@@ -11,6 +11,8 @@ from openai.types.chat import ChatCompletionMessageParam
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import json
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -162,6 +164,7 @@ class AgentApp:
     def __init__(self):
         self.agent = Agent()
         self.session: Optional[ClientSession] = None
+        self.scheduler: Optional[SchedulerManager] = None
     
     async def init_tools(self, session: ClientSession):
         mcp_tools = await session.list_tools()
@@ -177,6 +180,10 @@ class AgentApp:
         logger.debug(f"工具详情: {[(t.name, t.description) for t in mcp_tools.tools]}")
         return session
     
+    def init_scheduler(self):
+        self.scheduler = SchedulerManager(self, self.session)
+        self.scheduler.start()
+    
     async def run_task(self, task: str, session):
         return await self.agent.run(task, session)
     
@@ -185,10 +192,12 @@ class AgentApp:
         
         async def loop():
             while True:
-                question = Prompt.ask(
-                    "\n[bold cyan]?[/bold cyan] [cyan]请描述任务[/cyan]",
-                    default=""
-                )
+                try:
+                    question = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: Prompt.ask("\n[bold cyan]?[/bold cyan] [cyan]请描述任务[/cyan]")
+                    )
+                except:
+                    break
                 
                 if not question.strip():
                     continue
@@ -206,6 +215,66 @@ class AgentApp:
                 ))
         
         return loop()
+
+
+class SchedulerManager:
+    def __init__(self, app: AgentApp, session):
+        self.app = app
+        self.session = session
+        self.scheduler = AsyncIOScheduler()
+    
+    def load_schedules(self):
+        schedules_path = os.path.join(os.path.dirname(__file__), "schedules.json")
+        if not os.path.exists(schedules_path):
+            logger.warning(f"未找到配置文件: {schedules_path}")
+            return []
+        
+        with open(schedules_path, encoding="utf-8") as f:
+            schedules = json.load(f)
+        
+        enabled_schedules = [s for s in schedules if s.get("enabled", True)]
+        logger.info(f"已加载 {len(enabled_schedules)} 个定时任务")
+        return enabled_schedules
+    
+    async def run_scheduled_task(self, schedule: Dict):
+        name = schedule.get("name", "未命名任务")
+        task = schedule.get("task", "")
+        
+        logger.info(f"⏰ 触发定时任务: {name}")
+        logger.info(f"   任务内容: {task}")
+        
+        try:
+            result = await self.app.run_task(task, self.session)
+            logger.info(f"✓ 定时任务完成: {name}")
+            logger.debug(f"结果: {result}")
+        except Exception as e:
+            logger.error(f"✗ 定时任务失败: {name}, 错误: {e}")
+    
+    def start(self):
+        schedules = self.load_schedules()
+        
+        for schedule in schedules:
+            name = schedule.get("name", "未命名")
+            cron = schedule.get("cron", "")
+            
+            try:
+                trigger = CronTrigger.from_crontab(cron)
+                self.scheduler.add_job(
+                    self.run_scheduled_task,
+                    trigger=trigger,
+                    args=[schedule],
+                    name=name
+                )
+                logger.info(f"✓ 已注册定时任务: {name} ({cron})")
+            except Exception as e:
+                logger.error(f"✗ 注册定时任务失败: {name}, 错误: {e}")
+        
+        if self.scheduler.get_jobs():
+            self.scheduler.start()
+            logger.info(f"定时任务调度器已启动，共 {len(self.scheduler.get_jobs())} 个任务")
+            logger.info(f"下次执行时间: {[job.next_run_time for job in self.scheduler.get_jobs()]}")
+        else:
+            logger.warning("没有可执行的定时任务")
 
 
 async def main():
@@ -232,6 +301,7 @@ async def main():
             app = AgentApp()
             await app.init_tools(session)
             app.session = session
+            app.init_scheduler()
             
             if args.task:
                 result = await app.run_task(args.task, session)

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "每日销售报表",
+    "cron": "* * * * *",
+    "task": "查询昨天的销售订单并发送到 jimingqing@xzrobot.com",
+    "enabled": true
+  },
+  {
+    "name": "每小时数据同步",
+    "cron": "0 * * * *",
+    "task": "执行 SELECT COUNT(*) FROM orders 查询",
+    "enabled": false
+  }
+]
