@@ -34,6 +34,8 @@ logging.basicConfig(
                           show_time=True, show_path=False)]
 )
 
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger("agent")
 
 
@@ -105,7 +107,7 @@ class MCPManager:
 
 
 class SchedulerManager:
-    def __init__(self, config_path: str = "schedules.json"):
+    def __init__(self, config_path: str = "..\\schedules.json"):
         self.config_path = config_path
         self.scheduler: Optional[AsyncIOScheduler] = None
         self._started = False
