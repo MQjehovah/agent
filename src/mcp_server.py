@@ -1,6 +1,6 @@
 import os
 import smtplib
-import json
+import datetime
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -39,6 +39,14 @@ SMTP_CONFIG = {
     "password": os.getenv("SMTP_PASSWORD", "pm1Fw4y2pHMDTyMB"),
     "from_name": os.getenv("SMTP_FROM_NAME", "数字中台")
 }
+
+@mcp.tool()
+def get_current_time():
+    """获取当前时间"""
+    logger.info("获取当前时间")
+
+    now = datetime.datetime.now()
+    return now.strftime("%Y-%m-%d %H:%M:%S")
 
 @mcp.tool()
 def list_tables():

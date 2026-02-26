@@ -49,15 +49,15 @@ class MCPManager:
 
     async def connect(self):
         from contextlib import AsyncExitStack
-        
+
         server_params = StdioServerParameters(
             command="python",
             args=[self.server_script],
         )
-        
+
         self._exit_stack = AsyncExitStack()
         await self._exit_stack.__aenter__()
-        
+
         stdio_transport = await self._exit_stack.enter_async_context(
             stdio_client(server_params)
         )
@@ -185,7 +185,7 @@ class Agent:
     def __init__(
         self,
         model: str = "MiniMax-M2.5",
-        max_iterations: int = 20,
+        max_iterations: int = 100,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
     ):
@@ -230,8 +230,7 @@ class Agent:
                 tools=self.tool_defs  # type: ignore
             )
             progress.update(task, completed=True)
-        
-        logger.debug(f"AI response: {response.choices[0].message.content}")
+
         return response
 
     async def execute_tool(self, name: str, args: Dict) -> str:
@@ -245,17 +244,22 @@ class Agent:
         self.scheduler.start()
 
     async def run(self, task: str) -> str:
-        soul_path = os.path.join(os.path.dirname(__file__), "SOUL.md")
-        system_prompt = open(soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
+        soul_path = os.path.join(os.path.dirname(__file__), "..\\SOUL.md")
+        system_prompt = open(
+            soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
         self.set_system_prompt(system_prompt)
-        
+
         self.add_message("user", task)
         logger.info(f"开始执行任务: {task}")
-        
+
         for i in range(self.max_iterations):
             logger.debug(f"Iteration {i + 1}/{self.max_iterations}")
             response = await self.think()
+
+            logger.debug(f"\n==================\n {self.messages} \n==================\n")
+
             msg = response.choices[0].message
+            logger.debug(f"AI response: \n{msg.content}")
 
             self.add_message("assistant", msg.content or "",
                              tool_calls=[{
@@ -281,10 +285,10 @@ class Agent:
                     logger.info(f"→ 调用工具: {func.name}")
                     logger.debug(f"Tool arguments: {args}")
                     result = await self.execute_tool(func.name, args)
+                    logger.debug(f"Tool results: {result}")
+                    logger.info(f"✓ {func.name} 执行完成")
 
                     self.add_message("tool", result, tool_call_id=tc.id)
-
-                    logger.info(f"✓ {func.name} 执行完成")
 
                 continue
 

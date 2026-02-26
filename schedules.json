@@ -1,14 +1,15 @@
 [
   {
-    "name": "每日销售报表",
-    "cron": "* * * * *",
-    "task": "发送邮件通知我吃晚饭 jimingqing@xzrobot.com",
-    "enabled": true
+    "name": "每周销售报表",
+    "cron": "*/1 * * * *",
+    "task": "总结本周的销售数据报表通过邮件发送给jimingqing@xzrobot.com",
+    "enabled": false
   },
   {
-    "name": "每小时数据同步",
-    "cron": "0 * * * *",
-    "task": "执行 SELECT COUNT(*) FROM orders 查询",
-    "enabled": false
+    "name": "每月经营报表",
+    "cron": "*/1 * * * *",
+    "task": "总结本月的经营数据（销售、采购、售后）报表通过邮件发送给jimingqing@xzrobot.com",
+    "enabled": true
   }
 ]
+ 
