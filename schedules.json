@@ -2,7 +2,7 @@
   {
     "name": "每日销售报表",
     "cron": "* * * * *",
-    "task": "查询昨天的销售订单并发送到 jimingqing@xzrobot.com",
+    "task": "发送邮件通知我吃晚饭 jimingqing@xzrobot.com",
     "enabled": true
   },
   {
