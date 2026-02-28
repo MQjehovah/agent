@@ -21,6 +21,9 @@ import json
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from dingtalk.plugin import DingTalkPlugin
+from agent_session import AgentSessionManager
+
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 
@@ -200,6 +203,7 @@ class Agent:
         )
         self.messages: List[ChatCompletionMessageParam] = []
         self.system_prompt = ""
+        self.session_manager: Optional[AgentSessionManager] = None
 
     @property
     def tool_defs(self):
@@ -215,7 +219,7 @@ class Agent:
             msg.update(kwargs)
         self.messages.append(cast(ChatCompletionMessageParam, msg))
 
-    async def think(self) -> Any:
+    async def _think(self, messages: List[ChatCompletionMessageParam]) -> Any:
         with Progress(
             SpinnerColumn(style="cyan"),
             TextColumn("[progress.description]{task.description}"),
@@ -226,15 +230,23 @@ class Agent:
             task = progress.add_task("AI 思考中...", total=None)
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=self.messages,
+                messages=messages,
                 tools=self.tool_defs  # type: ignore
             )
             progress.update(task, completed=True)
 
         return response
 
+    async def think(self) -> Any:
+        return await self._think(self.messages)
+
     async def execute_tool(self, name: str, args: Dict) -> str:
         return await self.mcp.call_tool(name, args)
+
+    def get_session_manager(self) -> AgentSessionManager:
+        if not self.session_manager:
+            self.session_manager = AgentSessionManager(self)
+        return self.session_manager
 
     async def initialize(self):
         self.mcp = MCPManager()
@@ -242,6 +254,19 @@ class Agent:
         await self.mcp.connect()
         self.scheduler.set_executor(self.run)
         self.scheduler.start()
+        
+        self.get_session_manager()
+        self._init_dingtalk_plugin()
+
+    def _init_dingtalk_plugin(self):
+        try:
+            self.dingtalk_plugin = DingTalkPlugin()
+            sm = self.get_session_manager()
+            self.dingtalk_plugin.register_agent(sm.run_in_session)
+            self.dingtalk_plugin.start()
+            logger.info("钉钉插件服务已启动")
+        except Exception as e:
+            logger.warning(f"钉钉插件启动失败: {e}")
 
     async def run(self, task: str) -> str:
         soul_path = os.path.join(os.path.dirname(__file__), "..\\SOUL.md")
