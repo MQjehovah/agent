@@ -23,6 +23,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from dingtalk.plugin import DingTalkPlugin
 from agent_session import AgentSessionManager
+from multi_agent import MultiAgentManager, create_default_team, AgentRole
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -204,6 +205,8 @@ class Agent:
         self.messages: List[ChatCompletionMessageParam] = []
         self.system_prompt = ""
         self.session_manager: Optional[AgentSessionManager] = None
+        self.multi_agent_manager: Optional[MultiAgentManager] = None
+        self.multi_agent_mode = False
 
     @property
     def tool_defs(self):
@@ -268,7 +271,17 @@ class Agent:
         except Exception as e:
             logger.warning(f"钉钉插件启动失败: {e}")
 
-    async def run(self, task: str) -> str:
+    def _init_multi_agent(self):
+        """初始化多智能体模式"""
+        self.multi_agent_manager = create_default_team(self)
+        self.multi_agent_manager.set_executor(self.run)
+        logger.info("多智能体模式已初始化")
+
+    async def run(self, task: str, use_multi_agent: bool = False) -> str:
+        """执行任务，可选择多智能体模式"""
+        # 如果启用多智能体模式
+        if use_multi_agent and self.multi_agent_manager:
+            return await self.multi_agent_manager.collaborative_execute(task)
         soul_path = os.path.join(os.path.dirname(__file__), "..\\SOUL.md")
         system_prompt = open(
             soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
@@ -357,6 +370,9 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", "-t", help="执行单个任务")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
+    parser.add_argument("--multi-agent", "-m", action="store_true", help="启用多智能体模式")
+    parser.add_argument("--list-agents", "-l", action="store_true", help="列出所有智能体")
+    parser.add_argument("--agent", "-a", help="使用指定智能体执行任务")
     args = parser.parse_args()
 
     if args.debug:
@@ -368,11 +384,35 @@ async def main():
     await agent.initialize()
 
     if args.task:
-        result = await agent.run(args.task)
-        console.print(Panel.fit(
-            f"[bold green]结果:[/bold green]\n{result}",
-            border_style="green", box=box.ROUNDED
-        ))
+        # 如果指定了智能体
+        if args.agent:
+            result = await agent.multi_agent_manager.execute_with_agent(args.agent, args.task)
+            console.print(Panel.fit(
+                f"[bold green]智能体 {result.agent_name} 执行结果:[/bold green]\n{result.content}",
+                border_style="green", box=box.ROUNDED
+            ))
+        else:
+            result = await agent.run(args.task, use_multi_agent=args.multi_agent)
+            console.print(Panel.fit(
+                f"[bold green]结果:[/bold green]\n{result}",
+                border_style="green", box=box.ROUNDED
+            ))
+        return
+    
+    # 列出智能体
+    if args.list_agents:
+        agents = agent.multi_agent_manager.list_agents()
+        table = Table(title="智能体列表")
+        table.add_column("名称", style="cyan")
+        table.add_column("角色", style="magenta")
+        table.add_column("状态", style="green")
+        table.add_column("人格", style="yellow")
+        
+        for a in agents:
+            status = "✓ 活跃" if a["active"] else "○" if a["enabled"] else "✗ 禁用"
+            table.add_row(a["name"], a["role"], status, a.get("personality", ""))
+        
+        console.print(table)
         return
 
     console.print(Panel.fit(
