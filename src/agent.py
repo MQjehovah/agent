@@ -13,7 +13,6 @@ from typing import cast, Optional, List, Dict, Any, Union
 from dataclasses import dataclass, field
 from openai import OpenAI
 from openai.types import chat
-from openai.types.responses import ResponseFunctionToolCall
 from openai.types.chat import ChatCompletionMessageParam
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -188,12 +187,11 @@ class Agent:
     def __init__(
         self,
         model: str = "MiniMax-M2.5",
-        max_iterations: int = 100,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
     ):
+
         self.model = model
-        self.max_iterations = max_iterations
         self.client = OpenAI(
             base_url=base_url or os.getenv(
                 "OPENAI_BASE_URL", "https://api.minimaxi.com/v1/"),
@@ -201,25 +199,28 @@ class Agent:
                 "OPENAI_API_KEY", "sk-api-UQHBI6bhRHXfg4iuASL66EadYaQbeetEqsJrSqTa6R_6n4-5ba_64vlWjmGq4lGCwnblwQ1usk6j0ukrN64PPGyYpV66WGCHf5wBVXKvVWxoxIWhs3AqL9M"),
             timeout=60.0
         )
-        self.messages: List[ChatCompletionMessageParam] = []
-        self.system_prompt = ""
-        self.session_manager: Optional[AgentSessionManager] = None
+        soul_path = os.path.join(os.path.dirname(__file__), "..\\SOUL.md")
+        system_prompt = open(
+            soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
+        self.system_prompt = system_prompt
+
+        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager(
+        )
+
+    async def initialize(self):
+        self.mcp = MCPManager()
+        self.scheduler = SchedulerManager()
+        await self.mcp.connect()
+        self.scheduler.set_executor(self.run)
+        self.scheduler.start()
+
+        self._init_dingtalk_plugin()
 
     @property
     def tool_defs(self):
         return self.mcp.tool_defs
 
-    def set_system_prompt(self, prompt: str):
-        self.system_prompt = prompt
-        self.messages = [{"role": "system", "content": prompt}]
-
-    def add_message(self, role: str, content: str, **kwargs):
-        msg = {"role": role, "content": content or ""}
-        if kwargs:
-            msg.update(kwargs)
-        self.messages.append(cast(ChatCompletionMessageParam, msg))
-
-    async def _think(self, messages: List[ChatCompletionMessageParam]) -> Any:
+    async def think(self, session) -> Any:
         with Progress(
             SpinnerColumn(style="cyan"),
             TextColumn("[progress.description]{task.description}"),
@@ -230,33 +231,15 @@ class Agent:
             task = progress.add_task("AI 思考中...", total=None)
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
-                tools=self.tool_defs  # type: ignore
+                messages=session.messages,
+                # tools=self.tool_defs  # type: ignore
             )
             progress.update(task, completed=True)
 
         return response
 
-    async def think(self) -> Any:
-        return await self._think(self.messages)
-
     async def execute_tool(self, name: str, args: Dict) -> str:
         return await self.mcp.call_tool(name, args)
-
-    def get_session_manager(self) -> AgentSessionManager:
-        if not self.session_manager:
-            self.session_manager = AgentSessionManager(self)
-        return self.session_manager
-
-    async def initialize(self):
-        self.mcp = MCPManager()
-        self.scheduler = SchedulerManager()
-        await self.mcp.connect()
-        self.scheduler.set_executor(self.run)
-        self.scheduler.start()
-        
-        self.get_session_manager()
-        self._init_dingtalk_plugin()
 
     def _init_dingtalk_plugin(self):
         try:
@@ -269,31 +252,24 @@ class Agent:
             logger.warning(f"钉钉插件启动失败: {e}")
 
     async def run(self, task: str) -> str:
-        soul_path = os.path.join(os.path.dirname(__file__), "..\\SOUL.md")
-        system_prompt = open(
-            soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
-        self.set_system_prompt(system_prompt)
+        # 可以在此处创建session
+        await self.session_manager.create_session("default", system_prompt=self.system_prompt)
+        agent_session = await self.session_manager.get_session("default")
+        agent_session.add_message("user", task)
 
-        self.add_message("user", task)
         logger.info(f"开始执行任务: {task}")
-
-        for i in range(self.max_iterations):
-            logger.debug(f"Iteration {i + 1}/{self.max_iterations}")
-            response = await self.think()
-
-            logger.debug(f"\n==================\n {self.messages} \n==================\n")
-
+        for i in range(agent_session.max_iterations):
+            logger.debug(f"Iteration {i + 1}/{agent_session.max_iterations}")
+            response = await self.think(agent_session)
             msg = response.choices[0].message
-            logger.debug(f"AI response: \n{msg.content}")
-
-            self.add_message("assistant", msg.content or "",
-                             tool_calls=[{
-                                 "id": tc.id,
-                                 "function": {
-                                     "name": tc.function.name,
-                                     "arguments": tc.function.arguments
-                                 }
-                             } for tc in (msg.tool_calls or [])] if msg.tool_calls else None)
+            agent_session.add_message("assistant", msg.content or "",
+                                      tool_calls=[{
+                                          "id": tc.id,
+                                          "function": {
+                                              "name": tc.function.name,
+                                              "arguments": tc.function.arguments
+                                          }
+                                      } for tc in (msg.tool_calls or [])] if msg.tool_calls else None)
 
             if msg.tool_calls:
                 for tc in msg.tool_calls:
@@ -313,7 +289,8 @@ class Agent:
                     logger.debug(f"Tool results: {result}")
                     logger.info(f"✓ {func.name} 执行完成")
 
-                    self.add_message("tool", result, tool_call_id=tc.id)
+                    agent_session.add_message(
+                        "tool", result, tool_call_id=tc.id)
 
                 continue
 
@@ -363,7 +340,7 @@ async def main():
         logging.getLogger("agent").setLevel(logging.DEBUG)
 
     logger.info("启动 Agent")
-
+    # 启动默认Agent
     agent = Agent()
     await agent.initialize()
 
