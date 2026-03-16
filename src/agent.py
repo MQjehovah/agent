@@ -42,7 +42,10 @@ logger = logging.getLogger("agent")
 
 
 class MCPManager:
-    def __init__(self, server_script: str = "mcp_server.py"):
+    def __init__(self, server_script: str = None):
+        if server_script is None:
+            server_script = os.path.join(os.path.dirname(
+                os.path.abspath(__file__)), "mcp_server.py")
         self.server_script = server_script
         self.session: Optional[ClientSession] = None
         self._exit_stack = None
@@ -199,7 +202,8 @@ class Agent:
                 "OPENAI_API_KEY", "sk-api-UQHBI6bhRHXfg4iuASL66EadYaQbeetEqsJrSqTa6R_6n4-5ba_64vlWjmGq4lGCwnblwQ1usk6j0ukrN64PPGyYpV66WGCHf5wBVXKvVWxoxIWhs3AqL9M"),
             timeout=60.0
         )
-        soul_path = os.path.join(os.path.dirname(__file__), "..\\SOUL.md")
+        soul_path = os.path.join(os.path.dirname(
+            __file__), "..\\config\\SOUL.md")
         system_prompt = open(
             soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
         self.system_prompt = system_prompt
@@ -215,6 +219,16 @@ class Agent:
         self.scheduler.start()
 
         self._init_dingtalk_plugin()
+
+    def _init_dingtalk_plugin(self):
+        try:
+            self.dingtalk_plugin = DingTalkPlugin()
+            sm = self.get_session_manager()
+            self.dingtalk_plugin.register_agent(sm.run_in_session)
+            self.dingtalk_plugin.start()
+            logger.info("钉钉插件服务已启动")
+        except Exception as e:
+            logger.warning(f"钉钉插件启动失败: {e}")
 
     @property
     def tool_defs(self):
@@ -241,35 +255,24 @@ class Agent:
     async def execute_tool(self, name: str, args: Dict) -> str:
         return await self.mcp.call_tool(name, args)
 
-    def _init_dingtalk_plugin(self):
-        try:
-            self.dingtalk_plugin = DingTalkPlugin()
-            sm = self.get_session_manager()
-            self.dingtalk_plugin.register_agent(sm.run_in_session)
-            self.dingtalk_plugin.start()
-            logger.info("钉钉插件服务已启动")
-        except Exception as e:
-            logger.warning(f"钉钉插件启动失败: {e}")
-
-    async def run(self, task: str) -> str:
-        # 可以在此处创建session
-        await self.session_manager.create_session("default", system_prompt=self.system_prompt)
-        agent_session = await self.session_manager.get_session("default")
-        agent_session.add_message("user", task)
+    async def run(self, task: str, session: None) -> str:
+        if not session:
+            session = await self.session_manager.create_session(system_prompt=self.system_prompt)
+        session.add_message("user", task)
 
         logger.info(f"开始执行任务: {task}")
-        for i in range(agent_session.max_iterations):
-            logger.debug(f"Iteration {i + 1}/{agent_session.max_iterations}")
-            response = await self.think(agent_session)
+        for i in range(session.max_iterations):
+            logger.debug(f"Iteration {i + 1}/{session.max_iterations}")
+            response = await self.think(session)
             msg = response.choices[0].message
-            agent_session.add_message("assistant", msg.content or "",
-                                      tool_calls=[{
-                                          "id": tc.id,
-                                          "function": {
-                                              "name": tc.function.name,
-                                              "arguments": tc.function.arguments
-                                          }
-                                      } for tc in (msg.tool_calls or [])] if msg.tool_calls else None)
+            session.add_message("assistant", msg.content or "",
+                                tool_calls=[{
+                                    "id": tc.id,
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                } for tc in (msg.tool_calls or [])] if msg.tool_calls else None)
 
             if msg.tool_calls:
                 for tc in msg.tool_calls:
@@ -289,7 +292,7 @@ class Agent:
                     logger.debug(f"Tool results: {result}")
                     logger.info(f"✓ {func.name} 执行完成")
 
-                    agent_session.add_message(
+                    session.add_message(
                         "tool", result, tool_call_id=tc.id)
 
                 continue
@@ -303,7 +306,7 @@ class Agent:
 
     async def interactive_mode(self):
         logger.info("进入交互模式")
-
+        agent_session = await self.session_manager.create_session(system_prompt=self.system_prompt)
         while True:
             try:
                 question = await asyncio.get_event_loop().run_in_executor(
@@ -321,7 +324,7 @@ class Agent:
                 break
 
             console.print()
-            result = await self.run(question)
+            result = await self.run(question, agent_session)
 
             console.print(Panel.fit(
                 f"[bold green]执行结果:[/bold green]\n{result}",
@@ -342,7 +345,8 @@ async def main():
     logger.info("启动 Agent")
     # 启动默认Agent
     agent = Agent()
-    await agent.initialize()
+    # 加载插件
+    # await agent.initialize()
 
     if args.task:
         result = await agent.run(args.task)
