@@ -22,7 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from dingtalk.plugin import DingTalkPlugin
 from agent_session import AgentSessionManager
-from skills import SkillLoader, SkillResult
+from skills import SkillLoader, SkillResult, SkillManager
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -187,15 +187,11 @@ class SchedulerManager:
             logger.warning("没有可执行的定时任务")
 
 
-class Agent:
-    def __init__(
-        self,
-        model: str = "MiniMax-M2.5",
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
-    ):
-
+class LLMClient:
+    def __init__(self, model: str = "MiniMax-M2.5", base_url: Optional[str] = None, api_key: Optional[str] = None):
         self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
         self.client = OpenAI(
             base_url=base_url or os.getenv(
                 "OPENAI_BASE_URL", "https://api.minimaxi.com/v1/"),
@@ -203,33 +199,56 @@ class Agent:
                 "OPENAI_API_KEY", "sk-api-UQHBI6bhRHXfg4iuASL66EadYaQbeetEqsJrSqTa6R_6n4-5ba_64vlWjmGq4lGCwnblwQ1usk6j0ukrN64PPGyYpV66WGCHf5wBVXKvVWxoxIWhs3AqL9M"),
             timeout=60.0
         )
+
+    def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], stream: bool = True):
+        return self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            stream=stream
+        )
+
+    def chat_sync(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]):
+        return self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            stream=False
+        )
+
+
+class Agent:
+    def __init__(self, client: LLMClient = None):
+        self.client = client
         soul_path = os.path.join(os.path.dirname(
             __file__), "..\\config\\SOUL.md")
         system_prompt = open(
             soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
         self.system_prompt = system_prompt
+        self.skill_manager: Optional[SkillManager] = None
 
-        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager()
-        self.skill_loader: Optional[SkillLoader] = None
+        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager(
+        )
 
     async def initialize(self):
-        self.mcp = MCPManager()
-        self.scheduler = SchedulerManager()
-        await self.mcp.connect()
-        
         self._init_skills()
-        
-        # self.scheduler.set_executor(self.run)
-        # self.scheduler.start()
-
+        self._init_scheduler()
         # self._init_dingtalk_plugin()
-    
+        await self._init_mcp()
+
     def _init_skills(self):
-        skills_dir = os.path.join(os.path.dirname(__file__), "..\\config", "skills")
-        self.skill_loader = SkillLoader(skills_dir)
-        loaded = self.skill_loader.load_all()
-        logger.info(f"✓ 已加载 {loaded} 个技能")
-        logger.info(self.skill_loader.get_skills_description())
+        skills_dir = os.path.join(os.path.dirname(
+            __file__), "..\\config", "skills")
+        self.skill_manager = SkillManager(skills_dir)
+        self.system_prompt = self.system_prompt + \
+            self.skill_manager.get_skills_prompt()
+
+    async def _init_mcp(self):
+        self.mcp = MCPManager()
+        await self.mcp.connect()
+
+    def _init_scheduler(self):
+        self.scheduler = SchedulerManager()
 
     def _init_dingtalk_plugin(self):
         try:
@@ -243,73 +262,90 @@ class Agent:
 
     @property
     def tool_defs(self):
-        return self.mcp.tool_defs
+        tools = []
+        if hasattr(self, 'mcp') and self.mcp:
+            tools = list(self.mcp.tool_defs)
+        if self.skill_manager:
+            tools.extend(self.skill_manager.get_tool_definitions())
+        return tools
 
     async def think(self, session) -> Any:
-        with Progress(
-            SpinnerColumn(style="cyan"),
-            TextColumn("[progress.description]{task.description}"),
-            TimeElapsedColumn(),
-            console=console,
-            transient=True
-        ) as progress:
-            task = progress.add_task("AI 思考中...", total=None)
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=session.messages,
-                tools=self.tool_defs  # type: ignore
-            )
-            progress.update(task, completed=True)
+        # logger.debug(f"调用API: {session.messages} \n {self.tool_defs}")
+        response = self.client.chat(
+            session.messages, self.tool_defs, stream=True)
 
-        return response
+        content_chunks = []
+        tool_calls_data = {}
+
+        for chunk in response:
+            delta = chunk.choices[0].delta
+
+            if delta.content:
+                content_chunks.append(delta.content)
+                print(delta.content, end="", flush=True)
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_data:
+                        tool_calls_data[idx] = {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""}
+                        }
+                    if tc.id:
+                        tool_calls_data[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            tool_calls_data[idx]["function"]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_data[idx]["function"]["arguments"] += tc.function.arguments
+
+        print()
+
+        full_content = "".join(content_chunks)
+        tool_calls_list = list(tool_calls_data.values()
+                               ) if tool_calls_data else None
+
+        class MockMessage:
+            def __init__(self, content, tool_calls):
+                self.content = content
+                self.tool_calls = tool_calls
+
+        class MockResponse:
+            def __init__(self, message):
+                self.choices = [type('Choice', (), {'message': message})]
+
+        return MockResponse(MockMessage(full_content, tool_calls_list))
 
     async def execute_tool(self, name: str, args: Dict) -> str:
+        if self.skill_manager and name == "execute_skill":
+            return await self.skill_manager.execute_tool(name, args)
         return await self.mcp.call_tool(name, args)
-    
+
     def list_skills(self) -> List[Dict[str, Any]]:
-        if not self.skill_loader:
+        if not self.skill_manager:
             return []
-        return self.skill_loader.list_skills()
-    
+        return self.skill_manager.list_skills()
+
     async def execute_skill(
         self,
         skill_name: str,
         user_input: str,
         variables: Dict[str, Any] = None
     ) -> SkillResult:
-        if not self.skill_loader:
-            return SkillResult(success=False, error="技能加载器未初始化")
-        
-        skill = self.skill_loader.get(skill_name)
-        if not skill:
-            return SkillResult(success=False, error=f"未找到技能: {skill_name}")
-        
-        all_vars = dict(variables or {})
-        all_vars["user_input"] = user_input
-        
-        prompt = skill.render_prompt(all_vars)
-        
-        logger.info(f"→ 执行技能: {skill_name}")
-        
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_input}
-            ]
-        )
-        
-        result_content = response.choices[0].message.content or ""
-        
-        logger.info(f"✓ 技能 {skill_name} 执行成功")
-        
+        if not self.skill_manager:
+            return SkillResult(success=False, error="技能管理器未初始化")
+
+        result = await self.skill_manager.execute_tool("execute_skill", {
+            "skill_name": skill_name,
+            "user_input": user_input
+        })
+
         return SkillResult(
             success=True,
-            data=result_content,
-            metadata={
-                "skill_name": skill_name,
-                "tools": [t.get("name") for t in skill.tools]
-            }
+            data=result,
+            metadata={"skill_name": skill_name}
         )
 
     async def run(self, task: str, session=None) -> str:
@@ -323,34 +359,38 @@ class Agent:
             response = await self.think(session)
             msg = response.choices[0].message
             session.add_message("assistant", msg.content or "",
-                                tool_calls=[{
-                                    "id": tc.id,
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments
-                                    }
-                                } for tc in (msg.tool_calls or [])] if msg.tool_calls else None)
+                                tool_calls=msg.tool_calls if msg.tool_calls else None)
 
             if msg.tool_calls:
                 for tc in msg.tool_calls:
-                    func = tc.function
-                    if not func or not func.name:
+                    if isinstance(tc, dict):
+                        tc_id = tc.get("id", "")
+                        func_data = tc.get("function", {})
+                        func_name = func_data.get("name", "")
+                        func_args = func_data.get("arguments", "")
+                    else:
+                        tc_id = tc.id
+                        func = tc.function
+                        func_name = func.name if func else ""
+                        func_args = func.arguments if func else ""
+
+                    if not func_name:
                         continue
 
                     try:
-                        args = json.loads(func.arguments) if isinstance(
-                            func.arguments, str) else func.arguments
+                        args = json.loads(func_args) if isinstance(
+                            func_args, str) else func_args
                     except:
                         args = {}
 
-                    logger.info(f"→ 调用工具: {func.name}")
+                    logger.info(f"→ 调用工具: {func_name}")
                     logger.debug(f"Tool arguments: {args}")
-                    result = await self.execute_tool(func.name, args)
+                    result = await self.execute_tool(func_name, args)
                     logger.debug(f"Tool results: {result}")
-                    logger.info(f"✓ {func.name} 执行完成")
+                    logger.info(f"✓ {func_name} 执行完成")
 
                     session.add_message(
-                        "tool", result, tool_call_id=tc.id)
+                        "tool", result, tool_call_id=tc_id)
 
                 continue
 
@@ -379,10 +419,6 @@ class Agent:
             if question.strip().lower() in ["quit", "exit", "q"]:
                 logger.info("ℹ 再见!")
                 break
-            
-            if question.strip().lower() == "skills":
-                self._show_skills()
-                continue
 
             console.print()
             result = await self.run(question, agent_session)
@@ -391,28 +427,6 @@ class Agent:
                 f"[bold green]执行结果:[/bold green]\n{result}",
                 border_style="green", box=box.ROUNDED
             ))
-    
-    def _show_skills(self):
-        skills = self.list_skills()
-        if not skills:
-            console.print("[yellow]没有可用的技能[/yellow]")
-            return
-        
-        table = Table(title="可用技能", box=box.ROUNDED)
-        table.add_column("名称", style="cyan")
-        table.add_column("工具", style="green")
-        table.add_column("描述")
-        
-        for skill in skills:
-            tools = skill.get("tools", [])
-            tools_str = ", ".join(tools) if isinstance(tools, list) else str(tools)
-            table.add_row(
-                skill.get("name", ""),
-                tools_str,
-                skill.get("description", "")
-            )
-        
-        console.print(table)
 
 
 async def main():
@@ -420,7 +434,6 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", "-t", help="执行单个任务")
     parser.add_argument("--skill", "-s", help="执行指定技能")
-    parser.add_argument("--list-skills", action="store_true", help="列出所有可用技能")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     args = parser.parse_args()
 
@@ -428,13 +441,9 @@ async def main():
         logging.getLogger("agent").setLevel(logging.DEBUG)
 
     logger.info("启动 Agent")
-    agent = Agent()
+    agent = Agent(LLMClient())
     await agent.initialize()
 
-    if args.list_skills:
-        agent._show_skills()
-        return
-    
     if args.skill:
         result = await agent.execute_skill(args.skill, args.task or "")
         console.print(Panel.fit(
