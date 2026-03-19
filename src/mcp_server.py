@@ -24,7 +24,7 @@ logger = logging.getLogger("mcp_server")
 mcp = FastMCP("Rosiwit MCP Server")
 
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "192.168.31.8"),
+    "host": os.getenv("DB_HOST", "192.168.31.45"),
     "port": int(os.getenv("DB_PORT", "3306")),
     "user": os.getenv("DB_USER", "root"),
     "password": os.getenv("DB_PASSWORD", "xzyz2022!"),

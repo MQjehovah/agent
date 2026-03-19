@@ -22,6 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from dingtalk.plugin import DingTalkPlugin
 from agent_session import AgentSessionManager
+from skills import SkillLoader, SkillResult
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -208,22 +209,32 @@ class Agent:
             soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
         self.system_prompt = system_prompt
 
-        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager(
-        )
+        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager()
+        self.skill_loader: Optional[SkillLoader] = None
 
     async def initialize(self):
         self.mcp = MCPManager()
         self.scheduler = SchedulerManager()
         await self.mcp.connect()
-        self.scheduler.set_executor(self.run)
-        self.scheduler.start()
+        
+        self._init_skills()
+        
+        # self.scheduler.set_executor(self.run)
+        # self.scheduler.start()
 
-        self._init_dingtalk_plugin()
+        # self._init_dingtalk_plugin()
+    
+    def _init_skills(self):
+        skills_dir = os.path.join(os.path.dirname(__file__), "..\\config", "skills")
+        self.skill_loader = SkillLoader(skills_dir)
+        loaded = self.skill_loader.load_all()
+        logger.info(f"✓ 已加载 {loaded} 个技能")
+        logger.info(self.skill_loader.get_skills_description())
 
     def _init_dingtalk_plugin(self):
         try:
             self.dingtalk_plugin = DingTalkPlugin()
-            sm = self.get_session_manager()
+            sm = self.session_manager
             self.dingtalk_plugin.register_agent(sm.run_in_session)
             self.dingtalk_plugin.start()
             logger.info("钉钉插件服务已启动")
@@ -246,7 +257,7 @@ class Agent:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=session.messages,
-                # tools=self.tool_defs  # type: ignore
+                tools=self.tool_defs  # type: ignore
             )
             progress.update(task, completed=True)
 
@@ -254,8 +265,54 @@ class Agent:
 
     async def execute_tool(self, name: str, args: Dict) -> str:
         return await self.mcp.call_tool(name, args)
+    
+    def list_skills(self) -> List[Dict[str, Any]]:
+        if not self.skill_loader:
+            return []
+        return self.skill_loader.list_skills()
+    
+    async def execute_skill(
+        self,
+        skill_name: str,
+        user_input: str,
+        variables: Dict[str, Any] = None
+    ) -> SkillResult:
+        if not self.skill_loader:
+            return SkillResult(success=False, error="技能加载器未初始化")
+        
+        skill = self.skill_loader.get(skill_name)
+        if not skill:
+            return SkillResult(success=False, error=f"未找到技能: {skill_name}")
+        
+        all_vars = dict(variables or {})
+        all_vars["user_input"] = user_input
+        
+        prompt = skill.render_prompt(all_vars)
+        
+        logger.info(f"→ 执行技能: {skill_name}")
+        
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_input}
+            ]
+        )
+        
+        result_content = response.choices[0].message.content or ""
+        
+        logger.info(f"✓ 技能 {skill_name} 执行成功")
+        
+        return SkillResult(
+            success=True,
+            data=result_content,
+            metadata={
+                "skill_name": skill_name,
+                "tools": [t.get("name") for t in skill.tools]
+            }
+        )
 
-    async def run(self, task: str, session: None) -> str:
+    async def run(self, task: str, session=None) -> str:
         if not session:
             session = await self.session_manager.create_session(system_prompt=self.system_prompt)
         session.add_message("user", task)
@@ -311,7 +368,7 @@ class Agent:
             try:
                 question = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: Prompt.ask(
-                        "\n[bold cyan]?[/bold cyan] [cyan]请描述任务[/cyan]")
+                        "\n[bold cyan]?[/bold cyan] [cyan]请描述任务 (输入 skills 查看可用技能)[/cyan]")
                 )
             except:
                 break
@@ -322,6 +379,10 @@ class Agent:
             if question.strip().lower() in ["quit", "exit", "q"]:
                 logger.info("ℹ 再见!")
                 break
+            
+            if question.strip().lower() == "skills":
+                self._show_skills()
+                continue
 
             console.print()
             result = await self.run(question, agent_session)
@@ -330,12 +391,36 @@ class Agent:
                 f"[bold green]执行结果:[/bold green]\n{result}",
                 border_style="green", box=box.ROUNDED
             ))
+    
+    def _show_skills(self):
+        skills = self.list_skills()
+        if not skills:
+            console.print("[yellow]没有可用的技能[/yellow]")
+            return
+        
+        table = Table(title="可用技能", box=box.ROUNDED)
+        table.add_column("名称", style="cyan")
+        table.add_column("工具", style="green")
+        table.add_column("描述")
+        
+        for skill in skills:
+            tools = skill.get("tools", [])
+            tools_str = ", ".join(tools) if isinstance(tools, list) else str(tools)
+            table.add_row(
+                skill.get("name", ""),
+                tools_str,
+                skill.get("description", "")
+            )
+        
+        console.print(table)
 
 
 async def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", "-t", help="执行单个任务")
+    parser.add_argument("--skill", "-s", help="执行指定技能")
+    parser.add_argument("--list-skills", action="store_true", help="列出所有可用技能")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     args = parser.parse_args()
 
@@ -343,10 +428,21 @@ async def main():
         logging.getLogger("agent").setLevel(logging.DEBUG)
 
     logger.info("启动 Agent")
-    # 启动默认Agent
     agent = Agent()
-    # 加载插件
-    # await agent.initialize()
+    await agent.initialize()
+
+    if args.list_skills:
+        agent._show_skills()
+        return
+    
+    if args.skill:
+        result = await agent.execute_skill(args.skill, args.task or "")
+        console.print(Panel.fit(
+            f"[bold green]技能执行结果:[/bold green]\n{result.data if result.success else result.error}",
+            border_style="green" if result.success else "red",
+            box=box.ROUNDED
+        ))
+        return
 
     if args.task:
         result = await agent.run(args.task)
@@ -359,6 +455,7 @@ async def main():
     console.print(Panel.fit(
         "[bold cyan]数据库智能 Agent[/bold cyan]\n"
         "[dim]输入任务描述，自动完成工作[/dim]\n"
+        "[dim]输入 [bold]skills[/bold] 查看可用技能[/dim]\n"
         "[dim]输入 [bold]quit[/bold] 退出[/dim]",
         border_style="cyan", box=box.DOUBLE
     ))
