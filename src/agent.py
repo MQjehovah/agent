@@ -282,7 +282,7 @@ class Agent:
 
             if delta.content:
                 content_chunks.append(delta.content)
-                print(delta.content, end="", flush=True)
+                # print(delta.content, end="", flush=True)
 
             if delta.tool_calls:
                 for tc in delta.tool_calls:
@@ -301,7 +301,7 @@ class Agent:
                         if tc.function.arguments:
                             tool_calls_data[idx]["function"]["arguments"] += tc.function.arguments
 
-        print()
+        # print()
 
         full_content = "".join(content_chunks)
         tool_calls_list = list(tool_calls_data.values()
@@ -408,7 +408,7 @@ class Agent:
             try:
                 question = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: Prompt.ask(
-                        "\n[bold cyan]?[/bold cyan] [cyan]请描述任务 (输入 skills 查看可用技能)[/cyan]")
+                        "\n[bold cyan]?[/bold cyan] [cyan]请描述任务[/cyan]")
                 )
             except:
                 break
@@ -462,9 +462,8 @@ async def main():
         return
 
     console.print(Panel.fit(
-        "[bold cyan]数据库智能 Agent[/bold cyan]\n"
+        "[bold cyan]Agent[/bold cyan]\n"
         "[dim]输入任务描述，自动完成工作[/dim]\n"
-        "[dim]输入 [bold]skills[/bold] 查看可用技能[/dim]\n"
         "[dim]输入 [bold]quit[/bold] 退出[/dim]",
         border_style="cyan", box=box.DOUBLE
     ))
