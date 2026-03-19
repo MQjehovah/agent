@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,8 +60,7 @@ class Skill:
 
 
 class SkillLoader:
-    SKILL_FILE = "skill.json"
-    PROMPT_FILE = "prompt.md"
+    SKILL_MD_FILE = "SKILL.md"
     EXAMPLES_DIR = "examples"
     
     def __init__(self, skills_dir: str):
@@ -83,31 +83,37 @@ class SkillLoader:
         return loaded
     
     def load_skill(self, skill_dir: str) -> Optional[Skill]:
-        skill_file = os.path.join(skill_dir, self.SKILL_FILE)
+        skill_md_file = os.path.join(skill_dir, self.SKILL_MD_FILE)
         
-        if not os.path.exists(skill_file):
-            logger.warning(f"未找到skill.json: {skill_dir}")
+        if not os.path.exists(skill_md_file):
+            logger.warning(f"未找到SKILL.md: {skill_dir}")
             return None
         
         try:
-            with open(skill_file, encoding="utf-8") as f:
-                data = json.load(f)
+            with open(skill_md_file, encoding="utf-8") as f:
+                content = f.read()
             
-            prompt_template = self._load_prompt(skill_dir)
+            front_matter, prompt_template = self._parse_skill_md(content)
+            if not front_matter:
+                logger.warning(f"SKILL.md格式错误: {skill_md_file}")
+                return None
+            
+            name = front_matter.get("name", os.path.basename(skill_dir))
+            description = front_matter.get("description", "")
             examples = self._load_examples(skill_dir)
             
             skill = Skill(
-                name=data.get("name", os.path.basename(skill_dir)),
-                description=data.get("description", ""),
-                version=data.get("version", "1.0.0"),
-                author=data.get("author", ""),
-                tags=data.get("tags", []),
-                enabled=data.get("enabled", True),
+                name=name,
+                description=description,
+                version=front_matter.get("version", "1.0.0"),
+                author=front_matter.get("author", ""),
+                tags=front_matter.get("tags", []),
+                enabled=front_matter.get("enabled", True),
                 prompt_template=prompt_template,
-                tools=data.get("tools", []),
+                tools=front_matter.get("tools", []),
                 examples=examples,
-                variables=data.get("variables", []),
-                output_format=data.get("output_format", "markdown"),
+                variables=front_matter.get("variables", []),
+                output_format=front_matter.get("output_format", "markdown"),
                 skill_dir=skill_dir
             )
             
@@ -119,12 +125,34 @@ class SkillLoader:
             logger.error(f"加载技能失败: {skill_dir}, 错误: {e}")
             return None
     
-    def _load_prompt(self, skill_dir: str) -> str:
-        prompt_file = os.path.join(skill_dir, self.PROMPT_FILE)
-        if os.path.exists(prompt_file):
-            with open(prompt_file, encoding="utf-8") as f:
-                return f.read()
-        return ""
+    def _parse_skill_md(self, content: str) -> tuple:
+        pattern = r'^---\s*\n(.*?)\n---\s*\n(.*)$'
+        match = re.match(pattern, content, re.DOTALL)
+        
+        if not match:
+            return None, content
+        
+        front_matter_str = match.group(1)
+        prompt_template = match.group(2).strip()
+        
+        front_matter = {}
+        for line in front_matter_str.split('\n'):
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip()
+                value = value.strip()
+                
+                if value.startswith('[') and value.endswith(']'):
+                    items = [item.strip().strip('"\'') for item in value[1:-1].split(',')]
+                    front_matter[key] = [item for item in items if item]
+                elif value.lower() == 'true':
+                    front_matter[key] = True
+                elif value.lower() == 'false':
+                    front_matter[key] = False
+                else:
+                    front_matter[key] = value.strip('"\'')
+        
+        return front_matter, prompt_template
     
     def _load_examples(self, skill_dir: str) -> List[Dict[str, str]]:
         examples_dir = os.path.join(skill_dir, self.EXAMPLES_DIR)
@@ -167,25 +195,36 @@ class SkillLoader:
         skill_dir = os.path.join(self.skills_dir, name)
         os.makedirs(skill_dir, exist_ok=True)
         
-        skill_data = {
-            "name": name,
-            "description": description or f"{name} skill",
-            "version": "1.0.0",
-            "author": "",
-            "tags": [],
-            "enabled": True,
-            "tools": [],
-            "variables": [],
-            "output_format": "markdown"
-        }
+        skill_md_content = f'''---
+name: {name}
+description: {description or f"{name} skill"}
+---
+
+# {name}
+
+## Overview
+
+{description or f"{name} skill description"}
+
+## When to Use
+
+- 
+
+## Workflow
+
+1. 
+2. 
+
+## Output Format
+
+### Result
+
+{{{{result}}}}
+'''
         
-        skill_file = os.path.join(skill_dir, self.SKILL_FILE)
-        with open(skill_file, "w", encoding="utf-8") as f:
-            json.dump(skill_data, f, ensure_ascii=False, indent=2)
-        
-        prompt_file = os.path.join(skill_dir, self.PROMPT_FILE)
-        with open(prompt_file, "w", encoding="utf-8") as f:
-            f.write(f"# {name}\n\n请在此编写提示词模板...\n\n使用 {{{{variable}}}} 作为变量占位符。\n")
+        skill_md_file = os.path.join(skill_dir, self.SKILL_MD_FILE)
+        with open(skill_md_file, "w", encoding="utf-8") as f:
+            f.write(skill_md_content)
         
         logger.info(f"创建技能目录: {skill_dir}")
         return skill_dir
