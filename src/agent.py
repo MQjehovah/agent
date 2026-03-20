@@ -113,7 +113,7 @@ class MCPManager:
 
 
 class SchedulerManager:
-    def __init__(self, config_path: str = "..\\schedules.json"):
+    def __init__(self, config_path: str = "schedules.json"):
         self.config_path = config_path
         self.scheduler: Optional[AsyncIOScheduler] = None
         self._started = False
@@ -221,7 +221,7 @@ class Agent:
     def __init__(self, client: LLMClient = None):
         self.client = client
         soul_path = os.path.join(os.path.dirname(
-            __file__), "..\\config\\SOUL.md")
+            __file__), "../config", "SOUL.md")
         system_prompt = open(
             soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
         self.system_prompt = system_prompt
@@ -238,7 +238,7 @@ class Agent:
 
     def _init_skills(self):
         skills_dir = os.path.join(os.path.dirname(
-            __file__), "..\\config", "skills")
+            __file__), "../config", "skills")
         self.skill_manager = SkillManager(skills_dir)
         self.system_prompt = self.system_prompt + \
             self.skill_manager.get_skills_prompt()
@@ -248,7 +248,9 @@ class Agent:
         await self.mcp.connect()
 
     def _init_scheduler(self):
-        self.scheduler = SchedulerManager()
+        schedules_dir = os.path.join(os.path.dirname(
+            __file__), "../config", "schedules.json")
+        self.scheduler = SchedulerManager(schedules_dir)
         self.scheduler.set_executor(self.run)
         self.scheduler.start()
 
