@@ -232,9 +232,9 @@ class Agent:
 
     async def initialize(self):
         self._init_skills()
-        self._init_scheduler()
         # self._init_dingtalk_plugin()
         await self._init_mcp()
+        self._init_scheduler()
 
     def _init_skills(self):
         skills_dir = os.path.join(os.path.dirname(
@@ -249,6 +249,8 @@ class Agent:
 
     def _init_scheduler(self):
         self.scheduler = SchedulerManager()
+        self.scheduler.set_executor(self.run)
+        self.scheduler.start()
 
     def _init_dingtalk_plugin(self):
         try:

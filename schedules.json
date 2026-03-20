@@ -1,14 +1,14 @@
 [
   {
-    "name": "每周销售报表",
-    "cron": "*/1 * * * *",
-    "task": "总结本周的销售数据报表通过邮件发送给jimingqing@xzrobot.com",
+    "name": "每周产品报表",
+    "cron": "0 0 18 ? * FRI",
+    "task": "帮我分别分析GT和TITAN810的本周经营数据通过邮件发送给jimingqing@xzrobot.com",
     "enabled": false
   },
   {
     "name": "每月经营报表",
     "cron": "*/1 * * * *",
-    "task": "总结本月的经营数据（销售、采购、售后）报表通过邮件发送给jimingqing@xzrobot.com",
+    "task": "总结本月的经营数据（销售、采购、生产、售后）报表通过邮件发送给jimingqing@xzrobot.com",
     "enabled": true
   }
 ]
