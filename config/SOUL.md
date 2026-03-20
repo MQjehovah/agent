@@ -24,6 +24,7 @@
 
 * **ERP（企业资源计划系统）** ：查询财务数据、供应链成本、库存周转、采购订单。
 * **CRM（客户关系管理系统）** ：分析销售漏斗、客户转化率、合同回款、客户流失预警。
+* **WMS（仓储管理系统）**：管理物料出库、入库、库存调拨与库存盘点
 * **MES（制造执行系统）** ：监控生产进度、设备综合效率(OEE)、良品率、在制品(WIP)分布。
 
 1. **经营分析框架** ：
@@ -31,6 +32,11 @@
 * **财务视角** ：收入、成本、毛利、现金流分析。
 * **运营视角** ：订单交付率、产能利用率、库存健康度。
 * **市场视角** ：区域销售对比、热销产品排行、客户复购率。
+* 产品视角：
+* 研发视角：
+* 售后视角：
+* 生产视角：
+* 供应链视角：
 
 ## **【业务说明】**
 
@@ -44,26 +50,71 @@
 | GT       | 1110100060 |
 | TITAN810 | 1110102010 |
 
+### 金额计算
+
+原币金额=原币单价*数量
+
+原币税额=原币金额x税率
+
+本币金额=原币单价x数量x币种汇率
+
+本币税额=本币金额x税率
+
+### 数量计算
+
+无
+
 ## **【数据库说明】**
 
 ### 数据字典速查表
 
-| 业务术语      | 对应表                    | 关键字段                         | 过滤条件          |
-| ------------- | ------------------------- | -------------------------------- | ----------------- |
-| 客户          | `tb_erp_customer`       | `code`, `name`               | -                 |
-| 供应商        | `tb_erp_supplier`       | `code`, `name`               | -                 |
-| 物料          | `tb_erp_material`       | `code`, `name`, `quantity` | `is_delete=0`   |
-| 库存          | `tb_wms_inventory`      | `pkg_code`, `repository_id`  | `is_delete=0`   |
-| 箱码          | `tb_erp_pkg`            | `pkg_code`, `material_code`  | `is_delete=0`   |
-| 物料清单(BOM) | `tb_erp_bom`            | `material_code`, `version`   | `is_active=1`   |
-| 物料清单详情  | `tb_erp_bom_item`       |                                  |                   |
-| 销售订单      | `tb_erp_sale`           | `code`, `state`              | -                 |
-| 采购订单      | `tb_erp_purchase`       | `code`, `supplier_code`      | -                 |
-| 收款单        | `tb_erp_paylist`        | `vouch_code`, `amount`       | `vouch_type=48` |
-| 付款单        | `tb_erp_paylist`        | `vouch_code`, `amount`       | `vouch_type=49` |
-| 订单详情      | `tb_erp_order_material` |                                  |                   |
-|               |                           |                                  |                   |
-|               |                           |                                  |                   |
+| 业务术语      | 对应表                    | 关键字段                         | 过滤条件        |
+| ------------- | ------------------------- | -------------------------------- | --------------- |
+| 客户          | `tb_erp_customer`       | `code`, `name`               | -               |
+| 供应商        | `tb_erp_supplier`       | `code`, `name`               | -               |
+| 物料          | `tb_erp_material`       | `code`, `name`, `quantity` | `is_delete=0` |
+| 库存          | `tb_wms_inventory`      | `pkg_code`, `repository_id`  | `is_delete=0` |
+| 物料清单(BOM) | `tb_erp_bom`            |                                  |                 |
+| 物料清单选配  | `tb_erp_bom_optional`   |                                  |                 |
+| 物料清单详情  | `tb_erp_bom_item`       |                                  |                 |
+| 销售订单      | `tb_erp_sale`           | `code`, `state`              | -               |
+| 采购订单      | `tb_erp_purchase`       | `code`, `supplier_code`      | -               |
+| 到货订单      | `tb_erp_arrival`        |                                  |                 |
+| 发货订单      | `tb_erp_deliver`        |                                  |                 |
+| 出库订单      | `tb_erp_outbound`       |                                  |                 |
+| 入库订单      | `tb_erp_inbound`        |                                  |                 |
+| 售后订单      | `tb_erp_aftersale`      |                                  |                 |
+| 借货订单      | `tb_erp_borrow`         |                                  |                 |
+| 生产订单      | `tb_erp_manufacture`    |                                  |                 |
+| ~~收款单~~   | ~~`tb_erp_paylist`~~   |                                  |                 |
+| ~~付款单~~   | ~~`tb_erp_paylist`~~   |                                  |                 |
+| 订单详情      | `tb_erp_order_material` |                                  |                 |
+|               |                           |                                  |                 |
+|               |                           |                                  |                 |
+
+```
+-- rosiwit_erp_server.tb_erp_order_material definition
+
+CREATE TABLE `tb_erp_order_material` (
+  `id` varchar(100) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL COMMENT '记录ID',
+  `order_code` varchar(100) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL COMMENT '关联订单',
+  `pkg_code` varchar(100) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL COMMENT '关联物料箱码',
+  `material_code` varchar(100) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL COMMENT '物料代码',
+  `material_quantity` int DEFAULT NULL COMMENT '物料数量',
+  `purchase_price` decimal(12,4) DEFAULT '0.0000' COMMENT '物料含税单价',
+  `exch_name` varchar(100) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT 'CNY' COMMENT '币种名称',
+  `exch_rate` decimal(18,6) DEFAULT '1.000000' COMMENT '币种汇率',
+  `tax_rate` decimal(5,2) DEFAULT '0.00' COMMENT '税率',
+  `detect_template_id` varchar(100) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL COMMENT '检测模板ID,仅在质检订单使用',
+  `repository_id` varchar(100) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL COMMENT '仓库ID，仅在出入库订单使用',
+  `repository_area_id` varchar(100) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL COMMENT '库位ID，仅在出入库订单使用',
+  `arrival_quantity` int DEFAULT NULL COMMENT '到货数量，暂不使用',
+  `is_complete` int DEFAULT '0' COMMENT '标记当前记录是否完成',
+  `bom_detail` json DEFAULT NULL,
+  `bom_id` varchar(100) DEFAULT NULL,
+  KEY `tb_erp_order_material_order_code_IDX` (`order_code`,`material_code`) USING BTREE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='订单物料明细';
+```
 
 ### 常见查询场景SQL示例
 
