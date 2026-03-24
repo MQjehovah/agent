@@ -227,8 +227,13 @@ class Agent:
 
                         logger.info(
                             f"Agent [{self.name}] -> tool: {func_name}")
+                        logger.debug(
+                            f"Agent [{self.name}] -> tool: {func_name} args: {func_args}")
                         result = await self._execute_tool(func_name, func_args)
-                        logger.info(f"Agent [{self.name}] <- {func_name} done")
+                        logger.info(
+                            f"Agent [{self.name}] <- tool: {func_name}")
+                        logger.debug(
+                            f"Agent [{self.name}] <- tool: {func_name} result: {result}")
 
                         self.messages.append({
                             "role": "tool",
