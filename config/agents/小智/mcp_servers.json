@@ -1,1 +1,20 @@
-[]
+[
+  {
+    "name": "default",
+    "enabled": false,
+    "command": "python",
+    "args": ["mcp_server/src/default.py"],
+    "env": {},
+    "description": "默认MCP服务 - 数据库查询和邮件发送"
+  },
+  {
+    "name": "device-ops",
+    "enabled": false,
+    "command": "python",
+    "args": ["mcp_server/src/device_ops.py"],
+    "env": {
+      "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
+    },
+    "description": "设备远程运维服务"
+  }
+]

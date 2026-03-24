@@ -51,10 +51,17 @@ class Agent:
         self.error: Optional[str] = None
         self.iterations = 0
 
-    async def initialize(self, tool_registry=None, session_manager=None):
+    async def initialize(self, tool_registry=None, session_manager=None, parent_mcp=None):
+        logger.info(f"Start init agent")
         self._load_system_prompt()
         self._init_tools(tool_registry)
         self._init_skills()
+
+        # 不继承父Agent的MCP
+        # if parent_mcp:
+        #     self.mcp = parent_mcp
+        # else:
+        #     await self._load_mcp_servers()
         await self._load_mcp_servers()
 
         if session_manager:
@@ -140,8 +147,8 @@ class Agent:
                 self.skill_manager.get_skills_prompt()
             logger.debug(
                 f"Agent [{self.name}] loaded skills from {skills_dir}")
-        logger.info(
-            f"Agent [] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
+            logger.info(
+                f"Agent [] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
     async def _load_mcp_servers(self):
         mcp_file = os.path.join(self.workspace, "mcp_servers.json")
@@ -170,26 +177,26 @@ class Agent:
                 self.subagent_manager.get_subagent_prompt()
             logger.debug(
                 f"Agent [{self.name}] loaded subagents from {agents_dir}")
-        logger.info(
-            f"Agent [] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {[self.subagent_manager.list_templates()]}")
+            logger.info(
+                f"Agent [] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {[self.subagent_manager.list_templates()]}")
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
         tools = []
 
         if self.tool_registry:
-            tools.extend(self.tool_registry.get_tool_definitions())
+            registry_tools = self.tool_registry.get_tool_definitions()
+            if self.tools:
+                tool_names = set(self.tools)
+                registry_tools = [t for t in registry_tools if t.get(
+                    "function", {}).get("name") in tool_names]
+            tools.extend(registry_tools)
 
         if self.mcp:
             tools.extend(self.mcp.tool_defs)
 
         if self.skill_manager:
             tools.extend(self.skill_manager.get_tool_definitions())
-
-        if self.tools:
-            tool_names = set(self.tools)
-            tools = [t for t in tools if t.get(
-                "function", {}).get("name") in tool_names]
 
         return tools
 
@@ -304,6 +311,9 @@ class Agent:
 
     async def _execute_tool(self, name: str, args: Dict) -> str:
         try:
+            if name == "subagent" and self.subagent_manager:
+                return await self._execute_subagent(args)
+
             if self.tool_registry and self.tool_registry.has_tool(name):
                 return await self.tool_registry.execute(name, args)
 
@@ -312,9 +322,6 @@ class Agent:
 
             if self.mcp:
                 return await self.mcp.call_tool(name, args)
-
-            if name == "subagent" and self.subagent_manager:
-                return await self._execute_subagent(args)
 
             return f"工具 {name} 不存在"
         except Exception as e:
@@ -448,11 +455,13 @@ class SubagentManager:
         if tools:
             agent.tools = tools
 
-        await agent.initialize(tool_registry=tool_registry)
+        parent_mcp = parent_agent.mcp if parent_agent else None
+        await agent.initialize(tool_registry=tool_registry, parent_mcp=parent_mcp)
 
         try:
             result = await agent.run(task)
         finally:
-            await agent.cleanup()
+            if not parent_mcp:
+                await agent.cleanup()
 
         return result, agent.name
