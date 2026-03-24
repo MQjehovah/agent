@@ -14,6 +14,7 @@ from rich.logging import RichHandler
 
 from llm import LLMClient
 from agent import Agent
+from scheduler import SchedulerManager
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -32,7 +33,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("agent")
 
 
-async def interactive_mode(agent: Agent):
+async def interactive_mode(agent: Agent, scheduler: SchedulerManager):
     logger.info("进入交互模式")
     
     while True:
@@ -111,24 +112,35 @@ async def main():
     parser.add_argument("--task", "-t", help="执行单个任务")
     parser.add_argument("--workspace", "-w", default="config", help="Agent工作目录")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
+    parser.add_argument("--no-scheduler", action="store_true", help="禁用定时任务")
     args = parser.parse_args()
 
     if args.debug:
         logging.getLogger("agent").setLevel(logging.DEBUG)
 
-    workspace = os.path.join(os.path.curdir, args.workspace)
+    workspace = os.path.abspath(args.workspace)
     client = LLMClient()
     
     agent = Agent(workspace=workspace, client=client)
     await agent.initialize()
 
-    if args.task:
-        result = await agent.run(args.task)
-        print(result.result)
-    else:
-        await interactive_mode(agent)
+    scheduler = None
+    if not args.no_scheduler:
+        schedules_path = os.path.join(workspace, "schedules.json")
+        scheduler = SchedulerManager(schedules_path)
+        scheduler.set_executor(lambda task: agent.run(task))
+        scheduler.start()
 
-    await agent.cleanup()
+    try:
+        if args.task:
+            result = await agent.run(args.task)
+            print(result.result)
+        else:
+            await interactive_mode(agent, scheduler)
+    finally:
+        if scheduler:
+            scheduler.stop()
+        await agent.cleanup()
 
 
 if __name__ == "__main__":
