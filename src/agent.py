@@ -99,7 +99,7 @@ class Agent:
         logger.info(f"Agent [{self.name}] prompt initialized")
 
     def _init_tools(self, parent_tool_registry=None):
-        from tools import ToolRegistry, TodoTool, FileTool
+        from tools import ToolRegistry, TodoTool, FileTool, SubagentTool
 
         if parent_tool_registry and not self.tools:
             self.tool_registry = parent_tool_registry
@@ -107,6 +107,7 @@ class Agent:
             self.tool_registry = ToolRegistry()
             self.tool_registry.register_tool(TodoTool())
             self.tool_registry.register_tool(FileTool())
+            self.tool_registry.register_tool(SubagentTool())
 
         logger.debug(f"Agent [{self.name}] tools initialized")
         logger.info(
