@@ -43,7 +43,7 @@ logger = logging.getLogger("agent")
 
 
 class MCPServerConnection:
-    def __init__(self, name: str, config: Dict[str, Any], base_dir: str):
+    def __init__(self, name: str, config: Dict[str, Any], base_dir: str = ""):
         self.name = name
         self.config = config
         self.base_dir = base_dir
@@ -128,6 +128,7 @@ class MCPManager:
         self.servers: Dict[str, MCPServerConnection] = {}
         self.tool_defs: List[Dict[str, Any]] = []
         self._tool_to_server: Dict[str, str] = {}
+        self._config_data: List[Dict[str, Any]] = []
 
     def load_config(self) -> List[Dict[str, Any]]:
         if not self.config_path or not os.path.exists(self.config_path):
@@ -138,8 +139,24 @@ class MCPManager:
             configs = json.load(f)
 
         enabled = [c for c in configs if c.get("enabled", True)]
+        self._config_data = configs
         logger.info(f"发现 {len(enabled)} 个启用的MCP服务")
         return enabled
+
+    def _get_server_config(self, name: str) -> Optional[Dict[str, Any]]:
+        for config in self._config_data:
+            if config.get("name") == name:
+                return config
+        return None
+
+    def _refresh_tool_defs(self) -> None:
+        self.tool_defs = []
+        self._tool_to_server = {}
+        for name, server in self.servers.items():
+            self.tool_defs.extend(server.tool_defs)
+            for tool_def in server.tool_defs:
+                tool_name = tool_def["function"]["name"]
+                self._tool_to_server[tool_name] = name
 
     async def connect(self):
         configs = self.load_config()
@@ -177,6 +194,62 @@ class MCPManager:
             {"name": name, "tools": len(s.tool_defs)}
             for name, s in self.servers.items()
         ]
+
+    async def connect_server(self, config: Dict[str, Any]) -> bool:
+        name = config.get("name", "unnamed")
+        if name in self.servers:
+            await self.disconnect_server(name)
+
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        server = MCPServerConnection(name, config, base_dir)
+        success = await server.connect()
+        if success:
+            self.servers[name] = server
+            self._refresh_tool_defs()
+            logger.info(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
+            return True
+        else:
+            logger.error(f"✗ MCP服务 [{name}] 动态连接失败")
+            return False
+
+    async def disconnect_server(self, name: str) -> bool:
+        if name not in self.servers:
+            logger.warning(f"MCP服务 [{name}] 未连接")
+            return False
+
+        server = self.servers.pop(name)
+        await server.close()
+        self._refresh_tool_defs()
+        logger.info(f"✓ MCP服务 [{name}] 已断开连接")
+        return True
+
+    async def reload_server(self, name: str) -> bool:
+        if name in self.servers:
+            await self.disconnect_server(name)
+
+        config = self._get_server_config(name)
+        if not config:
+            logger.error(f"未找到MCP服务 [{name}] 的配置")
+            return False
+
+        return await self.connect_server(config)
+
+    async def reload_all(self) -> Dict[str, bool]:
+        results = {}
+        for name in list(self.servers.keys()):
+            await self.disconnect_server(name)
+
+        configs = self.load_config()
+        for config in configs:
+            name = config.get("name", "unnamed")
+            if not config.get("enabled", True):
+                results[name] = True
+                continue
+            results[name] = await self.connect_server(config)
+
+        success_count = sum(1 for v in results.values() if v)
+        logger.info(f"重载完成: {success_count}/{len(results)} 个服务成功")
+        return results
 
 
 class SchedulerManager:
