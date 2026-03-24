@@ -69,7 +69,7 @@ class MCPServerConnection:
                     }
                 })
 
-            logger.info(f"✓ MCP [{self.name}] 已加载 {len(mcp_tools.tools)} 个工具")
+            # logger.info(f"✓ MCP [{self.name}] 已加载 {len(mcp_tools.tools)} 个工具")
             return True
         except Exception as e:
             logger.error(f"✗ MCP [{self.name}] 连接失败: {e}")
@@ -208,10 +208,10 @@ class MCPManager:
         if success:
             self.servers[name] = server
             self._refresh_tool_defs()
-            logger.info(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
+            logger.debug(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
             return True
         else:
-            logger.error(f"✗ MCP服务 [{name}] 动态连接失败")
+            logger.debug(f"✗ MCP服务 [{name}] 动态连接失败")
             return False
 
     async def disconnect_server(self, name: str) -> bool:

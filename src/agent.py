@@ -55,8 +55,7 @@ class Agent:
         self._load_system_prompt()
         self._init_tools(tool_registry)
         self._init_skills()
-        self._load_mcp_servers()
-        await self._init_mcp()
+        await self._load_mcp_servers()
 
         if session_manager:
             self.session_manager = session_manager
@@ -66,6 +65,25 @@ class Agent:
 
         self._init_subagents()
         logger.info(f"Agent [{self.name}] initialized")
+
+    def _extract_frontmatter(self, content: str) -> tuple:
+        pattern = r"^---\s*\n(.*?)\n---\s*\n?(.*)$"
+        match = re.match(pattern, content, re.DOTALL)
+
+        if not match:
+            return {}, content
+
+        frontmatter_str = match.group(1)
+        body = match.group(2)
+
+        import yaml
+        try:
+            frontmatter = yaml.safe_load(frontmatter_str) or {}
+        except yaml.YAMLError as e:
+            logger.error(f"YAML parse error: {e}")
+            return {}, content
+
+        return frontmatter, body
 
     def _load_system_prompt(self):
         prompt_file = os.path.join(self.workspace, "PROMPT.md")
@@ -111,7 +129,7 @@ class Agent:
 
         logger.debug(f"Agent [{self.name}] tools initialized")
         logger.info(
-            f"✓ 已注册 {len(self.tool_registry.list_tools())} 个工具: {[self.tool_registry.list_tools()]}")
+            f"Agent [] 已注册 {len(self.tool_registry.list_tools())} 个工具: {[self.tool_registry.list_tools()]}")
 
     def _init_skills(self):
         skills_dir = os.path.join(self.workspace, "skills")
@@ -123,9 +141,9 @@ class Agent:
             logger.debug(
                 f"Agent [{self.name}] loaded skills from {skills_dir}")
         logger.info(
-            f"✓ 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
+            f"Agent [] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
-    def _load_mcp_servers(self):
+    async def _load_mcp_servers(self):
         mcp_file = os.path.join(self.workspace, "mcp_servers.json")
         self.mcp_configs = []
 
@@ -133,38 +151,16 @@ class Agent:
             try:
                 with open(mcp_file, "r", encoding="utf-8") as f:
                     self.mcp_configs = json.load(f)
-                logger.info(
-                    f"Agent [{self.name}] loaded {len(self.mcp_configs)} MCP configs")
             except Exception as e:
                 logger.error(f"Failed to load mcp_servers.json: {e}")
 
-    def _extract_frontmatter(self, content: str) -> tuple:
-        pattern = r"^---\s*\n(.*?)\n---\s*\n?(.*)$"
-        match = re.match(pattern, content, re.DOTALL)
-
-        if not match:
-            return {}, content
-
-        frontmatter_str = match.group(1)
-        body = match.group(2)
-
-        import yaml
-        try:
-            frontmatter = yaml.safe_load(frontmatter_str) or {}
-        except yaml.YAMLError as e:
-            logger.error(f"YAML parse error: {e}")
-            return {}, content
-
-        return frontmatter, body
-
-    async def _init_mcp(self):
         if self.mcp_configs:
             from mcps import MCPManager
             self.mcp = MCPManager("")
             for config in self.mcp_configs:
                 await self.mcp.connect_server(config)
             logger.info(
-                f"Agent [{self.name}] initialized {len(self.mcp_configs)} MCP servers")
+                f"Agent [{self.name}] 已连接 {len(self.mcp_configs)} MCP servers：[[{", ".join([str(i["name"]) for i in self.mcp_configs])}]]")
 
     def _init_subagents(self):
         agents_dir = os.path.join(self.workspace, "agents")
@@ -172,8 +168,10 @@ class Agent:
             self.subagent_manager = SubagentManager(agents_dir)
             self.system_prompt = self.system_prompt + \
                 self.subagent_manager.get_subagent_prompt()
-            logger.info(
+            logger.debug(
                 f"Agent [{self.name}] loaded subagents from {agents_dir}")
+        logger.info(
+            f"Agent [] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {[self.subagent_manager.list_templates()]}")
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
@@ -377,7 +375,7 @@ class SubagentManager:
                 "workspace": agent_dir
             }
             self.templates[name] = template
-            logger.info(f"Loaded subagent template: {name}")
+            logger.debug(f"Loaded subagent template: {name}")
 
     def get_subagent_prompt(self) -> str:
         if not self.templates:
