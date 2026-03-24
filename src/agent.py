@@ -32,19 +32,19 @@ class Agent:
         self.client = client
         self.parent_agent = parent_agent
         self.agent_id = str(uuid.uuid4())[:8]
-        
+
         self.name = ""
         self.description = ""
         self.system_prompt = ""
         self.tools: List[str] = []
         self.max_iterations = 50
-        
+
         self.tool_registry = None
         self.mcp = None
         self.skill_manager = None
         self.subagent_manager = None
         self.session_manager = None
-        
+
         self.messages: List[Dict[str, Any]] = []
         self.status = "pending"
         self.result: Optional[str] = None
@@ -57,18 +57,19 @@ class Agent:
         self._init_skills()
         self._load_mcp_servers()
         await self._init_mcp()
-        
+
         if session_manager:
             self.session_manager = session_manager
         else:
             from agent_session import AgentSessionManager
             self.session_manager = AgentSessionManager()
-        
+
         self._init_subagents()
+        logger.info(f"Agent [{self.name}] initialized")
 
     def _load_system_prompt(self):
         prompt_file = os.path.join(self.workspace, "PROMPT.md")
-        
+
         if not os.path.exists(prompt_file):
             logger.warning(f"No PROMPT.md found in {self.workspace}")
             self.name = os.path.basename(self.workspace)
@@ -78,32 +79,61 @@ class Agent:
             content = f.read()
 
         frontmatter, body = self._extract_frontmatter(content)
-        
+
         if frontmatter:
-            self.name = frontmatter.get("name", os.path.basename(self.workspace))
+            self.name = frontmatter.get(
+                "name", os.path.basename(self.workspace))
             self.description = frontmatter.get("description", "")
             if isinstance(self.description, str):
                 self.description = self.description.strip()
-            
+
             tools = frontmatter.get("tools", [])
             if isinstance(tools, str):
                 tools = [t.strip() for t in tools.split(",") if t.strip()]
             self.tools = tools
-            
+
             self.max_iterations = frontmatter.get("max_iterations", 50)
 
         self.system_prompt = body.strip() if body else ""
-        logger.info(f"Agent [{self.name}] loaded from {prompt_file}")
+        logger.debug(f"Agent [{self.name}] 读取prompt {prompt_file}")
+        logger.info(f"Agent [{self.name}] prompt initialized")
+
+    def _init_tools(self, parent_tool_registry=None):
+        from tools import ToolRegistry, TodoTool, FileTool
+
+        if parent_tool_registry and not self.tools:
+            self.tool_registry = parent_tool_registry
+        else:
+            self.tool_registry = ToolRegistry()
+            self.tool_registry.register_tool(TodoTool())
+            self.tool_registry.register_tool(FileTool())
+
+        logger.debug(f"Agent [{self.name}] tools initialized")
+        logger.info(
+            f"✓ 已注册 {len(self.tool_registry.list_tools())} 个工具: {[self.tool_registry.list_tools()]}")
+
+    def _init_skills(self):
+        skills_dir = os.path.join(self.workspace, "skills")
+        if os.path.exists(skills_dir):
+            from skills import SkillManager
+            self.skill_manager = SkillManager(skills_dir)
+            self.system_prompt = self.system_prompt + \
+                self.skill_manager.get_skills_prompt()
+            logger.debug(
+                f"Agent [{self.name}] loaded skills from {skills_dir}")
+        logger.info(
+            f"✓ 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
     def _load_mcp_servers(self):
         mcp_file = os.path.join(self.workspace, "mcp_servers.json")
         self.mcp_configs = []
-        
+
         if os.path.exists(mcp_file):
             try:
                 with open(mcp_file, "r", encoding="utf-8") as f:
                     self.mcp_configs = json.load(f)
-                logger.info(f"Agent [{self.name}] loaded {len(self.mcp_configs)} MCP configs")
+                logger.info(
+                    f"Agent [{self.name}] loaded {len(self.mcp_configs)} MCP configs")
             except Exception as e:
                 logger.error(f"Failed to load mcp_servers.json: {e}")
 
@@ -126,70 +156,56 @@ class Agent:
 
         return frontmatter, body
 
-    def _init_tools(self, parent_tool_registry=None):
-        from tools import ToolRegistry, TodoTool, FileTool
-        
-        if parent_tool_registry and not self.tools:
-            self.tool_registry = parent_tool_registry
-        else:
-            self.tool_registry = ToolRegistry()
-            self.tool_registry.register_tool(TodoTool())
-            self.tool_registry.register_tool(FileTool())
-        
-        logger.debug(f"Agent [{self.name}] tools initialized")
-
-    def _init_skills(self):
-        skills_dir = os.path.join(self.workspace, "skills")
-        if os.path.exists(skills_dir):
-            from skills import SkillManager
-            self.skill_manager = SkillManager(skills_dir)
-            self.system_prompt = self.system_prompt + self.skill_manager.get_skills_prompt()
-            logger.info(f"Agent [{self.name}] loaded skills from {skills_dir}")
-
     async def _init_mcp(self):
         if self.mcp_configs:
             from mcps import MCPManager
             self.mcp = MCPManager("")
             for config in self.mcp_configs:
                 await self.mcp.connect_server(config)
-            logger.info(f"Agent [{self.name}] initialized {len(self.mcp_configs)} MCP servers")
+            logger.info(
+                f"Agent [{self.name}] initialized {len(self.mcp_configs)} MCP servers")
 
     def _init_subagents(self):
         agents_dir = os.path.join(self.workspace, "agents")
         if os.path.exists(agents_dir):
             self.subagent_manager = SubagentManager(agents_dir)
-            self.system_prompt = self.system_prompt + self.subagent_manager.get_subagent_prompt()
-            logger.info(f"Agent [{self.name}] loaded subagents from {agents_dir}")
+            self.system_prompt = self.system_prompt + \
+                self.subagent_manager.get_subagent_prompt()
+            logger.info(
+                f"Agent [{self.name}] loaded subagents from {agents_dir}")
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
         tools = []
-        
+
         if self.tool_registry:
             tools.extend(self.tool_registry.get_tool_definitions())
-        
+
         if self.mcp:
             tools.extend(self.mcp.tool_defs)
-        
+
         if self.skill_manager:
             tools.extend(self.skill_manager.get_tool_definitions())
-        
+
         if self.tools:
             tool_names = set(self.tools)
-            tools = [t for t in tools if t.get("function", {}).get("name") in tool_names]
-        
+            tools = [t for t in tools if t.get(
+                "function", {}).get("name") in tool_names]
+
         return tools
 
     async def run(self, task: str, session=None) -> AgentResult:
         self.status = "running"
         self.messages = []
-        
+
         if self.system_prompt:
-            self.messages.append({"role": "system", "content": self.system_prompt})
-        
+            self.messages.append(
+                {"role": "system", "content": self.system_prompt})
+
         self.messages.append({"role": "user", "content": task})
-        
-        logger.info(f"Agent [{self.name}] ({self.agent_id}) started: {task[:50]}...")
+
+        logger.info(
+            f"Agent [{self.name}] ({self.agent_id}) started: {task[:50]}...")
 
         try:
             for i in range(self.max_iterations):
@@ -216,7 +232,8 @@ class Agent:
                             except:
                                 func_args = {}
 
-                        logger.info(f"Agent [{self.name}] -> tool: {func_name}")
+                        logger.info(
+                            f"Agent [{self.name}] -> tool: {func_name}")
                         result = await self._execute_tool(func_name, func_args)
                         logger.info(f"Agent [{self.name}] <- {func_name} done")
 
@@ -231,7 +248,8 @@ class Agent:
                 if msg.get("content"):
                     self.status = "completed"
                     self.result = msg.get("content")
-                    logger.info(f"Agent [{self.name}] ({self.agent_id}) completed")
+                    logger.info(
+                        f"Agent [{self.name}] ({self.agent_id}) completed")
                     break
             else:
                 self.status = "max_iterations"
@@ -289,16 +307,16 @@ class Agent:
         try:
             if self.tool_registry and self.tool_registry.has_tool(name):
                 return await self.tool_registry.execute(name, args)
-            
+
             if self.skill_manager and name == "execute_skill":
                 return await self.skill_manager.execute_tool(name, args)
-            
+
             if self.mcp:
                 return await self.mcp.call_tool(name, args)
-            
+
             if name == "subagent" and self.subagent_manager:
                 return await self._execute_subagent(args)
-            
+
             return f"工具 {name} 不存在"
         except Exception as e:
             return f"工具执行错误: {e}"
@@ -388,14 +406,14 @@ class SubagentManager:
     ) -> tuple:
         template_name = template or name
         template_data = self.templates.get(template_name)
-        
+
         workspace = template_data["workspace"] if template_data else None
-        
+
         if not workspace:
             from tools import ToolRegistry, TodoTool, FileTool
             temp_dir = os.path.join(self.base_dir, name or "temp")
             os.makedirs(temp_dir, exist_ok=True)
-            
+
             skill_content = "---\n"
             if name:
                 skill_content += f"name: {name}\n"
@@ -407,17 +425,17 @@ class SubagentManager:
             skill_content += "---\n"
             if system_prompt:
                 skill_content += system_prompt
-            
+
             with open(os.path.join(temp_dir, "SKILL.md"), "w", encoding="utf-8") as f:
                 f.write(skill_content)
-            
+
             if mcp_servers:
                 with open(os.path.join(temp_dir, "mcp_servers.json"), "w", encoding="utf-8") as f:
                     json.dump(mcp_servers, f)
             else:
                 with open(os.path.join(temp_dir, "mcp_servers.json"), "w", encoding="utf-8") as f:
                     json.dump([], f)
-            
+
             workspace = temp_dir
 
         agent = Agent(
@@ -425,14 +443,14 @@ class SubagentManager:
             client=client,
             parent_agent=parent_agent
         )
-        
+
         if max_iterations != 50:
             agent.max_iterations = max_iterations
         if tools:
             agent.tools = tools
-        
+
         await agent.initialize(tool_registry=tool_registry)
-        
+
         try:
             result = await agent.run(task)
         finally:

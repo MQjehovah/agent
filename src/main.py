@@ -5,15 +5,15 @@ import logging
 import json
 from typing import Dict, Any, List, Optional
 
-from rich.logging import RichHandler
 from rich import box
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.console import Console
+from rich.logging import RichHandler
 
+from llm import LLMClient
 from agent import Agent
-from llm_client import LLMClient
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -82,10 +82,12 @@ async def interactive_mode(agent: Agent):
 
         if question.strip().lower() == "/skills":
             if agent.skill_manager:
-                console.print(Panel.fit(
-                    f"[bold green]技能列表:[/bold green]\n{agent.skill_manager.list_skills()}",
-                    border_style="green", box=box.ROUNDED
-                ))
+                table = Table(title="技能列表", show_header=True,
+                              header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("名称", style="cyan")
+                for skill_name in agent.skill_manager.list_skills():
+                    table.add_row(skill_name)
+                console.print(table)
             else:
                 console.print("[yellow]无可用技能[/yellow]")
             continue
@@ -114,8 +116,6 @@ async def main():
     if args.debug:
         logging.getLogger("agent").setLevel(logging.DEBUG)
 
-    logger.info("启动 Agent")
-    
     workspace = os.path.join(os.path.curdir, args.workspace)
     client = LLMClient()
     

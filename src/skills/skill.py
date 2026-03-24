@@ -80,8 +80,6 @@ class SkillLoader:
                 if self.load_skill(skill_path):
                     loaded += 1
 
-        logger.info(
-            f"✓ 已加载 {loaded} 个技能: {[k.name for k in self.skills.values()]}")
         return loaded
 
     def load_skill(self, skill_dir: str) -> Optional[Skill]:
@@ -176,8 +174,8 @@ class SkillLoader:
     def get(self, name: str) -> Optional[Skill]:
         return self.skills.get(name)
 
-    def list_skills(self) -> List[Dict[str, Any]]:
-        return [skill.get_info() for skill in self.skills.values() if skill.enabled]
+    def list_skills(self) -> List[str]:
+        return [skill.name for skill in self.skills.values() if skill.enabled]
 
     def get_skills_prompt(self) -> str:
         if not self.skills:
@@ -294,7 +292,7 @@ class SkillManager:
 
         skill = self.loader.get(skill_name)
         if not skill:
-            available = [s.get("name") for s in self.loader.list_skills()]
+            available = self.loader.list_skills()
             return json.dumps({"error": f"Skill not found: {skill_name}", "available_skills": available})
 
         result = skill.render_prompt({"user_input": user_input})
@@ -304,7 +302,7 @@ class SkillManager:
         logger.info(f"Skill {skill_name} executed successfully")
         return result
 
-    def list_skills(self) -> List[Dict[str, Any]]:
+    def list_skills(self) -> List[str]:
         if not self.loader:
             return []
         return self.loader.list_skills()
