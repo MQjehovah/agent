@@ -153,8 +153,10 @@ class Agent:
             self.mcp = MCPManager("")
             for config in self.mcp_configs:
                 await self.mcp.connect_server(config)
+            
+            server_names = [c.get("name", "unnamed") for c in self.mcp_configs]
             logger.info(
-                f"Agent [{self.name}] 已连接 {len(self.mcp_configs)} MCP servers：[[{", ".join([str(i["name"]) for i in self.mcp_configs])}]]")
+                f"Agent [{self.name}] 已连接 {len(server_names)} MCP servers: {server_names}")
 
     def _init_subagents(self):
         agents_dir = os.path.join(self.workspace, "agents")
