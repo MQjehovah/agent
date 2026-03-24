@@ -12,10 +12,10 @@ logger = logging.getLogger("agent.subagent")
 @dataclass
 class SubagentConfig:
     name: str
+    description: str = ""
     system_prompt: str = ""
     tools: List[str] = field(default_factory=list)
     max_iterations: int = 50
-    description: str = ""
     filename: str = ""
 
 
@@ -205,7 +205,8 @@ class SubagentManager:
 
     def _load_all(self):
         if not self.base_dir or not os.path.exists(self.base_dir):
-            logger.warning(f"Agent config directory not found: {self.base_dir}")
+            logger.warning(
+                f"Agent config directory not found: {self.base_dir}")
             return
 
         for filename in os.listdir(self.base_dir):
@@ -233,22 +234,22 @@ class SubagentManager:
             logger.warning(f"No 'name' in frontmatter: {filepath}")
             return None
 
-        system_prompt = frontmatter.get("system_prompt", "")
-        if isinstance(system_prompt, str):
-            system_prompt = system_prompt.strip()
+        description = frontmatter.get("description", "")
+        if isinstance(description, str):
+            description = description.strip()
 
         tools = frontmatter.get("tools", [])
         if isinstance(tools, str):
             tools = [t.strip() for t in tools.split(",") if t.strip()]
 
-        description = body.strip() if body else ""
+        system_prompt = body.strip() if body else ""
 
         return SubagentConfig(
             name=name,
+            description=description,
             system_prompt=system_prompt,
             tools=tools,
             max_iterations=frontmatter.get("max_iterations", 50),
-            description=description,
             filename=os.path.basename(filepath)
         )
 
@@ -278,13 +279,13 @@ class SubagentManager:
         if not self.configs:
             return "没有可用的子代理"
 
-        lines = ["SubAgent列表:\n"]
+        lines = ["\n## 【SubAgent列表】\n"]
         for config in self.configs.values():
-            lines.append(f"[{config.name}]")
+            lines.append(f"[名称：{config.name}]")
             if config.description:
-                lines.append(f"  描述: {config.description[:100]}")
+                lines.append(f"描述: {config.description}")
             if config.tools:
-                lines.append(f"  工具: {', '.join(config.tools)}")
+                lines.append(f"工具: {', '.join(config.tools)}")
             lines.append("")
 
         return "\n".join(lines) + "通过subagent工具调用激活"
@@ -312,7 +313,7 @@ class SubagentManager:
         template: str = ""
     ) -> SubagentConfig:
         base_config = self.configs.get(template or name)
-        
+
         if base_config:
             name = name or base_config.name
             system_prompt = system_prompt or base_config.system_prompt

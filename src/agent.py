@@ -302,11 +302,11 @@ class Agent:
     async def _execute_subagent(self, args: Dict) -> str:
         from subagent import Subagent
         import json
-        
+
         task = args.get("task")
         if not task:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
-        
+
         config = self.subagent_manager.create_config(
             name=args.get("name", ""),
             system_prompt=args.get("system_prompt", ""),
@@ -314,7 +314,7 @@ class Agent:
             max_iterations=args.get("max_iterations", 50),
             template=args.get("template", "")
         )
-        
+
         subagent = Subagent(
             task=task,
             config=config,
@@ -323,9 +323,9 @@ class Agent:
             mcp_manager=self.mcp if hasattr(self, 'mcp') else None,
             skill_manager=self.skill_manager
         )
-        
+
         result = await subagent.run()
-        
+
         return json.dumps({
             "success": result.status == "completed",
             "subagent_id": result.subagent_id,
@@ -489,6 +489,27 @@ class Agent:
                 break
 
             if not question.strip():
+                continue
+            
+            if question.strip().lower() == "/prompt":
+                console.print(Panel.fit(
+                    f"[bold green]工具列表:[/bold green]\n{self.system_prompt}",
+                    border_style="green", box=box.ROUNDED
+                ))
+                continue
+
+            if question.strip().lower() == "/tools":
+                console.print(Panel.fit(
+                    f"[bold green]工具列表:[/bold green]\n{map(lambda t: t.name + t.description + "\n", self.tool_defs)}",
+                    border_style="green", box=box.ROUNDED
+                ))
+                continue
+
+            if question.strip().lower() == "/skills":
+                console.print(Panel.fit(
+                    f"[bold green]技能列表:[/bold green]\n{self.list_skills()}",
+                    border_style="green", box=box.ROUNDED
+                ))
                 continue
 
             if question.strip().lower() in ["quit", "exit", "q"]:
