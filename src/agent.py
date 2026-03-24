@@ -51,24 +51,14 @@ class Agent:
         self.error: Optional[str] = None
         self.iterations = 0
 
-    async def initialize(self, tool_registry=None, session_manager=None, parent_mcp=None):
-        logger.info(f"Start init agent")
+    async def initialize(self):
         self._load_system_prompt()
-        self._init_tools(tool_registry)
+        self._init_tools()
         self._init_skills()
-
-        # 不继承父Agent的MCP
-        # if parent_mcp:
-        #     self.mcp = parent_mcp
-        # else:
-        #     await self._load_mcp_servers()
         await self._load_mcp_servers()
 
-        if session_manager:
-            self.session_manager = session_manager
-        else:
-            from agent_session import AgentSessionManager
-            self.session_manager = AgentSessionManager()
+        from agent_session import AgentSessionManager
+        self.session_manager = AgentSessionManager()
 
         self._init_subagents()
         logger.info(f"Agent [{self.name}] initialized")
@@ -123,16 +113,13 @@ class Agent:
         logger.debug(f"Agent [{self.name}] 读取prompt {prompt_file}")
         logger.info(f"Agent [{self.name}] prompt initialized")
 
-    def _init_tools(self, parent_tool_registry=None):
+    def _init_tools(self):
         from tools import ToolRegistry, TodoTool, FileTool, SubagentTool
 
-        if parent_tool_registry and not self.tools:
-            self.tool_registry = parent_tool_registry
-        else:
-            self.tool_registry = ToolRegistry()
-            self.tool_registry.register_tool(TodoTool())
-            self.tool_registry.register_tool(FileTool())
-            self.tool_registry.register_tool(SubagentTool())
+        self.tool_registry = ToolRegistry()
+        self.tool_registry.register_tool(TodoTool())
+        self.tool_registry.register_tool(FileTool())
+        self.tool_registry.register_tool(SubagentTool())
 
         logger.debug(f"Agent [{self.name}] tools initialized")
         logger.info(
@@ -341,7 +328,6 @@ class Agent:
             max_iterations=args.get("max_iterations", 50),
             mcp_servers=args.get("mcp_servers"),
             client=self.client,
-            tool_registry=self.tool_registry,
             parent_agent=self
         )
 
@@ -407,7 +393,6 @@ class SubagentManager:
         max_iterations: int = 50,
         mcp_servers: Optional[List[Dict[str, Any]]] = None,
         client=None,
-        tool_registry=None,
         parent_agent: Agent = None
     ) -> tuple:
         template_name = template or name
@@ -455,13 +440,11 @@ class SubagentManager:
         if tools:
             agent.tools = tools
 
-        parent_mcp = parent_agent.mcp if parent_agent else None
-        await agent.initialize(tool_registry=tool_registry, parent_mcp=parent_mcp)
+        await agent.initialize()
 
         try:
             result = await agent.run(task)
         finally:
-            if not parent_mcp:
-                await agent.cleanup()
+            await agent.cleanup()
 
         return result, agent.name
