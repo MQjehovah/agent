@@ -152,8 +152,7 @@ class Agent:
         self.tool_registry: ToolRegistry = None
         self.skill_manager: Optional[SkillManager] = None
 
-        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager(
-        )
+        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager()
 
     async def initialize(self):
         self._init_tools()
@@ -161,6 +160,7 @@ class Agent:
         await self._init_mcp()
         self._init_scheduler()
         # self._init_dingtalk_plugin()
+        self._init_webhook_plugin()
 
     def _init_prompt(self):
         soul_path = os.path.join(os.path.dirname(
@@ -197,12 +197,21 @@ class Agent:
     def _init_dingtalk_plugin(self):
         try:
             self.dingtalk_plugin = DingTalkPlugin()
-            sm = self.session_manager
-            self.dingtalk_plugin.register_agent(sm.run_in_session)
+            self.dingtalk_plugin.register_agent(self.run_with_session_id)
             self.dingtalk_plugin.start()
             logger.info("钉钉插件服务已启动")
         except Exception as e:
             logger.warning(f"钉钉插件启动失败: {e}")
+
+    def _init_webhook_plugin(self):
+        try:
+            from webhook import WebhookPlugin
+            self.webhook_plugin = WebhookPlugin()
+            self.webhook_plugin.register_agent(self.run_with_session_id)
+            self.webhook_plugin.start()
+            logger.info("Webhook插件服务已启动")
+        except Exception as e:
+            logger.warning(f"Webhook插件启动失败: {e}")
 
     @property
     def tool_defs(self):
@@ -395,6 +404,20 @@ class Agent:
 
         logger.warning("达到最大迭代次数")
         return "达到最大迭代次数"
+
+    async def run_with_session_id(
+        self,
+        session_id: str,
+        task: str,
+        system_prompt: str = ""
+    ) -> str:
+        session = await self.session_manager.get_session(session_id)
+        if not session:
+            session = await self.session_manager.create_session(
+                session_id=session_id,
+                system_prompt=system_prompt or self.system_prompt
+            )
+        return await self.run(task, session)
 
     async def interactive_mode(self):
         logger.info("进入交互模式")

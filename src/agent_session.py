@@ -66,17 +66,5 @@ class AgentSessionManager:
                 del self.sessions[session_id]
                 logger.info(f"删除Session: {session_id}")
 
-    async def run_in_session(
-        self,
-        session_id: str,
-        task: str,
-        system_prompt: str = ""
-    ) -> str:
-        session = await self.get_session(session_id)
-        if not session:
-            session = await self.create_session(session_id, system_prompt)
-
-        return await session.run(task)
-
     def list_sessions(self) -> List[str]:
         return list(self.sessions.keys())
