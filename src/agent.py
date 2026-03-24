@@ -19,7 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 from dingtalk.plugin import DingTalkPlugin
 from agent_session import AgentSessionManager
 from skills import SkillLoader, SkillResult, SkillManager
-from tools import ToolRegistry, TodoTool
+from tools import ToolRegistry, TodoTool, FileTool
 from mcps import MCPManager
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -172,6 +172,7 @@ class Agent:
     def _init_tools(self):
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_tool(TodoTool())
+        self.tool_registry.register_tool(FileTool())
 
     def _init_skills(self):
         skills_dir = os.path.join(os.path.dirname(

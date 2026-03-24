@@ -108,5 +108,6 @@ class ToolRegistry:
 
 
 from .todo import TodoTool
+from .file import FileTool
 
-__all__ = ['ToolRegistry', 'BuiltinTool', 'ToolDefinition', 'TodoTool']
+__all__ = ['ToolRegistry', 'BuiltinTool', 'ToolDefinition', 'TodoTool', 'FileTool']

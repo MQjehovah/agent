@@ -151,7 +151,7 @@ class MCPManager:
     async def connect(self):
         """连接所有MCP服务器"""
         configs = self.load_config()
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
         for config in configs:
             name = config.get("name", "unnamed")
@@ -202,7 +202,7 @@ class MCPManager:
         if name in self.servers:
             await self.disconnect_server(name)
 
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         server = MCPServerConnection(name, config, base_dir)
         success = await server.connect()
         if success:
