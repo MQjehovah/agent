@@ -122,9 +122,9 @@ class LLMClient:
         self.api_key = api_key
         self.client = OpenAI(
             base_url=base_url or os.getenv(
-                "OPENAI_BASE_URL", "https://api.minimaxi.com/v1/"),
+                "OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
             api_key=api_key or os.getenv(
-                "OPENAI_API_KEY", "sk-api-UQHBI6bhRHXfg4iuASL66EadYaQbeetEqsJrSqTa6R_6n4-5ba_64vlWjmGq4lGCwnblwQ1usk6j0ukrN64PPGyYpV66WGCHf5wBVXKvVWxoxIWhs3AqL9M"),
+                "OPENAI_API_KEY", "sk-b9f1b675f3724a65b0e70cfd335e8313"),
             timeout=60.0
         )
 

@@ -156,13 +156,14 @@ class WebhookPlugin:
                 "result": result
             })
         except Exception as e:
+            import traceback
             task.status = "failed"
-            task.error = str(e)
-            logger.error(f"Task {task.task_id} failed: {e}")
+            task.error = f"{type(e).__name__}: {e}"
+            logger.error(f"Task {task.task_id} failed: {e}\n{traceback.format_exc()}")
             return jsonify({
                 "task_id": task.task_id,
                 "status": "failed",
-                "error": str(e)
+                "error": task.error
             }), 500
     
     def _run_async_task(self, task: WebhookTask):
@@ -183,9 +184,10 @@ class WebhookPlugin:
             finally:
                 loop.close()
         except Exception as e:
+            import traceback
             task.status = "failed"
-            task.error = str(e)
-            logger.error(f"Task {task.task_id} failed: {e}")
+            task.error = f"{type(e).__name__}: {e}"
+            logger.error(f"Task {task.task_id} failed: {e}\n{traceback.format_exc()}")
             
             if task.callback_url:
                 self._send_callback(task)
