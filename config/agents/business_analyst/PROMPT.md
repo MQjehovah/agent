@@ -96,8 +96,6 @@ max_iterations: 40
 | ~~收款单~~   | ~~`tb_erp_paylist`~~   |                                  |                 |
 | ~~付款单~~   | ~~`tb_erp_paylist`~~   |                                  |                 |
 | 订单详情      | `tb_erp_order_material` |                                  |                 |
-|               |                           |                                  |                 |
-|               |                           |                                  |                 |
 
 ```
 -- rosiwit_erp_server.tb_erp_order_material definition

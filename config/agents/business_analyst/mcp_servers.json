@@ -1,0 +1,8 @@
+[
+  {
+    "name": "db",
+    "command": "python",
+    "args": ["mcp_server/src/default.py"],
+    "env": {}
+  }
+]

@@ -1,590 +1,441 @@
-from rich.logging import RichHandler
-from rich import box
-from rich.table import Table
-from rich.panel import Panel
-from rich.prompt import Prompt
-from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-from rich.console import Console
-import os
-import sys
-import asyncio
 import logging
-from typing import cast, Optional, List, Dict, Any, Union
+import uuid
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
-from openai import OpenAI
+from datetime import datetime
+import os
+import re
 import json
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
-from dingtalk.plugin import DingTalkPlugin
-from agent_session import AgentSessionManager
-from skills import SkillLoader, SkillResult, SkillManager
-from tools import ToolRegistry, TodoTool, FileTool, SubagentTool
-from mcps import MCPManager
-from subagent import SubagentManager
-
-os.environ["PYTHONIOENCODING"] = "utf-8"
+logger = logging.getLogger("agent.subagent")
 
 
-console = Console()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler(console=console, rich_tracebacks=True,
-                          show_time=True, show_path=False)]
-)
-
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-logger = logging.getLogger("agent")
-
-
-class SchedulerManager:
-    def __init__(self, config_path: str = "schedules.json"):
-        self.config_path = config_path
-        self.scheduler: Optional[AsyncIOScheduler] = None
-        self._started = False
-        self._task_executor = None
-
-    def set_executor(self, executor):
-        self._task_executor = executor
-
-    def load_schedules(self):
-        schedules_path = os.path.join(
-            os.path.dirname(__file__), self.config_path)
-        if not os.path.exists(schedules_path):
-            logger.warning(f"未找到配置文件: {schedules_path}")
-            return []
-
-        with open(schedules_path, encoding="utf-8") as f:
-            schedules = json.load(f)
-
-        enabled_schedules = [s for s in schedules if s.get("enabled", True)]
-        logger.info(f"已加载 {len(enabled_schedules)} 个定时任务")
-        return enabled_schedules
-
-    async def _execute_task(self, schedule: Dict):
-        name = schedule.get("name", "未命名任务")
-        task = schedule.get("task", "")
-
-        logger.info(f"⏰ 触发定时任务: {name}")
-        logger.info(f"   任务内容: {task}")
-
-        if not self._task_executor:
-            logger.error("未设置任务执行器")
-            return
-
-        try:
-            result = await self._task_executor(task)
-            logger.info(f"✓ 定时任务完成: {name}")
-            logger.debug(f"结果: {result}")
-        except Exception as e:
-            logger.error(f"✗ 定时任务失败: {name}, 错误: {e}")
-
-    def start(self):
-        self.scheduler = AsyncIOScheduler()
-        schedules = self.load_schedules()
-
-        for schedule in schedules:
-            name = schedule.get("name", "未命名")
-            cron = schedule.get("cron", "")
-
-            try:
-                trigger = CronTrigger.from_crontab(cron)
-                self.scheduler.add_job(  # type: ignore
-                    self._execute_task,
-                    trigger=trigger,
-                    args=[schedule],
-                    name=name
-                )
-                logger.info(f"✓ 已注册定时任务: {name} ({cron})")
-            except Exception as e:
-                logger.error(f"✗ 注册定时任务失败: {name}, 错误: {e}")
-
-        scheduler = self.scheduler
-        if scheduler.get_jobs():  # type: ignore
-            scheduler.start()  # type: ignore
-            self._started = True
-            # type: ignore
-            logger.info(f"定时任务调度器已启动，共 {len(scheduler.get_jobs())} 个任务")
-            # type: ignore
-            logger.info(
-                f"下次执行时间: {[job.next_run_time for job in scheduler.get_jobs()]}")
-        else:
-            logger.warning("没有可执行的定时任务")
-
-
-class LLMClient:
-    def __init__(self, model: str = "MiniMax-M2.5", base_url: Optional[str] = None, api_key: Optional[str] = None):
-        self.model = model
-        self.base_url = base_url
-        self.api_key = api_key
-        self.client = OpenAI(
-            base_url=base_url or os.getenv(
-                "OPENAI_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1"),
-
-            api_key=api_key or os.getenv(
-                "OPENAI_API_KEY", "sk-sp-39ab191a77af4bbda827e309afa60b12"),
-            timeout=60.0
-        )
-
-    def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], stream: bool = True):
-        return self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            stream=stream
-        )
-
-    def chat_sync(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]):
-        return self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            stream=False
-        )
+@dataclass
+class AgentResult:
+    agent_id: str
+    status: str
+    result: str
+    iterations: int
+    error: Optional[str] = None
+    completed_at: str = field(
+        default_factory=lambda: datetime.now().isoformat())
 
 
 class Agent:
-    def __init__(self, client: LLMClient = None):
+    def __init__(
+        self,
+        workspace: str,
+        client,
+        parent_agent: "Agent" = None
+    ):
+        self.workspace = workspace
         self.client = client
+        self.parent_agent = parent_agent
+        self.agent_id = str(uuid.uuid4())[:8]
+        
+        self.name = ""
+        self.description = ""
         self.system_prompt = ""
-        self.tool_registry: ToolRegistry = None
-        self.skill_manager: Optional[SkillManager] = None
-        self.subagent_manager: Optional[SubagentManager] = None
+        self.tools: List[str] = []
+        self.max_iterations = 50
+        
+        self.tool_registry = None
+        self.mcp = None
+        self.skill_manager = None
+        self.subagent_manager = None
+        self.session_manager = None
+        
+        self.messages: List[Dict[str, Any]] = []
+        self.status = "pending"
+        self.result: Optional[str] = None
+        self.error: Optional[str] = None
+        self.iterations = 0
 
-        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager(
-        )
-
-    async def initialize(self):
-        self._init_prompt()
-        self._init_subagent()
-        self._init_tools()
+    async def initialize(self, tool_registry=None, session_manager=None):
+        self._load_system_prompt()
+        self._init_tools(tool_registry)
         self._init_skills()
+        self._load_mcp_servers()
         await self._init_mcp()
-        self._init_scheduler()
-        # self._init_dingtalk_plugin()
-        # self._init_webhook_plugin()
+        
+        if session_manager:
+            self.session_manager = session_manager
+        else:
+            from agent_session import AgentSessionManager
+            self.session_manager = AgentSessionManager()
+        
+        self._init_subagents()
 
-        logger.debug(f"system_prompt:{self.system_prompt}")
-        logger.debug(f"system_tools:{self.tool_defs}")
+    def _load_system_prompt(self):
+        prompt_file = os.path.join(self.workspace, "PROMPT.md")
+        
+        if not os.path.exists(prompt_file):
+            logger.warning(f"No PROMPT.md found in {self.workspace}")
+            self.name = os.path.basename(self.workspace)
+            return
 
-    def _init_prompt(self):
-        soul_path = os.path.join(os.path.dirname(
-            __file__), "../config", "SOUL.md")
-        system_prompt = open(
-            soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
-        self.system_prompt = system_prompt
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            content = f.read()
 
-    def _init_subagent(self):
-        agents_dir = os.path.join(os.path.dirname(
-            __file__), "../config", "agents")
-        self.subagent_manager = SubagentManager(agents_dir)
+        frontmatter, body = self._extract_frontmatter(content)
+        
+        if frontmatter:
+            self.name = frontmatter.get("name", os.path.basename(self.workspace))
+            self.description = frontmatter.get("description", "")
+            if isinstance(self.description, str):
+                self.description = self.description.strip()
+            
+            tools = frontmatter.get("tools", [])
+            if isinstance(tools, str):
+                tools = [t.strip() for t in tools.split(",") if t.strip()]
+            self.tools = tools
+            
+            self.max_iterations = frontmatter.get("max_iterations", 50)
 
-        self.system_prompt = self.system_prompt + \
-            self.subagent_manager.get_subagent_prompt()
+        self.system_prompt = body.strip() if body else ""
+        logger.info(f"Agent [{self.name}] loaded from {prompt_file}")
 
-    def _init_tools(self):
-        self.tool_registry = ToolRegistry()
-        self.tool_registry.register_tool(TodoTool())
-        self.tool_registry.register_tool(FileTool())
-        self.tool_registry.register_tool(SubagentTool())
+    def _load_mcp_servers(self):
+        mcp_file = os.path.join(self.workspace, "mcp_servers.json")
+        self.mcp_configs = []
+        
+        if os.path.exists(mcp_file):
+            try:
+                with open(mcp_file, "r", encoding="utf-8") as f:
+                    self.mcp_configs = json.load(f)
+                logger.info(f"Agent [{self.name}] loaded {len(self.mcp_configs)} MCP configs")
+            except Exception as e:
+                logger.error(f"Failed to load mcp_servers.json: {e}")
+
+    def _extract_frontmatter(self, content: str) -> tuple:
+        pattern = r"^---\s*\n(.*?)\n---\s*\n?(.*)$"
+        match = re.match(pattern, content, re.DOTALL)
+
+        if not match:
+            return {}, content
+
+        frontmatter_str = match.group(1)
+        body = match.group(2)
+
+        import yaml
+        try:
+            frontmatter = yaml.safe_load(frontmatter_str) or {}
+        except yaml.YAMLError as e:
+            logger.error(f"YAML parse error: {e}")
+            return {}, content
+
+        return frontmatter, body
+
+    def _init_tools(self, parent_tool_registry=None):
+        from tools import ToolRegistry, TodoTool, FileTool
+        
+        if parent_tool_registry and not self.tools:
+            self.tool_registry = parent_tool_registry
+        else:
+            self.tool_registry = ToolRegistry()
+            self.tool_registry.register_tool(TodoTool())
+            self.tool_registry.register_tool(FileTool())
+        
+        logger.debug(f"Agent [{self.name}] tools initialized")
 
     def _init_skills(self):
-        skills_dir = os.path.join(os.path.dirname(
-            __file__), "../config", "skills")
-        self.skill_manager = SkillManager(skills_dir)
-        self.system_prompt = self.system_prompt + \
-            self.skill_manager.get_skills_prompt()
+        skills_dir = os.path.join(self.workspace, "skills")
+        if os.path.exists(skills_dir):
+            from skills import SkillManager
+            self.skill_manager = SkillManager(skills_dir)
+            self.system_prompt = self.system_prompt + self.skill_manager.get_skills_prompt()
+            logger.info(f"Agent [{self.name}] loaded skills from {skills_dir}")
 
     async def _init_mcp(self):
-        config_path = os.path.join(os.path.dirname(
-            __file__), "../config", "mcp_servers.json")
-        self.mcp = MCPManager(config_path)
-        await self.mcp.connect()
+        if self.mcp_configs:
+            from mcps import MCPManager
+            self.mcp = MCPManager("")
+            for config in self.mcp_configs:
+                await self.mcp.connect_server(config)
+            logger.info(f"Agent [{self.name}] initialized {len(self.mcp_configs)} MCP servers")
 
-    def _init_scheduler(self):
-        schedules_dir = os.path.join(os.path.dirname(
-            __file__), "../config", "schedules.json")
-        self.scheduler = SchedulerManager(schedules_dir)
-        self.scheduler.set_executor(self.run)
-        self.scheduler.start()
-
-    def _init_dingtalk_plugin(self):
-        try:
-            self.dingtalk_plugin = DingTalkPlugin()
-            self.dingtalk_plugin.register_agent(self.run_with_session_id)
-            self.dingtalk_plugin.start()
-            logger.info("钉钉插件服务已启动")
-        except Exception as e:
-            logger.warning(f"钉钉插件启动失败: {e}")
-
-    def _init_webhook_plugin(self):
-        try:
-            from webhook import WebhookPlugin
-            self.webhook_plugin = WebhookPlugin()
-            self.webhook_plugin.register_agent(self.run_with_session_id)
-            self.webhook_plugin.start()
-            logger.info("Webhook插件服务已启动")
-        except Exception as e:
-            logger.warning(f"Webhook插件启动失败: {e}")
+    def _init_subagents(self):
+        agents_dir = os.path.join(self.workspace, "agents")
+        if os.path.exists(agents_dir):
+            self.subagent_manager = SubagentManager(agents_dir)
+            self.system_prompt = self.system_prompt + self.subagent_manager.get_subagent_prompt()
+            logger.info(f"Agent [{self.name}] loaded subagents from {agents_dir}")
 
     @property
-    def tool_defs(self):
+    def tool_defs(self) -> List[Dict[str, Any]]:
         tools = []
-        tools.extend(self.tool_registry.get_tool_definitions())
-        if hasattr(self, 'mcp') and self.mcp:
+        
+        if self.tool_registry:
+            tools.extend(self.tool_registry.get_tool_definitions())
+        
+        if self.mcp:
             tools.extend(self.mcp.tool_defs)
+        
         if self.skill_manager:
             tools.extend(self.skill_manager.get_tool_definitions())
+        
+        if self.tools:
+            tool_names = set(self.tools)
+            tools = [t for t in tools if t.get("function", {}).get("name") in tool_names]
+        
         return tools
 
-    async def think(self, session) -> Any:
-        # logger.debug(f"调用API: {session.messages} \n {self.tool_defs}")
-        response = self.client.chat(
-            session.messages, self.tool_defs, stream=True)
+    async def run(self, task: str, session=None) -> AgentResult:
+        self.status = "running"
+        self.messages = []
+        
+        if self.system_prompt:
+            self.messages.append({"role": "system", "content": self.system_prompt})
+        
+        self.messages.append({"role": "user", "content": task})
+        
+        logger.info(f"Agent [{self.name}] ({self.agent_id}) started: {task[:50]}...")
 
-        content_chunks = []
-        tool_calls_data = {}
+        try:
+            for i in range(self.max_iterations):
+                self.iterations = i + 1
+                logger.debug(f"Agent [{self.name}] iteration {i + 1}")
 
-        for chunk in response:
-            delta = chunk.choices[0].delta
+                response = await self._think()
+                msg = response.get("message", {})
 
-            if delta.content:
-                content_chunks.append(delta.content)
-                # print(delta.content, end="", flush=True)
+                self.messages.append({
+                    "role": "assistant",
+                    "content": msg.get("content"),
+                    "tool_calls": msg.get("tool_calls")
+                })
 
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls_data:
-                        tool_calls_data[idx] = {
-                            "id": "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""}
+                if msg.get("tool_calls"):
+                    for tc in msg.get("tool_calls", []):
+                        func_name = tc.get("function", {}).get("name", "")
+                        func_args = tc.get("function", {}).get("arguments", {})
+
+                        if isinstance(func_args, str):
+                            try:
+                                func_args = json.loads(func_args)
+                            except:
+                                func_args = {}
+
+                        logger.info(f"Agent [{self.name}] -> tool: {func_name}")
+                        result = await self._execute_tool(func_name, func_args)
+                        logger.info(f"Agent [{self.name}] <- {func_name} done")
+
+                        self.messages.append({
+                            "role": "tool",
+                            "content": result,
+                            "tool_call_id": tc.get("id", "")
+                        })
+
+                    continue
+
+                if msg.get("content"):
+                    self.status = "completed"
+                    self.result = msg.get("content")
+                    logger.info(f"Agent [{self.name}] ({self.agent_id}) completed")
+                    break
+            else:
+                self.status = "max_iterations"
+                self.result = "达到最大迭代次数"
+                logger.warning(f"Agent [{self.name}] max iterations reached")
+
+        except Exception as e:
+            self.status = "failed"
+            self.error = str(e)
+            logger.error(f"Agent [{self.name}] failed: {e}")
+
+        return AgentResult(
+            agent_id=self.agent_id,
+            status=self.status,
+            result=self.result or "",
+            iterations=self.iterations,
+            error=self.error
+        )
+
+    async def _think(self) -> Dict[str, Any]:
+        try:
+            response = self.client.chat(
+                self.messages,
+                self.tool_defs,
+                stream=False
+            )
+
+            choice = response.choices[0]
+            msg = choice.message
+
+            tool_calls = None
+            if msg.tool_calls:
+                tool_calls = []
+                for tc in msg.tool_calls:
+                    tool_calls.append({
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
                         }
-                    if tc.id:
-                        tool_calls_data[idx]["id"] = tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            tool_calls_data[idx]["function"]["name"] = tc.function.name
-                        if tc.function.arguments:
-                            tool_calls_data[idx]["function"]["arguments"] += tc.function.arguments
+                    })
 
-        # print()
+            return {
+                "message": {
+                    "content": msg.content,
+                    "tool_calls": tool_calls
+                }
+            }
+        except Exception as e:
+            logger.error(f"Agent [{self.name}] think error: {e}")
+            return {"message": {"content": f"思考出错: {e}"}}
 
-        full_content = "".join(content_chunks)
-        tool_calls_list = list(tool_calls_data.values()
-                               ) if tool_calls_data else None
-
-        class MockMessage:
-            def __init__(self, content, tool_calls):
-                self.content = content
-                self.tool_calls = tool_calls
-
-        class MockResponse:
-            def __init__(self, message):
-                self.choices = [type('Choice', (), {'message': message})]
-
-        return MockResponse(MockMessage(full_content, tool_calls_list))
-
-    async def execute_tool(self, name: str, args: Dict) -> str:
-        if name == "subagent":
-            return await self._execute_subagent(args)
-        if self.tool_registry.has_tool(name):
-            return await self.tool_registry.execute(name, args)
-        if self.skill_manager and name == "execute_skill":
-            return await self.skill_manager.execute_tool(name, args)
-        return await self.mcp.call_tool(name, args)
+    async def _execute_tool(self, name: str, args: Dict) -> str:
+        try:
+            if self.tool_registry and self.tool_registry.has_tool(name):
+                return await self.tool_registry.execute(name, args)
+            
+            if self.skill_manager and name == "execute_skill":
+                return await self.skill_manager.execute_tool(name, args)
+            
+            if self.mcp:
+                return await self.mcp.call_tool(name, args)
+            
+            if name == "subagent" and self.subagent_manager:
+                return await self._execute_subagent(args)
+            
+            return f"工具 {name} 不存在"
+        except Exception as e:
+            return f"工具执行错误: {e}"
 
     async def _execute_subagent(self, args: Dict) -> str:
-        from subagent import Subagent
-        import json
-
         task = args.get("task")
         if not task:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
 
-        config = self.subagent_manager.create_config(
+        result, agent_name = await self.subagent_manager.run_subagent(
+            task=task,
+            template=args.get("template", ""),
             name=args.get("name", ""),
             system_prompt=args.get("system_prompt", ""),
             tools=args.get("tools"),
             max_iterations=args.get("max_iterations", 50),
-            template=args.get("template", "")
-        )
-
-        subagent = Subagent(
-            task=task,
-            config=config,
+            mcp_servers=args.get("mcp_servers"),
             client=self.client,
             tool_registry=self.tool_registry,
-            mcp_manager=self.mcp if hasattr(self, 'mcp') else None,
-            skill_manager=self.skill_manager
+            parent_agent=self
         )
-
-        result = await subagent.run()
 
         return json.dumps({
             "success": result.status == "completed",
-            "subagent_id": result.subagent_id,
-            "name": config.name,
+            "agent_id": result.agent_id,
+            "name": agent_name,
             "status": result.status,
             "result": result.result,
             "iterations": result.iterations,
             "error": result.error
         }, ensure_ascii=False)
 
-    def list_skills(self) -> List[Dict[str, Any]]:
-        if not self.skill_manager:
-            return []
-        return self.skill_manager.list_skills()
+    async def cleanup(self):
+        if self.mcp:
+            await self.mcp.close()
+            logger.info(f"Agent [{self.name}] cleaned up MCP")
 
-    async def connect_mcp(self, config: Dict[str, Any]) -> bool:
-        """动态连接MCP服务器
 
-        Args:
-            config: MCP服务器配置，包含name、command、args等
+class SubagentManager:
+    def __init__(self, base_dir: str):
+        self.base_dir = base_dir
+        self.templates: Dict[str, Dict[str, Any]] = {}
+        self._load_all()
 
-        Returns:
-            是否连接成功
-        """
-        return await self.mcp.connect_server(config)
+    def _load_all(self):
+        if not self.base_dir or not os.path.exists(self.base_dir):
+            logger.warning(f"Subagent directory not found: {self.base_dir}")
+            return
 
-    async def disconnect_mcp(self, name: str) -> bool:
-        """断开MCP服务器
-
-        Args:
-            name: 服务器名称
-
-        Returns:
-            是否断开成功
-        """
-        return await self.mcp.disconnect_server(name)
-
-    async def reload_mcp(self, name: str = None) -> Dict[str, bool]:
-        """重载MCP服务器
-
-        Args:
-            name: 服务器名称，为None时重载全部
-
-        Returns:
-            各服务器的重载结果
-        """
-        if name:
-            success = await self.mcp.reload_server(name)
-            return {name: success}
-        return await self.mcp.reload_all()
-
-    def list_tools(self) -> Dict[str, List[str]]:
-        """列出所有工具
-
-        Returns:
-            按类型分组的工具列表
-        """
-        return {
-            "builtin": self.tool_registry.list_tools(),
-            "mcp": [t["function"]["name"] for t in self.mcp.tool_defs] if hasattr(self, 'mcp') and self.mcp else [],
-            "skills": [t["function"]["name"] for t in self.skill_manager.get_tool_definitions()] if self.skill_manager else []
-        }
-
-    async def execute_skill(
-        self,
-        skill_name: str,
-        user_input: str,
-        variables: Dict[str, Any] = None
-    ) -> SkillResult:
-        if not self.skill_manager:
-            return SkillResult(success=False, error="技能管理器未初始化")
-
-        result = await self.skill_manager.execute_tool("execute_skill", {
-            "skill_name": skill_name,
-            "user_input": user_input
-        })
-
-        return SkillResult(
-            success=True,
-            data=result,
-            metadata={"skill_name": skill_name}
-        )
-
-    async def run(self, task: str, session=None) -> str:
-        if not session:
-            session = await self.session_manager.create_session(system_prompt=self.system_prompt)
-        session.add_message("user", task)
-
-        logger.info(f"开始执行任务: {task}")
-        for i in range(session.max_iterations):
-            logger.debug(f"Iteration {i + 1}/{session.max_iterations}")
-            response = await self.think(session)
-            msg = response.choices[0].message
-            session.add_message("assistant", msg.content or "",
-                                tool_calls=msg.tool_calls if msg.tool_calls else None)
-
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if isinstance(tc, dict):
-                        tc_id = tc.get("id", "")
-                        func_data = tc.get("function", {})
-                        func_name = func_data.get("name", "")
-                        func_args = func_data.get("arguments", "")
-                    else:
-                        tc_id = tc.id
-                        func = tc.function
-                        func_name = func.name if func else ""
-                        func_args = func.arguments if func else ""
-
-                    if not func_name:
-                        continue
-
-                    try:
-                        args = json.loads(func_args) if isinstance(
-                            func_args, str) else func_args
-                    except:
-                        args = {}
-
-                    logger.info(f"→ 调用工具: {func_name}")
-                    logger.debug(f"Tool arguments: {args}")
-                    result = await self.execute_tool(func_name, args)
-                    logger.debug(f"Tool results: {result}")
-                    logger.info(f"✓ {func_name} 执行完成")
-
-                    session.add_message(
-                        "tool", result, tool_call_id=tc_id)
-
+        for name in os.listdir(self.base_dir):
+            agent_dir = os.path.join(self.base_dir, name)
+            if not os.path.isdir(agent_dir):
                 continue
 
-            if msg.content and msg.content.strip():
-                logger.info("任务完成")
-                return msg.content
+            template = {
+                "name": name,
+                "workspace": agent_dir
+            }
+            self.templates[name] = template
+            logger.info(f"Loaded subagent template: {name}")
 
-        logger.warning("达到最大迭代次数")
-        return "达到最大迭代次数"
+    def get_subagent_prompt(self) -> str:
+        if not self.templates:
+            return "没有可用的子代理"
 
-    async def run_with_session_id(
+        lines = ["\n## 【SubAgent列表】\n"]
+        for name in self.templates:
+            lines.append(f"[名称：{name}]")
+            lines.append("")
+        return "\n".join(lines) + "\n通过subagent工具调用激活\n"
+
+    def list_templates(self) -> List[Dict[str, Any]]:
+        return [{"name": name, "workspace": t["workspace"]} for name, t in self.templates.items()]
+
+    async def run_subagent(
         self,
-        session_id: str,
         task: str,
-        system_prompt: str = ""
-    ) -> str:
-        session = await self.session_manager.get_session(session_id)
-        if not session:
-            session = await self.session_manager.create_session(
-                session_id=session_id,
-                system_prompt=system_prompt or self.system_prompt
-            )
-        return await self.run(task, session)
-
-    async def interactive_mode(self):
-        logger.info("进入交互模式")
-        agent_session = await self.session_manager.create_session(system_prompt=self.system_prompt)
-        while True:
-            try:
-                question = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: Prompt.ask(
-                        "\n[bold cyan]?[/bold cyan] [cyan]请描述任务[/cyan]")
-                )
-            except:
-                break
-
-            if not question.strip():
-                continue
+        template: str = "",
+        name: str = "",
+        system_prompt: str = "",
+        tools: Optional[List[str]] = None,
+        max_iterations: int = 50,
+        mcp_servers: Optional[List[Dict[str, Any]]] = None,
+        client=None,
+        tool_registry=None,
+        parent_agent: Agent = None
+    ) -> tuple:
+        template_name = template or name
+        template_data = self.templates.get(template_name)
+        
+        workspace = template_data["workspace"] if template_data else None
+        
+        if not workspace:
+            from tools import ToolRegistry, TodoTool, FileTool
+            temp_dir = os.path.join(self.base_dir, name or "temp")
+            os.makedirs(temp_dir, exist_ok=True)
             
-            if question.strip().lower() == "/prompt":
-                console.print(Panel.fit(
-                    f"[bold green]工具列表:[/bold green]\n{self.system_prompt}",
-                    border_style="green", box=box.ROUNDED
-                ))
-                continue
+            skill_content = "---\n"
+            if name:
+                skill_content += f"name: {name}\n"
+            if system_prompt:
+                pass
+            skill_content += f"max_iterations: {max_iterations}\n"
+            if tools:
+                skill_content += f"tools: {tools}\n"
+            skill_content += "---\n"
+            if system_prompt:
+                skill_content += system_prompt
+            
+            with open(os.path.join(temp_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+                f.write(skill_content)
+            
+            if mcp_servers:
+                with open(os.path.join(temp_dir, "mcp_servers.json"), "w", encoding="utf-8") as f:
+                    json.dump(mcp_servers, f)
+            else:
+                with open(os.path.join(temp_dir, "mcp_servers.json"), "w", encoding="utf-8") as f:
+                    json.dump([], f)
+            
+            workspace = temp_dir
 
-            if question.strip().lower() == "/tools":
-                table = Table(title="工具列表", show_header=True,
-                              header_style="bold magenta", box=box.ROUNDED)
-                table.add_column("名称", style="cyan", no_wrap=True)
-                table.add_column("描述", style="green")
-                for tool in self.tool_defs:
-                    func = tool.get("function", {})
-                    name = func.get("name", "未知")
-                    desc = func.get("description", "无描述")
-                    table.add_row(name, desc)
-                console.print(table)
-                continue
+        agent = Agent(
+            workspace=workspace,
+            client=client,
+            parent_agent=parent_agent
+        )
+        
+        if max_iterations != 50:
+            agent.max_iterations = max_iterations
+        if tools:
+            agent.tools = tools
+        
+        await agent.initialize(tool_registry=tool_registry)
+        
+        try:
+            result = await agent.run(task)
+        finally:
+            await agent.cleanup()
 
-            if question.strip().lower() == "/messages":
-                table = Table(title=f"当前会话消息 (共 {len(agent_session.messages)} 条)",
-                              show_header=True, header_style="bold magenta", box=box.ROUNDED)
-                table.add_column("#", style="dim", width=3)
-                table.add_column("角色", style="cyan", width=10)
-                table.add_column("内容", style="green")
-                for i, msg in enumerate(agent_session.messages, 1):
-                    role = str(msg.get("role", "未知"))
-                    content = str(msg.get("content", "") or "")
-                    table.add_row(str(i), role, content)
-                console.print(table)
-                continue
-
-            if question.strip().lower() == "/skills":
-                console.print(Panel.fit(
-                    f"[bold green]技能列表:[/bold green]\n{self.list_skills()}",
-                    border_style="green", box=box.ROUNDED
-                ))
-                continue
-
-            if question.strip().lower() in ["quit", "exit", "q"]:
-                logger.info("ℹ 再见!")
-                break
-
-            console.print()
-            result = await self.run(question, agent_session)
-
-            console.print(Panel.fit(
-                f"[bold green]执行结果:[/bold green]\n{result}",
-                border_style="green", box=box.ROUNDED
-            ))
-
-
-async def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--task", "-t", help="执行单个任务")
-    parser.add_argument("--skill", "-s", help="执行指定技能")
-    parser.add_argument("--debug", action="store_true", help="启用调试模式")
-    args = parser.parse_args()
-
-    if args.debug:
-        logging.getLogger("agent").setLevel(logging.DEBUG)
-
-    logger.info("启动 Agent")
-    agent = Agent(LLMClient())
-    await agent.initialize()
-
-    if args.skill:
-        result = await agent.execute_skill(args.skill, args.task or "")
-        console.print(Panel.fit(
-            f"[bold green]技能执行结果:[/bold green]\n{result.data if result.success else result.error}",
-            border_style="green" if result.success else "red",
-            box=box.ROUNDED
-        ))
-        return
-
-    if args.task:
-        result = await agent.run(args.task)
-        console.print(Panel.fit(
-            f"[bold green]结果:[/bold green]\n{result}",
-            border_style="green", box=box.ROUNDED
-        ))
-        return
-
-    console.print(Panel.fit(
-        "[bold cyan]Agent[/bold cyan]\n"
-        "[dim]输入任务描述，自动完成工作[/dim]\n"
-        "[dim]输入 [bold]quit[/bold] 退出[/dim]",
-        border_style="cyan", box=box.DOUBLE
-    ))
-
-    await agent.interactive_mode()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        return result, agent.name

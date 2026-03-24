@@ -1,5 +1,5 @@
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from . import BuiltinTool
 
@@ -17,10 +17,14 @@ class SubagentTool(BuiltinTool):
 - 需要将复杂任务分解为多个独立子任务并行处理
 - 需要使用不同的系统提示词处理特定任务
 - 需要隔离的任务执行环境
+- 需要为子代理配置独立的MCP服务器
 
 示例:
 {"task": "分析数据", "template": "business_analyst"}
-{"task": "分析数据", "name": "analyst", "system_prompt": "你是一个数据分析师"}"""
+{"task": "分析数据", "name": "analyst", "system_prompt": "你是一个数据分析师"}
+{"task": "查询库存", "template": "business_analyst", "mcp_servers": [{"name": "db", "command": "python", "args": ["mcp_server.py"]}]}
+
+注意: 推荐在配置文件(config/agents/*.md)中预先定义subagent模板，包含mcp_servers配置"""
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -51,6 +55,19 @@ class SubagentTool(BuiltinTool):
                 "max_iterations": {
                     "type": "integer",
                     "description": "最大迭代次数，默认50"
+                },
+                "mcp_servers": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "MCP服务器名称"},
+                            "command": {"type": "string", "description": "启动命令"},
+                            "args": {"type": "array", "items": {"type": "string"}, "description": "命令参数"},
+                            "env": {"type": "object", "description": "环境变量"}
+                        }
+                    },
+                    "description": "子代理独立使用的MCP服务器配置列表"
                 }
             },
             "required": ["task"]
