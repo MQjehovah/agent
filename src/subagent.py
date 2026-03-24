@@ -288,7 +288,7 @@ class SubagentManager:
                 lines.append(f"工具: {', '.join(config.tools)}")
             lines.append("")
 
-        return "\n".join(lines) + "通过subagent工具调用激活"
+        return "\n".join(lines) + "\n通过subagent工具调用激活\n"
 
     def list_configs(self) -> List[Dict[str, Any]]:
         return [

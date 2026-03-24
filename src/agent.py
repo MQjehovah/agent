@@ -499,10 +499,29 @@ class Agent:
                 continue
 
             if question.strip().lower() == "/tools":
-                console.print(Panel.fit(
-                    f"[bold green]工具列表:[/bold green]\n{map(lambda t: t.name + t.description + "\n", self.tool_defs)}",
-                    border_style="green", box=box.ROUNDED
-                ))
+                table = Table(title="工具列表", show_header=True,
+                              header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("名称", style="cyan", no_wrap=True)
+                table.add_column("描述", style="green")
+                for tool in self.tool_defs:
+                    func = tool.get("function", {})
+                    name = func.get("name", "未知")
+                    desc = func.get("description", "无描述")
+                    table.add_row(name, desc)
+                console.print(table)
+                continue
+
+            if question.strip().lower() == "/messages":
+                table = Table(title=f"当前会话消息 (共 {len(agent_session.messages)} 条)",
+                              show_header=True, header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("#", style="dim", width=3)
+                table.add_column("角色", style="cyan", width=10)
+                table.add_column("内容", style="green")
+                for i, msg in enumerate(agent_session.messages, 1):
+                    role = str(msg.get("role", "未知"))
+                    content = str(msg.get("content", "") or "")
+                    table.add_row(str(i), role, content)
+                console.print(table)
                 continue
 
             if question.strip().lower() == "/skills":
