@@ -34,7 +34,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("agent")
 
 
-async def interactive_mode(agent: Agent, scheduler: SchedulerManager):
+async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] = None):
     logger.info("进入交互模式")
     
     while True:
@@ -134,12 +134,16 @@ async def main():
         scheduler.set_executor(lambda task: agent.run(task))
         scheduler.start()
 
+    async def run_agent(session_id: str, content: str) -> str:
+        result = await agent.run(content)
+        return result.result
+
     plugin_manager = None
     if not args.no_plugins:
         plugins_dir = os.path.join(src_dir, "plugins")
         plugin_manager = PluginManager(plugins_dir)
         plugin_manager.load_all()
-        plugin_manager.register_agent(lambda session_id, content: agent.run(content))
+        plugin_manager.register_agent(run_agent)
         plugin_manager.start_all()
 
     try:
