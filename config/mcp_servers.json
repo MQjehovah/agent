@@ -9,11 +9,11 @@
   },
   {
     "name": "device-ops",
-    "enabled": false,
+    "enabled": true,
     "command": "python",
-    "args": ["mcp_server/src/device_op.py"],
+    "args": ["mcp_server/src/device_ops.py"],
     "env": {
-      "DEVICE_API_BASE_URL": "http://localhost:8080"
+      "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
     },
     "description": "设备远程运维服务"
   }

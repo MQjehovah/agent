@@ -28,8 +28,8 @@ mcp = FastMCP("Device Operations MCP Server")
 
 @dataclass
 class APIConfig:
-    base_url: str = os.getenv("DEVICE_API_BASE_URL", "http://localhost:8080")
-    token: Optional[str] = None
+    base_url: str = os.getenv("DEVICE_API_BASE_URL", "https://bms-cn.rosiwit.com")
+    token: Optional[str] = "eyJhbGciOiJIUzI1NiJ9.eyJqdGkiOiI0ODciLCJpc3MiOiIxX251bGwiLCJpYXQiOjE3NzQzMTgzNDQsInN1YiI6IldFQiIsImV4cCI6MTc3NDkyMzE0NH0.iVPL9AxWvV8WWmuvCsTg3PoJk9py5VVCXVk5ty2cy8o"
     timeout: int = 30
 
 
@@ -66,7 +66,7 @@ def set_api_base_url(base_url: str):
     """设置API基础URL
     
     参数:
-    - base_url: API服务器地址，如 http://192.168.1.100:8080
+    - base_url: API服务器地址，如 https://bms-cn.rosiwit.com
     """
     api_config.base_url = base_url.rstrip("/")
     logger.info(f"API基础URL已设置: {api_config.base_url}")
@@ -92,13 +92,13 @@ def get_token(username: str, password: str, login_url: str = None):
     参数:
     - username: 用户名
     - password: 密码
-    - login_url: 登录接口路径（可选，默认为 /xz_sc50/login）
+    - login_url: 登录接口路径（可选，默认为 /xz_robot_common/user/login）
     """
-    url = f"{api_config.base_url}{login_url or '/xz_sc50/login'}"
+    url = f"{api_config.base_url}{login_url or '/xz_robot_common/user/login'}"
     try:
         response = requests.post(
             url,
-            json={"username": username, "password": password},
+            json={"username": username, "password": password,"clientType": "WEB"},
             headers={"Content-Type": "application/json"},
             timeout=api_config.timeout
         )
