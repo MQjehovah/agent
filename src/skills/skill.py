@@ -193,7 +193,7 @@ class SkillLoader:
                         f"  工具: {', '.join([t.get('name', '') for t in skill.tools])}")
                 lines.append("")
 
-        return "技能列表：" + "\n".join(lines) + "\n通过execute_skill工具调用激活"
+        return "\n".join(lines) + "\n通过execute_skill工具调用激活"
 
     def create_skill(self, name: str, description: str = "") -> str:
         skill_dir = os.path.join(self.skills_dir, name)

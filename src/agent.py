@@ -19,8 +19,10 @@ from apscheduler.triggers.cron import CronTrigger
 from dingtalk.plugin import DingTalkPlugin
 from agent_session import AgentSessionManager
 from skills import SkillLoader, SkillResult, SkillManager
-from tools import ToolRegistry, TodoTool, FileTool
+from tools import ToolRegistry, TodoTool, FileTool, SubagentTool
 from mcps import MCPManager
+from subagent import SubagentManager
+from agent_loader import AgentLoader
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -123,7 +125,7 @@ class LLMClient:
         self.client = OpenAI(
             base_url=base_url or os.getenv(
                 "OPENAI_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1"),
-                
+
             api_key=api_key or os.getenv(
                 "OPENAI_API_KEY", "sk-sp-39ab191a77af4bbda827e309afa60b12"),
             timeout=60.0
@@ -152,16 +154,22 @@ class Agent:
         self.system_prompt = ""
         self.tool_registry: ToolRegistry = None
         self.skill_manager: Optional[SkillManager] = None
+        self.subagent_manager: Optional[SubagentManager] = None
 
         self.session_manager: Optional[AgentSessionManager] = AgentSessionManager()
 
     async def initialize(self):
+        self._init_prompt()
+        self._init_subagent()
         self._init_tools()
         self._init_skills()
         await self._init_mcp()
         self._init_scheduler()
         # self._init_dingtalk_plugin()
-        self._init_webhook_plugin()
+        # self._init_webhook_plugin()
+
+        logger.debug(f"system_prompt:{self.system_prompt}")
+        logger.debug(f"system_tools:{self.tool_defs}")
 
     def _init_prompt(self):
         soul_path = os.path.join(os.path.dirname(
@@ -170,10 +178,21 @@ class Agent:
             soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
         self.system_prompt = system_prompt
 
+    def _init_subagent(self):
+        self.subagent_manager = SubagentManager(self)
+        agents_dir = os.path.join(os.path.dirname(__file__), "../config", "agents")
+        loader = AgentLoader(agents_dir)
+        templates = loader.load_all()
+        if templates:
+            self.subagent_manager.load_templates(templates)
+        self.system_prompt = self.system_prompt + \
+            self.subagent_manager.get_subagent_prompt()
+
     def _init_tools(self):
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_tool(TodoTool())
         self.tool_registry.register_tool(FileTool())
+        self.tool_registry.register_tool(SubagentTool(self.subagent_manager))
 
     def _init_skills(self):
         skills_dir = os.path.join(os.path.dirname(
@@ -287,10 +306,10 @@ class Agent:
 
     async def connect_mcp(self, config: Dict[str, Any]) -> bool:
         """动态连接MCP服务器
-        
+
         Args:
             config: MCP服务器配置，包含name、command、args等
-            
+
         Returns:
             是否连接成功
         """
@@ -298,10 +317,10 @@ class Agent:
 
     async def disconnect_mcp(self, name: str) -> bool:
         """断开MCP服务器
-        
+
         Args:
             name: 服务器名称
-            
+
         Returns:
             是否断开成功
         """
@@ -309,10 +328,10 @@ class Agent:
 
     async def reload_mcp(self, name: str = None) -> Dict[str, bool]:
         """重载MCP服务器
-        
+
         Args:
             name: 服务器名称，为None时重载全部
-            
+
         Returns:
             各服务器的重载结果
         """
@@ -323,7 +342,7 @@ class Agent:
 
     def list_tools(self) -> Dict[str, List[str]]:
         """列出所有工具
-        
+
         Returns:
             按类型分组的工具列表
         """
