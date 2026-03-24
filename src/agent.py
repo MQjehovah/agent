@@ -22,7 +22,6 @@ from skills import SkillLoader, SkillResult, SkillManager
 from tools import ToolRegistry, TodoTool, FileTool, SubagentTool
 from mcps import MCPManager
 from subagent import SubagentManager
-from agent_loader import AgentLoader
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -156,7 +155,8 @@ class Agent:
         self.skill_manager: Optional[SkillManager] = None
         self.subagent_manager: Optional[SubagentManager] = None
 
-        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager()
+        self.session_manager: Optional[AgentSessionManager] = AgentSessionManager(
+        )
 
     async def initialize(self):
         self._init_prompt()
@@ -179,12 +179,10 @@ class Agent:
         self.system_prompt = system_prompt
 
     def _init_subagent(self):
-        self.subagent_manager = SubagentManager(self)
-        agents_dir = os.path.join(os.path.dirname(__file__), "../config", "agents")
-        loader = AgentLoader(agents_dir)
-        templates = loader.load_all()
-        if templates:
-            self.subagent_manager.load_templates(templates)
+        agents_dir = os.path.join(os.path.dirname(
+            __file__), "../config", "agents")
+        self.subagent_manager = SubagentManager(agents_dir)
+
         self.system_prompt = self.system_prompt + \
             self.subagent_manager.get_subagent_prompt()
 
