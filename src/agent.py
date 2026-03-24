@@ -480,6 +480,54 @@ class Agent:
             return []
         return self.skill_manager.list_skills()
 
+    async def connect_mcp(self, config: Dict[str, Any]) -> bool:
+        """动态连接MCP服务器
+        
+        Args:
+            config: MCP服务器配置，包含name、command、args等
+            
+        Returns:
+            是否连接成功
+        """
+        return await self.mcp.connect_server(config)
+
+    async def disconnect_mcp(self, name: str) -> bool:
+        """断开MCP服务器
+        
+        Args:
+            name: 服务器名称
+            
+        Returns:
+            是否断开成功
+        """
+        return await self.mcp.disconnect_server(name)
+
+    async def reload_mcp(self, name: str = None) -> Dict[str, bool]:
+        """重载MCP服务器
+        
+        Args:
+            name: 服务器名称，为None时重载全部
+            
+        Returns:
+            各服务器的重载结果
+        """
+        if name:
+            success = await self.mcp.reload_server(name)
+            return {name: success}
+        return await self.mcp.reload_all()
+
+    def list_tools(self) -> Dict[str, List[str]]:
+        """列出所有工具
+        
+        Returns:
+            按类型分组的工具列表
+        """
+        return {
+            "builtin": self.tool_registry.list_tools(),
+            "mcp": [t["function"]["name"] for t in self.mcp.tool_defs] if hasattr(self, 'mcp') and self.mcp else [],
+            "skills": [t["function"]["name"] for t in self.skill_manager.get_tool_definitions()] if self.skill_manager else []
+        }
+
     async def execute_skill(
         self,
         skill_name: str,
