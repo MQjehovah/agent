@@ -190,7 +190,7 @@ class Agent:
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_tool(TodoTool())
         self.tool_registry.register_tool(FileTool())
-        self.tool_registry.register_tool(SubagentTool(self.subagent_manager))
+        self.tool_registry.register_tool(SubagentTool())
 
     def _init_skills(self):
         skills_dir = os.path.join(os.path.dirname(
@@ -291,11 +291,50 @@ class Agent:
         return MockResponse(MockMessage(full_content, tool_calls_list))
 
     async def execute_tool(self, name: str, args: Dict) -> str:
+        if name == "subagent":
+            return await self._execute_subagent(args)
         if self.tool_registry.has_tool(name):
             return await self.tool_registry.execute(name, args)
         if self.skill_manager and name == "execute_skill":
             return await self.skill_manager.execute_tool(name, args)
         return await self.mcp.call_tool(name, args)
+
+    async def _execute_subagent(self, args: Dict) -> str:
+        from subagent import Subagent
+        import json
+        
+        task = args.get("task")
+        if not task:
+            return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
+        
+        config = self.subagent_manager.create_config(
+            name=args.get("name", ""),
+            system_prompt=args.get("system_prompt", ""),
+            tools=args.get("tools"),
+            max_iterations=args.get("max_iterations", 50),
+            template=args.get("template", "")
+        )
+        
+        subagent = Subagent(
+            task=task,
+            config=config,
+            client=self.client,
+            tool_registry=self.tool_registry,
+            mcp_manager=self.mcp if hasattr(self, 'mcp') else None,
+            skill_manager=self.skill_manager
+        )
+        
+        result = await subagent.run()
+        
+        return json.dumps({
+            "success": result.status == "completed",
+            "subagent_id": result.subagent_id,
+            "name": config.name,
+            "status": result.status,
+            "result": result.result,
+            "iterations": result.iterations,
+            "error": result.error
+        }, ensure_ascii=False)
 
     def list_skills(self) -> List[Dict[str, Any]]:
         if not self.skill_manager:

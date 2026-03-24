@@ -1,35 +1,22 @@
-import asyncio
 import logging
 import uuid
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from datetime import datetime
 import os
 import re
-import logging
 
 logger = logging.getLogger("agent.subagent")
 
 
 @dataclass
-class SubagentTemplate:
+class SubagentConfig:
     name: str
-    system_prompt: str
+    system_prompt: str = ""
     tools: List[str] = field(default_factory=list)
     max_iterations: int = 50
     description: str = ""
     filename: str = ""
-
-
-@dataclass
-class SubagentConfig:
-    name: str
-    task: str
-    system_prompt: str = ""
-    tools: List[str] = field(default_factory=list)
-    max_iterations: int = 50
-    parent_session_id: str = ""
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
 @dataclass
@@ -46,12 +33,14 @@ class SubagentResult:
 class Subagent:
     def __init__(
         self,
+        task: str,
         config: SubagentConfig,
         client,
         tool_registry,
         mcp_manager=None,
         skill_manager=None
     ):
+        self.task = task
         self.config = config
         self.client = client
         self.tool_registry = tool_registry
@@ -68,7 +57,7 @@ class Subagent:
             self.messages.append(
                 {"role": "system", "content": config.system_prompt})
 
-        self.messages.append({"role": "user", "content": config.task})
+        self.messages.append({"role": "user", "content": task})
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
@@ -94,7 +83,7 @@ class Subagent:
     async def run(self) -> SubagentResult:
         self.status = "running"
         logger.info(
-            f"Subagent [{self.config.name}] ({self.subagent_id}) 开始执行: {self.config.task[:50]}...")
+            f"Subagent [{self.config.name}] ({self.subagent_id}) 开始执行: {self.task[:50]}...")
 
         try:
             for i in range(self.config.max_iterations):
@@ -208,37 +197,29 @@ class Subagent:
             return f"工具执行错误: {e}"
 
 
-class SubAgentLoader:
-    def __init__(self, config_dir: str = None):
-        if not config_dir:
-            config_dir = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                "config", "agents"
-            )
-        self.config_dir = config_dir
-        self.templates: Dict[str, SubagentTemplate] = {}
+class SubagentManager:
+    def __init__(self, base_dir: str = ""):
+        self.base_dir = base_dir
+        self.configs: Dict[str, SubagentConfig] = {}
+        self._load_all()
 
-    def load_all(self) -> Dict[str, SubagentTemplate]:
-        if not os.path.exists(self.config_dir):
-            logger.warning(
-                f"Agent config directory not found: {self.config_dir}")
-            return {}
+    def _load_all(self):
+        if not self.base_dir or not os.path.exists(self.base_dir):
+            logger.warning(f"Agent config directory not found: {self.base_dir}")
+            return
 
-        for filename in os.listdir(self.config_dir):
+        for filename in os.listdir(self.base_dir):
             if filename.endswith(".md"):
-                filepath = os.path.join(self.config_dir, filename)
+                filepath = os.path.join(self.base_dir, filename)
                 try:
-                    template = self._parse_file(filepath)
-                    if template:
-                        self.templates[template.name] = template
-                        logger.info(
-                            f"Loaded subagent template: {template.name}")
+                    config = self._parse_file(filepath)
+                    if config:
+                        self.configs[config.name] = config
+                        logger.info(f"Loaded subagent config: {config.name}")
                 except Exception as e:
                     logger.error(f"Failed to parse {filename}: {e}")
 
-        return self.templates
-
-    def _parse_file(self, filepath: str) -> Optional[SubagentTemplate]:
+    def _parse_file(self, filepath: str) -> Optional[SubagentConfig]:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
 
@@ -262,7 +243,7 @@ class SubAgentLoader:
 
         description = body.strip() if body else ""
 
-        return SubagentTemplate(
+        return SubagentConfig(
             name=name,
             system_prompt=system_prompt,
             tools=tools,
@@ -290,163 +271,64 @@ class SubAgentLoader:
 
         return frontmatter, body
 
-    def get_template(self, name: str) -> Optional[SubagentTemplate]:
-        return self.templates.get(name)
+    def get(self, name: str) -> Optional[SubagentConfig]:
+        return self.configs.get(name)
 
-    def list_templates(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "name": t.name,
-                "tools": t.tools,
-                "max_iterations": t.max_iterations,
-                "description": t.description[:100] if t.description else ""
-            }
-            for t in self.templates.values()
-        ]
-
-    def reload(self) -> Dict[str, SubagentTemplate]:
-        self.templates.clear()
-        return self.load_all()
-
-
-class SubagentManager:
-    def __init__(self, base_dir: str = ""):
-        self.subagents: Dict[str, Subagent] = {}
-        self.results: Dict[str, SubagentResult] = {}
-        self.templates: Dict[str, SubagentTemplate] = {}
-
-        self.loader = SubAgentLoader(base_dir)
-        self.templates = self.loader.load_all()
-
-    def load_templates(self, templates: Dict[str, "SubagentTemplate"]):
-        self.templates.update(templates)
-        logger.info(f"已加载 {len(templates)} 个子代理模板: {list(templates.keys())}")
-
-    def get_subagent_prompt(self):
-        if not self.loader:
-            return "No subagent loaded"
-        if not self.templates:
-            return "没有可用的技能"
+    def get_subagent_prompt(self) -> str:
+        if not self.configs:
+            return "没有可用的子代理"
 
         lines = ["SubAgent列表:\n"]
-        for subagent in self.templates.values():
-            if subagent.enabled:
-                lines.append(f"[{subagent.name}]")
-                lines.append(f"  描述: {subagent.description}")
-                if subagent.tools:
-                    lines.append(
-                        f"  工具: {', '.join([t.get('name', '') for t in subagent.tools])}")
-                lines.append("")
+        for config in self.configs.values():
+            lines.append(f"[{config.name}]")
+            if config.description:
+                lines.append(f"  描述: {config.description[:100]}")
+            if config.tools:
+                lines.append(f"  工具: {', '.join(config.tools)}")
+            lines.append("")
 
-        return "\n".join(lines) + "\n通过subagent工具调用激活"
+        return "\n".join(lines) + "通过subagent工具调用激活"
+
+    def list_configs(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "name": c.name,
+                "tools": c.tools,
+                "max_iterations": c.max_iterations,
+                "description": c.description[:100] if c.description else ""
+            }
+            for c in self.configs.values()
+        ]
 
     def list_templates(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "name": t.name,
-                "tools": t.tools,
-                "max_iterations": t.max_iterations,
-                "description": t.description[:100] if t.description else ""
-            }
-            for t in self.templates.values()
-        ]
+        return self.list_configs()
 
-    def create_subagent(
+    def create_config(
         self,
-        task: str,
         name: str = "",
         system_prompt: str = "",
         tools: List[str] = None,
         max_iterations: int = 50,
-        parent_session_id: str = "",
         template: str = ""
-    ) -> str:
-        if template and template in self.templates:
-            t = self.templates[template]
-            name = name or t.name
-            system_prompt = system_prompt or t.system_prompt
-            tools = tools if tools is not None else t.tools
-            max_iterations = max_iterations or t.max_iterations
-            logger.info(f"使用模板 '{template}' 创建子代理")
+    ) -> SubagentConfig:
+        base_config = self.configs.get(template or name)
+        
+        if base_config:
+            name = name or base_config.name
+            system_prompt = system_prompt or base_config.system_prompt
+            tools = tools if tools is not None else base_config.tools
+            max_iterations = max_iterations if max_iterations != 50 else base_config.max_iterations
+            if template:
+                logger.info(f"使用配置 '{template}' 创建子代理")
 
-        subagent_name = name or f"subagent_{len(self.subagents) + 1}"
-
-        config = SubagentConfig(
-            name=subagent_name,
-            task=task,
+        return SubagentConfig(
+            name=name or f"subagent",
             system_prompt=system_prompt,
             tools=tools or [],
-            max_iterations=max_iterations,
-            parent_session_id=parent_session_id
+            max_iterations=max_iterations
         )
 
-        subagent = Subagent(
-            config=config,
-            client=self.agent.client,
-            tool_registry=self.agent.tool_registry,
-            mcp_manager=self.agent.mcp if hasattr(self.agent, 'mcp') else None,
-            skill_manager=self.agent.skill_manager
-        )
-
-        self.subagents[subagent.subagent_id] = subagent
-        logger.info(f"创建 Subagent: {subagent_name} ({subagent.subagent_id})")
-
-        return subagent.subagent_id
-
-    async def run_subagent(self, subagent_id: str) -> SubagentResult:
-        subagent = self.subagents.get(subagent_id)
-        if not subagent:
-            return SubagentResult(
-                subagent_id=subagent_id,
-                status="failed",
-                result="",
-                iterations=0,
-                error="Subagent not found"
-            )
-
-        result = await subagent.run()
-        self.results[subagent_id] = result
-        return result
-
-    async def create_and_run(
-        self,
-        task: str,
-        name: str = "",
-        system_prompt: str = "",
-        tools: List[str] = None,
-        max_iterations: int = 50,
-        template: str = ""
-    ) -> SubagentResult:
-        subagent_id = self.create_subagent(
-            task=task,
-            name=name,
-            system_prompt=system_prompt,
-            tools=tools,
-            max_iterations=max_iterations,
-            template=template
-        )
-        return await self.run_subagent(subagent_id)
-
-    def get_result(self, subagent_id: str) -> Optional[SubagentResult]:
-        return self.results.get(subagent_id)
-
-    def list_subagents(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "id": sa.subagent_id,
-                "name": sa.config.name,
-                "status": sa.status,
-                "task": sa.config.task[:100],
-                "iterations": sa.iterations
-            }
-            for sa in self.subagents.values()
-        ]
-
-    def clear_completed(self):
-        completed_ids = [
-            sid for sid, sa in self.subagents.items()
-            if sa.status in ("completed", "failed", "max_iterations")
-        ]
-        for sid in completed_ids:
-            del self.subagents[sid]
-        return len(completed_ids)
+    def reload(self):
+        self.configs.clear()
+        self._load_all()
+        logger.info(f"重新加载子代理配置: {list(self.configs.keys())}")
