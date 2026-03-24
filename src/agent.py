@@ -42,51 +42,61 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("agent")
 
 
-class MCPManager:
-    def __init__(self, server_script: str = None):
-        if server_script is None:
-            server_script = os.path.join(os.path.dirname(
-                os.path.abspath(__file__)), "mcp_server.py")
-        self.server_script = server_script
+class MCPServerConnection:
+    def __init__(self, name: str, config: Dict[str, Any], base_dir: str):
+        self.name = name
+        self.config = config
+        self.base_dir = base_dir
         self.session: Optional[ClientSession] = None
         self._exit_stack = None
-        self.tools: List[Dict[str, Any]] = []
         self.tool_defs: List[Dict[str, Any]] = []
 
-    async def connect(self):
+    async def connect(self) -> bool:
         from contextlib import AsyncExitStack
 
+        command = self.config.get("command", "python")
+        args = self.config.get("args", [])
+        env = self.config.get("env", {})
+
+        resolved_args = [os.path.join(self.base_dir, a) if not os.path.isabs(a) else a for a in args]
+
+        merged_env = dict(os.environ)
+        merged_env.update(env)
+
         server_params = StdioServerParameters(
-            command="python",
-            args=[self.server_script],
+            command=command,
+            args=resolved_args,
+            env=merged_env
         )
 
-        self._exit_stack = AsyncExitStack()
-        await self._exit_stack.__aenter__()
+        try:
+            self._exit_stack = AsyncExitStack()
+            await self._exit_stack.__aenter__()
 
-        stdio_transport = await self._exit_stack.enter_async_context(
-            stdio_client(server_params)
-        )
-        self.session = await self._exit_stack.enter_async_context(
-            ClientSession(stdio_transport[0], stdio_transport[1])
-        )
-        await self.session.initialize()
+            stdio_transport = await self._exit_stack.enter_async_context(
+                stdio_client(server_params)
+            )
+            self.session = await self._exit_stack.enter_async_context(
+                ClientSession(stdio_transport[0], stdio_transport[1])
+            )
+            await self.session.initialize()
 
-        mcp_tools = await self.session.list_tools()
-        for t in mcp_tools.tools:
-            self.tool_defs.append({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description or "",
-                    "parameters": t.inputSchema
-                }
-            })
+            mcp_tools = await self.session.list_tools()
+            for t in mcp_tools.tools:
+                self.tool_defs.append({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description or "",
+                        "parameters": t.inputSchema
+                    }
+                })
 
-        logger.info(
-            f"✓ 已加载 {len(mcp_tools.tools)} 个工具: {[t.name for t in mcp_tools.tools]}")
-        logger.debug(
-            f"工具详情: {[(t.name, t.description) for t in mcp_tools.tools]}")
+            logger.info(f"✓ MCP [{self.name}] 已加载 {len(mcp_tools.tools)} 个工具")
+            return True
+        except Exception as e:
+            logger.error(f"✗ MCP [{self.name}] 连接失败: {e}")
+            return False
 
     async def close(self):
         if self._exit_stack:
@@ -110,6 +120,63 @@ class MCPManager:
             return "执行成功"
         except Exception as e:
             return f"执行失败: {e}"
+
+
+class MCPManager:
+    def __init__(self, config_path: str = None):
+        self.config_path = config_path
+        self.servers: Dict[str, MCPServerConnection] = {}
+        self.tool_defs: List[Dict[str, Any]] = []
+        self._tool_to_server: Dict[str, str] = {}
+
+    def load_config(self) -> List[Dict[str, Any]]:
+        if not self.config_path or not os.path.exists(self.config_path):
+            logger.warning(f"MCP配置文件不存在: {self.config_path}")
+            return []
+
+        with open(self.config_path, encoding="utf-8") as f:
+            configs = json.load(f)
+
+        enabled = [c for c in configs if c.get("enabled", True)]
+        logger.info(f"发现 {len(enabled)} 个启用的MCP服务")
+        return enabled
+
+    async def connect(self):
+        configs = self.load_config()
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        for config in configs:
+            name = config.get("name", "unnamed")
+            server = MCPServerConnection(name, config, base_dir)
+            success = await server.connect()
+            if success:
+                self.servers[name] = server
+                self.tool_defs.extend(server.tool_defs)
+                for tool_def in server.tool_defs:
+                    tool_name = tool_def["function"]["name"]
+                    self._tool_to_server[tool_name] = name
+
+        logger.info(f"✓ 共加载 {len(self.tool_defs)} 个MCP工具")
+
+    async def close(self):
+        for server in self.servers.values():
+            await server.close()
+
+    async def call_tool(self, name: str, args: Dict) -> str:
+        server_name = self._tool_to_server.get(name)
+        if not server_name:
+            return f"工具 {name} 未找到"
+
+        server = self.servers.get(server_name)
+        if server:
+            return await server.call_tool(name, args)
+        return f"MCP服务 {server_name} 未连接"
+
+    def list_servers(self) -> List[Dict[str, Any]]:
+        return [
+            {"name": name, "tools": len(s.tool_defs)}
+            for name, s in self.servers.items()
+        ]
 
 
 class SchedulerManager:
@@ -244,7 +311,9 @@ class Agent:
             self.skill_manager.get_skills_prompt()
 
     async def _init_mcp(self):
-        self.mcp = MCPManager()
+        config_path = os.path.join(os.path.dirname(
+            __file__), "../config", "mcp_servers.json")
+        self.mcp = MCPManager(config_path)
         await self.mcp.connect()
 
     def _init_scheduler(self):
