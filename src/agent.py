@@ -23,6 +23,7 @@ from apscheduler.triggers.cron import CronTrigger
 from dingtalk.plugin import DingTalkPlugin
 from agent_session import AgentSessionManager
 from skills import SkillLoader, SkillResult, SkillManager
+from tools import ToolRegistry, TodoTool
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -366,6 +367,8 @@ class Agent:
             soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
         self.system_prompt = system_prompt
         self.skill_manager: Optional[SkillManager] = None
+        self.tool_registry = ToolRegistry()
+        self.tool_registry.register_tool(TodoTool())
 
         self.session_manager: Optional[AgentSessionManager] = AgentSessionManager(
         )
@@ -409,8 +412,9 @@ class Agent:
     @property
     def tool_defs(self):
         tools = []
+        tools.extend(self.tool_registry.get_tool_definitions())
         if hasattr(self, 'mcp') and self.mcp:
-            tools = list(self.mcp.tool_defs)
+            tools.extend(self.mcp.tool_defs)
         if self.skill_manager:
             tools.extend(self.skill_manager.get_tool_definitions())
         return tools
@@ -465,6 +469,8 @@ class Agent:
         return MockResponse(MockMessage(full_content, tool_calls_list))
 
     async def execute_tool(self, name: str, args: Dict) -> str:
+        if self.tool_registry.has_tool(name):
+            return await self.tool_registry.execute(name, args)
         if self.skill_manager and name == "execute_skill":
             return await self.skill_manager.execute_tool(name, args)
         return await self.mcp.call_tool(name, args)
