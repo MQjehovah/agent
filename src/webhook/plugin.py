@@ -10,11 +10,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 try:
-    from flask import Flask, request, jsonify
+    from flask import Flask, request, Response
 except ImportError:
     Flask = None
 
 logger = logging.getLogger("webhook.plugin")
+
+
+def json_response(data: Any, status: int = 200) -> Response:
+    return Response(
+        json.dumps(data, ensure_ascii=False),
+        status=status,
+        mimetype='application/json; charset=utf-8'
+    )
 
 
 @dataclass
@@ -64,7 +72,7 @@ class WebhookPlugin:
         
         @self._app.route("/health", methods=["GET"])
         def health():
-            return jsonify({"status": "ok", "service": "webhook"})
+            return json_response({"status": "ok", "service": "webhook"})
     
     def register_agent(self, executor: Callable):
         self.agent_executor = executor
@@ -82,24 +90,24 @@ class WebhookPlugin:
         
         return token in self.config.tokens
     
-    def _handle_execute(self) -> Dict[str, Any]:
+    def _handle_execute(self):
         if not self._validate_token():
-            return jsonify({"error": "Unauthorized", "code": 401}), 401
+            return json_response({"error": "Unauthorized", "code": 401}, 401)
         
         try:
             data = request.get_json()
             if not data:
-                return jsonify({"error": "Invalid JSON body", "code": 400}), 400
+                return json_response({"error": "Invalid JSON body", "code": 400}, 400)
             
             content = data.get("content") or data.get("task") or data.get("prompt")
             if not content:
-                return jsonify({"error": "Missing 'content' field", "code": 400}), 400
+                return json_response({"error": "Missing 'content' field", "code": 400}, 400)
             
             if len(content) > self.config.max_content_length:
-                return jsonify({
+                return json_response({
                     "error": f"Content too long, max {self.config.max_content_length} characters",
                     "code": 400
-                }), 400
+                }, 400)
             
             task_id = data.get("task_id") or str(uuid.uuid4())
             session_id = data.get("session_id") or f"webhook_{task_id[:8]}"
@@ -117,13 +125,13 @@ class WebhookPlugin:
             if not self.agent_executor:
                 task.status = "failed"
                 task.error = "Agent not registered"
-                return jsonify({"error": "Agent not registered", "code": 500}), 500
+                return json_response({"error": "Agent not registered", "code": 500}, 500)
             
             if sync:
                 return self._execute_sync(task)
             else:
                 self._executor.submit(self._run_async_task, task)
-                return jsonify({
+                return json_response({
                     "task_id": task_id,
                     "status": "pending",
                     "message": "Task submitted successfully",
@@ -132,9 +140,9 @@ class WebhookPlugin:
         
         except Exception as e:
             logger.error(f"Handle execute error: {e}")
-            return jsonify({"error": str(e), "code": 500}), 500
+            return json_response({"error": str(e), "code": 500}, 500)
     
-    def _execute_sync(self, task: WebhookTask) -> Dict[str, Any]:
+    def _execute_sync(self, task: WebhookTask):
         task.status = "running"
         try:
             loop = asyncio.new_event_loop()
@@ -150,7 +158,7 @@ class WebhookPlugin:
             if task.callback_url:
                 self._send_callback(task)
             
-            return jsonify({
+            return json_response({
                 "task_id": task.task_id,
                 "status": "completed",
                 "result": result
@@ -160,11 +168,11 @@ class WebhookPlugin:
             task.status = "failed"
             task.error = f"{type(e).__name__}: {e}"
             logger.error(f"Task {task.task_id} failed: {e}\n{traceback.format_exc()}")
-            return jsonify({
+            return json_response({
                 "task_id": task.task_id,
                 "status": "failed",
                 "error": task.error
-            }), 500
+            }, 500)
     
     def _run_async_task(self, task: WebhookTask):
         task.status = "running"
@@ -192,25 +200,6 @@ class WebhookPlugin:
             if task.callback_url:
                 self._send_callback(task)
     
-    async def _execute_async(self, task: WebhookTask):
-        task.status = "running"
-        try:
-            result = await self.agent_executor(task.session_id, task.content)
-            task.status = "completed"
-            task.result = result
-            logger.info(f"Task {task.task_id} completed")
-            
-            if task.callback_url:
-                self._send_callback(task)
-        
-        except Exception as e:
-            task.status = "failed"
-            task.error = str(e)
-            logger.error(f"Task {task.task_id} failed: {e}")
-            
-            if task.callback_url:
-                self._send_callback(task)
-    
     def _send_callback(self, task: WebhookTask):
         if not task.callback_url:
             return
@@ -225,7 +214,7 @@ class WebhookPlugin:
                 "completed_at": datetime.now().isoformat()
             }
             
-            headers = {"Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json; charset=utf-8"}
             if self.config.tokens:
                 headers["X-Webhook-Token"] = self.config.tokens[0]
             
@@ -236,37 +225,37 @@ class WebhookPlugin:
         except Exception as e:
             logger.error(f"Callback failed for task {task.task_id}: {e}")
     
-    def _handle_get_status(self, task_id: str) -> Dict[str, Any]:
+    def _handle_get_status(self, task_id: str):
         task = self.tasks.get(task_id)
         if not task:
-            return jsonify({"error": "Task not found", "code": 404}), 404
+            return json_response({"error": "Task not found", "code": 404}, 404)
         
-        return jsonify({
+        return json_response({
             "task_id": task.task_id,
             "status": task.status,
             "created_at": task.created_at,
             "error": task.error
         })
     
-    def _handle_get_result(self, task_id: str) -> Dict[str, Any]:
+    def _handle_get_result(self, task_id: str):
         task = self.tasks.get(task_id)
         if not task:
-            return jsonify({"error": "Task not found", "code": 404}), 404
+            return json_response({"error": "Task not found", "code": 404}, 404)
         
         if task.status == "pending":
-            return jsonify({"error": "Task not started", "code": 400}), 400
+            return json_response({"error": "Task not started", "code": 400}, 400)
         
         if task.status == "running":
-            return jsonify({"error": "Task still running", "code": 202}), 202
+            return json_response({"error": "Task still running", "code": 202}, 202)
         
-        return jsonify({
+        return json_response({
             "task_id": task.task_id,
             "status": task.status,
             "result": task.result,
             "error": task.error
         })
     
-    def _handle_list_tasks(self) -> Dict[str, Any]:
+    def _handle_list_tasks(self):
         status_filter = request.args.get("status")
         limit = min(int(request.args.get("limit", 50)), 100)
         
@@ -280,7 +269,7 @@ class WebhookPlugin:
                 "created_at": task.created_at
             })
         
-        return jsonify({
+        return json_response({
             "count": len(tasks),
             "tasks": tasks
         })
