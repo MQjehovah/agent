@@ -15,6 +15,7 @@ from rich.logging import RichHandler
 from llm import LLMClient
 from agent import Agent
 from scheduler import SchedulerManager
+from plugins import PluginManager
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -113,12 +114,14 @@ async def main():
     parser.add_argument("--workspace", "-w", default="config", help="Agent工作目录")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     parser.add_argument("--no-scheduler", action="store_true", help="禁用定时任务")
+    parser.add_argument("--no-plugins", action="store_true", help="禁用插件")
     args = parser.parse_args()
 
     if args.debug:
         logging.getLogger("agent").setLevel(logging.DEBUG)
 
     workspace = os.path.abspath(args.workspace)
+    src_dir = os.path.dirname(os.path.abspath(__file__))
     client = LLMClient()
     
     agent = Agent(workspace=workspace, client=client)
@@ -131,6 +134,14 @@ async def main():
         scheduler.set_executor(lambda task: agent.run(task))
         scheduler.start()
 
+    plugin_manager = None
+    if not args.no_plugins:
+        plugins_dir = os.path.join(src_dir, "plugins")
+        plugin_manager = PluginManager(plugins_dir)
+        plugin_manager.load_all()
+        plugin_manager.register_agent(lambda session_id, content: agent.run(content))
+        plugin_manager.start_all()
+
     try:
         if args.task:
             result = await agent.run(args.task)
@@ -138,6 +149,8 @@ async def main():
         else:
             await interactive_mode(agent, scheduler)
     finally:
+        if plugin_manager:
+            plugin_manager.stop_all()
         if scheduler:
             scheduler.stop()
         await agent.cleanup()
