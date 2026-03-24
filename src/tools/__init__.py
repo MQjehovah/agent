@@ -105,3 +105,8 @@ class ToolRegistry:
 
     def get_tool(self, name: str) -> Optional[BuiltinTool]:
         return self._tools.get(name)
+
+
+from .todo import TodoTool
+
+__all__ = ['ToolRegistry', 'BuiltinTool', 'ToolDefinition', 'TodoTool']
