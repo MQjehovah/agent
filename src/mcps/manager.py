@@ -22,6 +22,7 @@ class MCPServerConnection:
     async def connect(self) -> bool:
         """连接MCP服务器"""
         from contextlib import AsyncExitStack
+        import asyncio
 
         command = self.config.get("command", "python")
         args = self.config.get("args", [])
@@ -42,9 +43,16 @@ class MCPServerConnection:
             self._exit_stack = AsyncExitStack()
             await self._exit_stack.__aenter__()
 
-            stdio_transport = await self._exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
+            try:
+                stdio_transport = await self._exit_stack.enter_async_context(
+                    stdio_client(server_params)
+                )
+            except asyncio.CancelledError:
+                logger.error(f"✗ MCP [{self.name}] 连接被取消（可能是超时或进程启动失败）")
+                await self._exit_stack.__aexit__(None, None, None)
+                self._exit_stack = None
+                return False
+
             self.session = await self._exit_stack.enter_async_context(
                 ClientSession(stdio_transport[0], stdio_transport[1])
             )
@@ -65,6 +73,12 @@ class MCPServerConnection:
             return True
         except Exception as e:
             logger.error(f"✗ MCP [{self.name}] 连接失败: {e}")
+            if self._exit_stack:
+                try:
+                    await self._exit_stack.__aexit__(None, None, None)
+                except:
+                    pass
+                self._exit_stack = None
             return False
 
     async def close(self):
@@ -96,7 +110,7 @@ class MCPServerConnection:
 class MCPManager:
     """MCP服务器管理器"""
     
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path
         self.servers: Dict[str, MCPServerConnection] = {}
         self.tool_defs: List[Dict[str, Any]] = []

@@ -148,11 +148,7 @@ class LLMClient:
 class Agent:
     def __init__(self, client: LLMClient = None):
         self.client = client
-        soul_path = os.path.join(os.path.dirname(
-            __file__), "../config", "SOUL.md")
-        system_prompt = open(
-            soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
-        self.system_prompt = system_prompt
+        self.system_prompt = ""
         self.tool_registry: ToolRegistry = None
         self.skill_manager: Optional[SkillManager] = None
 
@@ -166,9 +162,17 @@ class Agent:
         self._init_scheduler()
         # self._init_dingtalk_plugin()
 
+    def _init_prompt(self):
+        soul_path = os.path.join(os.path.dirname(
+            __file__), "../config", "SOUL.md")
+        system_prompt = open(
+            soul_path, encoding="utf-8").read() if os.path.exists(soul_path) else ""
+        self.system_prompt = system_prompt
+
     def _init_tools(self):
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_tool(TodoTool())
+
     def _init_skills(self):
         skills_dir = os.path.join(os.path.dirname(
             __file__), "../config", "skills")
