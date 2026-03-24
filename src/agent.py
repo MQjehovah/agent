@@ -122,9 +122,10 @@ class LLMClient:
         self.api_key = api_key
         self.client = OpenAI(
             base_url=base_url or os.getenv(
-                "OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                "OPENAI_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1"),
+                
             api_key=api_key or os.getenv(
-                "OPENAI_API_KEY", "sk-b9f1b675f3724a65b0e70cfd335e8313"),
+                "OPENAI_API_KEY", "sk-sp-39ab191a77af4bbda827e309afa60b12"),
             timeout=60.0
         )
 
