@@ -44,6 +44,7 @@ class Agent:
         self.skill_manager = None
         self.subagent_manager = None
         self.session_manager = None
+        self.memory = None
 
         self.messages: List[Dict[str, Any]] = []
         self.status = "pending"
@@ -61,6 +62,21 @@ class Agent:
         self.session_manager = AgentSessionManager()
 
         self._init_subagents()
+        
+        from memory import MemoryManager
+        self.memory = MemoryManager(self.workspace)
+        self.memory.start_session()
+        
+        memory_context = self.memory.load_memory("")
+        if memory_context:
+            self.system_prompt += f"\n\n## 【记忆上下文】\n{memory_context}"
+        
+        logger.info(f"Agent [{self.name}] memory initialized")
+        
+        memory_tool = self.tool_registry.get_tool("memory")
+        if memory_tool:
+            memory_tool.set_memory_manager(self.memory)
+        
         logger.info(f"Agent [{self.name}] initialized")
 
     def _extract_frontmatter(self, content: str) -> tuple:
@@ -114,12 +130,13 @@ class Agent:
         logger.info(f"Agent [{self.name}] prompt initialized")
 
     def _init_tools(self):
-        from tools import ToolRegistry, TodoTool, FileTool, SubagentTool
+        from tools import ToolRegistry, TodoTool, FileTool, SubagentTool, MemoryTool
 
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_tool(TodoTool())
         self.tool_registry.register_tool(FileTool())
         self.tool_registry.register_tool(SubagentTool())
+        self.tool_registry.register_tool(MemoryTool())
 
         logger.debug(f"Agent [{self.name}] tools initialized")
         logger.info(
@@ -260,6 +277,10 @@ class Agent:
             self.status = "failed"
             self.error = str(e)
             logger.error(f"Agent [{self.name}] failed: {e}")
+
+        if self.memory:
+            self.memory.set_summary(self.result or "")
+            self.memory.save_session_and_extract(self.client)
 
         return AgentResult(
             agent_id=self.agent_id,
