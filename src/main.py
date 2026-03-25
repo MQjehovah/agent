@@ -38,8 +38,8 @@ _shutdown_event: Optional[asyncio.Event] = None
 
 async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] = None):
     global _shutdown_event
-    logger.info(f"进入交互模式 (session_id: {agent.session_id})")
-    
+    logger.info(f"进入交互模式")
+
     while _shutdown_event is None or not _shutdown_event.is_set():
         try:
             question = await asyncio.get_event_loop().run_in_executor(
@@ -53,13 +53,6 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
             break
 
         if not question.strip():
-            continue
-
-        if question.strip().lower() == "/session":
-            console.print(Panel.fit(
-                f"[bold green]Session ID:[/bold green] {agent.session_id}",
-                border_style="green", box=box.ROUNDED
-            ))
             continue
 
         if question.strip().lower() == "/prompt":
@@ -79,23 +72,6 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
                 name = func.get("name", "未知")
                 desc = func.get("description", "无描述")
                 table.add_row(name, desc)
-            console.print(table)
-            continue
-
-        if question.strip().lower() == "/messages":
-            session = None
-            if agent.session_manager and agent.session_id:
-                session = await agent.session_manager.get_session(agent.session_id)
-            messages = session.messages if session else []
-            table = Table(title=f"当前会话消息 (共 {len(messages)} 条)",
-                          show_header=True, header_style="bold magenta", box=box.ROUNDED)
-            table.add_column("#", style="dim", width=3)
-            table.add_column("角色", style="cyan", width=10)
-            table.add_column("内容", style="green")
-            for i, msg in enumerate(messages, 1):
-                role = str(msg.get("role", "未知"))
-                content = str(msg.get("content", "") or "")
-                table.add_row(str(i), role, content)
             console.print(table)
             continue
 
@@ -150,13 +126,31 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
             else:
                 console.print("[yellow]Session Manager 未初始化[/yellow]")
             continue
+        
+        if question.strip().lower().startswith("/messages"):
+            session_id = "cli"
+            session = None
+            if agent.session_manager:
+                session = await agent.session_manager.get_session(session_id)
+            messages = session.messages if session else []
+            table = Table(title=f"当前会话消息 (共 {len(messages)} 条)",
+                          show_header=True, header_style="bold magenta", box=box.ROUNDED)
+            table.add_column("#", style="dim", width=3)
+            table.add_column("角色", style="cyan", width=10)
+            table.add_column("内容", style="green")
+            for i, msg in enumerate(messages, 1):
+                role = str(msg.get("role", "未知"))
+                content = str(msg.get("content", "") or "")
+                table.add_row(str(i), role, content)
+            console.print(table)
+            continue
 
         if question.strip().lower() in ["quit", "exit", "q"]:
             logger.info("再见!")
             break
 
         console.print()
-        result = await agent.run(question, session_id=agent.session_id or "cli")
+        result = await agent.run(question, session_id="cli") # 交互模式下的会话
 
         console.print(Panel.fit(
             f"[bold green]执行结果:[/bold green]\n{result.result}",
@@ -167,11 +161,12 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
 async def main():
     global _shutdown_event
     _shutdown_event = asyncio.Event()
-    
+
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", "-t", help="执行单个任务")
-    parser.add_argument("--workspace", "-w", default="config", help="Agent工作目录")
+    parser.add_argument("--workspace", "-w",
+                        default="config", help="Agent工作目录")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     parser.add_argument("--no-scheduler", action="store_true", help="禁用定时任务")
     parser.add_argument("--no-plugins", action="store_true", help="禁用插件")
@@ -183,7 +178,7 @@ async def main():
     workspace = os.path.abspath(args.workspace)
     src_dir = os.path.dirname(os.path.abspath(__file__))
     client = LLMClient()
-    
+
     agent = Agent(workspace=workspace, client=client)
     await agent.initialize()
 
@@ -207,12 +202,12 @@ async def main():
         plugin_manager.start_all()
 
     loop = asyncio.get_running_loop()
-    
+
     def signal_handler():
         logger.info("收到退出信号...")
         if _shutdown_event:
             _shutdown_event.set()
-    
+
     try:
         loop.add_signal_handler(signal.SIGINT, signal_handler)
         loop.add_signal_handler(signal.SIGTERM, signal_handler)
@@ -237,19 +232,20 @@ async def main():
         logger.info("任务被取消")
     finally:
         logger.info("正在清理资源...")
-        
+
         if plugin_manager:
             plugin_manager.stop_all()
         if scheduler:
             scheduler.stop()
         await agent.cleanup()
-        
+
         try:
             await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             pass
-        
-        tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+
+        tasks = [t for t in asyncio.all_tasks(
+            loop) if t is not asyncio.current_task()]
         if tasks:
             logger.info(f"取消 {len(tasks)} 个后台任务...")
             for task in tasks:
@@ -258,7 +254,7 @@ async def main():
                 await asyncio.gather(*tasks, return_exceptions=True)
             except asyncio.CancelledError:
                 pass
-        
+
         logger.info("清理完成")
 
 

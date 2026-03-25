@@ -37,20 +37,14 @@ class DingTalkSession:
     sender_id: str
     sender_nick: str
     robot_code: str
-    messages: list = field(default_factory=list)
     _plugin: Optional["DingTalkPlugin"] = field(default=None, repr=False)
-
-    def add_message(self, role: str, content: str):
-        self.messages.append({"role": role, "content": content})
 
     async def send_to_agent(self, content: str) -> str:
         if not self._plugin or not self._plugin.agent_executor:
             return "Agent未就绪"
         
-        self.add_message("user", content)
         try:
             result = await self._plugin.agent_executor(self.session_id, content)
-            self.add_message("assistant", result)
             return result
         except Exception as e:
             logger.error(f"Session {self.session_id} 执行失败: {e}")
