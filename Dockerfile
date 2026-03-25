@@ -27,4 +27,4 @@ EXPOSE 8081
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')" || exit 1
 
-CMD ["python", "src/agent.py"]
+CMD ["python", "src/main.py"]
