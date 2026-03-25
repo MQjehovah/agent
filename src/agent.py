@@ -37,7 +37,6 @@ class Agent:
         self.name = ""
         self.description = ""
         self.system_prompt = ""
-        self.tools: List[str] = []
         self.max_iterations = 50
 
         self.tool_registry = None
@@ -120,11 +119,6 @@ class Agent:
             if isinstance(self.description, str):
                 self.description = self.description.strip()
 
-            tools = frontmatter.get("tools", [])
-            if isinstance(tools, str):
-                tools = [t.strip() for t in tools.split(",") if t.strip()]
-            self.tools = tools
-
             self.max_iterations = frontmatter.get("max_iterations", 50)
 
         self.system_prompt = body.strip() if body else ""
@@ -194,12 +188,7 @@ class Agent:
         tools = []
 
         if self.tool_registry:
-            registry_tools = self.tool_registry.get_tool_definitions()
-            if self.tools:
-                tool_names = set(self.tools)
-                registry_tools = [t for t in registry_tools if t.get(
-                    "function", {}).get("name") in tool_names]
-            tools.extend(registry_tools)
+            tools.extend(self.tool_registry.get_tool_definitions())
 
         if self.mcp:
             tools.extend(self.mcp.tool_defs)
@@ -518,8 +507,6 @@ class SubagentManager:
 
         if max_iterations != 50:
             agent.max_iterations = max_iterations
-        if tools:
-            agent.tools = tools
 
         await agent.initialize()
 
