@@ -2,6 +2,7 @@ import os
 import smtplib
 import datetime
 import logging
+from email.header import Header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Optional
@@ -119,7 +120,7 @@ def send_email(
     
     try:
         msg = MIMEMultipart('alternative')
-        msg['From'] = f"{SMTP_CONFIG['from_name']} <{SMTP_CONFIG['username']}>"
+        msg['From'] = f"{Header(SMTP_CONFIG['from_name'], 'utf-8').encode()} <{SMTP_CONFIG['username']}>"
         msg['To'] = ', '.join(to_recipients)
         msg['Subject'] = subject
         
