@@ -83,12 +83,16 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
             continue
 
         if question.strip().lower() == "/messages":
-            table = Table(title=f"当前会话消息 (共 {len(agent.messages)} 条)",
+            session = None
+            if agent.session_manager and agent.session_id:
+                session = await agent.session_manager.get_session(agent.session_id)
+            messages = session.messages if session else []
+            table = Table(title=f"当前会话消息 (共 {len(messages)} 条)",
                           show_header=True, header_style="bold magenta", box=box.ROUNDED)
             table.add_column("#", style="dim", width=3)
             table.add_column("角色", style="cyan", width=10)
             table.add_column("内容", style="green")
-            for i, msg in enumerate(agent.messages, 1):
+            for i, msg in enumerate(messages, 1):
                 role = str(msg.get("role", "未知"))
                 content = str(msg.get("content", "") or "")
                 table.add_row(str(i), role, content)
@@ -112,7 +116,7 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
             break
 
         console.print()
-        result = await agent.run(question)
+        result = await agent.run(question, session_id=agent.session_id or "cli")
 
         console.print(Panel.fit(
             f"[bold green]执行结果:[/bold green]\n{result.result}",
@@ -151,7 +155,7 @@ async def main():
         scheduler.start()
 
     async def run_agent(session_id: str, content: str) -> str:
-        result = await agent.run(content)
+        result = await agent.run(content, session_id=session_id)
         return result.result
 
     plugin_manager = None

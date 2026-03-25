@@ -49,7 +49,6 @@ class Agent:
         self.session_id: Optional[str] = None
         self._background_tasks: set = set()
 
-        self.messages: List[Dict[str, Any]] = []
         self.status = "pending"
         self.result: Optional[str] = None
         self.error: Optional[str] = None
@@ -210,23 +209,44 @@ class Agent:
 
         return tools
 
-    async def run(self, task: str, session=None) -> AgentResult:
+    async def run(self, task: str, session_id: str = None) -> AgentResult:
         self.status = "running"
-        self.messages = []
-
-        if self.memory:
-            memory_context = self.memory.load_memory(task)
-            if memory_context:
-                self.messages.append({
-                    "role": "system", 
-                    "content": f"## 【记忆上下文】\n{memory_context}"
-                })
-
-        if self.system_prompt:
-            self.messages.append(
-                {"role": "system", "content": self.system_prompt})
-
-        self.messages.append({"role": "user", "content": task})
+        
+        from agent_session import AgentSession
+        session = None
+        if session_id and self.session_manager:
+            session = await self.session_manager.get_session(session_id)
+            if session:
+                session.add_message("user", task)
+                logger.info(f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
+            else:
+                session = await self.session_manager.create_session(
+                    session_id=session_id,
+                    system_prompt=self.system_prompt
+                )
+                if self.memory:
+                    memory_context = self.memory.load_memory(task)
+                    if memory_context:
+                        session.messages.insert(0, {
+                            "role": "system", 
+                            "content": f"## 【记忆上下文】\n{memory_context}"
+                        })
+                session.add_message("user", task)
+                logger.info(f"Agent [{self.name}] 创建新session: {session_id}")
+        
+        if not session:
+            session = AgentSession(
+                session_id=session_id or "temp",
+                system_prompt=self.system_prompt
+            )
+            if self.memory:
+                memory_context = self.memory.load_memory(task)
+                if memory_context:
+                    session.messages.insert(0, {
+                        "role": "system", 
+                        "content": f"## 【记忆上下文】\n{memory_context}"
+                    })
+            session.add_message("user", task)
 
         logger.info(
             f"Agent [{self.name}] ({self.agent_id}) started: {task[:50]}...")
@@ -236,10 +256,10 @@ class Agent:
                 self.iterations = i + 1
                 logger.debug(f"Agent [{self.name}] iteration {i + 1}")
 
-                response = await self._think()
+                response = await self._think(session.messages)
                 msg = response.get("message", {})
 
-                self.messages.append({
+                session.messages.append({
                     "role": "assistant",
                     "content": msg.get("content"),
                     "tool_calls": msg.get("tool_calls")
@@ -266,7 +286,7 @@ class Agent:
                         logger.debug(
                             f"Agent [{self.name}] <- tool: {func_name} result: {result}")
 
-                        self.messages.append({
+                        session.messages.append({
                             "role": "tool",
                             "content": result,
                             "tool_call_id": tc.get("id", "")
@@ -297,6 +317,8 @@ class Agent:
             self._background_tasks.add(bg_task)
             bg_task.add_done_callback(self._background_tasks.discard)
 
+        logger.debug(f"Agent [{self.name}] session完成: {session_id}, 消息数: {len(session.messages)}")
+
         return AgentResult(
             agent_id=self.agent_id,
             status=self.status,
@@ -314,10 +336,10 @@ class Agent:
         except Exception as e:
             logger.error(f"Agent [{self.name}] memory extraction failed: {e}")
 
-    async def _think(self) -> Dict[str, Any]:
+    async def _think(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         try:
             response = self.client.chat(
-                self.messages,
+                messages,
                 self.tool_defs,
                 stream=False
             )
