@@ -37,15 +37,19 @@ _shutdown_event: Optional[asyncio.Event] = None
 
 
 async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] = None):
+    global _shutdown_event
     logger.info(f"进入交互模式 (session_id: {agent.session_id})")
     
-    while True:
+    while _shutdown_event is None or not _shutdown_event.is_set():
         try:
             question = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: Prompt.ask(
                     "\n[bold cyan]?[/bold cyan] [cyan]请描述任务[/cyan]")
             )
-        except:
+        except (KeyboardInterrupt, EOFError):
+            logger.info("收到中断信号，准备退出...")
+            if _shutdown_event:
+                _shutdown_event.set()
             break
 
         if not question.strip():
@@ -169,7 +173,13 @@ async def main():
         loop.add_signal_handler(signal.SIGINT, signal_handler)
         loop.add_signal_handler(signal.SIGTERM, signal_handler)
     except NotImplementedError:
-        pass
+        if sys.platform == "win32":
+            def win_signal_handler(sig, frame):
+                logger.info("收到退出信号...")
+                if _shutdown_event:
+                    _shutdown_event.set()
+            signal.signal(signal.SIGINT, win_signal_handler)
+            signal.signal(signal.SIGTERM, win_signal_handler)
 
     try:
         if args.task:
@@ -177,6 +187,8 @@ async def main():
             print(result.result)
         else:
             await interactive_mode(agent, scheduler)
+        if not _shutdown_event.is_set():
+            await _shutdown_event.wait()
     except asyncio.CancelledError:
         logger.info("任务被取消")
     finally:
@@ -188,14 +200,20 @@ async def main():
             scheduler.stop()
         await agent.cleanup()
         
-        await asyncio.sleep(0.5)
+        try:
+            await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
         
         tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
         if tasks:
             logger.info(f"取消 {len(tasks)} 个后台任务...")
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                pass
         
         logger.info("清理完成")
 
