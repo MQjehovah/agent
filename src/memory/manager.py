@@ -1,7 +1,7 @@
 import os
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("agent.memory")
@@ -103,3 +103,104 @@ class MemoryManager:
             lines.append(self.session_memory.summary)
         
         return "\n".join(lines)
+    
+    def load_memory(self, task: str = "") -> str:
+        parts = []
+        
+        long_term = self._load_long_term(task)
+        if long_term:
+            parts.append(f"【长期记忆】\n{long_term}")
+        
+        daily = self._load_recent_daily(days=3)
+        if daily:
+            parts.append(f"【近期记忆】\n{daily}")
+        
+        sessions = self._load_recent_sessions(count=5)
+        if sessions:
+            parts.append(f"【会话历史】\n{sessions}")
+        
+        if parts:
+            return "\n\n".join(parts)
+        return ""
+    
+    def _load_long_term(self, task: str) -> str:
+        if not os.path.exists(self.long_term_file):
+            return ""
+        
+        with open(self.long_term_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        if not task:
+            return content
+        
+        keywords = task.lower().split()
+        lines = content.split("\n")
+        relevant_lines = []
+        current_section = []
+        in_relevant_section = False
+        
+        for line in lines:
+            if line.startswith("## "):
+                in_relevant_section = any(kw in line.lower() for kw in keywords)
+                if in_relevant_section:
+                    current_section = [line]
+            elif in_relevant_section:
+                current_section.append(line)
+                if line.startswith("## ") or line.startswith("# "):
+                    relevant_lines.extend(current_section[:-1])
+                    current_section = [line]
+                    in_relevant_section = any(kw in line.lower() for kw in keywords)
+        
+        if current_section and in_relevant_section:
+            relevant_lines.extend(current_section)
+        
+        return "\n".join(relevant_lines) if relevant_lines else content[:500]
+    
+    def _load_recent_daily(self, days: int = 3) -> str:
+        contents = []
+        for i in range(days):
+            date = datetime.now() - timedelta(days=i)
+            filename = date.strftime("%Y-%m-%d.md")
+            filepath = os.path.join(self.daily_dir, filename)
+            
+            if os.path.exists(filepath):
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                contents.append(f"### {filename}\n{content}")
+        
+        return "\n\n".join(contents)
+    
+    def _load_recent_sessions(self, count: int = 5) -> str:
+        if not os.path.exists(self.sessions_dir):
+            return ""
+        
+        files = sorted(
+            [f for f in os.listdir(self.sessions_dir) if f.endswith(".md")],
+            reverse=True
+        )[:count]
+        
+        contents = []
+        for filename in files:
+            filepath = os.path.join(self.sessions_dir, filename)
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+            summary = self._extract_summary(content)
+            contents.append(f"### {filename}\n{summary}")
+        
+        return "\n\n".join(contents)
+    
+    def _extract_summary(self, content: str) -> str:
+        lines = content.split("\n")
+        summary_lines = []
+        in_summary = False
+        
+        for line in lines:
+            if line.startswith("## 执行摘要"):
+                in_summary = True
+                continue
+            if in_summary and line.startswith("## "):
+                break
+            if in_summary and line.strip():
+                summary_lines.append(line)
+        
+        return "\n".join(summary_lines) if summary_lines else content[:300]
