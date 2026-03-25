@@ -66,7 +66,7 @@ class DingTalkPlugin(BasePlugin):
         config_file = self.config_path
         if not config_file:
             config_file = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
                 "config", "dingtalk.json"
             )
         
@@ -187,6 +187,10 @@ class AgentChatbotHandler:
     def __init__(self, plugin: DingTalkPlugin):
         self.plugin = plugin
         self.logger = logging.getLogger("plugin.dingtalk.handler")
+        self.dingtalk_client = None
+
+    def pre_start(self):
+        self.logger.info("DingTalk Stream handler pre_start")
 
     def reply_text(self, content: str, incoming_message):
         import dingtalk_stream
