@@ -52,3 +52,54 @@ class MemoryManager:
     def set_summary(self, summary: str):
         if self.session_memory:
             self.session_memory.summary = summary
+    
+    def save_session(self) -> Optional[str]:
+        if not self.session_memory:
+            logger.warning("No session memory to save")
+            return None
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d_%Hh%Mm")
+        filename = f"{timestamp}_session.md"
+        filepath = os.path.join(self.sessions_dir, filename)
+        
+        content = self._format_session_content()
+        
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        
+        logger.info(f"Session memory saved to {filepath}")
+        self.session_memory = None
+        return filepath
+    
+    def _format_session_content(self) -> str:
+        if not self.session_memory:
+            return ""
+        
+        lines = [
+            f"# 会话记录 - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            ""
+        ]
+        
+        if self.session_memory.user_preferences:
+            lines.append("## 用户偏好")
+            for p in self.session_memory.user_preferences:
+                lines.append(f"- {p}")
+            lines.append("")
+        
+        if self.session_memory.key_info:
+            lines.append("## 关键信息")
+            for info in self.session_memory.key_info:
+                lines.append(f"- {info}")
+            lines.append("")
+        
+        if self.session_memory.todos:
+            lines.append("## 待办事项")
+            for todo in self.session_memory.todos:
+                lines.append(f"- {todo}")
+            lines.append("")
+        
+        if self.session_memory.summary:
+            lines.append("## 执行摘要")
+            lines.append(self.session_memory.summary)
+        
+        return "\n".join(lines)
