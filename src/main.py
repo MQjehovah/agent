@@ -35,7 +35,7 @@ logger = logging.getLogger("agent")
 
 
 async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] = None):
-    logger.info("进入交互模式")
+    logger.info(f"进入交互模式 (session_id: {agent.session_id})")
     
     while True:
         try:
@@ -47,6 +47,13 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
             break
 
         if not question.strip():
+            continue
+
+        if question.strip().lower() == "/session":
+            console.print(Panel.fit(
+                f"[bold green]Session ID:[/bold green] {agent.session_id}",
+                border_style="green", box=box.ROUNDED
+            ))
             continue
 
         if question.strip().lower() == "/prompt":

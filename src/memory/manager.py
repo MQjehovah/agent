@@ -1,4 +1,5 @@
 import os
+import uuid
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
@@ -9,11 +10,13 @@ logger = logging.getLogger("agent.memory")
 
 @dataclass
 class SessionMemory:
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     user_preferences: List[str] = field(default_factory=list)
     key_info: List[str] = field(default_factory=list)
     todos: List[str] = field(default_factory=list)
-    summary: str = ""
+    summaries: List[Dict[str, str]] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
 class MemoryManager:
@@ -25,6 +28,7 @@ class MemoryManager:
         self.long_term_file = os.path.join(self.memory_dir, "memory.md")
         
         self.session_memory: Optional[SessionMemory] = None
+        self.current_session_id: Optional[str] = None
         
         self._ensure_dirs()
     
@@ -33,33 +37,116 @@ class MemoryManager:
         os.makedirs(self.daily_dir, exist_ok=True)
         logger.debug(f"Memory directories initialized at {self.memory_dir}")
     
-    def start_session(self):
-        self.session_memory = SessionMemory()
-        logger.info("Session memory started")
+    def start_session(self, session_id: str = None) -> str:
+        if session_id:
+            self.current_session_id = session_id
+            existing = self._load_session_file(session_id)
+            if existing:
+                self.session_memory = existing
+                logger.info(f"Session [{session_id}] resumed")
+                return session_id
+        
+        self.current_session_id = session_id or str(uuid.uuid4())[:8]
+        self.session_memory = SessionMemory(session_id=self.current_session_id)
+        logger.info(f"Session [{self.current_session_id}] started")
+        return self.current_session_id
     
     def add_preference(self, preference: str):
         if self.session_memory:
-            self.session_memory.user_preferences.append(preference)
+            if preference not in self.session_memory.user_preferences:
+                self.session_memory.user_preferences.append(preference)
     
     def add_key_info(self, info: str):
         if self.session_memory:
-            self.session_memory.key_info.append(info)
+            if info not in self.session_memory.key_info:
+                self.session_memory.key_info.append(info)
     
     def add_todo(self, todo: str):
         if self.session_memory:
-            self.session_memory.todos.append(todo)
+            if todo not in self.session_memory.todos:
+                self.session_memory.todos.append(todo)
     
-    def set_summary(self, summary: str):
+    def add_summary(self, task: str, result: str):
         if self.session_memory:
-            self.session_memory.summary = summary
+            self.session_memory.summaries.append({
+                "time": datetime.now().strftime("%H:%M"),
+                "task": task[:100],
+                "result": result[:500]
+            })
+            self.session_memory.updated_at = datetime.now().isoformat()
+    
+    def _load_session_file(self, session_id: str) -> Optional[SessionMemory]:
+        filepath = os.path.join(self.sessions_dir, f"{session_id}.md")
+        if not os.path.exists(filepath):
+            return None
+        
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            session = SessionMemory(session_id=session_id)
+            lines = content.split("\n")
+            current_section = None
+            current_summary = {}
+            
+            for line in lines:
+                if line.startswith("## 用户偏好"):
+                    current_section = "preferences"
+                elif line.startswith("## 关键信息"):
+                    current_section = "key_info"
+                elif line.startswith("## 待办事项"):
+                    current_section = "todos"
+                elif line.startswith("## 对话记录"):
+                    current_section = "summaries"
+                elif line.startswith("## "):
+                    if current_section == "summary_content" and current_summary:
+                        session.summaries.append(current_summary)
+                        current_summary = {}
+                    current_section = None
+                elif line.startswith("### [") and current_section == "summaries":
+                    if current_summary:
+                        session.summaries.append(current_summary)
+                    import re
+                    match = re.match(r"### \[(\d+:\d+)\]\s*(.*)", line)
+                    if match:
+                        current_summary = {
+                            "time": match.group(1),
+                            "task": match.group(2),
+                            "result": ""
+                        }
+                        current_section = "summary_content"
+                elif current_section == "summary_content" and line.strip():
+                    if current_summary.get("result"):
+                        current_summary["result"] += "\n" + line
+                    else:
+                        current_summary["result"] = line
+                elif line.startswith("- ") and current_section in ["preferences", "key_info", "todos"]:
+                    item = line[2:].strip()
+                    if current_section == "preferences" and item not in session.user_preferences:
+                        session.user_preferences.append(item)
+                    elif current_section == "key_info" and item not in session.key_info:
+                        session.key_info.append(item)
+                    elif current_section == "todos" and item not in session.todos:
+                        session.todos.append(item)
+            
+            if current_summary:
+                session.summaries.append(current_summary)
+            
+            return session
+        except Exception as e:
+            logger.error(f"Failed to load session file: {e}")
+            return None
     
     def save_session(self) -> Optional[str]:
         if not self.session_memory:
             logger.warning("No session memory to save")
             return None
         
-        timestamp = datetime.now().strftime("%Y-%m-%d_%Hh%Mm")
-        filename = f"{timestamp}_session.md"
+        if not self.current_session_id:
+            logger.warning("No session_id set")
+            return None
+        
+        filename = f"{self.current_session_id}.md"
         filepath = os.path.join(self.sessions_dir, filename)
         
         content = self._format_session_content()
@@ -67,8 +154,7 @@ class MemoryManager:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
         
-        logger.info(f"Session memory saved to {filepath}")
-        self.session_memory = None
+        logger.info(f"Session [{self.current_session_id}] saved")
         return filepath
     
     def _format_session_content(self) -> str:
@@ -76,8 +162,11 @@ class MemoryManager:
             return ""
         
         lines = [
-            f"# 会话记录 - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            ""
+            f"# 会话记录 - {self.current_session_id}",
+            f"",
+            f"创建时间: {self.session_memory.created_at}",
+            f"更新时间: {self.session_memory.updated_at}",
+            f""
         ]
         
         if self.session_memory.user_preferences:
@@ -98,9 +187,13 @@ class MemoryManager:
                 lines.append(f"- {todo}")
             lines.append("")
         
-        if self.session_memory.summary:
-            lines.append("## 执行摘要")
-            lines.append(self.session_memory.summary)
+        if self.session_memory.summaries:
+            lines.append("## 对话记录")
+            for s in self.session_memory.summaries:
+                lines.append(f"")
+                lines.append(f"### [{s.get('time', '')}] {s.get('task', '')[:50]}")
+                lines.append(s.get('result', '')[:500])
+            lines.append("")
         
         return "\n".join(lines)
     
@@ -119,9 +212,22 @@ class MemoryManager:
         if sessions:
             parts.append(f"【会话历史】\n{sessions}")
         
+        current = self._load_current_session()
+        if current:
+            parts.append(f"【当前会话】\n{current}")
+        
         if parts:
             return "\n\n".join(parts)
         return ""
+    
+    def _load_current_session(self) -> str:
+        if not self.session_memory or not self.session_memory.summaries:
+            return ""
+        
+        lines = []
+        for s in self.session_memory.summaries[-3:]:
+            lines.append(f"- [{s.get('time', '')}] {s.get('task', '')[:30]}")
+        return "\n".join(lines)
     
     def _load_long_term(self, task: str) -> str:
         if not os.path.exists(self.long_term_file):
@@ -176,6 +282,7 @@ class MemoryManager:
         
         files = sorted(
             [f for f in os.listdir(self.sessions_dir) if f.endswith(".md")],
+            key=lambda x: os.path.getmtime(os.path.join(self.sessions_dir, x)),
             reverse=True
         )[:count]
         
@@ -185,25 +292,27 @@ class MemoryManager:
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
             summary = self._extract_summary(content)
-            contents.append(f"### {filename}\n{summary}")
+            session_id = filename.replace(".md", "")
+            contents.append(f"### {session_id}\n{summary}")
         
         return "\n\n".join(contents)
     
     def _extract_summary(self, content: str) -> str:
         lines = content.split("\n")
         summary_lines = []
-        in_summary = False
+        in_summaries = False
         
         for line in lines:
-            if line.startswith("## 执行摘要"):
-                in_summary = True
+            if line.startswith("## 对话记录"):
+                in_summaries = True
                 continue
-            if in_summary and line.startswith("## "):
+            if in_summaries and line.startswith("## "):
                 break
-            if in_summary and line.strip():
-                summary_lines.append(line)
+            if in_summaries and line.startswith("### "):
+                if len(summary_lines) < 5:
+                    summary_lines.append(line)
         
-        return "\n".join(summary_lines) if summary_lines else content[:300]
+        return "\n".join(summary_lines) if summary_lines else content[:200]
     
     def save_session_and_extract(self, llm_client=None) -> Optional[str]:
         filepath = self.save_session()
@@ -222,3 +331,10 @@ class MemoryManager:
         extractor.extract_to_daily(session_content, daily_file)
         
         return filepath
+    
+    def end_session(self):
+        if self.session_memory:
+            self.save_session()
+            self.session_memory = None
+            self.current_session_id = None
+            logger.info("Session ended")

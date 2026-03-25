@@ -45,6 +45,7 @@ class Agent:
         self.subagent_manager = None
         self.session_manager = None
         self.memory = None
+        self.session_id: Optional[str] = None
 
         self.messages: List[Dict[str, Any]] = []
         self.status = "pending"
@@ -52,7 +53,7 @@ class Agent:
         self.error: Optional[str] = None
         self.iterations = 0
 
-    async def initialize(self):
+    async def initialize(self, session_id: str = None):
         self._load_system_prompt()
         self._init_tools()
         self._init_skills()
@@ -65,16 +66,16 @@ class Agent:
         
         from memory import MemoryManager
         self.memory = MemoryManager(self.workspace)
-        self.memory.start_session()
+        self.session_id = self.memory.start_session(session_id)
         
         memory_context = self.memory.load_memory("")
         if memory_context:
             self.system_prompt += f"\n\n## 【记忆上下文】\n{memory_context}"
         
-        logger.info(f"Agent [{self.name}] memory initialized")
+        logger.info(f"Agent [{self.name}] memory initialized, session_id={self.session_id}")
         
         memory_tool = self.tool_registry.get_tool("memory")
-        if memory_tool:
+        if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
         
         logger.info(f"Agent [{self.name}] initialized")
@@ -210,8 +211,7 @@ class Agent:
         self.status = "running"
         self.messages = []
 
-        if self.memory and not self.memory.session_memory:
-            self.memory.start_session()
+        if self.memory:
             memory_context = self.memory.load_memory(task)
             if memory_context:
                 self.messages.append({
@@ -288,7 +288,7 @@ class Agent:
             logger.error(f"Agent [{self.name}] failed: {e}")
 
         if self.memory:
-            self.memory.set_summary(self.result or "")
+            self.memory.add_summary(task, self.result or "")
             self.memory.save_session_and_extract(self.client)
 
         return AgentResult(
@@ -379,6 +379,8 @@ class Agent:
         }, ensure_ascii=False)
 
     async def cleanup(self):
+        if self.memory:
+            self.memory.end_session()
         if self.mcp:
             await self.mcp.close()
             logger.info(f"Agent [{self.name}] cleaned up MCP")
