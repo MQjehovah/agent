@@ -176,7 +176,7 @@ class MCPManager:
 
     async def close(self):
         """关闭所有MCP连接"""
-        for server in self.servers.values():
+        for server in list(reversed(self.servers.values())):
             await server.close()
 
     async def call_tool(self, name: str, args: Dict) -> str:
