@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import asyncio
 from typing import Optional, List, Dict, Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -22,7 +23,6 @@ class MCPServerConnection:
     async def connect(self) -> bool:
         """连接MCP服务器"""
         from contextlib import AsyncExitStack
-        import asyncio
 
         command = self.config.get("command", "python")
         args = self.config.get("args", [])
@@ -84,7 +84,15 @@ class MCPServerConnection:
     async def close(self):
         """关闭连接"""
         if self._exit_stack:
-            await self._exit_stack.__aexit__(None, None, None)
+            try:
+                await self._exit_stack.__aexit__(None, None, None)
+            except (RuntimeError, asyncio.CancelledError):
+                pass
+            except Exception as e:
+                logger.debug(f"MCP [{self.name}] 关闭时出错: {e}")
+            finally:
+                self._exit_stack = None
+                self.session = None
 
     async def call_tool(self, name: str, args: Dict) -> str:
         """调用工具"""
