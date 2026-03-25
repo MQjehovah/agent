@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import asyncio
-from typing import Optional, Dict, Any, List, Callable, Awaitable
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 
 from plugins.base import BasePlugin
@@ -78,8 +78,11 @@ class DingTalkPlugin(BasePlugin):
                     data = json.load(f)
                 self.config.load_from_dict(data)
                 logger.info(f"Loaded dingtalk config from {config_file}")
+                logger.info(f"  client_id: {self.config.stream.client_id[:8]}... (enabled={self.config.stream.enabled})")
             except Exception as e:
                 logger.error(f"Failed to load dingtalk config: {e}")
+        else:
+            logger.warning(f"DingTalk config file not found: {config_file}")
         
         self.sessions: Dict[str, DingTalkSession] = {}
         self._client = None
@@ -87,6 +90,8 @@ class DingTalkPlugin(BasePlugin):
         self._task: Optional[asyncio.Task] = None
 
     def start(self):
+        logger.info(f"DingTalk plugin start() called, enabled={self.config.stream.enabled}")
+        
         if not self.config.stream.enabled:
             logger.info("DingTalk plugin is disabled")
             return
@@ -97,16 +102,30 @@ class DingTalkPlugin(BasePlugin):
         
         try:
             import dingtalk_stream
-        except ImportError:
-            logger.error("dingtalk-stream is required. Install: pip install dingtalk-stream")
+            logger.info("dingtalk-stream imported successfully")
+        except ImportError as e:
+            logger.error(f"dingtalk-stream is required. Install: pip install dingtalk-stream. Error: {e}")
             return
         
         self._running = True
-        self._task = asyncio.create_task(self._run_stream_client())
-        logger.info(f"DingTalk Stream plugin started (client_id: {self.config.stream.client_id[:8]}...)")
+        
+        try:
+            loop = asyncio.get_running_loop()
+            self._task = loop.create_task(self._run_stream_client())
+            logger.info(f"DingTalk Stream task created in existing loop")
+        except RuntimeError:
+            logger.warning("No running event loop, will start in separate thread")
+            import threading
+            self._thread = threading.Thread(target=self._run_in_thread, daemon=True)
+            self._thread.start()
+
+    def _run_in_thread(self):
+        asyncio.run(self._run_stream_client())
 
     async def _run_stream_client(self):
         import dingtalk_stream
+        
+        logger.info("Initializing DingTalk Stream client...")
         
         credential = dingtalk_stream.Credential(
             self.config.stream.client_id,
@@ -121,15 +140,18 @@ class DingTalkPlugin(BasePlugin):
             handler
         )
         
+        logger.info("DingTalk Stream client registered, starting connection...")
+        
         while self._running:
             try:
                 logger.info("DingTalk Stream client connecting...")
                 await self._client.start()
+                logger.info("DingTalk Stream client connected")
             except asyncio.CancelledError:
                 logger.info("DingTalk Stream client cancelled")
                 break
             except Exception as e:
-                logger.error(f"DingTalk Stream client error: {e}")
+                logger.error(f"DingTalk Stream client error: {type(e).__name__}: {e}")
                 if self._running:
                     logger.info("Reconnecting in 5 seconds...")
                     await asyncio.sleep(5)
@@ -137,6 +159,7 @@ class DingTalkPlugin(BasePlugin):
                     break
 
     def stop(self):
+        logger.info("Stopping DingTalk plugin...")
         self._running = False
         if self._task:
             self._task.cancel()
@@ -168,13 +191,16 @@ class AgentChatbotHandler:
     def reply_text(self, content: str, incoming_message):
         import dingtalk_stream
         
-        text_message = dingtalk_stream.TextMessage(content)
-        response = dingtalk_stream.ReplyMessage(
-            incoming_message.session_webhook,
-            text_message
-        )
-        dingtalk_stream.sync_send(response)
-        self.logger.info(f"已回复消息: {content[:50]}...")
+        try:
+            text_message = dingtalk_stream.TextMessage(content)
+            response = dingtalk_stream.ReplyMessage(
+                incoming_message.session_webhook,
+                text_message
+            )
+            dingtalk_stream.sync_send(response)
+            self.logger.info(f"已回复消息: {content[:50]}...")
+        except Exception as e:
+            self.logger.error(f"回复消息失败: {e}")
 
     async def process(self, callback):
         import dingtalk_stream
