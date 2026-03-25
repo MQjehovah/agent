@@ -192,20 +192,6 @@ class AgentChatbotHandler:
     def pre_start(self):
         self.logger.info("DingTalk Stream handler pre_start")
 
-    def reply_text(self, content: str, incoming_message):
-        import dingtalk_stream
-        
-        try:
-            text_message = dingtalk_stream.TextMessage(content)
-            response = dingtalk_stream.ReplyMessage(
-                incoming_message.session_webhook,
-                text_message
-            )
-            dingtalk_stream.sync_send(response)
-            self.logger.info(f"已回复消息: {content[:50]}...")
-        except Exception as e:
-            self.logger.error(f"回复消息失败: {e}")
-
     async def process(self, callback):
         import dingtalk_stream
         
@@ -246,6 +232,31 @@ class AgentChatbotHandler:
         except Exception as e:
             self.logger.error(f"处理消息失败: {e}")
             return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
+
+    async def raw_process(self, callback_message):
+        import dingtalk_stream
+        
+        code, message = await self.process(callback_message)
+        ack_message = dingtalk_stream.AckMessage()
+        ack_message.code = code
+        ack_message.headers.message_id = callback_message.headers.message_id
+        ack_message.headers.content_type = dingtalk_stream.Headers.CONTENT_TYPE_APPLICATION_JSON
+        ack_message.data = {"response": message}
+        return ack_message
+
+    def reply_text(self, content: str, incoming_message):
+        import dingtalk_stream
+        
+        try:
+            text_message = dingtalk_stream.TextMessage(content)
+            response = dingtalk_stream.ReplyMessage(
+                incoming_message.session_webhook,
+                text_message
+            )
+            dingtalk_stream.sync_send(response)
+            self.logger.info(f"已回复消息: {content[:50]}...")
+        except Exception as e:
+            self.logger.error(f"回复消息失败: {e}")
 
 
 plugin = DingTalkPlugin
