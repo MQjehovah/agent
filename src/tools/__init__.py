@@ -110,5 +110,6 @@ class ToolRegistry:
 from .todo import TodoTool
 from .file import FileTool
 from .subagent import SubagentTool
+from .memory import MemoryTool
 
-__all__ = ['ToolRegistry', 'BuiltinTool', 'ToolDefinition', 'TodoTool', 'FileTool', 'SubagentTool']
+__all__ = ['ToolRegistry', 'BuiltinTool', 'ToolDefinition', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool']
