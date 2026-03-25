@@ -111,5 +111,6 @@ from .todo import TodoTool
 from .file import FileTool
 from .subagent import SubagentTool
 from .memory import MemoryTool
+from .shell import ShellTool
 
-__all__ = ['ToolRegistry', 'BuiltinTool', 'ToolDefinition', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool']
+__all__ = ['ToolRegistry', 'BuiltinTool', 'ToolDefinition', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool']

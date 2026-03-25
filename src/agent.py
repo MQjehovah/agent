@@ -131,13 +131,14 @@ class Agent:
         logger.info(f"Agent [{self.name}] prompt initialized")
 
     def _init_tools(self):
-        from tools import ToolRegistry, TodoTool, FileTool, SubagentTool, MemoryTool
+        from tools import ToolRegistry, TodoTool, FileTool, SubagentTool, MemoryTool, ShellTool
 
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_tool(TodoTool())
         self.tool_registry.register_tool(FileTool())
         self.tool_registry.register_tool(SubagentTool())
         self.tool_registry.register_tool(MemoryTool())
+        self.tool_registry.register_tool(ShellTool())
 
         logger.debug(f"Agent [{self.name}] tools initialized")
         logger.info(
