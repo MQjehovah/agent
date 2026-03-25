@@ -150,11 +150,14 @@ class Agent:
             from mcps import MCPManager
             self.mcp = MCPManager("")
             for config in self.mcp_configs:
-                await self.mcp.connect_server(config)
+                if config.get("enabled", True):
+                    await self.mcp.connect_server(config)
+                else:
+                    logger.info(f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
 
-            server_names = [c.get("name", "unnamed") for c in self.mcp_configs]
+            connected = [c.get("name", "unnamed") for c in self.mcp_configs if c.get("enabled", True)]
             logger.info(
-                f"Agent [{self.name}] 已连接 {len(server_names)} MCP servers: {server_names}")
+                f"Agent [{self.name}] 已连接 {len(connected)} MCP servers: {connected}")
 
     def _init_subagents(self):
         agents_dir = os.path.join(self.workspace, "agents")
@@ -248,6 +251,24 @@ class Agent:
                     "content": msg.get("content"),
                     "tool_calls": msg.get("tool_calls")
                 })
+
+                # tool_calls_to_save = msg.get("tool_calls")
+                # if tool_calls_to_save:
+                #     formatted_tool_calls = []
+                #     for tc in tool_calls_to_save:
+                #         tc_copy = tc.copy()
+                #         func_args = tc_copy.get("function", {}).get("arguments")
+                #         if isinstance(func_args, dict):
+                #             tc_copy["function"] = tc_copy["function"].copy()
+                #             tc_copy["function"]["arguments"] = json.dumps(func_args, ensure_ascii=False)
+                #         formatted_tool_calls.append(tc_copy)
+                #     tool_calls_to_save = formatted_tool_calls
+
+                # session.messages.append({
+                #     "role": "assistant",
+                #     "content": msg.get("content"),
+                #     "tool_calls": tool_calls_to_save
+                # })
 
                 if msg.get("tool_calls"):
                     for tc in msg.get("tool_calls", []):
