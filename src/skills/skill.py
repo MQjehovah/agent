@@ -181,10 +181,10 @@ class SkillLoader:
         if not self.skills:
             return "没有可用的技能"
 
-        lines = ["\n## 【技能列表】\n"]
+        lines = ["\n\n## 【技能列表】\n"]
         for skill in self.skills.values():
             if skill.enabled:
-                lines.append(f"[{skill.name}]")
+                lines.append(f"  名称：{skill.name}")
                 lines.append(f"  描述: {skill.description}")
                 if skill.tools:
                     lines.append(

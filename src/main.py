@@ -111,6 +111,46 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
                 console.print("[yellow]无可用技能[/yellow]")
             continue
 
+        if question.strip().lower() == "/sessions":
+            if agent.session_manager:
+                sessions = agent.session_manager.list_sessions()
+                if sessions:
+                    table = Table(title=f"会话列表 (共 {len(sessions)} 个)", show_header=True,
+                                  header_style="bold magenta", box=box.ROUNDED)
+                    table.add_column("Session ID", style="cyan")
+                    table.add_column("消息数", style="green", justify="right")
+                    for session_id in sessions:
+                        session = await agent.session_manager.get_session(session_id)
+                        msg_count = len(session.messages) if session else 0
+                        table.add_row(session_id, str(msg_count))
+                    console.print(table)
+                else:
+                    console.print("[yellow]暂无会话[/yellow]")
+            else:
+                console.print("[yellow]Session Manager 未初始化[/yellow]")
+            continue
+
+        if question.strip().lower().startswith("/session "):
+            target_id = question.strip()[9:].strip()
+            if agent.session_manager:
+                session = await agent.session_manager.get_session(target_id)
+                if session:
+                    table = Table(title=f"会话 {target_id} (共 {len(session.messages)} 条消息)",
+                                  show_header=True, header_style="bold magenta", box=box.ROUNDED)
+                    table.add_column("#", style="dim", width=3)
+                    table.add_column("角色", style="cyan", width=10)
+                    table.add_column("内容", style="green")
+                    for i, msg in enumerate(session.messages, 1):
+                        role = str(msg.get("role", "未知"))
+                        content = str(msg.get("content", "") or "")
+                        table.add_row(str(i), role, content)
+                    console.print(table)
+                else:
+                    console.print(f"[yellow]会话 {target_id} 不存在[/yellow]")
+            else:
+                console.print("[yellow]Session Manager 未初始化[/yellow]")
+            continue
+
         if question.strip().lower() in ["quit", "exit", "q"]:
             logger.info("再见!")
             break

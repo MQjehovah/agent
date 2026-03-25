@@ -45,7 +45,6 @@ class Agent:
         self.subagent_manager = None
         self.session_manager = None
         self.memory = None
-        self.session_id: Optional[str] = None
         self._background_tasks: set = set()
 
         self.status = "pending"
@@ -63,22 +62,7 @@ class Agent:
         self.session_manager = AgentSessionManager()
 
         self._init_subagents()
-        
-        from memory import MemoryManager
-        self.memory = MemoryManager(self.workspace)
-        self.session_id = self.memory.start_session(session_id)
-        
-        memory_context = self.memory.load_memory("")
-        if memory_context:
-            self.system_prompt += f"\n\n## 【记忆上下文】\n{memory_context}"
-        
-        logger.info(f"Agent [{self.name}] memory initialized, session_id={self.session_id}")
-        
-        memory_tool = self.tool_registry.get_tool("memory")
-        if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
-            memory_tool.set_memory_manager(self.memory)
-        
-        logger.info(f"Agent [{self.name}] initialized")
+        self._init_memory(session_id) # session_id用于恢复会话
 
     def _extract_frontmatter(self, content: str) -> tuple:
         pattern = r"^---\s*\n(.*?)\n---\s*\n?(.*)$"
@@ -167,7 +151,7 @@ class Agent:
             self.mcp = MCPManager("")
             for config in self.mcp_configs:
                 await self.mcp.connect_server(config)
-            
+
             server_names = [c.get("name", "unnamed") for c in self.mcp_configs]
             logger.info(
                 f"Agent [{self.name}] 已连接 {len(server_names)} MCP servers: {server_names}")
@@ -182,6 +166,23 @@ class Agent:
                 f"Agent [{self.name}] loaded subagents from {agents_dir}")
             logger.info(
                 f"Agent [] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {[self.subagent_manager.list_templates()]}")
+
+    def _init_memory(self, session_id: str = None):
+        from memory import MemoryManager
+        self.memory = MemoryManager(self.workspace)
+        self.memory.start_session(session_id)
+
+        memory_context = self.memory.load_memory("")
+        if memory_context:
+            self.system_prompt += f"\n\n## 【记忆上下文】\n{memory_context}"
+
+        logger.info(f"Agent [{self.name}] memory initialized")
+
+        memory_tool = self.tool_registry.get_tool("memory")
+        if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
+            memory_tool.set_memory_manager(self.memory)
+
+        logger.info(f"Agent [{self.name}] initialized")
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
@@ -200,29 +201,23 @@ class Agent:
 
     async def run(self, task: str, session_id: str = None) -> AgentResult:
         self.status = "running"
-        
+
         from agent_session import AgentSession
         session = None
         if session_id and self.session_manager:
             session = await self.session_manager.get_session(session_id)
             if session:
                 session.add_message("user", task)
-                logger.info(f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
+                logger.info(
+                    f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
             else:
                 session = await self.session_manager.create_session(
                     session_id=session_id,
                     system_prompt=self.system_prompt
                 )
-                if self.memory:
-                    memory_context = self.memory.load_memory(task)
-                    if memory_context:
-                        session.messages.insert(0, {
-                            "role": "system", 
-                            "content": f"## 【记忆上下文】\n{memory_context}"
-                        })
                 session.add_message("user", task)
                 logger.info(f"Agent [{self.name}] 创建新session: {session_id}")
-        
+
         if not session:
             session = AgentSession(
                 session_id=session_id or "temp",
@@ -232,7 +227,7 @@ class Agent:
                 memory_context = self.memory.load_memory(task)
                 if memory_context:
                     session.messages.insert(0, {
-                        "role": "system", 
+                        "role": "system",
                         "content": f"## 【记忆上下文】\n{memory_context}"
                     })
             session.add_message("user", task)
@@ -306,7 +301,8 @@ class Agent:
             self._background_tasks.add(bg_task)
             bg_task.add_done_callback(self._background_tasks.discard)
 
-        logger.debug(f"Agent [{self.name}] session完成: {session_id}, 消息数: {len(session.messages)}")
+        logger.debug(
+            f"Agent [{self.name}] session完成: {session_id}, 消息数: {len(session.messages)}")
 
         return AgentResult(
             agent_id=self.agent_id,
@@ -321,7 +317,8 @@ class Agent:
             await asyncio.sleep(0.1)
             if self.memory:
                 self.memory.extract_daily(self.client)
-                logger.debug(f"Agent [{self.name}] memory extraction completed")
+                logger.debug(
+                    f"Agent [{self.name}] memory extraction completed")
         except Exception as e:
             logger.error(f"Agent [{self.name}] memory extraction failed: {e}")
 
@@ -409,7 +406,7 @@ class Agent:
             task.cancel()
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
-        
+
         if self.memory:
             self.memory.end_session()
         if self.mcp:
@@ -444,7 +441,7 @@ class SubagentManager:
         if not self.templates:
             return "没有可用的子代理"
 
-        lines = ["\n## 【SubAgent列表】\n"]
+        lines = ["\n\n## 【SubAgent列表】\n"]
         for name in self.templates:
             lines.append(f"[名称：{name}]")
             lines.append("")
