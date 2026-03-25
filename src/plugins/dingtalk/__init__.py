@@ -188,9 +188,18 @@ class AgentChatbotHandler:
         self.plugin = plugin
         self.logger = logging.getLogger("plugin.dingtalk.handler")
         self.dingtalk_client = None
+        self._handler = None
 
     def pre_start(self):
+        import dingtalk_stream
+        self._handler = dingtalk_stream.ChatbotHandler()
+        self._handler.pre_start()
         self.logger.info("DingTalk Stream handler pre_start")
+
+    def reply_text(self, content: str, incoming_message):
+        if self._handler:
+            self._handler.reply_text(content, incoming_message)
+            self.logger.info(f"已回复消息: {content[:50]}...")
 
     async def process(self, callback):
         import dingtalk_stream
@@ -240,23 +249,9 @@ class AgentChatbotHandler:
         ack_message = dingtalk_stream.AckMessage()
         ack_message.code = code
         ack_message.headers.message_id = callback_message.headers.message_id
-        ack_message.headers.content_type = dingtalk_stream.Headers.CONTENT_TYPE_APPLICATION_JSON
+        ack_message.headers.content_type = "application/json"
         ack_message.data = {"response": message}
         return ack_message
-
-    def reply_text(self, content: str, incoming_message):
-        import dingtalk_stream
-        
-        try:
-            text_message = dingtalk_stream.TextMessage(content)
-            response = dingtalk_stream.ReplyMessage(
-                incoming_message.session_webhook,
-                text_message
-            )
-            dingtalk_stream.sync_send(response)
-            self.logger.info(f"已回复消息: {content[:50]}...")
-        except Exception as e:
-            self.logger.error(f"回复消息失败: {e}")
 
 
 plugin = DingTalkPlugin
