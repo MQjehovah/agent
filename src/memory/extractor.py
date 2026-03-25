@@ -17,21 +17,13 @@ class MemoryExtractor:
         return self._llm_extract(session_content, daily_file)
     
     def _simple_extract(self, session_content: str, daily_file: str) -> bool:
-        existing_content = ""
-        if os.path.exists(daily_file):
-            with open(daily_file, "r", encoding="utf-8") as f:
-                existing_content = f.read()
-        
         new_sections = self._extract_sections(session_content)
         if not new_sections:
             return False
         
-        if not existing_content:
-            date_str = datetime.now().strftime("%Y-%m-%d")
-            header = f"# 每日记忆 - {date_str}\n\n"
-            content = header + "\n".join(new_sections)
-        else:
-            content = self._merge_content(existing_content, new_sections)
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        header = f"# 每日记忆 - {date_str}\n\n"
+        content = header + "\n".join(new_sections)
         
         with open(daily_file, "w", encoding="utf-8") as f:
             f.write(content)
@@ -59,37 +51,44 @@ class MemoryExtractor:
         
         return sections
     
-    def _merge_content(self, existing: str, new_sections: list) -> str:
-        lines = existing.split("\n")
-        result = []
-        current_section_lines = []
-        
-        section_map = {}
-        for section in new_sections:
-            sec_lines = section.split("\n")
-            if sec_lines:
-                title = sec_lines[0]
-                section_map[title] = sec_lines[1:] if len(sec_lines) > 1 else []
-        
-        for line in lines:
-            if line.startswith("## "):
-                if current_section_lines:
-                    result.extend(current_section_lines)
-                current_section_lines = [line]
-            elif current_section_lines:
-                current_section_lines.append(line)
-        
-        for title, items in section_map.items():
-            if title in existing:
-                continue
-            result.append("")
-            result.append(title)
-            result.extend(items)
-        
-        return "\n".join(result)
-    
     def _llm_extract(self, session_content: str, daily_file: str) -> bool:
-        prompt = f"""请从以下会话记录中提取关键信息，按以下格式整理：
+        existing_content = ""
+        if os.path.exists(daily_file):
+            with open(daily_file, "r", encoding="utf-8") as f:
+                existing_content = f.read()
+            if existing_content.startswith("# "):
+                lines = existing_content.split("\n", 2)
+                if len(lines) >= 3:
+                    existing_content = lines[2]
+        
+        if existing_content.strip():
+            prompt = f"""你是一个记忆管理助手。请将新的会话信息合并到已有的每日记忆中，生成一份整合后的每日记忆。
+
+要求：
+1. 去重：相同或相似的信息只保留一条
+2. 归类：将信息放入合适的分类（业务洞察、用户偏好、学到的知识）
+3. 简洁：保留关键信息，去除冗余
+
+已有每日记忆：
+{existing_content}
+
+新会话记录：
+{session_content}
+
+请输出整合后的每日记忆，格式如下：
+
+## 业务洞察
+- [重要业务发现]
+
+## 用户偏好
+- [用户偏好信息]
+
+## 学到的知识
+- [新学到的知识或流程]
+
+只输出内容，不要添加额外说明。"""
+        else:
+            prompt = f"""请从以下会话记录中提取关键信息，按以下格式整理：
 
 ## 业务洞察
 - [重要业务发现]
@@ -114,12 +113,7 @@ class MemoryExtractor:
             extracted = response.choices[0].message.content
             
             date_str = datetime.now().strftime("%Y-%m-%d")
-            if os.path.exists(daily_file):
-                with open(daily_file, "r", encoding="utf-8") as f:
-                    existing = f.read()
-                content = existing + "\n\n" + extracted
-            else:
-                content = f"# 每日记忆 - {date_str}\n\n{extracted}"
+            content = f"# 每日记忆 - {date_str}\n\n{extracted}"
             
             with open(daily_file, "w", encoding="utf-8") as f:
                 f.write(content)
