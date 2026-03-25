@@ -319,6 +319,18 @@ class MemoryManager:
         if not filepath:
             return None
         
+        self.extract_daily(llm_client, filepath)
+        return filepath
+    
+    def extract_daily(self, llm_client=None, filepath: str = None) -> bool:
+        if not filepath:
+            if not self.current_session_id:
+                return False
+            filepath = os.path.join(self.sessions_dir, f"{self.current_session_id}.md")
+        
+        if not os.path.exists(filepath):
+            return False
+        
         from .extractor import MemoryExtractor
         extractor = MemoryExtractor(llm_client)
         
@@ -328,9 +340,7 @@ class MemoryManager:
         today = datetime.now().strftime("%Y-%m-%d.md")
         daily_file = os.path.join(self.daily_dir, today)
         
-        extractor.extract_to_daily(session_content, daily_file)
-        
-        return filepath
+        return extractor.extract_to_daily(session_content, daily_file)
     
     def end_session(self):
         if self.session_memory:

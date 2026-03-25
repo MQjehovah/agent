@@ -1,5 +1,6 @@
 import logging
 import uuid
+import asyncio
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -290,7 +291,8 @@ class Agent:
 
         if self.memory:
             self.memory.add_summary(task, self.result or "")
-            self.memory.save_session_and_extract(self.client)
+            self.memory.save_session()
+            asyncio.create_task(self._background_memory_extract())
 
         return AgentResult(
             agent_id=self.agent_id,
@@ -299,6 +301,15 @@ class Agent:
             iterations=self.iterations,
             error=self.error
         )
+
+    async def _background_memory_extract(self):
+        try:
+            await asyncio.sleep(0.1)
+            if self.memory:
+                self.memory.extract_daily(self.client)
+                logger.debug(f"Agent [{self.name}] memory extraction completed")
+        except Exception as e:
+            logger.error(f"Agent [{self.name}] memory extraction failed: {e}")
 
     async def _think(self) -> Dict[str, Any]:
         try:
