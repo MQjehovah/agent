@@ -1,9 +1,8 @@
 import os
 import json
 import logging
-import threading
 import asyncio
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, Any, List, Callable, Awaitable
 from dataclasses import dataclass, field
 
 from plugins.base import BasePlugin
@@ -12,39 +11,32 @@ logger = logging.getLogger("plugin.dingtalk")
 
 
 @dataclass
-class DingTalkServer:
-    name: str
-    webhook_url: str
-    secret: str
+class DingTalkStreamConfig:
+    client_id: str = ""
+    client_secret: str = ""
     enabled: bool = True
 
 
 @dataclass
-class DingTalkReceiverConfig:
-    host: str = "0.0.0.0"
-    port: int = 5000
-    webhook_path: str = "/dingtalk/callback"
-    token: str = ""
-    encoding_aes_key: str = ""
-
-
-@dataclass
 class DingTalkConfig:
-    servers: List[DingTalkServer] = field(default_factory=list)
-    receiver: DingTalkReceiverConfig = field(default_factory=DingTalkReceiverConfig)
+    stream: DingTalkStreamConfig = field(default_factory=DingTalkStreamConfig)
 
-    def get_enabled_servers(self) -> List[DingTalkServer]:
-        return [s for s in self.servers if s.enabled]
+    def load_from_dict(self, data: dict):
+        stream_data = data.get("stream", {})
+        self.stream = DingTalkStreamConfig(
+            client_id=stream_data.get("client_id", ""),
+            client_secret=stream_data.get("client_secret", ""),
+            enabled=stream_data.get("enabled", True)
+        )
 
 
 @dataclass
 class DingTalkSession:
     session_id: str
-    chatid: str
-    sender: str
+    conversation_id: str
+    sender_id: str
     sender_nick: str
     robot_code: str
-    create_at: int
     messages: list = field(default_factory=list)
     _plugin: Optional["DingTalkPlugin"] = field(default=None, repr=False)
 
@@ -67,8 +59,8 @@ class DingTalkSession:
 
 class DingTalkPlugin(BasePlugin):
     name = "dingtalk"
-    description = "钉钉机器人插件，支持消息接收和发送"
-    version = "1.0.0"
+    description = "钉钉机器人插件，使用Stream模式接收和发送消息"
+    version = "2.0.0"
 
     def _load_config(self):
         config_file = self.config_path
@@ -84,160 +76,146 @@ class DingTalkPlugin(BasePlugin):
             try:
                 with open(config_file, encoding="utf-8") as f:
                     data = json.load(f)
-                
-                servers = [
-                    DingTalkServer(
-                        name=s["name"],
-                        webhook_url=s["webhook_url"],
-                        secret=s["secret"],
-                        enabled=s.get("enabled", True)
-                    )
-                    for s in data.get("servers", [])
-                ]
-                
-                receiver_data = data.get("receiver", {})
-                receiver = DingTalkReceiverConfig(
-                    host=receiver_data.get("host", "0.0.0.0"),
-                    port=receiver_data.get("port", 5000),
-                    webhook_path=receiver_data.get("webhook_path", "/dingtalk/callback"),
-                )
-                
-                self.config = DingTalkConfig(servers=servers, receiver=receiver)
+                self.config.load_from_dict(data)
                 logger.info(f"Loaded dingtalk config from {config_file}")
             except Exception as e:
                 logger.error(f"Failed to load dingtalk config: {e}")
         
         self.sessions: Dict[str, DingTalkSession] = {}
-        self._thread: Optional[threading.Thread] = None
-        self._app = None
+        self._client = None
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
 
     def start(self):
+        if not self.config.stream.enabled:
+            logger.info("DingTalk plugin is disabled")
+            return
+        
+        if not self.config.stream.client_id or not self.config.stream.client_secret:
+            logger.warning("DingTalk client_id or client_secret not configured")
+            return
+        
         try:
-            from flask import Flask, request, jsonify
+            import dingtalk_stream
         except ImportError:
-            logger.error("flask is required. Install: pip install flask")
+            logger.error("dingtalk-stream is required. Install: pip install dingtalk-stream")
             return
         
-        self._app = Flask(__name__)
-        self._setup_routes()
+        self._running = True
+        self._task = asyncio.create_task(self._run_stream_client())
+        logger.info(f"DingTalk Stream plugin started (client_id: {self.config.stream.client_id[:8]}...)")
+
+    async def _run_stream_client(self):
+        import dingtalk_stream
         
-        host = self.config.receiver.host
-        port = self.config.receiver.port
-        
-        self._thread = threading.Thread(
-            target=self._run_server,
-            args=(host, port),
-            daemon=True
+        credential = dingtalk_stream.Credential(
+            self.config.stream.client_id,
+            self.config.stream.client_secret
         )
-        self._thread.start()
-        logger.info(f"DingTalk plugin started: http://{host}:{port}{self.config.receiver.webhook_path}")
-
-    def _setup_routes(self):
-        from flask import request, jsonify
-        webhook_path = self.config.receiver.webhook_path
-
-        @self._app.route(webhook_path, methods=["GET"])
-        def verify():
-            return jsonify({"errcode": 0, "errmsg": "success"})
-
-        @self._app.route(webhook_path, methods=["POST"])
-        def callback():
-            return self._handle_callback(request)
-
-        @self._app.route("/health", methods=["GET"])
-        def health():
-            return jsonify({"status": "ok"})
-
-    def _handle_callback(self, request) -> Dict[str, Any]:
-        try:
-            data = request.get_json()
-            logger.debug(f"收到钉钉回调: {data}")
-
-            if not data:
-                return {"errcode": 0, "errmsg": "success"}
-
-            msg_type = data.get("msgtype", "")
-            
-            if msg_type == "text":
-                content = data.get("text", {}).get("content", "").strip()
-            elif msg_type == "markdown":
-                content = data.get("markdown", {}).get("text", "").strip()
-            else:
-                return {"errcode": 0, "errmsg": "不支持的消息类型"}
-
-            chatid = data.get("chatid", "")
-            sender = data.get("sender", "")
-            sender_nick = data.get("senderNick", "")
-            robot_code = data.get("robotCode", "")
-            create_at = data.get("createAt", 0)
-
-            session_id = f"{chatid}_{sender}_{create_at}"
-            
-            if session_id not in self.sessions:
-                session = DingTalkSession(
-                    session_id=session_id,
-                    chatid=chatid,
-                    sender=sender,
-                    sender_nick=sender_nick,
-                    robot_code=robot_code,
-                    create_at=create_at
-                )
-                session._plugin = self
-                self.sessions[session_id] = session
-                logger.info(f"创建新Session: {session_id} by {sender_nick}")
-            
-            session = self.sessions[session_id]
-            
-            if not self.agent_executor:
-                return {"errcode": 1, "errmsg": "Agent未注册"}
-
-            asyncio.create_task(self._process_message(session, content))
-            return {"errcode": 0, "errmsg": "success"}
-        except Exception as e:
-            logger.error(f"处理回调失败: {e}")
-            return {"errcode": 1, "errmsg": str(e)}
-
-    async def _process_message(self, session: DingTalkSession, content: str):
-        result = await session.send_to_agent(content)
-        self.send_reply(session, result)
-
-    def send_reply(self, session: DingTalkSession, content: str):
-        if not self.config.servers:
-            logger.warning("No dingtalk servers configured")
-            return
         
-        server = self.config.get_enabled_servers()[0]
-        try:
-            import time
-            import hmac
-            import hashlib
-            import base64
-            import urllib.parse
-            import requests
-            
-            timestamp = str(round(time.time() * 1000))
-            secret_enc = server.secret.encode("utf-8")
-            string_to_sign = f"{timestamp}\n{server.secret}"
-            string_to_sign_enc = string_to_sign.encode("utf-8")
-            hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
-            sign = base64.b64encode(hmac_code).decode("utf-8")
-            url = f"{server.webhook_url}&timestamp={timestamp}&sign={urllib.parse.quote(sign)}"
-            
-            message = {
-                "msgtype": "text",
-                "text": {"content": f"@{session.sender_nick}\n{content}"}
-            }
-            
-            response = requests.post(url, json=message, timeout=10)
-            logger.info(f"已回复 Session {session.session_id}: {response.json()}")
-        except Exception as e:
-            logger.error(f"发送回复失败: {e}")
-
-    def _run_server(self, host: str, port: int):
-        self._app.run(host=host, port=port, threaded=True, use_reloader=False)
+        self._client = dingtalk_stream.DingTalkStreamClient(credential)
+        
+        handler = AgentChatbotHandler(self)
+        self._client.register_callback_handler(
+            dingtalk_stream.ChatbotMessage.TOPIC,
+            handler
+        )
+        
+        while self._running:
+            try:
+                logger.info("DingTalk Stream client connecting...")
+                await self._client.start()
+            except asyncio.CancelledError:
+                logger.info("DingTalk Stream client cancelled")
+                break
+            except Exception as e:
+                logger.error(f"DingTalk Stream client error: {e}")
+                if self._running:
+                    logger.info("Reconnecting in 5 seconds...")
+                    await asyncio.sleep(5)
+                else:
+                    break
 
     def stop(self):
+        self._running = False
+        if self._task:
+            self._task.cancel()
         logger.info("DingTalk plugin stopped")
+
+    def get_session(self, conversation_id: str, sender_id: str, sender_nick: str, robot_code: str) -> DingTalkSession:
+        session_id = f"{conversation_id}_{sender_id}"
+        
+        if session_id not in self.sessions:
+            session = DingTalkSession(
+                session_id=session_id,
+                conversation_id=conversation_id,
+                sender_id=sender_id,
+                sender_nick=sender_nick,
+                robot_code=robot_code
+            )
+            session._plugin = self
+            self.sessions[session_id] = session
+            logger.info(f"创建新Session: {session_id} by {sender_nick}")
+        
+        return self.sessions[session_id]
+
+
+class AgentChatbotHandler:
+    def __init__(self, plugin: DingTalkPlugin):
+        self.plugin = plugin
+        self.logger = logging.getLogger("plugin.dingtalk.handler")
+
+    def reply_text(self, content: str, incoming_message):
+        import dingtalk_stream
+        
+        text_message = dingtalk_stream.TextMessage(content)
+        response = dingtalk_stream.ReplyMessage(
+            incoming_message.session_webhook,
+            text_message
+        )
+        dingtalk_stream.sync_send(response)
+        self.logger.info(f"已回复消息: {content[:50]}...")
+
+    async def process(self, callback):
+        import dingtalk_stream
+        
+        try:
+            incoming_message = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
+            
+            content = ""
+            if hasattr(incoming_message, 'text') and incoming_message.text:
+                content = incoming_message.text.content.strip()
+            
+            if not content:
+                self.logger.debug("Empty message, skipping")
+                return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
+            
+            conversation_id = incoming_message.conversation_id or ""
+            sender_id = incoming_message.sender_id or ""
+            sender_nick = incoming_message.sender_nick or ""
+            robot_code = incoming_message.robot_code or ""
+            
+            self.logger.info(f"收到消息: [{sender_nick}] {content[:50]}...")
+            
+            session = self.plugin.get_session(
+                conversation_id=conversation_id,
+                sender_id=sender_id,
+                sender_nick=sender_nick,
+                robot_code=robot_code
+            )
+            
+            if not self.plugin.agent_executor:
+                response = "Agent未注册，请稍后再试"
+            else:
+                response = await session.send_to_agent(content)
+            
+            self.reply_text(response, incoming_message)
+            
+            return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
+            
+        except Exception as e:
+            self.logger.error(f"处理消息失败: {e}")
+            return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
 
 
 plugin = DingTalkPlugin
