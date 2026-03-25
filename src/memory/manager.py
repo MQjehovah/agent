@@ -204,3 +204,21 @@ class MemoryManager:
                 summary_lines.append(line)
         
         return "\n".join(summary_lines) if summary_lines else content[:300]
+    
+    def save_session_and_extract(self, llm_client=None) -> Optional[str]:
+        filepath = self.save_session()
+        if not filepath:
+            return None
+        
+        from .extractor import MemoryExtractor
+        extractor = MemoryExtractor(llm_client)
+        
+        with open(filepath, "r", encoding="utf-8") as f:
+            session_content = f.read()
+        
+        today = datetime.now().strftime("%Y-%m-%d.md")
+        daily_file = os.path.join(self.daily_dir, today)
+        
+        extractor.extract_to_daily(session_content, daily_file)
+        
+        return filepath

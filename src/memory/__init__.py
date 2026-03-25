@@ -1,3 +1,4 @@
 from .manager import MemoryManager
+from .extractor import MemoryExtractor
 
-__all__ = ["MemoryManager"]
+__all__ = ["MemoryManager", "MemoryExtractor"]
