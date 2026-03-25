@@ -70,8 +70,8 @@ class MemoryManager:
         if self.session_memory:
             self.session_memory.summaries.append({
                 "time": datetime.now().strftime("%H:%M"),
-                "task": task[:100],
-                "result": result[:500]
+                "task": task,
+                "result": result
             })
             self.session_memory.updated_at = datetime.now().isoformat()
     
@@ -191,8 +191,8 @@ class MemoryManager:
             lines.append("## 对话记录")
             for s in self.session_memory.summaries:
                 lines.append(f"")
-                lines.append(f"### [{s.get('time', '')}] {s.get('task', '')[:50]}")
-                lines.append(s.get('result', '')[:500])
+                lines.append(f"### [{s.get('time', '')}] {s.get('task', '')}")
+                lines.append(s.get('result', ''))
             lines.append("")
         
         return "\n".join(lines)
