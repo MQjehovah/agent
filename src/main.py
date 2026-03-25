@@ -2,7 +2,7 @@ import os
 import sys
 import asyncio
 import logging
-import json
+import signal
 from typing import Dict, Any, List, Optional
 
 from rich import box
@@ -32,6 +32,8 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger("agent")
+
+_shutdown_event: Optional[asyncio.Event] = None
 
 
 async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] = None):
@@ -102,7 +104,7 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
             continue
 
         if question.strip().lower() in ["quit", "exit", "q"]:
-            logger.info("ℹ 再见!")
+            logger.info("再见!")
             break
 
         console.print()
@@ -115,6 +117,9 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
 
 
 async def main():
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+    
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", "-t", help="执行单个任务")
@@ -153,19 +158,50 @@ async def main():
         plugin_manager.register_agent(run_agent)
         plugin_manager.start_all()
 
+    loop = asyncio.get_running_loop()
+    
+    def signal_handler():
+        logger.info("收到退出信号...")
+        if _shutdown_event:
+            _shutdown_event.set()
+    
+    try:
+        loop.add_signal_handler(signal.SIGINT, signal_handler)
+        loop.add_signal_handler(signal.SIGTERM, signal_handler)
+    except NotImplementedError:
+        pass
+
     try:
         if args.task:
             result = await agent.run(args.task)
             print(result.result)
         else:
             await interactive_mode(agent, scheduler)
+    except asyncio.CancelledError:
+        logger.info("任务被取消")
     finally:
+        logger.info("正在清理资源...")
+        
         if plugin_manager:
             plugin_manager.stop_all()
         if scheduler:
             scheduler.stop()
         await agent.cleanup()
+        
+        await asyncio.sleep(0.5)
+        
+        tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+        if tasks:
+            logger.info(f"取消 {len(tasks)} 个后台任务...")
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        
+        logger.info("清理完成")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

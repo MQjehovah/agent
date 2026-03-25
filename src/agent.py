@@ -47,6 +47,7 @@ class Agent:
         self.session_manager = None
         self.memory = None
         self.session_id: Optional[str] = None
+        self._background_tasks: set = set()
 
         self.messages: List[Dict[str, Any]] = []
         self.status = "pending"
@@ -292,7 +293,9 @@ class Agent:
         if self.memory:
             self.memory.add_summary(task, self.result or "")
             self.memory.save_session()
-            asyncio.create_task(self._background_memory_extract())
+            bg_task = asyncio.create_task(self._background_memory_extract())
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
 
         return AgentResult(
             agent_id=self.agent_id,
@@ -391,6 +394,11 @@ class Agent:
         }, ensure_ascii=False)
 
     async def cleanup(self):
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        
         if self.memory:
             self.memory.end_session()
         if self.mcp:

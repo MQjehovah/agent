@@ -149,7 +149,7 @@ class DingTalkPlugin(BasePlugin):
                 logger.info("DingTalk Stream client connected")
             except asyncio.CancelledError:
                 logger.info("DingTalk Stream client cancelled")
-                break
+                raise
             except Exception as e:
                 logger.error(f"DingTalk Stream client error: {type(e).__name__}: {e}")
                 if self._running:
@@ -157,11 +157,13 @@ class DingTalkPlugin(BasePlugin):
                     await asyncio.sleep(5)
                 else:
                     break
+        
+        logger.info("DingTalk Stream client stopped")
 
     def stop(self):
         logger.info("Stopping DingTalk plugin...")
         self._running = False
-        if self._task:
+        if self._task and not self._task.done():
             self._task.cancel()
         logger.info("DingTalk plugin stopped")
 
