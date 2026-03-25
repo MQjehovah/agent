@@ -17,17 +17,21 @@ class LLMClient:
         )
 
     def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], stream: bool = True):
-        return self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            stream=stream
-        )
+        params = {
+            "model": self.model,
+            "messages": messages,
+            "stream": stream
+        }
+        if tools:
+            params["tools"] = tools
+        return self.client.chat.completions.create(**params)
 
     def chat_sync(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]):
-        return self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            stream=False
-        )
+        params = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False
+        }
+        if tools:
+            params["tools"] = tools
+        return self.client.chat.completions.create(**params)
