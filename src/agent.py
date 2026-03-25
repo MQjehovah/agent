@@ -210,6 +210,15 @@ class Agent:
         self.status = "running"
         self.messages = []
 
+        if self.memory and not self.memory.session_memory:
+            self.memory.start_session()
+            memory_context = self.memory.load_memory(task)
+            if memory_context:
+                self.messages.append({
+                    "role": "system", 
+                    "content": f"## 【记忆上下文】\n{memory_context}"
+                })
+
         if self.system_prompt:
             self.messages.append(
                 {"role": "system", "content": self.system_prompt})
