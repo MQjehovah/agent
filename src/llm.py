@@ -19,7 +19,7 @@ api_logger.addHandler(handler)
 
 
 class LLMClient:
-    def __init__(self, model: str = "MiniMax-M2.5", base_url: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(self, model: str = "glm-5", base_url: Optional[str] = None, api_key: Optional[str] = None):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key

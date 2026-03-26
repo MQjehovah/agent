@@ -50,7 +50,7 @@ class DingTalkSession:
             result = await self._plugin.agent_executor(self.session_id, content)
             return result
         except Exception as e:
-            logger.error(f"Session {self.session_id} 执行失败: {e}")
+            logger.error(f"Session {self.session_id} 执行失败: {e!r}")
             return f"处理失败: {e}"
 
     async def send_image(self, image_path: str) -> bool:
@@ -68,7 +68,7 @@ class DingTalkSession:
             logger.info(f"已发送图片: {image_path}")
             return True
         except Exception as e:
-            logger.error(f"发送图片失败: {e}")
+            logger.error(f"发送图片失败: {e!r}")
             return False
 
 
@@ -95,7 +95,7 @@ class DingTalkPlugin(BasePlugin):
                 logger.info(f"Loaded dingtalk config from {config_file}")
                 logger.info(f"  client_id: {self.config.stream.client_id[:8]}... (enabled={self.config.stream.enabled})")
             except Exception as e:
-                logger.error(f"Failed to load dingtalk config: {e}")
+                logger.error(f"Failed to load dingtalk config: {e!r}")
         else:
             logger.warning(f"DingTalk config file not found: {config_file}")
         
@@ -119,7 +119,7 @@ class DingTalkPlugin(BasePlugin):
             import dingtalk_stream
             logger.info("dingtalk-stream imported successfully")
         except ImportError as e:
-            logger.error(f"dingtalk-stream is required. Install: pip install dingtalk-stream. Error: {e}")
+            logger.error(f"dingtalk-stream is required. Install: pip install dingtalk-stream. Error: {e!r}")
             return
         
         self._running = True
@@ -166,7 +166,7 @@ class DingTalkPlugin(BasePlugin):
                 logger.info("DingTalk Stream client cancelled")
                 raise
             except Exception as e:
-                logger.error(f"DingTalk Stream client error: {type(e).__name__}: {e}")
+                logger.error(f"DingTalk Stream client error: {type(e).__name__}: {e!r}")
                 if self._running:
                     logger.info("Reconnecting in 5 seconds...")
                     await asyncio.sleep(5)
@@ -277,7 +277,7 @@ class AgentChatbotHandler:
                 self._handler.reply_image(media.media_id, incoming_message)
                 self.logger.info(f"已回复图片: {image_path}")
             except Exception as e:
-                self.logger.error(f"回复图片失败: {e}")
+                self.logger.error(f"回复图片失败: {e!r}")
 
     async def process(self, callback):
         import dingtalk_stream
@@ -317,7 +317,7 @@ class AgentChatbotHandler:
             return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
             
         except Exception as e:
-            self.logger.error(f"处理消息失败: {e}")
+            self.logger.error(f"处理消息失败: {e!r}")
             return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
 
     async def raw_process(self, callback_message):

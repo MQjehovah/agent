@@ -14,9 +14,9 @@ logger = logging.getLogger("agent.subagent")
 @dataclass
 class AgentResult:
     agent_id: str
+    agent_name: str
     status: str
     result: str
-    error: Optional[str] = None
     completed_at: str = field(
         default_factory=lambda: datetime.now().isoformat())
 
@@ -49,7 +49,6 @@ class Agent:
 
         self.status = "pending"
         self.result: Optional[str] = None
-        self.error: Optional[str] = None
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
@@ -242,9 +241,11 @@ class Agent:
 
         try:
             for i in range(self.max_iterations):
-                logger.debug(f"Agent [{self.name}] iteration {i + 1}")
+                logger.debug(f"Agent [{self.name}] [{session.session_id}] iteration {i + 1}")
 
                 response = await self._think(session.messages)
+                logger.debug(f"Agent [{self.name}] [{session.session_id}] think response: {response}")
+
                 msg = response.get("message", {})
 
                 session.messages.append({
@@ -295,7 +296,6 @@ class Agent:
 
         except Exception as e:
             self.status = "failed"
-            self.error = str(e)
             logger.error(f"Agent [{self.name}] failed: {e}")
 
         # if self.memory:
@@ -310,9 +310,9 @@ class Agent:
 
         return AgentResult(
             agent_id=self.agent_id,
+            agent_name=self.name,
             status=self.status,
             result=self.result or "",
-            error=self.error
         )
 
     async def _background_memory_extract(self):
@@ -407,7 +407,7 @@ class Agent:
         if not task:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
 
-        result, agent_name = await self.subagent_manager.run_subagent(
+        result = await self.subagent_manager.run_subagent(
             task=task,
             template=args.get("template", ""),
             name=args.get("name", ""),
@@ -421,10 +421,9 @@ class Agent:
         return json.dumps({
             "success": result.status == "completed",
             "agent_id": result.agent_id,
-            "name": agent_name,
+            "name": result.agent_name,
             "status": result.status,
-            "result": result.result,
-            "error": result.error
+            "result": result.result
         }, ensure_ascii=False)
 
     async def cleanup(self):
@@ -536,4 +535,4 @@ class SubagentManager:
         finally:
             await agent.cleanup()
 
-        return result, agent.name
+        return result
