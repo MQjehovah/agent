@@ -202,23 +202,17 @@ async def main():
         plugin_manager.start_all()
 
     loop = asyncio.get_running_loop()
+    shutdown_event = _shutdown_event
 
     def signal_handler():
         logger.info("收到退出信号...")
-        if _shutdown_event:
-            _shutdown_event.set()
+        shutdown_event.set()
 
-    try:
-        loop.add_signal_handler(signal.SIGINT, signal_handler)
-        loop.add_signal_handler(signal.SIGTERM, signal_handler)
-    except NotImplementedError:
-        if sys.platform == "win32":
-            def win_signal_handler(sig, frame):
-                logger.info("收到退出信号...")
-                if _shutdown_event:
-                    _shutdown_event.set()
-            signal.signal(signal.SIGINT, win_signal_handler)
-            signal.signal(signal.SIGTERM, win_signal_handler)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except NotImplementedError:
+            pass
 
     try:
         if args.task:
