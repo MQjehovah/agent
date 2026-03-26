@@ -44,6 +44,7 @@ class Agent:
         self.skill_manager = None
         self.subagent_manager = None
         self.session_manager = None
+        self.plugin_manager = None
         self.memory = None
         self._background_tasks: set = set()
 
@@ -199,6 +200,11 @@ class Agent:
 
         if self.skill_manager:
             tools.extend(self.skill_manager.get_tool_definitions())
+
+        if self.plugin_manager:
+            for plugin in self.plugin_manager.plugins.values():
+                if plugin.enabled:
+                    tools.extend(plugin.get_tool_defs())
 
         return tools
 
@@ -381,6 +387,13 @@ class Agent:
 
             if self.mcp:
                 return await self.mcp.call_tool(name, args)
+
+            if self.plugin_manager:
+                for plugin in self.plugin_manager.plugins.values():
+                    if plugin.enabled:
+                        tool_defs = plugin.get_tool_defs()
+                        if any(t.get("function", {}).get("name") == name for t in tool_defs):
+                            return await plugin.execute_tool(name, args)
 
             return f"工具 {name} 不存在"
         except Exception as e:

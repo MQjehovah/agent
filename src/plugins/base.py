@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List
 
 logger = logging.getLogger("agent.plugins")
 
@@ -31,6 +31,12 @@ class BasePlugin(ABC):
     def register_agent(self, executor: Callable):
         self.agent_executor = executor
         logger.info(f"Plugin [{self.name}] agent registered")
+    
+    def get_tool_defs(self) -> List[Dict[str, Any]]:
+        return []
+    
+    async def execute_tool(self, name: str, args: Dict[str, Any]) -> str:
+        return f"Tool {name} not implemented in plugin {self.name}"
     
     def get_info(self) -> Dict[str, Any]:
         return {

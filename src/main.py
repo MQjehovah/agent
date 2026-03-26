@@ -201,6 +201,8 @@ async def main():
         plugin_manager.register_agent(run_agent)
         plugin_manager.start_all()
 
+    agent.plugin_manager = plugin_manager
+
     loop = asyncio.get_running_loop()
     shutdown_event = _shutdown_event
 

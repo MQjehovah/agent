@@ -50,6 +50,24 @@ class DingTalkSession:
             logger.error(f"Session {self.session_id} 执行失败: {e}")
             return f"处理失败: {e}"
 
+    async def send_image(self, image_path: str) -> bool:
+        if not self._plugin or not self._plugin._client:
+            logger.warning("DingTalk client not initialized")
+            return False
+        
+        try:
+            import dingtalk_stream
+            await self._plugin._client.media.upload(
+                media_type=dingtalk_stream.MediaType.IMAGE,
+                file_path=image_path,
+                conversation_id=self.conversation_id
+            )
+            logger.info(f"已发送图片: {image_path}")
+            return True
+        except Exception as e:
+            logger.error(f"发送图片失败: {e}")
+            return False
+
 
 class DingTalkPlugin(BasePlugin):
     name = "dingtalk"
@@ -161,6 +179,53 @@ class DingTalkPlugin(BasePlugin):
             self._task.cancel()
         logger.info("DingTalk plugin stopped")
 
+    def get_tool_defs(self) -> List[Dict[str, Any]]:
+        return [{
+            "type": "function",
+            "function": {
+                "name": "send_image_to_dingtalk",
+                "description": "发送本地图片到钉钉对话中。适用于需要展示图片给用户的场景，例如截图、图表等。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "image_path": {
+                            "type": "string",
+                            "description": "图片的本地文件路径，例如: /path/to/image.png 或 screenshot.png"
+                        }
+                    },
+                    "required": ["image_path"]
+                }
+            }
+        }]
+
+    async def execute_tool(self, name: str, args: Dict[str, Any]) -> str:
+        if name == "send_image_to_dingtalk":
+            return await self._send_image(args.get("image_path", ""))
+        return f"Tool {name} not implemented"
+
+    async def _send_image(self, image_path: str) -> str:
+        if not self._client:
+            return "错误: 钉钉客户端未连接"
+        
+        if not self.sessions:
+            return "错误: 没有活跃的钉钉会话"
+        
+        try:
+            import dingtalk_stream
+            session = list(self.sessions.values())[0]
+            media = await self._client.media.upload(
+                media_type=dingtalk_stream.MediaType.IMAGE,
+                file_path=image_path,
+                conversation_id=session.conversation_id
+            )
+            
+            handler = self._client._callback_handler
+            handler.reply_image(media.media_id, type('Message', (), {'conversation_id': session.conversation_id})())
+            
+            return f"图片已发送: {image_path}"
+        except Exception as e:
+            return f"发送图片失败: {e}"
+
     def get_session(self, conversation_id: str, sender_id: str, sender_nick: str, robot_code: str) -> DingTalkSession:
         session_id = f"{conversation_id}_{sender_id}"
         
@@ -196,6 +261,20 @@ class AgentChatbotHandler:
         if self._handler:
             self._handler.reply_text(content, incoming_message)
             self.logger.info(f"已回复消息: {content[:50]}...")
+
+    def reply_image(self, image_path: str, incoming_message):
+        if self._handler and self.plugin._client:
+            import dingtalk_stream
+            try:
+                media = self.plugin._client.media.upload(
+                    media_type=dingtalk_stream.MediaType.IMAGE,
+                    file_path=image_path,
+                    conversation_id=incoming_message.conversation_id
+                )
+                self._handler.reply_image(media.media_id, incoming_message)
+                self.logger.info(f"已回复图片: {image_path}")
+            except Exception as e:
+                self.logger.error(f"回复图片失败: {e}")
 
     async def process(self, callback):
         import dingtalk_stream
