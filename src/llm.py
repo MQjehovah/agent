@@ -87,7 +87,7 @@ class LLMClient:
                     "stream": True, "chunks": chunks, "total_tokens": total_tokens}
         api_logger.debug(json.dumps(log_data, ensure_ascii=False))
 
-    def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], stream: bool = True):
+    def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], stream: bool = False):
         params = {
             "model": self.model,
             "messages": messages,
@@ -97,7 +97,11 @@ class LLMClient:
             params["tools"] = tools
 
         self._log_request(params)
-        response = self.client.chat.completions.create(**params)
+        try:
+            response = self.client.chat.completions.create(**params)
+        except Exception as e:
+            api_logger.error(f"API调用失败: {e}")
+            raise e
         if stream:
             self._log_stream_response(response)
         else:

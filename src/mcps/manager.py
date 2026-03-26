@@ -11,7 +11,7 @@ logger = logging.getLogger("agent")
 
 class MCPServerConnection:
     """MCP服务器连接管理"""
-    
+
     def __init__(self, name: str, config: Dict[str, Any], base_dir: str = ""):
         self.name = name
         self.config = config
@@ -28,7 +28,8 @@ class MCPServerConnection:
         args = self.config.get("args", [])
         env = self.config.get("env", {})
 
-        resolved_args = [os.path.join(self.base_dir, a) if not os.path.isabs(a) else a for a in args]
+        resolved_args = [os.path.join(
+            self.base_dir, a) if not os.path.isabs(a) else a for a in args]
 
         merged_env = dict(os.environ)
         merged_env.update(env)
@@ -117,7 +118,7 @@ class MCPServerConnection:
 
 class MCPManager:
     """MCP服务器管理器"""
-    
+
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path
         self.servers: Dict[str, MCPServerConnection] = {}
@@ -159,7 +160,8 @@ class MCPManager:
     async def connect(self):
         """连接所有MCP服务器"""
         configs = self.load_config()
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        base_dir = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))
 
         for config in configs:
             name = config.get("name", "unnamed")
@@ -178,6 +180,10 @@ class MCPManager:
         """关闭所有MCP连接"""
         for server in list(reversed(self.servers.values())):
             await server.close()
+
+    def has_tool(self, name: str) -> bool:
+        """检查是否有指定工具"""
+        return name in self._tool_to_server
 
     async def call_tool(self, name: str, args: Dict) -> str:
         """调用MCP工具"""
@@ -199,10 +205,10 @@ class MCPManager:
 
     async def connect_server(self, config: Dict[str, Any]) -> bool:
         """动态连接MCP服务器
-        
+
         Args:
             config: MCP服务器配置
-            
+
         Returns:
             是否连接成功
         """
@@ -210,13 +216,15 @@ class MCPManager:
         if name in self.servers:
             await self.disconnect_server(name)
 
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        base_dir = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))
         server = MCPServerConnection(name, config, base_dir)
         success = await server.connect()
         if success:
             self.servers[name] = server
             self._refresh_tool_defs()
-            logger.debug(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
+            logger.debug(
+                f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
             return True
         else:
             logger.debug(f"✗ MCP服务 [{name}] 动态连接失败")
@@ -224,10 +232,10 @@ class MCPManager:
 
     async def disconnect_server(self, name: str) -> bool:
         """断开MCP服务器
-        
+
         Args:
             name: 服务器名称
-            
+
         Returns:
             是否断开成功
         """
@@ -243,10 +251,10 @@ class MCPManager:
 
     async def reload_server(self, name: str) -> bool:
         """重载MCP服务器
-        
+
         Args:
             name: 服务器名称
-            
+
         Returns:
             是否重载成功
         """
@@ -262,7 +270,7 @@ class MCPManager:
 
     async def reload_all(self) -> Dict[str, bool]:
         """重载所有MCP服务器
-        
+
         Returns:
             各服务器的重载结果
         """

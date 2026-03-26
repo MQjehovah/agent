@@ -277,7 +277,8 @@ class Agent:
 
                         session.messages.append({
                             "role": "tool",
-                            "content": result,
+                            "name": func_name,
+                            "content": str(result),
                             "tool_call_id": tc.get("id", "")
                         })
 
@@ -385,7 +386,7 @@ class Agent:
             if self.skill_manager and name == "execute_skill":
                 return await self.skill_manager.execute_tool(name, args)
 
-            if self.mcp:
+            if self.mcp and self.mcp.has_tool(name):
                 return await self.mcp.call_tool(name, args)
 
             if self.plugin_manager:
