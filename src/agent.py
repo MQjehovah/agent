@@ -8,7 +8,7 @@ import os
 import re
 import json
 
-logger = logging.getLogger("agent.subagent")
+logger = logging.getLogger("agent.agent")
 
 
 @dataclass
@@ -334,6 +334,10 @@ class Agent:
                 stream=False
             )
 
+            if not response.choices:
+                logger.error(f"Agent [{self.name}] no choices returned from LLM")
+                raise Exception("No choices returned")
+
             choice = response.choices[0]
             msg = choice.message
 
@@ -408,16 +412,20 @@ class Agent:
         if not task:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
 
-        result = await self.subagent_manager.run_subagent(
-            task=task,
-            template=args.get("template", ""),
-            name=args.get("name", ""),
-            system_prompt=args.get("system_prompt", ""),
-            tools=args.get("tools"),
-            mcp_servers=args.get("mcp_servers"),
-            client=self.client,
-            parent_agent=self
-        )
+        try:
+            result = await self.subagent_manager.run_subagent(
+                task=task,
+                template=args.get("template", ""),
+                name=args.get("name", ""),
+                system_prompt=args.get("system_prompt", ""),
+                tools=args.get("tools"),
+                mcp_servers=args.get("mcp_servers"),
+                client=self.client,
+                parent_agent=self
+            )
+        except Exception as e:
+            logger.error(f"Subagent execution error: {e}")
+            return json.dumps({"success": False, "error": f"子代理执行错误: {e}"}, ensure_ascii=False)
 
         return json.dumps({
             "success": result.status == "completed",

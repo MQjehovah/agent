@@ -23,7 +23,7 @@ console = Console()
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(message)s",
+    format="%(name)s - %(message)s",
     datefmt="[%X]",
     handlers=[RichHandler(console=console, rich_tracebacks=True,
                           show_time=True, show_path=False)]
@@ -31,7 +31,7 @@ logging.basicConfig(
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-logger = logging.getLogger("agent")
+logger = logging.getLogger("agent.main")
 
 _shutdown_event: Optional[asyncio.Event] = None
 
