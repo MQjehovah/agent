@@ -533,6 +533,14 @@ class SubagentManager:
 
         try:
             result = await agent.run(task)
+        except Exception as e:
+            result = AgentResult(
+                agent_id=agent.agent_id,
+                agent_name=agent.name,
+                status="failed",
+                result=f"子代理执行错误: {e}"
+            )
+            logger.error(f"子代理执行错误: {e}")
         finally:
             await agent.cleanup()
 

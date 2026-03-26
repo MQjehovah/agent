@@ -150,8 +150,7 @@ async def interactive_mode(agent: Agent):
             break
 
         console.print()
-        # result = await agent.run(question, session_id="cli")  # 交互模式下的会话
-        result = await asyncio.get_event_loop().run_in_executor(None, agent.run(question, session_id="cli"))
+        result = await agent.run(question, session_id="cli")  # 交互模式下的会话
 
         console.print(Panel.fit(
             f"[bold green]执行结果:[/bold green]\n{result.result}",
