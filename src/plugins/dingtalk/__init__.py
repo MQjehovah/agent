@@ -28,6 +28,9 @@ class DingTalkConfig:
             client_secret=stream_data.get("client_secret", ""),
             enabled=stream_data.get("enabled", True)
         )
+        
+        if "enabled" in data:
+            self.enabled = data.get("enabled", True)
 
 
 @dataclass

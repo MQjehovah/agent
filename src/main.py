@@ -126,7 +126,7 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
             else:
                 console.print("[yellow]Session Manager 未初始化[/yellow]")
             continue
-        
+
         if question.strip().lower().startswith("/messages"):
             session_id = "cli"
             session = None
@@ -150,7 +150,7 @@ async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] =
             break
 
         console.print()
-        result = await agent.run(question, session_id="cli") # 交互模式下的会话
+        result = await agent.run(question, session_id="cli")  # 交互模式下的会话
 
         console.print(Panel.fit(
             f"[bold green]执行结果:[/bold green]\n{result.result}",
@@ -219,7 +219,7 @@ async def main():
     try:
         if args.task:
             result = await agent.run(args.task)
-            print(result.result)
+            print("=======================>", result.result)
         else:
             await interactive_mode(agent, scheduler)
         if not _shutdown_event.is_set():

@@ -303,12 +303,12 @@ class Agent:
             self.error = str(e)
             logger.error(f"Agent [{self.name}] failed: {e}")
 
-        if self.memory:
-            self.memory.add_summary(task, self.result or "")
-            self.memory.save_session()
-            bg_task = asyncio.create_task(self._background_memory_extract())
-            self._background_tasks.add(bg_task)
-            bg_task.add_done_callback(self._background_tasks.discard)
+        # if self.memory:
+        #     self.memory.add_summary(task, self.result or "")
+        #     self.memory.save_session()
+        #     bg_task = asyncio.create_task(self._background_memory_extract())
+        #     self._background_tasks.add(bg_task)
+        #     bg_task.add_done_callback(self._background_tasks.discard)
 
         logger.debug(
             f"Agent [{self.name}] session完成: {session_id}, 消息数: {len(session.messages)}")
@@ -348,7 +348,13 @@ class Agent:
                 for tc in msg.tool_calls:
                     func_args = tc.function.arguments
                     if isinstance(func_args, str):
-                        pass
+                        try:
+                            json.loads(func_args)
+                        except (json.JSONDecodeError, ValueError):
+                            try:
+                                func_args = json.dumps(func_args, ensure_ascii=False)
+                            except Exception:
+                                func_args = "{}"
                     elif isinstance(func_args, dict):
                         logger.warning(f"Agent [{self.name}] function.arguments is dict, converting to JSON string")
                         func_args = json.dumps(func_args, ensure_ascii=False)
@@ -390,9 +396,12 @@ class Agent:
 
             if self.plugin_manager:
                 for plugin in self.plugin_manager.plugins.values():
+                    logger.debug(f"检查插件 {plugin.name}, enabled={plugin.enabled}")
                     if plugin.enabled:
                         tool_defs = plugin.get_tool_defs()
+                        logger.debug(f"插件 {plugin.name} 工具定义: {[t.get('function', {}).get('name') for t in tool_defs]}")
                         if any(t.get("function", {}).get("name") == name for t in tool_defs):
+                            logger.info(f"执行插件工具: {plugin.name}.{name}")
                             return await plugin.execute_tool(name, args)
 
             return f"工具 {name} 不存在"

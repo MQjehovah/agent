@@ -18,7 +18,6 @@ handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
 api_logger.addHandler(handler)
 
 
-
 class LLMClient:
     def __init__(self, model: str = "MiniMax-M2.5", base_url: Optional[str] = None, api_key: Optional[str] = None):
         self.model = model
@@ -37,6 +36,45 @@ class LLMClient:
             "messages", []), "tools": params.get("tools"), "stream": params.get("stream")}
         api_logger.debug(json.dumps(log_data, ensure_ascii=False))
 
+    def _log_response(self, response):
+        try:
+            if response.choices:
+                content = response.choices[0].message.content
+                tool_calls = None
+                if response.choices[0].message.tool_calls:
+                    tool_calls = []
+                    for tc in response.choices[0].message.tool_calls:
+                        func_args = tc.function.arguments
+                        if isinstance(func_args, str):
+                            try:
+                                json.loads(func_args)
+                            except (json.JSONDecodeError, ValueError):
+                                try:
+                                    func_args = json.dumps(
+                                        func_args, ensure_ascii=False)
+                                except Exception:
+                                    func_args = "{}"
+                        elif isinstance(func_args, dict):
+                            func_args = json.dumps(
+                                func_args, ensure_ascii=False)
+                        else:
+                            func_args = "{}"
+                        tool_calls.append({
+                            "id": tc.id,
+                            "type": tc.type,
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": func_args
+                            }
+                        })
+
+            log_data = {"type": "response", "model": response.model, "choices": {"content": content, "tool_calls": tool_calls} if response.choices else None,
+                        "usage": {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens, "total_tokens": response.usage.total_tokens} if response.usage else None}
+            api_logger.debug(json.dumps(log_data, ensure_ascii=False))
+        except Exception as e:
+            print("+++++++++++++++++++++++++++++++", e)
+            print(response)
+
     def _log_stream_response(self, response):
         total_tokens = 0
         chunks = 0
@@ -48,14 +86,6 @@ class LLMClient:
         log_data = {"type": "response", "model": self.model,
                     "stream": True, "chunks": chunks, "total_tokens": total_tokens}
         api_logger.debug(json.dumps(log_data, ensure_ascii=False))
-
-    def _log_response(self, response):
-        try:
-            log_data = {"type": "response", "model": response.model, "choices": {"content": response.choices[0].message.content, "tool_calls": response.choices[0].message.tool_calls} if response.choices else None,
-                        "usage": {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens, "total_tokens": response.usage.total_tokens} if response.usage else None}
-            api_logger.debug(json.dumps(log_data, ensure_ascii=False))
-        except Exception as e:
-            print(e)
 
     def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], stream: bool = True):
         params = {
