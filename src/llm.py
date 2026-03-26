@@ -9,11 +9,13 @@ from openai import OpenAI
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-api_logger = logging.getLogger("api_call")
+api_logger = logging.getLogger("api")
 api_logger.setLevel(logging.DEBUG)
-handler = logging.FileHandler(os.path.join(LOG_DIR, f"api_calls_{datetime.now().strftime('%Y%m%d')}.log"), encoding="utf-8")
+handler = logging.FileHandler(os.path.join(
+    LOG_DIR, f"api_{datetime.now().strftime('%Y%m%d')}.log"), encoding="utf-8")
 handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
 api_logger.addHandler(handler)
+
 
 
 class LLMClient:
@@ -30,15 +32,29 @@ class LLMClient:
         )
 
     def _log_request(self, params: Dict[str, Any]):
-        log_data = {"type": "request", "model": params.get("model"), "messages_count": len(params.get("messages", [])), "tools": bool(params.get("tools")), "stream": params.get("stream")}
+        log_data = {"type": "request", "model": params.get("model"), "messages": params.get(
+            "messages", []), "tools": params.get("tools"), "stream": params.get("stream")}
+        api_logger.debug(json.dumps(log_data, ensure_ascii=False))
+
+    def _log_stream_response(self, response):
+        total_tokens = 0
+        chunks = 0
+        for chunk in response:
+            chunks += 1
+            if chunk.usage:
+                total_tokens = chunk.usage.total_tokens
+            yield chunk
+        log_data = {"type": "response", "model": self.model,
+                    "stream": True, "chunks": chunks, "total_tokens": total_tokens}
         api_logger.debug(json.dumps(log_data, ensure_ascii=False))
 
     def _log_response(self, response):
         try:
-            log_data = {"type": "response", "model": response.model, "usage": {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens, "total_tokens": response.usage.total_tokens} if response.usage else None, "choices_count": len(response.choices)}
+            log_data = {"type": "response", "model": response.model, "choices": {"content": response.choices[0].message.content, "tool_calls": response.choices[0].message.tool_calls} if response.choices else None,
+                        "usage": {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens, "total_tokens": response.usage.total_tokens} if response.usage else None}
             api_logger.debug(json.dumps(log_data, ensure_ascii=False))
-        except Exception:
-            pass
+        except Exception as e:
+            print(e)
 
     def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], stream: bool = True):
         params = {
@@ -48,8 +64,14 @@ class LLMClient:
         }
         if tools:
             params["tools"] = tools
+
         self._log_request(params)
-        return self.client.chat.completions.create(**params)
+        response = self.client.chat.completions.create(**params)
+        if stream:
+            self._log_stream_response(response)
+        else:
+            self._log_response(response)
+        return response
 
     def chat_sync(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]):
         params = {
