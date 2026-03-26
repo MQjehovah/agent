@@ -246,28 +246,10 @@ class Agent:
                 response = await self._think(session.messages)
                 msg = response.get("message", {})
 
-                tool_calls = msg.get("tool_calls")
-                if tool_calls:
-                    formatted_tool_calls = []
-                    for tc in tool_calls:
-                        tc_copy = tc.copy()
-                        func_args = tc_copy.get("function", {}).get("arguments")
-                        if isinstance(func_args, dict):
-                            tc_copy["function"] = tc_copy["function"].copy()
-                            tc_copy["function"]["arguments"] = json.dumps(func_args, ensure_ascii=False)
-                        elif func_args is None:
-                            tc_copy["function"] = tc_copy["function"].copy()
-                            tc_copy["function"]["arguments"] = "{}"
-                        elif isinstance(func_args, str) and not func_args.strip():
-                            tc_copy["function"] = tc_copy["function"].copy()
-                            tc_copy["function"]["arguments"] = "{}"
-                        formatted_tool_calls.append(tc_copy)
-                    tool_calls = formatted_tool_calls
-
                 session.messages.append({
                     "role": "assistant",
                     "content": msg.get("content"),
-                    "tool_calls": tool_calls
+                    "tool_calls": msg.get("tool_calls")
                 })
 
                 if msg.get("tool_calls"):
@@ -358,12 +340,21 @@ class Agent:
             if msg.tool_calls:
                 tool_calls = []
                 for tc in msg.tool_calls:
+                    func_args = tc.function.arguments
+                    if isinstance(func_args, str):
+                        pass
+                    elif isinstance(func_args, dict):
+                        logger.warning(f"Agent [{self.name}] function.arguments is dict, converting to JSON string")
+                        func_args = json.dumps(func_args, ensure_ascii=False)
+                    else:
+                        logger.warning(f"Agent [{self.name}] function.arguments is {type(func_args)}, set to empty object")
+                        func_args = "{}"
                     tool_calls.append({
                         "id": tc.id,
                         "type": tc.type,
                         "function": {
                             "name": tc.function.name,
-                            "arguments": tc.function.arguments
+                            "arguments": func_args
                         }
                     })
 
