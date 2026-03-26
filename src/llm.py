@@ -10,8 +10,8 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 api_logger = logging.getLogger("api")
-api_logger.setLevel(logging.DEBUG)
 api_logger.propagate = False
+api_logger.setLevel(logging.DEBUG)
 handler = logging.FileHandler(os.path.join(
     LOG_DIR, f"api_{datetime.now().strftime('%Y%m%d')}.log"), encoding="utf-8")
 handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
@@ -102,17 +102,4 @@ class LLMClient:
             self._log_stream_response(response)
         else:
             self._log_response(response)
-        return response
-
-    def chat_sync(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]):
-        params = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False
-        }
-        if tools:
-            params["tools"] = tools
-        self._log_request(params)
-        response = self.client.chat.completions.create(**params)
-        self._log_response(response)
         return response

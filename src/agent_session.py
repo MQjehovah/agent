@@ -12,7 +12,6 @@ logger = logging.getLogger("agent.session")
 class AgentSession:
     session_id: str
     system_prompt: str = ""
-    max_iterations: int = 100
     messages: List[ChatCompletionMessageParam] = field(default_factory=list)
 
     def __post_init__(self):
@@ -51,7 +50,6 @@ class AgentSessionManager:
             session = AgentSession(
                 session_id=session_id,
                 system_prompt=system_prompt,
-                max_iterations=AgentSessionManager.MAX_ITERATIONS
             )
             self.sessions[session_id] = session
             logger.info(f"创建新Session: {session_id}")

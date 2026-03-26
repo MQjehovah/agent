@@ -36,7 +36,7 @@ logger = logging.getLogger("agent")
 _shutdown_event: Optional[asyncio.Event] = None
 
 
-async def interactive_mode(agent: Agent, scheduler: Optional[SchedulerManager] = None):
+async def interactive_mode(agent: Agent):
     global _shutdown_event
     logger.info(f"进入交互模式")
 
@@ -177,9 +177,8 @@ async def main():
 
     workspace = os.path.abspath(args.workspace)
     src_dir = os.path.dirname(os.path.abspath(__file__))
-    client = LLMClient()
 
-    agent = Agent(workspace=workspace, client=client)
+    agent = Agent(workspace=workspace, client=LLMClient())
     await agent.initialize()
 
     scheduler = None
@@ -221,7 +220,7 @@ async def main():
             result = await agent.run(args.task)
             print("=======================>", result.result)
         else:
-            await interactive_mode(agent, scheduler)
+            await interactive_mode(agent)
         if not _shutdown_event.is_set():
             await _shutdown_event.wait()
     except asyncio.CancelledError:

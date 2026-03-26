@@ -52,10 +52,6 @@ class SubagentTool(BuiltinTool):
                     "items": {"type": "string"},
                     "description": "子代理可用的工具列表，为空则使用全部工具"
                 },
-                "max_iterations": {
-                    "type": "integer",
-                    "description": "最大迭代次数，默认50"
-                },
                 "mcp_servers": {
                     "type": "array",
                     "items": {

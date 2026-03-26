@@ -16,7 +16,6 @@ class AgentResult:
     agent_id: str
     status: str
     result: str
-    iterations: int
     error: Optional[str] = None
     completed_at: str = field(
         default_factory=lambda: datetime.now().isoformat())
@@ -37,7 +36,7 @@ class Agent:
         self.name = ""
         self.description = ""
         self.system_prompt = ""
-        self.max_iterations = 50
+        self.max_iterations = 100
 
         self.tool_registry = None
         self.mcp = None
@@ -51,7 +50,6 @@ class Agent:
         self.status = "pending"
         self.result: Optional[str] = None
         self.error: Optional[str] = None
-        self.iterations = 0
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
@@ -103,8 +101,6 @@ class Agent:
             self.description = frontmatter.get("description", "")
             if isinstance(self.description, str):
                 self.description = self.description.strip()
-
-            self.max_iterations = frontmatter.get("max_iterations", 50)
 
         self.system_prompt = body.strip() if body else ""
         logger.debug(f"Agent [{self.name}] 读取prompt {prompt_file}")
@@ -246,7 +242,6 @@ class Agent:
 
         try:
             for i in range(self.max_iterations):
-                self.iterations = i + 1
                 logger.debug(f"Agent [{self.name}] iteration {i + 1}")
 
                 response = await self._think(session.messages)
@@ -317,7 +312,6 @@ class Agent:
             agent_id=self.agent_id,
             status=self.status,
             result=self.result or "",
-            iterations=self.iterations,
             error=self.error
         )
 
@@ -419,7 +413,6 @@ class Agent:
             name=args.get("name", ""),
             system_prompt=args.get("system_prompt", ""),
             tools=args.get("tools"),
-            max_iterations=args.get("max_iterations", 50),
             mcp_servers=args.get("mcp_servers"),
             client=self.client,
             parent_agent=self
@@ -431,7 +424,6 @@ class Agent:
             "name": agent_name,
             "status": result.status,
             "result": result.result,
-            "iterations": result.iterations,
             "error": result.error
         }, ensure_ascii=False)
 
@@ -491,7 +483,6 @@ class SubagentManager:
         name: str = "",
         system_prompt: str = "",
         tools: Optional[List[str]] = None,
-        max_iterations: int = 50,
         mcp_servers: Optional[List[Dict[str, Any]]] = None,
         client=None,
         parent_agent: Agent = None
@@ -511,7 +502,6 @@ class SubagentManager:
                 skill_content += f"name: {name}\n"
             if system_prompt:
                 pass
-            skill_content += f"max_iterations: {max_iterations}\n"
             if tools:
                 skill_content += f"tools: {tools}\n"
             skill_content += "---\n"
@@ -536,8 +526,8 @@ class SubagentManager:
             parent_agent=parent_agent
         )
 
-        if max_iterations != 50:
-            agent.max_iterations = max_iterations
+        if parent_agent:
+            agent.plugin_manager = parent_agent.plugin_manager
 
         await agent.initialize()
 
