@@ -43,11 +43,11 @@ class DingTalkSession:
     _plugin: Optional["DingTalkPlugin"] = field(default=None, repr=False)
 
     async def send_to_agent(self, content: str) -> str:
-        if not self._plugin or not self._plugin.agent_executor:
-            return "Agent未就绪"
+        if not self._plugin or not self._plugin.plugin_manager:
+            return "PluginManager未就绪"
         
         try:
-            result = await self._plugin.agent_executor(self.session_id, content)
+            result = await self._plugin.plugin_manager.execute(self.session_id, content)
             return result
         except Exception as e:
             logger.error(f"Session {self.session_id} 执行失败: {e!r}")
@@ -104,7 +104,7 @@ class DingTalkPlugin(BasePlugin):
 
     def start(self):
         if not self.config.stream.enabled:
-            logger.info("DingTalk plugin is disabled")
+            logger.warning("DingTalk plugin is disabled")
             return
         
         if not self.config.stream.client_id or not self.config.stream.client_secret:
@@ -247,10 +247,15 @@ class AgentChatbotHandler:
         self._handler = dingtalk_stream.ChatbotHandler()
         self._handler.pre_start()
 
-    def reply_text(self, content: str, incoming_message):
+    def reply_text(self, content: str, incoming_message, msgtype: str = "markdown"):
         if self._handler:
-            self._handler.reply_text(content, incoming_message)
-            self.logger.info(f"已回复消息: {content[:50]}...")
+            if msgtype == "markdown":
+                title = content.split('\n')[0][:50] if content else "回复"
+                self._handler.reply_markdown(title, content, incoming_message)
+                self.logger.info(f"已回复Markdown消息: {title}")
+            else:
+                self._handler.reply_text(content, incoming_message)
+                self.logger.info(f"已回复文本消息: {content[:50]}...")
 
     def reply_image(self, image_path: str, incoming_message):
         if self._handler and self.plugin._client:
@@ -279,13 +284,14 @@ class AgentChatbotHandler:
             if not content:
                 self.logger.debug("Empty message, skipping")
                 return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
-            
-            conversation_id = incoming_message.conversation_id or ""
+
             sender_id = incoming_message.sender_id or ""
             sender_nick = incoming_message.sender_nick or ""
+            message_type = incoming_message.message_type or ""
+            conversation_id = incoming_message.conversation_id or ""
             robot_code = incoming_message.robot_code or ""
             
-            self.logger.info(f"收到消息: [{sender_nick}] {content[:50]}...")
+            self.logger.info(f"收到消息: [{sender_nick}] {content}...")
             
             session = self.plugin.get_session(
                 conversation_id=conversation_id,
@@ -294,7 +300,7 @@ class AgentChatbotHandler:
                 robot_code=robot_code
             )
             
-            if not self.plugin.agent_executor:
+            if not self.plugin.plugin_manager:
                 response = "Agent未注册，请稍后再试"
             else:
                 response = await session.send_to_agent(content)

@@ -1,6 +1,9 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional, Callable, Dict, Any, List
+from typing import Optional, Callable, Dict, Any, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from plugins import PluginManager
 
 logger = logging.getLogger("agent.plugins")
 
@@ -13,7 +16,7 @@ class BasePlugin(ABC):
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path
         self.enabled = True
-        self.agent_executor: Optional[Callable] = None
+        self.plugin_manager: Optional["PluginManager"] = None
         self._load_config()
     
     @abstractmethod
@@ -28,8 +31,8 @@ class BasePlugin(ABC):
     def stop(self):
         pass
     
-    def register_agent(self, executor: Callable):
-        self.agent_executor = executor
+    def set_plugin_manager(self, plugin_manager: "PluginManager"):
+        self.plugin_manager = plugin_manager
         logger.debug(f"注册插件：{self.name}")
     
     def get_tool_defs(self) -> List[Dict[str, Any]]:

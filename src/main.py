@@ -219,10 +219,9 @@ async def main():
         plugins_dir = os.path.join(src_dir, "plugins")
         plugin_manager = PluginManager(plugins_dir)
         plugin_manager.load_all()
-        plugin_manager.register_agent(run_agent)
+        plugin_manager.set_agent(agent)
         plugin_manager.start_all()
-
-    agent.plugin_manager = plugin_manager
+        agent.plugin_manager = plugin_manager
 
     loop = asyncio.get_running_loop()
     shutdown_event = _shutdown_event

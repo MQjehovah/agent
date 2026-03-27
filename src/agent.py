@@ -1,12 +1,15 @@
 import logging
 import uuid
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
 import os
 import re
 import json
+
+if TYPE_CHECKING:
+    from plugins import PluginManager
 
 logger = logging.getLogger("agent.agent")
 
@@ -43,7 +46,7 @@ class Agent:
         self.skill_manager = None
         self.subagent_manager = None
         self.session_manager = None
-        self.plugin_manager = None
+        self.plugin_manager: Optional["PluginManager"] = None
         self.memory = None
         self._background_tasks: set = set()
 

@@ -15,6 +15,8 @@ class PluginManager:
         self.plugins_dir = plugins_dir
         self.plugins: Dict[str, BasePlugin] = {}
         self._plugin_classes: Dict[str, Type[BasePlugin]] = {}
+        self.agent = None
+        self._executor: Optional[Callable] = None
     
     def discover(self) -> List[str]:
         if not self.plugins_dir or not os.path.exists(self.plugins_dir):
@@ -66,10 +68,22 @@ class PluginManager:
         logger.info(f"Loaded {loaded}/{len(discovered)} plugins")
         return loaded
     
-    def register_agent(self, executor: Callable):
+    def set_agent(self, agent):
+        self.agent = agent
+        self._executor = lambda session_id, content: agent.run(content, session_id=session_id)
         for plugin in self.plugins.values():
             if plugin.enabled:
-                plugin.register_agent(executor)
+                plugin.set_plugin_manager(self)
+    
+    def register_agent(self, agent):
+        logger.warning("register_agent is deprecated, use set_agent instead")
+        self.set_agent(agent)
+    
+    async def execute(self, session_id: str, content: str) -> str:
+        if not self._executor:
+            raise RuntimeError("Agent not registered")
+        result = await self._executor(session_id, content)
+        return result.result if hasattr(result, 'result') else str(result)
     
     def start_all(self):
         for name, plugin in self.plugins.items():
