@@ -92,8 +92,6 @@ class DingTalkPlugin(BasePlugin):
                 with open(config_file, encoding="utf-8") as f:
                     data = json.load(f)
                 self.config.load_from_dict(data)
-                logger.info(f"Loaded dingtalk config from {config_file}")
-                logger.info(f"  client_id: {self.config.stream.client_id[:8]}... (enabled={self.config.stream.enabled})")
             except Exception as e:
                 logger.error(f"Failed to load dingtalk config: {e!r}")
         else:
@@ -105,8 +103,6 @@ class DingTalkPlugin(BasePlugin):
         self._task: Optional[asyncio.Task] = None
 
     def start(self):
-        logger.info(f"DingTalk plugin start() called, enabled={self.config.stream.enabled}")
-        
         if not self.config.stream.enabled:
             logger.info("DingTalk plugin is disabled")
             return
@@ -117,7 +113,6 @@ class DingTalkPlugin(BasePlugin):
         
         try:
             import dingtalk_stream
-            logger.info("dingtalk-stream imported successfully")
         except ImportError as e:
             logger.error(f"dingtalk-stream is required. Install: pip install dingtalk-stream. Error: {e!r}")
             return
@@ -127,7 +122,6 @@ class DingTalkPlugin(BasePlugin):
         try:
             loop = asyncio.get_running_loop()
             self._task = loop.create_task(self._run_stream_client())
-            logger.info(f"DingTalk Stream task created in existing loop")
         except RuntimeError:
             logger.warning("No running event loop, will start in separate thread")
             import threading
@@ -139,8 +133,6 @@ class DingTalkPlugin(BasePlugin):
 
     async def _run_stream_client(self):
         import dingtalk_stream
-        
-        logger.info("Initializing DingTalk Stream client...")
         
         credential = dingtalk_stream.Credential(
             self.config.stream.client_id,
@@ -155,15 +147,11 @@ class DingTalkPlugin(BasePlugin):
             handler
         )
         
-        logger.info("DingTalk Stream client registered, starting connection...")
-        
         while self._running:
             try:
-                logger.info("DingTalk Stream client connecting...")
                 await self._client.start()
-                logger.info("DingTalk Stream client connected")
             except asyncio.CancelledError:
-                logger.info("DingTalk Stream client cancelled")
+                logger.warning("DingTalk Stream client cancelled")
                 raise
             except Exception as e:
                 logger.error(f"DingTalk Stream client error: {type(e).__name__}: {e!r}")
@@ -258,7 +246,6 @@ class AgentChatbotHandler:
         import dingtalk_stream
         self._handler = dingtalk_stream.ChatbotHandler()
         self._handler.pre_start()
-        self.logger.info("DingTalk Stream handler pre_start")
 
     def reply_text(self, content: str, incoming_message):
         if self._handler:

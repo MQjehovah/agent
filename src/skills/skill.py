@@ -78,6 +78,7 @@ class SkillLoader:
             skill_path = os.path.join(self.skills_dir, item)
             if os.path.isdir(skill_path):
                 if self.load_skill(skill_path):
+                    logger.debug(f"加载技能: {item}")
                     loaded += 1
 
         return loaded

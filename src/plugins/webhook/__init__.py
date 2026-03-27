@@ -92,7 +92,6 @@ class WebhookPlugin(BasePlugin):
             daemon=True
         )
         self._thread.start()
-        logger.info(f"Webhook plugin started: http://{host}:{port}{self.config.path}")
 
     def _setup_routes(self):
         from flask import request, Response

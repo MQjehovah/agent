@@ -30,7 +30,7 @@ class BasePlugin(ABC):
     
     def register_agent(self, executor: Callable):
         self.agent_executor = executor
-        logger.info(f"Plugin [{self.name}] agent registered")
+        logger.debug(f"注册插件：{self.name}")
     
     def get_tool_defs(self) -> List[Dict[str, Any]]:
         return []

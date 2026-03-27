@@ -64,7 +64,7 @@ class SchedulerManager:
                     args=[schedule],
                     name=name
                 )
-                logger.info(f"✓ 已注册定时任务: {name} ({cron})")
+                logger.debug(f"注册定时任务: {name} ({cron})")
             except Exception as e:
                 logger.error(f"✗ 注册定时任务失败: {name}, 错误: {e}")
 

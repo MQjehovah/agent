@@ -35,7 +35,6 @@ class MemoryManager:
     def _ensure_dirs(self):
         os.makedirs(self.sessions_dir, exist_ok=True)
         os.makedirs(self.daily_dir, exist_ok=True)
-        logger.debug(f"Memory directories initialized at {self.memory_dir}")
     
     def start_session(self, session_id: str = None) -> str:
         if session_id:

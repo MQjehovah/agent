@@ -102,8 +102,6 @@ class Agent:
                 self.description = self.description.strip()
 
         self.system_prompt = body.strip() if body else ""
-        logger.debug(f"Agent [{self.name}] 读取prompt {prompt_file}")
-        logger.info(f"Agent [{self.name}] prompt initialized")
 
     def _init_tools(self):
         from tools import ToolRegistry, TodoTool, FileTool, SubagentTool, MemoryTool, ShellTool
@@ -115,7 +113,6 @@ class Agent:
         self.tool_registry.register_tool(MemoryTool())
         self.tool_registry.register_tool(ShellTool())
 
-        logger.debug(f"Agent [{self.name}] tools initialized")
         logger.info(
             f"Agent [] 已注册 {len(self.tool_registry.list_tools())} 个工具: {[self.tool_registry.list_tools()]}")
 
@@ -126,8 +123,6 @@ class Agent:
             self.skill_manager = SkillManager(skills_dir)
             self.system_prompt = self.system_prompt + \
                 self.skill_manager.get_skills_prompt()
-            logger.debug(
-                f"Agent [{self.name}] loaded skills from {skills_dir}")
             logger.info(
                 f"Agent [] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
@@ -149,7 +144,7 @@ class Agent:
                 if config.get("enabled", True):
                     await self.mcp.connect_server(config)
                 else:
-                    logger.info(f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
+                    logger.debug(f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
 
             connected = [c.get("name", "unnamed") for c in self.mcp_configs if c.get("enabled", True)]
             logger.info(
@@ -161,8 +156,6 @@ class Agent:
             self.subagent_manager = SubagentManager(agents_dir)
             self.system_prompt = self.system_prompt + \
                 self.subagent_manager.get_subagent_prompt()
-            logger.debug(
-                f"Agent [{self.name}] loaded subagents from {agents_dir}")
             logger.info(
                 f"Agent [] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {[self.subagent_manager.list_templates()]}")
 
@@ -175,13 +168,9 @@ class Agent:
         if memory_context:
             self.system_prompt += f"\n\n## 【记忆上下文】\n{memory_context}"
 
-        logger.info(f"Agent [{self.name}] memory initialized")
-
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
-
-        logger.info(f"Agent [{self.name}] initialized")
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
@@ -469,7 +458,7 @@ class SubagentManager:
                 "workspace": agent_dir
             }
             self.templates[name] = template
-            logger.debug(f"Loaded subagent template: {name}")
+            logger.debug(f"加载子代理模板: {name}")
 
     def get_subagent_prompt(self) -> str:
         if not self.templates:

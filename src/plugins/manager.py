@@ -28,7 +28,6 @@ class PluginManager:
                 init_file = os.path.join(plugin_path, "__init__.py")
                 if os.path.exists(init_file):
                     discovered.append(name)
-                    logger.debug(f"Discovered plugin: {name}")
         
         return discovered
     
@@ -49,7 +48,7 @@ class PluginManager:
             
             plugin = plugin_class(config_path=config_path)
             self.plugins[name] = plugin
-            logger.info(f"Loaded plugin: {name}")
+            logger.debug(f"加载插件: {name}")
             return plugin
             
         except Exception as e:

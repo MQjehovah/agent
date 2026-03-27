@@ -6,6 +6,7 @@ import signal
 from typing import Dict, Any, List, Optional
 
 from rich import box
+from rich.text import Text
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -21,15 +22,36 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 
 console = Console()
 
+
+class AlignedRichHandler(RichHandler):
+    def __init__(self, name_width=20, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name_width = name_width
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # 临时保存原始名称
+        original_name = record.name
+        if self.name_width:
+            # 固定宽度，左对齐，右侧补空格
+            record.name = original_name.ljust(self.name_width)
+        try:
+            super().emit(record)
+        finally:
+            # 恢复原始名称，避免影响其他处理器
+            record.name = original_name
+
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(name)s - %(message)s",
+    format="[%(name)s] - %(message)s",
     datefmt="[%X]",
-    handlers=[RichHandler(console=console, rich_tracebacks=True,
-                          show_time=True, show_path=False)]
+    handlers=[AlignedRichHandler(name_width=25, console=console, rich_tracebacks=True,
+                                 show_time=True, show_path=False)]
 )
 
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 
 logger = logging.getLogger("agent.main")
 
