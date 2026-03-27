@@ -162,7 +162,7 @@ class Agent:
             self.system_prompt = self.system_prompt + \
                 self.subagent_manager.get_subagent_prompt()
             logger.info(
-                f"Agent [] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {[self.subagent_manager.list_templates()]}")
+                f"Agent [{self.name}] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {self.subagent_manager.list_templates()}")
 
     def _init_memory(self, session_id: str = None):
         from memory import MemoryManager
@@ -237,7 +237,7 @@ class Agent:
             for i in range(self.max_iterations):
                 logger.debug(
                     f"Agent [{self.name}] [{session.session_id}] iteration {i + 1}")
-                
+
                 response = await self._think(session.messages)
 
                 msg = response.get("message", {})
@@ -258,7 +258,6 @@ class Agent:
                                 func_args = json.loads(func_args)
                             except:
                                 func_args = {}
-
 
                         logger.debug(
                             f"Agent [{self.name}] [{session.session_id}] -> tool: {func_name} args: {func_args}")
@@ -442,7 +441,6 @@ class Agent:
         if self.mcp:
             await self.mcp.close()
         logger.info(f"Agent [{self.name}] cleaned up")
-        
 
 
 class SubagentManager:
@@ -504,24 +502,25 @@ class SubagentManager:
             return "没有可用的子代理"
 
         lines = ["\n\n## 【SubAgent列表】\n"]
-        for name in self.templates:
-            lines.append(f"[名称：{name}]")
-            lines.append("")
-        return "\n".join(lines) + "\n通过subagent工具调用激活\n"
+        for template_data in self.templates.values():
+            lines.append(f"名称：[{template_data['name']}]\n")
+            lines.append(f"描述：{template_data['description']}")
+        lines.append("\n通过subagent工具调用激活\n")
+        return "\n".join(lines)
 
     def list_templates(self) -> List[Dict[str, Any]]:
-        return [{"name": name, "workspace": t["workspace"]} for name, t in self.templates.items()]
+        return [t['name'] for t in self.templates.values()]
 
     async def run_subagent(
         self,
         task: str,
-        template: str="",
-        name: str="",
-        system_prompt: str="",
-        tools: Optional[List[str]]=None,
-        mcp_servers: Optional[List[Dict[str, Any]]]=None,
+        template: str = "",
+        name: str = "",
+        system_prompt: str = "",
+        tools: Optional[List[str]] = None,
+        mcp_servers: Optional[List[Dict[str, Any]]] = None,
         client=None,
-        parent_agent: Agent=None
+        parent_agent: Agent = None
     ) -> tuple:
         template_data = self.templates.get(template)
         workspace = template_data["workspace"] if template_data else None
