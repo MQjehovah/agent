@@ -244,6 +244,8 @@ class AgentChatbotHandler:
 
     def pre_start(self):
         import dingtalk_stream
+        logging.getLogger("dingtalk_stream.client").setLevel(logging.CRITICAL)
+        logging.getLogger('dingtalkchatbot').setLevel(logging.WARNING)
         self._handler = dingtalk_stream.ChatbotHandler()
         self._handler.pre_start()
 

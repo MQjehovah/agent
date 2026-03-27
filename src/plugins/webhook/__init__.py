@@ -80,7 +80,10 @@ class WebhookPlugin(BasePlugin):
             logger.error("flask is required. Install: pip install flask")
             return
         
+        logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
         self._app = Flask(__name__)
+        self._app.debug = False
         self._setup_routes()
         
         host = self.config.host
