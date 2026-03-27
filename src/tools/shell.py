@@ -46,7 +46,7 @@ class ShellTool(BuiltinTool):
         if not command:
             return json.dumps({"success": False, "error": "命令不能为空"}, ensure_ascii=False)
         
-        logger.info(f"执行命令: {command}")
+        logger.debug(f"执行命令: {command}")
         
         try:
             process = await asyncio.create_subprocess_shell(
@@ -80,7 +80,7 @@ class ShellTool(BuiltinTool):
                 "stderr": stderr_str[:1000] if len(stderr_str) > 1000 else stderr_str
             }
             
-            logger.info(f"命令执行完成: return_code={process.returncode}")
+            logger.debug(f"命令执行完成: return_code={process.returncode} stdout={stdout_str} stderr={stderr_str}")
             
             return json.dumps(result, ensure_ascii=False)
             

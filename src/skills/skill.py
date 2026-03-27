@@ -298,9 +298,7 @@ class SkillManager:
 
         result = skill.render_prompt({"user_input": user_input})
 
-        logger.info(f"Executing skill: {skill_name}")
-
-        logger.info(f"Skill {skill_name} executed successfully")
+        logger.debug(f"Executing Skill: {skill_name} executed successfully")
         return result
 
     def list_skills(self) -> List[str]:

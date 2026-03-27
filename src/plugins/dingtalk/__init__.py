@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from plugins.base import BasePlugin
 
 logger = logging.getLogger("plugin.dingtalk")
-
+logging.getLogger("dingtalk_stream.client").setLevel(logging.WARNING)
 
 @dataclass
 class DingTalkStreamConfig:
