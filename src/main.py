@@ -52,8 +52,8 @@ logging.basicConfig(
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
-
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
+logging.getLogger("dingtalk_stream.client ").setLevel(logging.CRITICAL)
 
 logger = logging.getLogger("agent.main")
 

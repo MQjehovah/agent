@@ -72,7 +72,6 @@ class LLMClient:
                         "usage": {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens, "total_tokens": response.usage.total_tokens} if response.usage else None}
             api_logger.debug(json.dumps(log_data, ensure_ascii=False))
         except Exception as e:
-            print("+++++++++++++++++++++++++++++++", e)
             print(response)
 
     def _log_stream_response(self, response):

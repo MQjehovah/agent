@@ -441,7 +441,8 @@ class Agent:
             self.memory.end_session()
         if self.mcp:
             await self.mcp.close()
-            logger.info(f"Agent [{self.name}] cleaned up MCP")
+        logger.info(f"Agent [{self.name}] cleaned up")
+        
 
 
 class SubagentManager:
@@ -493,36 +494,7 @@ class SubagentManager:
     ) -> tuple:
         template_name = template or name
         template_data = self.templates.get(template_name)
-
         workspace = template_data["workspace"] if template_data else None
-
-        if not workspace:
-            from tools import ToolRegistry, TodoTool, FileTool
-            temp_dir = os.path.join(self.base_dir, name or "temp")
-            os.makedirs(temp_dir, exist_ok=True)
-
-            skill_content = "---\n"
-            if name:
-                skill_content += f"name: {name}\n"
-            if system_prompt:
-                pass
-            if tools:
-                skill_content += f"tools: {tools}\n"
-            skill_content += "---\n"
-            if system_prompt:
-                skill_content += system_prompt
-
-            with open(os.path.join(temp_dir, "SKILL.md"), "w", encoding="utf-8") as f:
-                f.write(skill_content)
-
-            if mcp_servers:
-                with open(os.path.join(temp_dir, "mcp_servers.json"), "w", encoding="utf-8") as f:
-                    json.dump(mcp_servers, f)
-            else:
-                with open(os.path.join(temp_dir, "mcp_servers.json"), "w", encoding="utf-8") as f:
-                    json.dump([], f)
-
-            workspace = temp_dir
 
         agent = Agent(
             workspace=workspace,

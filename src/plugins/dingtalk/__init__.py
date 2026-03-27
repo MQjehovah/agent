@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from plugins.base import BasePlugin
 
 logger = logging.getLogger("plugin.dingtalk")
-logging.getLogger("dingtalk_stream.client").setLevel(logging.WARNING)
+logging.getLogger("dingtalk_stream").setLevel(logging.WARNING)
 
 @dataclass
 class DingTalkStreamConfig:
@@ -230,7 +230,7 @@ class DingTalkPlugin(BasePlugin):
             )
             session._plugin = self
             self.sessions[session_id] = session
-            logger.info(f"创建新Session: {session_id} by {sender_nick}")
+            logger.debug(f"创建新Session: {session_id} by {sender_nick}")
         
         return self.sessions[session_id]
 
@@ -291,7 +291,7 @@ class AgentChatbotHandler:
             conversation_id = incoming_message.conversation_id or ""
             robot_code = incoming_message.robot_code or ""
             
-            self.logger.info(f"收到消息: [{sender_nick}] {content}...")
+            self.logger.info(f"钉钉插件收到消息: [{sender_nick}] {content}...")
             
             session = self.plugin.get_session(
                 conversation_id=conversation_id,
