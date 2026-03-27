@@ -487,7 +487,7 @@ class SubagentManager:
                     name = frontmatter.get("name", dir)
                     description = frontmatter.get("description", "")
             else:
-                logger.warning(f"Subagent {name} missing PROMPT.md")
+                logger.warning(f"Subagent missing {prompt_file}")
 
             template = {
                 "name": name,
