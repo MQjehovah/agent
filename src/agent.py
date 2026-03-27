@@ -523,8 +523,7 @@ class SubagentManager:
         client=None,
         parent_agent: Agent=None
     ) -> tuple:
-        template_name = template or name
-        template_data = self.templates.get(template_name)
+        template_data = self.templates.get(template)
         workspace = template_data["workspace"] if template_data else None
 
         agent = Agent(
@@ -537,6 +536,11 @@ class SubagentManager:
             agent.plugin_manager = parent_agent.plugin_manager
 
         await agent.initialize()
+
+        # 没有模板数据则直接用预设参数初始化
+        if not template_data:
+            agent.name = name
+            agent.system_prompt = system_prompt
 
         try:
             result = await agent.run(task)
