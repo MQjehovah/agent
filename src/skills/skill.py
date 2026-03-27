@@ -60,15 +60,18 @@ class SkillResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-class SkillLoader:
+class SkillManager:
     SKILL_FILE = "SKILL.md"
     REFERENCE_DIR = "references"
 
     def __init__(self, skills_dir: str):
         self.skills_dir = skills_dir
         self.skills: Dict[str, Skill] = {}
+        self.tools: List[Dict[str, Any]] = []
+        self._load_all()
+        self._build_builtin_tools()
 
-    def load_all(self) -> int:
+    def _load_all(self) -> int:
         if not os.path.exists(self.skills_dir):
             logger.warning(f"Skills目录不存在: {self.skills_dir}")
             return 0
@@ -77,15 +80,13 @@ class SkillLoader:
         for item in os.listdir(self.skills_dir):
             skill_path = os.path.join(self.skills_dir, item)
             if os.path.isdir(skill_path):
-                if self.load_skill(skill_path):
+                if self._load_skill(skill_path):
                     logger.debug(f"加载技能: {item}")
                     loaded += 1
-
         return loaded
 
-    def load_skill(self, skill_dir: str) -> Optional[Skill]:
+    def _load_skill(self, skill_dir: str) -> Optional[Skill]:
         skill_file = os.path.join(skill_dir, self.SKILL_FILE)
-
         if not os.path.exists(skill_file):
             logger.warning(f"未找到SKILL.md: {skill_dir}")
             return None
@@ -119,7 +120,6 @@ class SkillLoader:
             )
 
             self.skills[skill.name] = skill
-            # logger.info(f"加载技能: {skill.name}")
             return skill
 
         except Exception as e:
@@ -172,11 +172,66 @@ class SkillLoader:
 
         return references
 
-    def get(self, name: str) -> Optional[Skill]:
-        return self.skills.get(name)
+    def _build_builtin_tools(self):
+        self._builtin_tool_defs = [{
+            "type": "function",
+            "function": {
+                "name": "execute_skill",
+                "description": f"""执行指定技能
+
+    参数:
+    - skill_name: 技能名称
+    - user_input: 用户输入
+    
+    返回技能执行结果
+    """,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "技能名称"
+                        },
+                        "user_input": {
+                            "type": "string",
+                            "description": "用户输入"
+                        }
+                    },
+                    "required": ["skill_name"]
+                }
+            }
+        }]
+
+    def get_tool_definitions(self) -> List[Dict[str, Any]]:
+        return self._builtin_tool_defs
+
+    def get_skill_names(self) -> List[str]:
+        return [s.name for s in self.skills.values() if s.enabled]
+
+    async def execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
+        if tool_name == "execute_skill":
+            return await self._execute_skill(args)
+        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+    async def _execute_skill(self, args: Dict[str, Any]) -> str:
+        skill_name = args.get("skill_name", "")
+        user_input = args.get("user_input", "")
+
+        skill = self.skills.get(skill_name)
+        if not skill:
+            available = self.list_skills()
+            return json.dumps({"error": f"Skill not found: {skill_name}", "available_skills": available})
+
+        result = skill.render_prompt({"user_input": user_input})
+
+        logger.debug(f"Executing Skill: {skill_name} executed successfully")
+        return result
 
     def list_skills(self) -> List[str]:
         return [skill.name for skill in self.skills.values() if skill.enabled]
+
+    def get_skill(self, name: str) -> Optional[Skill]:
+        return self.skills.get(name)
 
     def get_skills_prompt(self) -> str:
         if not self.skills:
@@ -222,7 +277,7 @@ description: {description or f"{name} skill"}
 
 ### Result
 
-{{{{result}}}}
+{{result}}
 '''
 
         skill_file = os.path.join(skill_dir, self.SKILL_FILE)
@@ -231,87 +286,3 @@ description: {description or f"{name} skill"}
 
         logger.info(f"创建技能目录: {skill_dir}")
         return skill_dir
-
-
-class SkillManager:
-    def __init__(self, skills_dir: str):
-        self.skills_dir = skills_dir
-        self.tools: List[Dict[str, Any]] = []
-        self.loader: Optional[SkillLoader] = SkillLoader(self.skills_dir)
-        loaded = self.loader.load_all()
-        self._build_builtin_tools()
-
-    def _build_builtin_tools(self):
-        self._builtin_tool_defs = [{
-            "type": "function",
-            "function": {
-                "name": "execute_skill",
-                "description": f"""执行指定技能
-
-    参数:
-    - skill_name: 技能名称
-    - user_input: 用户输入
-    
-    返回技能执行结果
-    """,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "skill_name": {
-                            "type": "string",
-                            "description": "技能名称"
-                        },
-                        "user_input": {
-                            "type": "string",
-                            "description": "用户输入"
-                        }
-                    },
-                    "required": ["skill_name"]
-                }
-            }
-        }]
-
-    def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        return self._builtin_tool_defs
-
-    def get_skill_names(self) -> List[str]:
-        if not self.loader:
-            return []
-        return [s.name for s in self.loader.skills.values() if s.enabled]
-
-    async def execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
-        if tool_name == "execute_skill":
-            return await self._execute_skill(args)
-        return json.dumps({"error": f"Unknown tool: {tool_name}"})
-
-    async def _execute_skill(self, args: Dict[str, Any]) -> str:
-        skill_name = args.get("skill_name", "")
-        user_input = args.get("user_input", "")
-
-        if not self.loader:
-            return json.dumps({"error": "Skill loader not initialized"})
-
-        skill = self.loader.get(skill_name)
-        if not skill:
-            available = self.loader.list_skills()
-            return json.dumps({"error": f"Skill not found: {skill_name}", "available_skills": available})
-
-        result = skill.render_prompt({"user_input": user_input})
-
-        logger.debug(f"Executing Skill: {skill_name} executed successfully")
-        return result
-
-    def list_skills(self) -> List[str]:
-        if not self.loader:
-            return []
-        return self.loader.list_skills()
-
-    def get_skill(self, name: str) -> Optional[Skill]:
-        if not self.loader:
-            return None
-        return self.loader.get(name)
-
-    def get_skills_prompt(self) -> str:
-        if not self.loader:
-            return "No skills loaded"
-        return self.loader.get_skills_prompt()

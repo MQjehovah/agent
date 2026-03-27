@@ -451,18 +451,49 @@ class SubagentManager:
         self.templates: Dict[str, Dict[str, Any]] = {}
         self._load_all()
 
+    def _extract_frontmatter(self, content: str) -> tuple:
+        import yaml
+        pattern = r'^---\s*\n(.*?)\n---\s*\n(.*)$'
+        match = re.match(pattern, content, re.DOTALL)
+
+        if not match:
+            return {}, content
+
+        frontmatter_str = match.group(1)
+        body = match.group(2)
+
+        try:
+            frontmatter = yaml.safe_load(frontmatter_str) or {}
+        except yaml.YAMLError as e:
+            logger.error(f"YAML parse error: {e}")
+            return {}, content
+
+        return frontmatter, body
+
     def _load_all(self):
         if not self.base_dir or not os.path.exists(self.base_dir):
             logger.warning(f"Subagent directory not found: {self.base_dir}")
             return
 
-        for name in os.listdir(self.base_dir):
-            agent_dir = os.path.join(self.base_dir, name)
+        for dir in os.listdir(self.base_dir):
+            agent_dir = os.path.join(self.base_dir, dir)
             if not os.path.isdir(agent_dir):
                 continue
 
+            prompt_file = os.path.join(agent_dir, "PROMPT.md")
+            if os.path.exists(prompt_file):
+                with open(prompt_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                frontmatter, body = self._extract_frontmatter(content)
+                if frontmatter:
+                    name = frontmatter.get("name", dir)
+                    description = frontmatter.get("description", "")
+            else:
+                logger.warning(f"Subagent {name} missing PROMPT.md")
+
             template = {
                 "name": name,
+                "description": description,
                 "workspace": agent_dir
             }
             self.templates[name] = template
