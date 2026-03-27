@@ -278,7 +278,6 @@ class AgentChatbotHandler:
         
         try:
             incoming_message = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
-            logger.error(f"Received message: =========================={incoming_message}")
             
             content = ""
             if hasattr(incoming_message, 'text') and incoming_message.text:
@@ -319,13 +318,21 @@ class AgentChatbotHandler:
     async def raw_process(self, callback_message):
         import dingtalk_stream
         
-        code, message = await self.process(callback_message)
         ack_message = dingtalk_stream.AckMessage()
-        ack_message.code = code
+        ack_message.code = dingtalk_stream.AckMessage.STATUS_OK
         ack_message.headers.message_id = callback_message.headers.message_id
         ack_message.headers.content_type = "application/json"
-        ack_message.data = {"response": message}
+        ack_message.data = {"response": "OK"}
+        
+        asyncio.create_task(self._async_process(callback_message))
+        
         return ack_message
+    
+    async def _async_process(self, callback_message):
+        try:
+            await self.process(callback_message)
+        except Exception as e:
+            self.logger.error(f"异步处理消息失败: {e!r}")
 
 
 plugin = DingTalkPlugin
