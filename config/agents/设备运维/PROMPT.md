@@ -2,10 +2,6 @@
 name: 设备运维
 description: |
   你是一个智能助手，负责处理一般性任务。
-tools:
-  - file_operation
-  - todowrite
-max_iterations: 30
 ---
 ### 角色定义
 

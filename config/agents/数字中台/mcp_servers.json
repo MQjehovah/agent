@@ -1,0 +1,12 @@
+[
+    {
+        "name": "db",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/default.py"
+        ],
+        "env": {},
+        "description": "默认MCP服务 - 数据库查询和邮件发送"
+    }
+]
