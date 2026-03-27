@@ -486,16 +486,16 @@ class SubagentManager:
                 if frontmatter:
                     name = frontmatter.get("name", dir)
                     description = frontmatter.get("description", "")
+                    template = {
+                        "name": name,
+                        "description": description,
+                        "workspace": agent_dir
+                    }
+                    self.templates[name] = template
+                    logger.debug(f"加载子代理模板: {name}")
             else:
                 logger.warning(f"Subagent missing {prompt_file}")
 
-            template = {
-                "name": name,
-                "description": description,
-                "workspace": agent_dir
-            }
-            self.templates[name] = template
-            logger.debug(f"加载子代理模板: {name}")
 
     def get_subagent_prompt(self) -> str:
         if not self.templates:
