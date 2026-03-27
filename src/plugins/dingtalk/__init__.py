@@ -301,7 +301,7 @@ class AgentChatbotHandler:
             )
             
             if not self.plugin.plugin_manager:
-                response = "Agent未注册，请稍后再试"
+                response = "执行器未注册，请稍后再试"
             else:
                 response = await session.send_to_agent(content)
             

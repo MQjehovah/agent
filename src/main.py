@@ -219,7 +219,7 @@ async def main():
         plugins_dir = os.path.join(src_dir, "plugins")
         plugin_manager = PluginManager(plugins_dir)
         plugin_manager.load_all()
-        plugin_manager.set_agent(agent)
+        plugin_manager.register_executor(run_agent)
         plugin_manager.start_all()
         agent.plugin_manager = plugin_manager
 
