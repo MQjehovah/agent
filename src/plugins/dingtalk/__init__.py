@@ -278,6 +278,7 @@ class AgentChatbotHandler:
         
         try:
             incoming_message = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
+            logger.error(f"Received message: =========================={incoming_message}")
             
             content = ""
             if hasattr(incoming_message, 'text') and incoming_message.text:

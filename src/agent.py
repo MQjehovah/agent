@@ -522,7 +522,7 @@ class SubagentManager:
         client=None,
         parent_agent: Agent = None
     ) -> tuple:
-        template_data = self.templates.get(template)
+        template_data = self.templates.get(template or name)
         workspace = template_data["workspace"] if template_data else None
 
         agent = Agent(
