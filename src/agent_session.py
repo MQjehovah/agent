@@ -52,7 +52,6 @@ class AgentSessionManager:
                 system_prompt=system_prompt,
             )
             self.sessions[session_id] = session
-            logger.info(f"创建新Session: {session_id}")
             return session
 
     async def get_session(self, session_id: str) -> Optional[AgentSession]:

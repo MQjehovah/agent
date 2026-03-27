@@ -60,7 +60,7 @@ class Agent:
         self.session_manager = AgentSessionManager()
 
         self._init_subagents()
-        self._init_memory(session_id) # session_id用于恢复会话
+        self._init_memory(session_id)  # session_id用于恢复会话
 
     def _extract_frontmatter(self, content: str) -> tuple:
         pattern = r"^---\s*\n(.*?)\n---\s*\n?(.*)$"
@@ -114,7 +114,7 @@ class Agent:
         self.tool_registry.register_tool(ShellTool())
 
         logger.info(
-            f"Agent [] 已注册 {len(self.tool_registry.list_tools())} 个工具: {[self.tool_registry.list_tools()]}")
+            f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {[self.tool_registry.list_tools()]}")
 
     def _init_skills(self):
         skills_dir = os.path.join(self.workspace, "skills")
@@ -124,7 +124,7 @@ class Agent:
             self.system_prompt = self.system_prompt + \
                 self.skill_manager.get_skills_prompt()
             logger.info(
-                f"Agent [] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
+                f"Agent [{self.name}] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
     async def _load_mcp_servers(self):
         mcp_file = os.path.join(self.workspace, "mcp_servers.json")
@@ -144,9 +144,11 @@ class Agent:
                 if config.get("enabled", True):
                     await self.mcp.connect_server(config)
                 else:
-                    logger.debug(f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
+                    logger.debug(
+                        f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
 
-            connected = [c.get("name", "unnamed") for c in self.mcp_configs if c.get("enabled", True)]
+            connected = [c.get("name", "unnamed")
+                         for c in self.mcp_configs if c.get("enabled", True)]
             logger.info(
                 f"Agent [{self.name}] 已连接 {len(connected)} MCP servers: {connected}")
 
@@ -209,7 +211,7 @@ class Agent:
                     system_prompt=self.system_prompt
                 )
                 session.add_message("user", task)
-                logger.info(f"Agent [{self.name}] 创建新session: {session_id}")
+                logger.debug(f"Agent [{self.name}] 创建新session: {session_id}")
 
         if not session:
             session = AgentSession(
@@ -226,14 +228,14 @@ class Agent:
             session.add_message("user", task)
 
         logger.info(
-            f"Agent [{self.name}] ({self.agent_id}) started: {task[:50]}...")
+            f"Agent [{self.name}] [{session.session_id}] 任务开始: {task}...")
 
         try:
             for i in range(self.max_iterations):
-                logger.debug(f"Agent [{self.name}] [{session.session_id}] iteration {i + 1}")
-
+                logger.debug(
+                    f"Agent [{self.name}] [{session.session_id}] iteration {i + 1}")
+                
                 response = await self._think(session.messages)
-                logger.debug(f"Agent [{self.name}] [{session.session_id}] think response: {response}")
 
                 msg = response.get("message", {})
 
@@ -254,15 +256,12 @@ class Agent:
                             except:
                                 func_args = {}
 
-                        logger.info(
-                            f"Agent [{self.name}] -> tool: {func_name}")
+
                         logger.debug(
-                            f"Agent [{self.name}] -> tool: {func_name} args: {func_args}")
+                            f"Agent [{self.name}] [{session.session_id}] -> tool: {func_name} args: {func_args}")
                         result = await self._execute_tool(func_name, func_args)
-                        logger.info(
-                            f"Agent [{self.name}] <- tool: {func_name}")
                         logger.debug(
-                            f"Agent [{self.name}] <- tool: {func_name} result: {result}")
+                            f"Agent [{self.name}] [{session.session_id}] <- tool: {func_name} result: {result}")
 
                         session.messages.append({
                             "role": "tool",
@@ -276,8 +275,6 @@ class Agent:
                 if msg.get("content"):
                     self.status = "completed"
                     self.result = msg.get("content")
-                    logger.info(
-                        f"Agent [{self.name}] ({self.agent_id}) completed")
                     break
             else:
                 self.status = "max_iterations"
@@ -286,7 +283,8 @@ class Agent:
 
         except Exception as e:
             self.status = "failed"
-            logger.error(f"Agent [{self.name}] failed: {e}")
+            logger.error(
+                f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
         # if self.memory:
         #     self.memory.add_summary(task, self.result or "")
@@ -296,7 +294,7 @@ class Agent:
         #     bg_task.add_done_callback(self._background_tasks.discard)
 
         logger.debug(
-            f"Agent [{self.name}] session完成: {session_id}, 消息数: {len(session.messages)}")
+            f"Agent [{self.name}] [{session_id}] 任务完成")
 
         return AgentResult(
             agent_id=self.agent_id,
@@ -324,7 +322,8 @@ class Agent:
             )
 
             if not response.choices:
-                logger.error(f"Agent [{self.name}] no choices returned from LLM")
+                logger.error(
+                    f"Agent [{self.name}] no choices returned from LLM")
                 raise Exception("No choices returned")
 
             choice = response.choices[0]
@@ -340,14 +339,17 @@ class Agent:
                             json.loads(func_args)
                         except (json.JSONDecodeError, ValueError):
                             try:
-                                func_args = json.dumps(func_args, ensure_ascii=False)
+                                func_args = json.dumps(
+                                    func_args, ensure_ascii=False)
                             except Exception:
                                 func_args = "{}"
                     elif isinstance(func_args, dict):
-                        logger.warning(f"Agent [{self.name}] function.arguments is dict, converting to JSON string")
+                        logger.warning(
+                            f"Agent [{self.name}] function.arguments is dict, converting to JSON string")
                         func_args = json.dumps(func_args, ensure_ascii=False)
                     else:
-                        logger.warning(f"Agent [{self.name}] function.arguments is {type(func_args)}, set to empty object")
+                        logger.warning(
+                            f"Agent [{self.name}] function.arguments is {type(func_args)}, set to empty object")
                         func_args = "{}"
                     tool_calls.append({
                         "id": tc.id,
@@ -384,10 +386,12 @@ class Agent:
 
             if self.plugin_manager:
                 for plugin in self.plugin_manager.plugins.values():
-                    logger.debug(f"检查插件 {plugin.name}, enabled={plugin.enabled}")
+                    logger.debug(
+                        f"检查插件 {plugin.name}, enabled={plugin.enabled}")
                     if plugin.enabled:
                         tool_defs = plugin.get_tool_defs()
-                        logger.debug(f"插件 {plugin.name} 工具定义: {[t.get('function', {}).get('name') for t in tool_defs]}")
+                        logger.debug(
+                            f"插件 {plugin.name} 工具定义: {[t.get('function', {}).get('name') for t in tool_defs]}")
                         if any(t.get("function", {}).get("name") == name for t in tool_defs):
                             logger.info(f"执行插件工具: {plugin.name}.{name}")
                             return await plugin.execute_tool(name, args)
@@ -476,13 +480,13 @@ class SubagentManager:
     async def run_subagent(
         self,
         task: str,
-        template: str = "",
-        name: str = "",
-        system_prompt: str = "",
-        tools: Optional[List[str]] = None,
-        mcp_servers: Optional[List[Dict[str, Any]]] = None,
+        template: str="",
+        name: str="",
+        system_prompt: str="",
+        tools: Optional[List[str]]=None,
+        mcp_servers: Optional[List[Dict[str, Any]]]=None,
         client=None,
-        parent_agent: Agent = None
+        parent_agent: Agent=None
     ) -> tuple:
         template_name = template or name
         template_data = self.templates.get(template_name)

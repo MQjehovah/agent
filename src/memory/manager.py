@@ -42,12 +42,12 @@ class MemoryManager:
             existing = self._load_session_file(session_id)
             if existing:
                 self.session_memory = existing
-                logger.info(f"Session [{session_id}] resumed")
+                logger.debug(f"Session [{session_id}] resumed")
                 return session_id
         
         self.current_session_id = session_id or str(uuid.uuid4())[:8]
         self.session_memory = SessionMemory(session_id=self.current_session_id)
-        logger.info(f"Session [{self.current_session_id}] started")
+        logger.debug(f"Session [{session_id}] started")
         return self.current_session_id
     
     def add_preference(self, preference: str):
@@ -153,7 +153,6 @@ class MemoryManager:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
         
-        logger.info(f"Session [{self.current_session_id}] saved")
         return filepath
     
     def _format_session_content(self) -> str:
@@ -346,4 +345,4 @@ class MemoryManager:
             self.save_session()
             self.session_memory = None
             self.current_session_id = None
-            logger.info("Session ended")
+            logger.debug("Session [{session_id}] ended")
