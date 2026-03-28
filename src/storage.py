@@ -108,3 +108,10 @@ class Storage:
                 msg["name"] = row["name"]
             messages.append(msg)
         return messages
+    
+    def get_all_agent_ids(self) -> List[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("""
+                SELECT DISTINCT agent_id FROM messages WHERE agent_id != ''
+            """).fetchall()
+        return [row[0] for row in rows]

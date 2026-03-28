@@ -175,7 +175,7 @@ class Agent:
     def _init_memory(self):
         from memory import MemoryManager
         self.memory = MemoryManager(
-            self.workspace, self.storage, self.client, self.agent_id)
+            self.workspace, self.storage, self.client)
 
         memory_context = self.memory.load_memory("")
         if memory_context:

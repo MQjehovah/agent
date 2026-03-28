@@ -8,15 +8,13 @@ logger = logging.getLogger("agent.memory")
 
 
 class MemoryManager:
-    def __init__(self, workspace: str, storage=None, llm_client=None, agent_id: str = ""):
-        self.agent_id = agent_id
+    def __init__(self, workspace: str, storage=None, llm_client=None):
         self.workspace = workspace
         self.storage = storage
         self.llm_client = llm_client
         self.memory_dir = os.path.join(workspace, "memory")
-        self.agent_memory_dir = os.path.join(self.memory_dir, "agents", agent_id) if agent_id else self.memory_dir
-        self.daily_dir = os.path.join(self.agent_memory_dir, "daily")
-        self.long_term_file = os.path.join(self.agent_memory_dir, "memory.md")
+        self.daily_dir = os.path.join(self.memory_dir, "daily")
+        self.long_term_file = os.path.join(self.memory_dir, "memory.md")
         self._daily_task = None
         
         self._ensure_dirs()
@@ -49,10 +47,18 @@ class MemoryManager:
             
             try:
                 logger.info("开始每日记忆提取...")
-                if self.extract_daily():
-                    logger.info("每日记忆提取完成")
+                if self.storage:
+                    agent_ids = self.storage.get_all_agent_ids()
+                    for agent_id in agent_ids:
+                        if self.extract_daily_for_agent(agent_id):
+                            logger.info(f"Agent [{agent_id}] 每日记忆提取完成")
+                        else:
+                            logger.debug(f"Agent [{agent_id}] 无需提取记忆")
                 else:
-                    logger.debug("无需提取记忆")
+                    if self.extract_daily():
+                        logger.info("每日记忆提取完成")
+                    else:
+                        logger.debug("无需提取记忆")
             except Exception as e:
                 logger.error(f"每日记忆提取失败: {e}")
     
@@ -166,11 +172,28 @@ class MemoryManager:
             yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
             date_str = yesterday
         
-        daily_file = os.path.join(self.daily_dir, f"{date_str}.md")
+        agent_ids = self.storage.get_all_agent_ids()
+        success = False
+        for agent_id in agent_ids:
+            if self.extract_daily_for_agent(agent_id, date_str):
+                success = True
+        return success
+    
+    def extract_daily_for_agent(self, target_agent_id: str, date_str: str = None) -> bool:
+        if not self.storage:
+            return False
         
-        messages = self.storage.get_messages_by_date(date_str, agent_id=self.agent_id)
+        if not date_str:
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            date_str = yesterday
+        
+        agent_daily_dir = os.path.join(self.memory_dir, "agents", target_agent_id, "daily")
+        os.makedirs(agent_daily_dir, exist_ok=True)
+        daily_file = os.path.join(agent_daily_dir, f"{date_str}.md")
+        
+        messages = self.storage.get_messages_by_date(date_str, agent_id=target_agent_id)
         if not messages:
-            logger.debug(f"No messages found for {date_str}, agent {self.agent_id}")
+            logger.debug(f"No messages found for {date_str}, agent {target_agent_id}")
             return False
         
         from .extractor import MemoryExtractor
