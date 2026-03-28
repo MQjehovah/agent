@@ -40,10 +40,10 @@ class Storage:
                 
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
-                    agent_id TEXT,
+                    agent_name TEXT,
                     created_at TEXT,
                     updated_at TEXT,
-                    FOREIGN KEY (agent_id) REFERENCES agents(id)
+                    FOREIGN KEY (agent_name) REFERENCES agents(name)
                 );
                 
                 CREATE TABLE IF NOT EXISTS messages (
@@ -63,20 +63,20 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
             """)
     
-    def register_agent(self, agent_id: str, name: str, description: str = ""):
+    def register_agent(self, agent_name: str, name: str, description: str = ""):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO agents (id, name, description, created_at)
                 VALUES (?, ?, ?, ?)
-            """, (agent_id, name, description, datetime.now().isoformat()))
+            """, (agent_name, name, description, datetime.now().isoformat()))
     
-    def create_session(self, session_id: str, agent_id: str) -> str:
+    def create_session(self, session_id: str, agent_name: str) -> str:
         now = datetime.now().isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
-                INSERT OR REPLACE INTO sessions (id, agent_id, created_at, updated_at)
+                INSERT OR REPLACE INTO sessions (id, agent_name, created_at, updated_at)
                 VALUES (?, ?, ?, ?)
-            """, (session_id, agent_id, now, now))
+            """, (session_id, agent_name, now, now))
         return session_id
     
     def save_message(self, session_id: str, role: str, content: str, 
@@ -111,17 +111,17 @@ class Storage:
             messages.append(msg)
         return messages
     
-    def list_sessions(self, agent_id: str = None) -> List[Dict]:
+    def list_sessions(self, agent_name: str = None) -> List[Dict]:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            if agent_id:
+            if agent_name:
                 rows = conn.execute("""
-                    SELECT id, agent_id, created_at, updated_at
-                    FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC
-                """, (agent_id,)).fetchall()
+                    SELECT id, agent_name, created_at, updated_at
+                    FROM sessions WHERE agent_name = ? ORDER BY updated_at DESC
+                """, (agent_name,)).fetchall()
             else:
                 rows = conn.execute("""
-                    SELECT id, agent_id, created_at, updated_at
+                    SELECT id, agent_name, created_at, updated_at
                     FROM sessions ORDER BY updated_at DESC
                 """).fetchall()
         return [dict(row) for row in rows]
@@ -130,24 +130,24 @@ class Storage:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
-                SELECT s.id, s.agent_id, s.created_at, s.updated_at
+                SELECT s.id, s.agent_name, s.created_at, s.updated_at
                 FROM sessions s
                 WHERE DATE(s.created_at) = ?
                 ORDER BY s.created_at
             """, (date_str,)).fetchall()
         return [dict(row) for row in rows]
     
-    def get_messages_by_date(self, date_str: str, agent_id: str = None) -> List[Dict[str, Any]]:
+    def get_messages_by_date(self, date_str: str, agent_name: str = None) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            if agent_id:
+            if agent_name:
                 rows = conn.execute("""
                     SELECT m.session_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.name
                     FROM messages m
                     JOIN sessions s ON m.session_id = s.id
-                    WHERE DATE(m.created_at) = ? AND s.agent_id = ?
+                    WHERE DATE(m.created_at) = ? AND s.agent_name = ?
                     ORDER BY m.session_id, m.id
-                """, (date_str, agent_id)).fetchall()
+                """, (date_str, agent_name)).fetchall()
             else:
                 rows = conn.execute("""
                     SELECT m.session_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.name

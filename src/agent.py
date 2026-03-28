@@ -17,7 +17,6 @@ logger = logging.getLogger("agent.agent")
 
 @dataclass
 class AgentResult:
-    agent_id: str
     agent_name: str
     status: str
     result: str
@@ -35,8 +34,6 @@ class Agent:
         self.workspace = workspace
         self.client = client
         self.parent_agent = parent_agent
-        self.agent_id = str(uuid.uuid4())[:8]
-
         self.name = ""
         self.description = ""
         self.system_prompt = ""
@@ -64,13 +61,11 @@ class Agent:
         from agent_session import AgentSessionManager
         from storage import init_storage
         self.session_manager = AgentSessionManager()
-        
+
         if self.parent_agent and self.parent_agent.storage:
             self.storage = self.parent_agent.storage
         else:
             self.storage = init_storage(self.workspace)
-        
-        self.storage.register_agent(self.agent_id, self.name, self.description)
 
         self._init_subagents()
         self._init_memory()
@@ -176,7 +171,8 @@ class Agent:
 
     def _init_memory(self):
         from memory import MemoryManager
-        self.memory = MemoryManager(self.workspace, self.storage, self.client, self.agent_id)
+        self.memory = MemoryManager(
+            self.workspace, self.storage, self.client, self.name)
 
         memory_context = self.memory.load_memory("")
         if memory_context:
@@ -185,7 +181,7 @@ class Agent:
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
-        
+
         if not self.parent_agent:
             self.memory.start_daily_task()
 
@@ -208,13 +204,13 @@ class Agent:
                     tools.extend(plugin.get_tool_defs())
 
         return tools
-    
+
     async def run(self, task: str, session_id: str = None) -> AgentResult:
         self.status = "running"
 
         from agent_session import AgentSession
         session = None
-        
+
         if self.session_manager:
             if session_id:
                 session = await self.session_manager.get_session(session_id)
@@ -224,27 +220,29 @@ class Agent:
                         f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
                 else:
                     session = await self.session_manager.create_session(
+                        agent_name=self.name,
                         session_id=session_id,
                         system_prompt=self.system_prompt,
-                        agent_id=self.agent_id
                     )
                     if self.storage:
-                        self.storage.create_session(session_id, self.agent_id)
+                        self.storage.create_session(session_id, self.name)
                         messages = self.storage.get_messages(session_id)
                         if messages:
-                            session.messages = cast(List[ChatCompletionMessageParam], messages)
+                            session.messages = cast(
+                                List[ChatCompletionMessageParam], messages)
                             logger.info(
                                 f"Agent [{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
                     session.add_message("user", task)
-                    logger.debug(f"Agent [{self.name}] 创建新session: {session_id}")
+                    logger.debug(
+                        f"Agent [{self.name}] 创建新session: {session_id}")
             else:
                 session = await self.session_manager.create_session(
+                    agent_name=self.name,
                     system_prompt=self.system_prompt,
-                    agent_id=self.agent_id
                 )
                 session_id = session.session_id
                 if self.storage:
-                    self.storage.create_session(session_id, self.agent_id)
+                    self.storage.create_session(session_id, self.name)
                 if self.memory:
                     memory_context = self.memory.load_memory(task)
                     if memory_context:
@@ -257,8 +255,8 @@ class Agent:
 
         if not session:
             session = AgentSession(
+                agent_name=self.name,
                 session_id=session_id or "temp",
-                agent_id=self.agent_id,
                 system_prompt=self.system_prompt
             )
             if self.memory:
@@ -332,7 +330,6 @@ class Agent:
             f"Agent [{self.name}] [{session.session_id}] 任务完成")
 
         return AgentResult(
-            agent_id=self.agent_id,
             agent_name=self.name,
             status=self.status,
             result=self.result or "",
@@ -457,7 +454,6 @@ class Agent:
 
         return json.dumps({
             "success": result.status == "completed",
-            "agent_id": result.agent_id,
             "name": result.agent_name,
             "status": result.status,
             "result": result.result
@@ -577,7 +573,6 @@ class SubagentManager:
             result = await agent.run(task)
         except Exception as e:
             result = AgentResult(
-                agent_id=agent.agent_id,
                 agent_name=agent.name,
                 status="failed",
                 result=f"子代理执行错误: {e}"

@@ -10,8 +10,8 @@ logger = logging.getLogger("agent.session")
 
 @dataclass
 class AgentSession:
-    session_id: str
-    agent_id: str = ""
+    agent_name: str = ""
+    session_id: str = ""
     system_prompt: str = ""
     messages: List[ChatCompletionMessageParam] = field(default_factory=list)
 
@@ -27,7 +27,7 @@ class AgentSession:
         if kwargs:
             msg.update(kwargs)
         self.messages.append(msg)
-        
+
         try:
             from storage import get_storage
             storage = get_storage()
@@ -55,10 +55,10 @@ class AgentSessionManager:
         self,
         session_id: Optional[str] = None,
         system_prompt: str = "",
-        agent_id: str = ""
+        agent_name: str = ""
     ) -> AgentSession:
         if not session_id:
-            session_id = str(uuid.uuid4())[:8]
+            session_id = str(uuid.uuid4())
 
         async with self._lock:
             if session_id in self.sessions:
@@ -66,7 +66,7 @@ class AgentSessionManager:
 
             session = AgentSession(
                 session_id=session_id,
-                agent_id=agent_id,
+                agent_name=agent_name,
                 system_prompt=system_prompt,
             )
             self.sessions[session_id] = session
