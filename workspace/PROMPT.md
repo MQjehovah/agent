@@ -1,3 +1,7 @@
+---
+name: 零号员工
+description:
+---
 # Agent System Prompt
 
 ### 角色定义

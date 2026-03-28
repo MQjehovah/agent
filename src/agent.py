@@ -1,5 +1,4 @@
 import logging
-import uuid
 import asyncio
 from typing import Optional, Dict, Any, List, TYPE_CHECKING, cast, Sequence
 from dataclasses import dataclass, field
@@ -34,8 +33,9 @@ class Agent:
         self.workspace = workspace
         self.client = client
         self.parent_agent = parent_agent
-        self.name = ""
+
         self.agent_id = ""
+        self.name = ""
         self.description = ""
         self.system_prompt = ""
         self.max_iterations = 100
@@ -95,8 +95,7 @@ class Agent:
 
         if not os.path.exists(prompt_file):
             logger.warning(f"No PROMPT.md found in {self.workspace}")
-            self.name = os.path.basename(self.workspace)
-            self.agent_id = self.name
+            self.agent_id = self.name = ""
             return
 
         with open(prompt_file, "r", encoding="utf-8") as f:
@@ -105,9 +104,7 @@ class Agent:
         frontmatter, body = self._extract_frontmatter(content)
 
         if frontmatter:
-            self.name = frontmatter.get(
-                "name", os.path.basename(self.workspace))
-            self.agent_id = self.name
+            self.agent_id = self.name = frontmatter.get("name", "")
             self.description = frontmatter.get("description", "")
             if isinstance(self.description, str):
                 self.description = self.description.strip()
