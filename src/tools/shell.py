@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import sys
 from typing import Dict, Any
 from . import BuiltinTool
 
@@ -48,6 +49,8 @@ class ShellTool(BuiltinTool):
         
         logger.debug(f"执行命令: {command}")
         
+        encoding = "utf-8" if sys.platform != "win32" else "gbk"
+        
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -70,8 +73,8 @@ class ShellTool(BuiltinTool):
                     "error": f"命令执行超时（{timeout}秒）"
                 }, ensure_ascii=False)
             
-            stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
-            stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
+            stdout_str = stdout.decode(encoding, errors="replace") if stdout else ""
+            stderr_str = stderr.decode(encoding, errors="replace") if stderr else ""
             
             result = {
                 "success": process.returncode == 0,
@@ -80,7 +83,7 @@ class ShellTool(BuiltinTool):
                 "stderr": stderr_str[:1000] if len(stderr_str) > 1000 else stderr_str
             }
             
-            logger.debug(f"命令执行完成: return_code={process.returncode} stdout={stdout_str} stderr={stderr_str}")
+            # logger.debug(f"命令执行完成: return_code={process.returncode} stdout={stdout_str} stderr={stderr_str}")
             
             return json.dumps(result, ensure_ascii=False)
             
