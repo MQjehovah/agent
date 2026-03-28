@@ -188,7 +188,7 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", "-t", help="执行单个任务")
     parser.add_argument("--workspace", "-w",
-                        default="config", help="Agent工作目录")
+                        default="workspace", help="Agent工作目录")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     parser.add_argument("--no-scheduler", action="store_true", help="禁用定时任务")
     parser.add_argument("--no-plugins", action="store_true", help="禁用插件")

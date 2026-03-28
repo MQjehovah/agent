@@ -24,7 +24,7 @@ class SubagentTool(BuiltinTool):
 {"task": "分析数据", "name": "analyst", "system_prompt": "你是一个数据分析师"}
 {"task": "查询库存", "template": "business_analyst", "mcp_servers": [{"name": "db", "command": "python", "args": ["mcp_server.py"]}]}
 
-注意: 推荐在配置文件(config/agents/*.md)中预先定义subagent模板，包含mcp_servers配置"""
+注意: 推荐在配置文件(workspace/agents/*.md)中预先定义subagent模板，包含mcp_servers配置"""
 
     @property
     def parameters(self) -> Dict[str, Any]:
