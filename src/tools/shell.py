@@ -8,6 +8,17 @@ from . import BuiltinTool
 logger = logging.getLogger("agent.tools")
 
 
+def decode_output(data: bytes) -> str:
+    if not data:
+        return ""
+    for encoding in ["utf-8", "gbk", "cp936", "latin-1"]:
+        try:
+            return data.decode(encoding)
+        except:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 class ShellTool(BuiltinTool):
     @property
     def name(self) -> str:
@@ -47,9 +58,7 @@ class ShellTool(BuiltinTool):
         if not command:
             return json.dumps({"success": False, "error": "命令不能为空"}, ensure_ascii=False)
         
-        logger.debug(f"执行命令: {command}")
-        
-        encoding = "utf-8" if sys.platform != "win32" else "gbk"
+        # logger.debug(f"执行命令: {command}")
         
         try:
             process = await asyncio.create_subprocess_shell(
@@ -73,8 +82,8 @@ class ShellTool(BuiltinTool):
                     "error": f"命令执行超时（{timeout}秒）"
                 }, ensure_ascii=False)
             
-            stdout_str = stdout.decode(encoding, errors="replace") if stdout else ""
-            stderr_str = stderr.decode(encoding, errors="replace") if stderr else ""
+            stdout_str = decode_output(stdout)
+            stderr_str = decode_output(stderr)
             
             result = {
                 "success": process.returncode == 0,
