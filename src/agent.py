@@ -62,9 +62,14 @@ class Agent:
         await self._load_mcp_servers()
 
         from agent_session import AgentSessionManager
-        from storage import Storage
+        from src.storage import init_storage, get_storage
         self.session_manager = AgentSessionManager()
-        self.storage = Storage(self.workspace)
+        
+        if self.parent_agent and self.parent_agent.storage:
+            self.storage = self.parent_agent.storage
+        else:
+            self.storage = init_storage(self.workspace)
+        
         self.storage.register_agent(self.agent_id, self.name, self.description)
 
         self._init_subagents()
@@ -171,7 +176,7 @@ class Agent:
 
     def _init_memory(self):
         from memory import MemoryManager
-        self.memory = MemoryManager(self.workspace, self.storage, self.client)
+        self.memory = MemoryManager(self.workspace, self.storage, self.client, self.agent_id)
 
         memory_context = self.memory.load_memory("")
         if memory_context:
@@ -181,7 +186,8 @@ class Agent:
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
         
-        self.memory.start_daily_task()
+        if not self.parent_agent:
+            self.memory.start_daily_task()
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
@@ -214,14 +220,13 @@ class Agent:
                 session = await self.session_manager.get_session(session_id)
                 if session:
                     session.add_message("user", task)
-                    if self.storage:
-                        self.storage.save_message(session_id, "user", task)
                     logger.info(
                         f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
                 else:
                     session = await self.session_manager.create_session(
                         session_id=session_id,
-                        system_prompt=self.system_prompt
+                        system_prompt=self.system_prompt,
+                        agent_id=self.agent_id
                     )
                     if self.storage:
                         self.storage.create_session(session_id, self.agent_id)
@@ -231,12 +236,11 @@ class Agent:
                             logger.info(
                                 f"Agent [{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
                     session.add_message("user", task)
-                    if self.storage:
-                        self.storage.save_message(session_id, "user", task)
                     logger.debug(f"Agent [{self.name}] 创建新session: {session_id}")
             else:
                 session = await self.session_manager.create_session(
-                    system_prompt=self.system_prompt
+                    system_prompt=self.system_prompt,
+                    agent_id=self.agent_id
                 )
                 session_id = session.session_id
                 if self.storage:
@@ -249,13 +253,12 @@ class Agent:
                             "content": f"## 【记忆上下文】\n{memory_context}"
                         })
                 session.add_message("user", task)
-                if self.storage:
-                    self.storage.save_message(session_id, "user", task)
                 logger.info(f"Agent [{self.name}] 创建随机session: {session_id}")
 
         if not session:
             session = AgentSession(
                 session_id=session_id or "temp",
+                agent_id=self.agent_id,
                 system_prompt=self.system_prompt
             )
             if self.memory:
@@ -279,11 +282,11 @@ class Agent:
 
                 msg = response.get("message", {})
 
-                session.messages.append({
-                    "role": "assistant",
-                    "content": msg.get("content"),
-                    "tool_calls": msg.get("tool_calls")
-                })
+                session.add_message(
+                    "assistant",
+                    msg.get("content") or "",
+                    tool_calls=msg.get("tool_calls")
+                )
 
                 if msg.get("tool_calls"):
                     for tc in msg.get("tool_calls", []):
@@ -302,12 +305,12 @@ class Agent:
                         logger.debug(
                             f"Agent [{self.name}] [{session.session_id}] <- tool: {func_name} result: {result}")
 
-                        session.messages.append({
-                            "role": "tool",
-                            "name": func_name,
-                            "content": str(result),
-                            "tool_call_id": tc.get("id", "")
-                        })
+                        session.add_message(
+                            "tool",
+                            str(result),
+                            name=func_name,
+                            tool_call_id=tc.get("id", "")
+                        )
 
                     continue
 
@@ -466,7 +469,7 @@ class Agent:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
-        if self.memory:
+        if self.memory and not self.parent_agent:
             self.memory.stop_daily_task()
         if self.mcp:
             await self.mcp.close()

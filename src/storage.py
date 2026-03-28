@@ -7,6 +7,18 @@ from pathlib import Path
 
 logger = logging.getLogger("agent.storage")
 
+_storage_instance: Optional["Storage"] = None
+
+
+def get_storage() -> Optional["Storage"]:
+    return _storage_instance
+
+
+def init_storage(workspace: str) -> "Storage":
+    global _storage_instance
+    _storage_instance = Storage(workspace)
+    return _storage_instance
+
 
 class Storage:
     def __init__(self, workspace: str):
@@ -125,15 +137,24 @@ class Storage:
             """, (date_str,)).fetchall()
         return [dict(row) for row in rows]
     
-    def get_messages_by_date(self, date_str: str) -> List[Dict[str, Any]]:
+    def get_messages_by_date(self, date_str: str, agent_id: str = None) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT m.session_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.name
-                FROM messages m
-                WHERE DATE(m.created_at) = ?
-                ORDER BY m.session_id, m.id
-            """, (date_str,)).fetchall()
+            if agent_id:
+                rows = conn.execute("""
+                    SELECT m.session_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.name
+                    FROM messages m
+                    JOIN sessions s ON m.session_id = s.id
+                    WHERE DATE(m.created_at) = ? AND s.agent_id = ?
+                    ORDER BY m.session_id, m.id
+                """, (date_str, agent_id)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT m.session_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.name
+                    FROM messages m
+                    WHERE DATE(m.created_at) = ?
+                    ORDER BY m.session_id, m.id
+                """, (date_str,)).fetchall()
         
         messages = []
         for row in rows:
