@@ -8,13 +8,13 @@ logger = logging.getLogger("agent.memory")
 
 
 class MemoryManager:
-    def __init__(self, workspace: str, storage=None, llm_client=None, agent_name: str = ""):
-        self.agent_name = agent_name
+    def __init__(self, workspace: str, storage=None, llm_client=None, agent_id: str = ""):
+        self.agent_id = agent_id
         self.workspace = workspace
         self.storage = storage
         self.llm_client = llm_client
         self.memory_dir = os.path.join(workspace, "memory")
-        self.agent_memory_dir = os.path.join(self.memory_dir, "agents", agent_name) if agent_name else self.memory_dir
+        self.agent_memory_dir = os.path.join(self.memory_dir, "agents", agent_id) if agent_id else self.memory_dir
         self.daily_dir = os.path.join(self.agent_memory_dir, "daily")
         self.long_term_file = os.path.join(self.agent_memory_dir, "memory.md")
         self._daily_task = None
@@ -168,9 +168,9 @@ class MemoryManager:
         
         daily_file = os.path.join(self.daily_dir, f"{date_str}.md")
         
-        messages = self.storage.get_messages_by_date(date_str, agent_id=self.agent_name)
+        messages = self.storage.get_messages_by_date(date_str, agent_id=self.agent_id)
         if not messages:
-            logger.debug(f"No messages found for {date_str}, agent {self.agent_name}")
+            logger.debug(f"No messages found for {date_str}, agent {self.agent_id}")
             return False
         
         from .extractor import MemoryExtractor

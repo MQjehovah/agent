@@ -10,7 +10,7 @@ logger = logging.getLogger("agent.session")
 
 @dataclass
 class AgentSession:
-    agent_name: str = ""
+    agent_id: str = ""
     session_id: str = ""
     system_prompt: str = ""
     messages: List[ChatCompletionMessageParam] = field(default_factory=list)
@@ -33,7 +33,7 @@ class AgentSession:
             storage = get_storage()
             if storage and self.session_id:
                 storage.save_message(
-                    agent_id=self.agent_name,
+                    agent_id=self.agent_id,
                     session_id=self.session_id,
                     role=role,
                     content=content or "",
@@ -56,7 +56,7 @@ class AgentSessionManager:
         self,
         session_id: Optional[str] = None,
         system_prompt: str = "",
-        agent_name: str = ""
+        agent_id: str = ""
     ) -> AgentSession:
         if not session_id:
             session_id = str(uuid.uuid4())
@@ -67,7 +67,7 @@ class AgentSessionManager:
 
             session = AgentSession(
                 session_id=session_id,
-                agent_name=agent_name,
+                agent_id=agent_id,
                 system_prompt=system_prompt,
             )
             self.sessions[session_id] = session

@@ -17,7 +17,7 @@ logger = logging.getLogger("agent.agent")
 
 @dataclass
 class AgentResult:
-    agent_name: str
+    agent_id: str
     status: str
     result: str
     completed_at: str = field(
@@ -35,6 +35,7 @@ class Agent:
         self.client = client
         self.parent_agent = parent_agent
         self.name = ""
+        self.agent_id = ""
         self.description = ""
         self.system_prompt = ""
         self.max_iterations = 100
@@ -95,6 +96,7 @@ class Agent:
         if not os.path.exists(prompt_file):
             logger.warning(f"No PROMPT.md found in {self.workspace}")
             self.name = os.path.basename(self.workspace)
+            self.agent_id = self.name
             return
 
         with open(prompt_file, "r", encoding="utf-8") as f:
@@ -105,6 +107,7 @@ class Agent:
         if frontmatter:
             self.name = frontmatter.get(
                 "name", os.path.basename(self.workspace))
+            self.agent_id = self.name
             self.description = frontmatter.get("description", "")
             if isinstance(self.description, str):
                 self.description = self.description.strip()
@@ -172,7 +175,7 @@ class Agent:
     def _init_memory(self):
         from memory import MemoryManager
         self.memory = MemoryManager(
-            self.workspace, self.storage, self.client, self.name)
+            self.workspace, self.storage, self.client, self.agent_id)
 
         memory_context = self.memory.load_memory("")
         if memory_context:
@@ -220,7 +223,7 @@ class Agent:
                         f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
                 else:
                     session = await self.session_manager.create_session(
-                        agent_name=self.name,
+                        agent_id=self.agent_id,
                         session_id=session_id,
                         system_prompt=self.system_prompt,
                     )
@@ -236,7 +239,7 @@ class Agent:
                         f"Agent [{self.name}] 创建新session: {session_id}")
             else:
                 session = await self.session_manager.create_session(
-                    agent_name=self.name,
+                    agent_id=self.agent_id,
                     system_prompt=self.system_prompt,
                 )
                 session_id = session.session_id
@@ -252,7 +255,7 @@ class Agent:
 
         if not session:
             session = AgentSession(
-                agent_name=self.name,
+                agent_id=self.agent_id,
                 session_id=session_id or "temp",
                 system_prompt=self.system_prompt
             )
@@ -327,7 +330,7 @@ class Agent:
             f"Agent [{self.name}] [{session.session_id}] 任务完成")
 
         return AgentResult(
-            agent_name=self.name,
+            agent_id=self.agent_id,
             status=self.status,
             result=self.result or "",
         )
@@ -451,7 +454,7 @@ class Agent:
 
         return json.dumps({
             "success": result.status == "completed",
-            "name": result.agent_name,
+            "name": result.agent_id,
             "status": result.status,
             "result": result.result
         }, ensure_ascii=False)
@@ -570,7 +573,7 @@ class SubagentManager:
             result = await agent.run(task)
         except Exception as e:
             result = AgentResult(
-                agent_name=agent.name,
+                agent_id=agent.agent_id,
                 status="failed",
                 result=f"子代理执行错误: {e}"
             )
