@@ -8,16 +8,18 @@ logger = logging.getLogger("agent.memory")
 
 
 class MemoryManager:
-    def __init__(self, workspace: str, storage=None, llm_client=None):
+    def __init__(self, workspace: str):
         self.workspace = workspace
-        self.storage = storage
-        self.llm_client = llm_client
         self.memory_dir = os.path.join(workspace, "memory")
         self.daily_dir = os.path.join(self.memory_dir, "daily")
         self.long_term_file = os.path.join(self.memory_dir, "memory.md")
         self._daily_task = None
         
         self._ensure_dirs()
+    
+    def _get_storage(self):
+        from storage import get_storage
+        return get_storage()
     
     def _ensure_dirs(self):
         os.makedirs(self.memory_dir, exist_ok=True)
@@ -47,18 +49,16 @@ class MemoryManager:
             
             try:
                 logger.info("开始每日记忆提取...")
-                if self.storage:
-                    agent_ids = self.storage.get_all_agent_ids()
+                storage = self._get_storage()
+                if storage:
+                    agent_ids = storage.get_all_agent_ids()
                     for agent_id in agent_ids:
                         if self.extract_daily_for_agent(agent_id):
                             logger.info(f"Agent [{agent_id}] 每日记忆提取完成")
                         else:
                             logger.debug(f"Agent [{agent_id}] 无需提取记忆")
                 else:
-                    if self.extract_daily():
-                        logger.info("每日记忆提取完成")
-                    else:
-                        logger.debug("无需提取记忆")
+                    logger.debug("Storage未初始化，无法提取记忆")
             except Exception as e:
                 logger.error(f"每日记忆提取失败: {e}")
     
@@ -165,14 +165,15 @@ class MemoryManager:
         return "\n\n".join(contents)
     
     def extract_daily(self, date_str: str = None) -> bool:
-        if not self.storage:
+        storage = self._get_storage()
+        if not storage:
             return False
         
         if not date_str:
             yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
             date_str = yesterday
         
-        agent_ids = self.storage.get_all_agent_ids()
+        agent_ids = storage.get_all_agent_ids()
         success = False
         for agent_id in agent_ids:
             if self.extract_daily_for_agent(agent_id, date_str):
@@ -180,7 +181,8 @@ class MemoryManager:
         return success
     
     def extract_daily_for_agent(self, target_agent_id: str, date_str: str = None) -> bool:
-        if not self.storage:
+        storage = self._get_storage()
+        if not storage:
             return False
         
         if not date_str:
@@ -191,13 +193,10 @@ class MemoryManager:
         os.makedirs(agent_daily_dir, exist_ok=True)
         daily_file = os.path.join(agent_daily_dir, f"{date_str}.md")
         
-        messages = self.storage.get_messages_by_date(date_str, agent_id=target_agent_id)
+        messages = storage.get_messages_by_date(date_str, agent_id=target_agent_id)
         if not messages:
             logger.debug(f"No messages found for {date_str}, agent {target_agent_id}")
             return False
-        
-        from .extractor import MemoryExtractor
-        extractor = MemoryExtractor(self.llm_client)
         
         session_text = []
         for msg in messages:
@@ -211,7 +210,14 @@ class MemoryManager:
         if not session_text:
             return False
         
-        return extractor.extract_to_daily("\n".join(session_text), daily_file)
+        header = f"# 每日会话记录 - {date_str}\n\n"
+        content = header + "\n".join(session_text)
+        
+        with open(daily_file, "w", encoding="utf-8") as f:
+            f.write(content)
+        
+        logger.info(f"Daily session saved: {daily_file}")
+        return True
     
     def list_daily_files(self) -> list:
         if not os.path.exists(self.daily_dir):
