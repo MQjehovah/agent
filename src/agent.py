@@ -62,7 +62,7 @@ class Agent:
         await self._load_mcp_servers()
 
         from agent_session import AgentSessionManager
-        from src.storage import init_storage, get_storage
+        from storage import init_storage
         self.session_manager = AgentSessionManager()
         
         if self.parent_agent and self.parent_agent.storage:

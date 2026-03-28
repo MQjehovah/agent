@@ -29,7 +29,7 @@ class AgentSession:
         self.messages.append(msg)
         
         try:
-            from src.storage import get_storage
+            from storage import get_storage
             storage = get_storage()
             if storage and self.session_id:
                 storage.save_message(
