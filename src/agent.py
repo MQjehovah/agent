@@ -47,7 +47,7 @@ class Agent:
         self.skill_manager = None
         self.subagent_manager = None
         self.session_manager = None
-        self.session_store = None
+        self.storage = None
         self.plugin_manager: Optional["PluginManager"] = None
         self.memory = None
         self._background_tasks: set = set()
@@ -62,9 +62,10 @@ class Agent:
         await self._load_mcp_servers()
 
         from agent_session import AgentSessionManager
-        from session_store import SessionStore
+        from storage import Storage
         self.session_manager = AgentSessionManager()
-        self.session_store = SessionStore(self.workspace)
+        self.storage = Storage(self.workspace)
+        self.storage.register_agent(self.agent_id, self.name, self.description)
 
         self._init_subagents()
         self._init_memory()
@@ -170,7 +171,7 @@ class Agent:
 
     def _init_memory(self):
         from memory import MemoryManager
-        self.memory = MemoryManager(self.workspace)
+        self.memory = MemoryManager(self.workspace, self.storage, self.client)
 
         memory_context = self.memory.load_memory("")
         if memory_context:
@@ -179,6 +180,8 @@ class Agent:
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
+        
+        self.memory.start_daily_task()
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
@@ -199,7 +202,7 @@ class Agent:
                     tools.extend(plugin.get_tool_defs())
 
         return tools
-
+    
     async def run(self, task: str, session_id: str = None) -> AgentResult:
         self.status = "running"
 
@@ -211,27 +214,33 @@ class Agent:
                 session = await self.session_manager.get_session(session_id)
                 if session:
                     session.add_message("user", task)
+                    if self.storage:
+                        self.storage.save_message(session_id, "user", task)
                     logger.info(
-                        f"Agent [{self.name}] 复用session: {session.session_id}, 消息数: {len(session.messages)}")
+                        f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
                 else:
                     session = await self.session_manager.create_session(
                         session_id=session_id,
                         system_prompt=self.system_prompt
                     )
-                    if self.session_store:
-                        messages = self.session_store.load(session_id)
+                    if self.storage:
+                        self.storage.create_session(session_id, self.agent_id)
+                        messages = self.storage.get_messages(session_id)
                         if messages:
                             session.messages = cast(List[ChatCompletionMessageParam], messages)
                             logger.info(
-                                f"Agent [{self.name}] 从存储恢复session: {session.session_id}, 消息数: {len(session.messages)}")
+                                f"Agent [{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
                     session.add_message("user", task)
-                    self.session_store.save(session_id, session.messages)
+                    if self.storage:
+                        self.storage.save_message(session_id, "user", task)
                     logger.debug(f"Agent [{self.name}] 创建新session: {session_id}")
             else:
                 session = await self.session_manager.create_session(
                     system_prompt=self.system_prompt
                 )
                 session_id = session.session_id
+                if self.storage:
+                    self.storage.create_session(session_id, self.agent_id)
                 if self.memory:
                     memory_context = self.memory.load_memory(task)
                     if memory_context:
@@ -240,10 +249,13 @@ class Agent:
                             "content": f"## 【记忆上下文】\n{memory_context}"
                         })
                 session.add_message("user", task)
-                logger.info(f"Agent [{self.name}] 创建随机session: {session.session_id}")
+                if self.storage:
+                    self.storage.save_message(session_id, "user", task)
+                logger.info(f"Agent [{self.name}] 创建随机session: {session_id}")
 
         if not session:
             session = AgentSession(
+                session_id=session_id or "temp",
                 system_prompt=self.system_prompt
             )
             if self.memory:
@@ -322,9 +334,6 @@ class Agent:
             status=self.status,
             result=self.result or "",
         )
-
-    def _get_session(session_id):
-        pass
 
     async def _background_memory_extract(self):
         try:
@@ -457,11 +466,8 @@ class Agent:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
-        if self.session_store and self.session_manager:
-            for session_id in self.session_manager.list_sessions():
-                session = await self.session_manager.get_session(session_id)
-                if session:
-                    self.session_store.save(session_id, session.messages)
+        if self.memory:
+            self.memory.stop_daily_task()
         if self.mcp:
             await self.mcp.close()
         logger.info(f"Agent [{self.name}] cleaned up")

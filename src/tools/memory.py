@@ -38,7 +38,7 @@ class MemoryTool(BuiltinTool):
                 },
                 "memory_type": {
                     "type": "string",
-                    "enum": ["session", "daily", "long_term"],
+                    "enum": ["daily", "long_term"],
                     "description": "记忆类型（action=list时使用）"
                 }
             },

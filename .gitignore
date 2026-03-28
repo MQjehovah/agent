@@ -3,6 +3,8 @@
 **/sessions/**/*.md
 **/sessions/**/*.json
 
+*.db
+
 /docs/plans/
 
 __pycache__/
