@@ -1,9 +1,11 @@
 import os
 import uuid
+import json
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Sequence
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
+from openai.types.chat import ChatCompletionMessageParam
 
 logger = logging.getLogger("agent.memory")
 
@@ -74,66 +76,40 @@ class MemoryManager:
             })
             self.session_memory.updated_at = datetime.now().isoformat()
     
+    def save_session_messages(self, session_id: str, messages: Sequence[ChatCompletionMessageParam]) -> str:
+        filepath = os.path.join(self.sessions_dir, f"{session_id}.json")
+        data = {
+            "session_id": session_id,
+            "messages": [dict(m) for m in messages],
+            "saved_at": datetime.now().isoformat()
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.debug(f"Session [{session_id}] messages saved: {len(messages)} msgs")
+        return filepath
+    
+    def load_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        filepath = os.path.join(self.sessions_dir, f"{session_id}.json")
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data.get("messages", [])
+            except Exception as e:
+                logger.error(f"Failed to load session messages: {e}")
+        return []
+    
     def _load_session_file(self, session_id: str) -> Optional[SessionMemory]:
-        filepath = os.path.join(self.sessions_dir, f"{session_id}.md")
-        if not os.path.exists(filepath):
+        json_filepath = os.path.join(self.sessions_dir, f"{session_id}.json")
+        if not os.path.exists(json_filepath):
             return None
         
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            session = SessionMemory(session_id=session_id)
-            lines = content.split("\n")
-            current_section = None
-            current_summary = {}
-            
-            for line in lines:
-                if line.startswith("## 用户偏好"):
-                    current_section = "preferences"
-                elif line.startswith("## 关键信息"):
-                    current_section = "key_info"
-                elif line.startswith("## 待办事项"):
-                    current_section = "todos"
-                elif line.startswith("## 对话记录"):
-                    current_section = "summaries"
-                elif line.startswith("## "):
-                    if current_section == "summary_content" and current_summary:
-                        session.summaries.append(current_summary)
-                        current_summary = {}
-                    current_section = None
-                elif line.startswith("### [") and current_section == "summaries":
-                    if current_summary:
-                        session.summaries.append(current_summary)
-                    import re
-                    match = re.match(r"### \[(\d+:\d+)\]\s*(.*)", line)
-                    if match:
-                        current_summary = {
-                            "time": match.group(1),
-                            "task": match.group(2),
-                            "result": ""
-                        }
-                        current_section = "summary_content"
-                elif current_section == "summary_content" and line.strip():
-                    if current_summary.get("result"):
-                        current_summary["result"] += "\n" + line
-                    else:
-                        current_summary["result"] = line
-                elif line.startswith("- ") and current_section in ["preferences", "key_info", "todos"]:
-                    item = line[2:].strip()
-                    if current_section == "preferences" and item not in session.user_preferences:
-                        session.user_preferences.append(item)
-                    elif current_section == "key_info" and item not in session.key_info:
-                        session.key_info.append(item)
-                    elif current_section == "todos" and item not in session.todos:
-                        session.todos.append(item)
-            
-            if current_summary:
-                session.summaries.append(current_summary)
-            
-            return session
+            with open(json_filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return SessionMemory(**data)
         except Exception as e:
-            logger.error(f"Failed to load session file: {e}")
+            logger.error(f"Failed to load session json: {e}")
             return None
     
     def save_session(self) -> Optional[str]:
@@ -145,55 +121,11 @@ class MemoryManager:
             logger.warning("No session_id set")
             return None
         
-        filename = f"{self.current_session_id}.md"
-        filepath = os.path.join(self.sessions_dir, filename)
+        json_filepath = os.path.join(self.sessions_dir, f"{self.current_session_id}.json")
+        with open(json_filepath, "w", encoding="utf-8") as f:
+            json.dump(asdict(self.session_memory), f, ensure_ascii=False, indent=2)
         
-        content = self._format_session_content()
-        
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
-        
-        return filepath
-    
-    def _format_session_content(self) -> str:
-        if not self.session_memory:
-            return ""
-        
-        lines = [
-            f"# 会话记录 - {self.current_session_id}",
-            f"",
-            f"创建时间: {self.session_memory.created_at}",
-            f"更新时间: {self.session_memory.updated_at}",
-            f""
-        ]
-        
-        if self.session_memory.user_preferences:
-            lines.append("## 用户偏好")
-            for p in self.session_memory.user_preferences:
-                lines.append(f"- {p}")
-            lines.append("")
-        
-        if self.session_memory.key_info:
-            lines.append("## 关键信息")
-            for info in self.session_memory.key_info:
-                lines.append(f"- {info}")
-            lines.append("")
-        
-        if self.session_memory.todos:
-            lines.append("## 待办事项")
-            for todo in self.session_memory.todos:
-                lines.append(f"- {todo}")
-            lines.append("")
-        
-        if self.session_memory.summaries:
-            lines.append("## 对话记录")
-            for s in self.session_memory.summaries:
-                lines.append(f"")
-                lines.append(f"### [{s.get('time', '')}] {s.get('task', '')}")
-                lines.append(s.get('result', ''))
-            lines.append("")
-        
-        return "\n".join(lines)
+        return json_filepath
     
     def load_memory(self, task: str = "") -> str:
         parts = []

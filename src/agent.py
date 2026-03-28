@@ -1,12 +1,13 @@
 import logging
 import uuid
 import asyncio
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, TYPE_CHECKING, cast, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 import os
 import re
 import json
+from openai.types.chat import ChatCompletionMessageParam
 
 if TYPE_CHECKING:
     from plugins import PluginManager
@@ -213,6 +214,12 @@ class Agent:
                     session_id=session_id,
                     system_prompt=self.system_prompt
                 )
+                if self.memory:
+                    messages = self.memory.load_session_messages(session_id)
+                    if messages:
+                        session.messages = cast(List[ChatCompletionMessageParam], messages)
+                        logger.info(
+                            f"Agent [{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
                 session.add_message("user", task)
                 logger.debug(f"Agent [{self.name}] 创建新session: {session_id}")
 
@@ -288,13 +295,6 @@ class Agent:
             logger.error(
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
-        # if self.memory:
-        #     self.memory.add_summary(task, self.result or "")
-        #     self.memory.save_session()
-        #     bg_task = asyncio.create_task(self._background_memory_extract())
-        #     self._background_tasks.add(bg_task)
-        #     bg_task.add_done_callback(self._background_tasks.discard)
-
         logger.debug(
             f"Agent [{self.name}] [{session_id}] 任务完成")
 
@@ -315,7 +315,7 @@ class Agent:
         except Exception as e:
             logger.error(f"Agent [{self.name}] memory extraction failed: {e}")
 
-    async def _think(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _think(self, messages: Sequence[ChatCompletionMessageParam]) -> Dict[str, Any]:
         try:
             response = self.client.chat(
                 messages,
@@ -436,8 +436,11 @@ class Agent:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
-        if self.memory:
-            self.memory.end_session()
+        if self.memory and self.session_manager:
+            for session_id in self.session_manager.list_sessions():
+                session = await self.session_manager.get_session(session_id)
+                if session:
+                    self.memory.save_session_messages(session_id, session.messages)
         if self.mcp:
             await self.mcp.close()
         logger.info(f"Agent [{self.name}] cleaned up")
