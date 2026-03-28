@@ -31,65 +31,33 @@ class Storage:
         
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript("""
-                CREATE TABLE IF NOT EXISTS agents (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    description TEXT,
-                    created_at TEXT
-                );
-                
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    agent_name TEXT,
-                    created_at TEXT,
-                    updated_at TEXT,
-                    FOREIGN KEY (agent_name) REFERENCES agents(name)
-                );
-                
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
+                    agent_name TEXT,
                     role TEXT,
                     content TEXT,
                     tool_calls TEXT,
                     tool_call_id TEXT,
                     name TEXT,
-                    created_at TEXT,
-                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                    created_at TEXT
                 );
                 
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+                CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_name);
                 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
-                CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
             """)
     
-    def register_agent(self, agent_name: str, name: str, description: str = ""):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO agents (id, name, description, created_at)
-                VALUES (?, ?, ?, ?)
-            """, (agent_name, name, description, datetime.now().isoformat()))
-    
-    def create_session(self, session_id: str, agent_name: str) -> str:
-        now = datetime.now().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO sessions (id, agent_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-            """, (session_id, agent_name, now, now))
-        return session_id
-    
     def save_message(self, session_id: str, role: str, content: str, 
-                     tool_calls: List = None, tool_call_id: str = None, name: str = None):
+                     agent_name: str = "", tool_calls: Optional[List] = None, 
+                     tool_call_id: str = "", name: str = ""):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
-                INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, name, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (session_id, role, content, 
+                INSERT INTO messages (session_id, agent_name, role, content, tool_calls, tool_call_id, name, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (session_id, agent_name, role, content or "",
                   json.dumps(tool_calls) if tool_calls else None,
                   tool_call_id, name, datetime.now().isoformat()))
-            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", 
-                        (datetime.now().isoformat(), session_id))
     
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
@@ -111,49 +79,22 @@ class Storage:
             messages.append(msg)
         return messages
     
-    def list_sessions(self, agent_name: str = None) -> List[Dict]:
+    def get_messages_by_date(self, date_str: str, agent_name: Optional[str] = None) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             if agent_name:
                 rows = conn.execute("""
-                    SELECT id, agent_name, created_at, updated_at
-                    FROM sessions WHERE agent_name = ? ORDER BY updated_at DESC
-                """, (agent_name,)).fetchall()
-            else:
-                rows = conn.execute("""
-                    SELECT id, agent_name, created_at, updated_at
-                    FROM sessions ORDER BY updated_at DESC
-                """).fetchall()
-        return [dict(row) for row in rows]
-    
-    def get_sessions_by_date(self, date_str: str) -> List[Dict]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT s.id, s.agent_name, s.created_at, s.updated_at
-                FROM sessions s
-                WHERE DATE(s.created_at) = ?
-                ORDER BY s.created_at
-            """, (date_str,)).fetchall()
-        return [dict(row) for row in rows]
-    
-    def get_messages_by_date(self, date_str: str, agent_name: str = None) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            if agent_name:
-                rows = conn.execute("""
-                    SELECT m.session_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.name
-                    FROM messages m
-                    JOIN sessions s ON m.session_id = s.id
-                    WHERE DATE(m.created_at) = ? AND s.agent_name = ?
-                    ORDER BY m.session_id, m.id
+                    SELECT session_id, role, content, tool_calls, tool_call_id, name
+                    FROM messages
+                    WHERE DATE(created_at) = ? AND agent_name = ?
+                    ORDER BY session_id, id
                 """, (date_str, agent_name)).fetchall()
             else:
                 rows = conn.execute("""
-                    SELECT m.session_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.name
-                    FROM messages m
-                    WHERE DATE(m.created_at) = ?
-                    ORDER BY m.session_id, m.id
+                    SELECT session_id, role, content, tool_calls, tool_call_id, name
+                    FROM messages
+                    WHERE DATE(created_at) = ?
+                    ORDER BY session_id, id
                 """, (date_str,)).fetchall()
         
         messages = []
@@ -167,8 +108,3 @@ class Storage:
                 msg["name"] = row["name"]
             messages.append(msg)
         return messages
-    
-    def delete_session(self, session_id: str):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))

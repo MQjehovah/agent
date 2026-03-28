@@ -225,7 +225,6 @@ class Agent:
                         system_prompt=self.system_prompt,
                     )
                     if self.storage:
-                        self.storage.create_session(session_id, self.name)
                         messages = self.storage.get_messages(session_id)
                         if messages:
                             session.messages = cast(
@@ -241,8 +240,6 @@ class Agent:
                     system_prompt=self.system_prompt,
                 )
                 session_id = session.session_id
-                if self.storage:
-                    self.storage.create_session(session_id, self.name)
                 if self.memory:
                     memory_context = self.memory.load_memory(task)
                     if memory_context:
