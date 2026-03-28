@@ -93,17 +93,12 @@ class MemoryTool(BuiltinTool):
         return json.dumps({"success": True, "results": "No matching memories found"}, ensure_ascii=False)
     
     async def _list(self, args: Dict[str, Any]) -> str:
-        memory_type = args.get("memory_type", "session")
+        memory_type = args.get("memory_type", "daily")
         
-        if memory_type == "session":
-            target_dir = self.memory_manager.sessions_dir
-        elif memory_type == "daily":
-            target_dir = self.memory_manager.daily_dir
-        else:
+        if memory_type == "daily":
+            files = self.memory_manager.list_daily_files()
+            return json.dumps({"success": True, "files": sorted(files, reverse=True)}, ensure_ascii=False)
+        elif memory_type == "long_term":
             return json.dumps({"success": True, "files": [self.memory_manager.long_term_file]}, ensure_ascii=False)
-        
-        if not os.path.exists(target_dir):
+        else:
             return json.dumps({"success": True, "files": []}, ensure_ascii=False)
-        
-        files = [f for f in os.listdir(target_dir) if f.endswith(".md")]
-        return json.dumps({"success": True, "files": sorted(files, reverse=True)}, ensure_ascii=False)
