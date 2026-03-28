@@ -1,5 +1,6 @@
 import os
 import sys
+import uuid
 import asyncio
 import logging
 import signal
@@ -61,7 +62,7 @@ _shutdown_event: Optional[asyncio.Event] = None
 async def interactive_mode(agent: Agent):
     global _shutdown_event
     logger.info(f"进入交互模式")
-
+    session_id = str(uuid.uuid4())
     while _shutdown_event is None or not _shutdown_event.is_set():
         try:
             question = await asyncio.get_event_loop().run_in_executor(
@@ -150,7 +151,6 @@ async def interactive_mode(agent: Agent):
             continue
 
         if question.strip().lower().startswith("/messages"):
-            session_id = "cli"
             session = None
             if agent.session_manager:
                 session = await agent.session_manager.get_session(session_id)
@@ -172,7 +172,7 @@ async def interactive_mode(agent: Agent):
             break
 
         console.print()
-        result = await agent.run(question, session_id="cli")  # 交互模式下的会话
+        result = await agent.run(question, session_id=session_id)  # 交互模式下的会话
 
         console.print(Panel.fit(
             f"[bold green]执行结果:[/bold green]\n{result.result}",

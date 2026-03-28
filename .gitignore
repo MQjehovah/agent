@@ -1,5 +1,7 @@
 **/memory/**/*.md
 **/memory/**/*.json
+**/sessions/**/*.md
+**/sessions/**/*.json
 
 /docs/plans/
 

@@ -205,30 +205,45 @@ class Agent:
 
         from agent_session import AgentSession
         session = None
-        if session_id and self.session_manager:
-            session = await self.session_manager.get_session(session_id)
-            if session:
-                session.add_message("user", task)
-                logger.info(
-                    f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
+        
+        if self.session_manager:
+            if session_id:
+                session = await self.session_manager.get_session(session_id)
+                if session:
+                    session.add_message("user", task)
+                    logger.info(
+                        f"Agent [{self.name}] 复用session: {session.session_id}, 消息数: {len(session.messages)}")
+                else:
+                    session = await self.session_manager.create_session(
+                        session_id=session_id,
+                        system_prompt=self.system_prompt
+                    )
+                    if self.session_store:
+                        messages = self.session_store.load(session_id)
+                        if messages:
+                            session.messages = cast(List[ChatCompletionMessageParam], messages)
+                            logger.info(
+                                f"Agent [{self.name}] 从存储恢复session: {session.session_id}, 消息数: {len(session.messages)}")
+                    session.add_message("user", task)
+                    self.session_store.save(session_id, session.messages)
+                    logger.debug(f"Agent [{self.name}] 创建新session: {session_id}")
             else:
                 session = await self.session_manager.create_session(
-                    session_id=session_id,
                     system_prompt=self.system_prompt
                 )
-                if self.session_store:
-                    messages = self.session_store.load(session_id)
-                    if messages:
-                        session.messages = cast(List[ChatCompletionMessageParam], messages)
-                        logger.info(
-                            f"Agent [{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
+                session_id = session.session_id
+                if self.memory:
+                    memory_context = self.memory.load_memory(task)
+                    if memory_context:
+                        session.messages.insert(0, {
+                            "role": "system",
+                            "content": f"## 【记忆上下文】\n{memory_context}"
+                        })
                 session.add_message("user", task)
-                self.session_store.save(session_id, session.messages)
-                logger.debug(f"Agent [{self.name}] 创建新session: {session_id}")
+                logger.info(f"Agent [{self.name}] 创建随机session: {session.session_id}")
 
         if not session:
             session = AgentSession(
-                session_id=session_id or "temp",
                 system_prompt=self.system_prompt
             )
             if self.memory:
@@ -299,7 +314,7 @@ class Agent:
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
         logger.debug(
-            f"Agent [{self.name}] [{session_id}] 任务完成")
+            f"Agent [{self.name}] [{session.session_id}] 任务完成")
 
         return AgentResult(
             agent_id=self.agent_id,
@@ -307,6 +322,9 @@ class Agent:
             status=self.status,
             result=self.result or "",
         )
+
+    def _get_session(session_id):
+        pass
 
     async def _background_memory_extract(self):
         try:
@@ -502,7 +520,6 @@ class SubagentManager:
             else:
                 logger.warning(f"Subagent missing {prompt_file}")
 
-
     def get_subagent_prompt(self) -> str:
         if not self.templates:
             return "没有可用的子代理"
@@ -510,7 +527,7 @@ class SubagentManager:
         lines = ["\n\n## 【SubAgent列表】\n"]
         for template_data in self.templates.values():
             lines.append(f"名称：[{template_data['name']}]\n")
-            lines.append(f"描述：{template_data['description']}")
+            lines.append(f"描述：{template_data['description']}\n")
         lines.append("\n通过subagent工具调用激活\n")
         return "\n".join(lines)
 
