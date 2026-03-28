@@ -34,7 +34,7 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
-                    agent_name TEXT,
+                    agent_id TEXT,
                     role TEXT,
                     content TEXT,
                     tool_calls TEXT,
@@ -44,18 +44,18 @@ class Storage:
                 );
                 
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-                CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_name);
+                CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
             """)
     
     def save_message(self, session_id: str, role: str, content: str, 
-                     agent_name: str = "", tool_calls: Optional[List] = None, 
+                     agent_id: str = "", tool_calls: Optional[List] = None, 
                      tool_call_id: str = "", name: str = ""):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
-                INSERT INTO messages (session_id, agent_name, role, content, tool_calls, tool_call_id, name, created_at)
+                INSERT INTO messages (session_id, agent_id, role, content, tool_calls, tool_call_id, name, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (session_id, agent_name, role, content or "",
+            """, (session_id, agent_id, role, content or "",
                   json.dumps(tool_calls) if tool_calls else None,
                   tool_call_id, name, datetime.now().isoformat()))
     
@@ -79,16 +79,16 @@ class Storage:
             messages.append(msg)
         return messages
     
-    def get_messages_by_date(self, date_str: str, agent_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_messages_by_date(self, date_str: str, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            if agent_name:
+            if agent_id:
                 rows = conn.execute("""
                     SELECT session_id, role, content, tool_calls, tool_call_id, name
                     FROM messages
-                    WHERE DATE(created_at) = ? AND agent_name = ?
+                    WHERE DATE(created_at) = ? AND agent_id = ?
                     ORDER BY session_id, id
-                """, (date_str, agent_name)).fetchall()
+                """, (date_str, agent_id)).fetchall()
             else:
                 rows = conn.execute("""
                     SELECT session_id, role, content, tool_calls, tool_call_id, name

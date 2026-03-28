@@ -36,7 +36,7 @@ class AgentSession:
                     self.session_id,
                     role,
                     content or "",
-                    agent_name=self.agent_name,
+                    agent_id=self.agent_name,
                     tool_calls=kwargs.get("tool_calls"),
                     tool_call_id=kwargs.get("tool_call_id"),
                     name=kwargs.get("name")

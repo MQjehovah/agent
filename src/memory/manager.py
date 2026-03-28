@@ -168,7 +168,7 @@ class MemoryManager:
         
         daily_file = os.path.join(self.daily_dir, f"{date_str}.md")
         
-        messages = self.storage.get_messages_by_date(date_str, self.agent_name)
+        messages = self.storage.get_messages_by_date(date_str, agent_id=self.agent_name)
         if not messages:
             logger.debug(f"No messages found for {date_str}, agent {self.agent_name}")
             return False
