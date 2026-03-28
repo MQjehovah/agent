@@ -33,10 +33,10 @@ class AgentSession:
             storage = get_storage()
             if storage and self.session_id:
                 storage.save_message(
-                    self.session_id,
-                    role,
-                    content or "",
                     agent_id=self.agent_name,
+                    session_id=self.session_id,
+                    role=role,
+                    content=content or "",
                     tool_calls=kwargs.get("tool_calls"),
                     tool_call_id=kwargs.get("tool_call_id"),
                     name=kwargs.get("name")
