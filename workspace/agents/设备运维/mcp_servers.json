@@ -1,20 +1,36 @@
 [
-  {
-    "name": "default",
-    "enabled": true,
-    "command": "python",
-    "args": ["mcp_server/src/default.py"],
-    "env": {},
-    "description": "默认MCP服务 - 数据库查询和邮件发送"
-  },
-  {
-    "name": "device-ops",
-    "enabled": true,
-    "command": "python",
-    "args": ["mcp_server/src/device_ops.py"],
-    "env": {
-      "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
+    {
+        "name": "default",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/default.py"
+        ],
+        "env": {},
+        "description": "默认MCP服务 - 数据库查询和邮件发送"
     },
-    "description": "设备远程运维服务"
-  }
+    {
+        "name": "device-ops",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/device_ops.py"
+        ],
+        "env": {
+            "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
+        },
+        "description": "设备远程运维服务"
+    },
+    {
+        "name": "device-terminal",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/terminal.py"
+        ],
+        "env": {
+            "WS_BASE_URL": "wss://dev.xzrobot.com:10000"
+        },
+        "description": "设备远程终端"
+    }
 ]
