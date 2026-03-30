@@ -1,9 +1,0 @@
-{
-    "input": "分析本月华东区的销售情况",
-    "context": {
-        "analysis_type": "sales",
-        "time_range": "本月",
-        "region": "华东区"
-    },
-    "expected_output": "生成包含销售总额、订单数量、Top客户、同比环比的销售分析报告"
-}
