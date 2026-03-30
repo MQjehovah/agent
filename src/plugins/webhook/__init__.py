@@ -46,7 +46,7 @@ class WebhookPlugin(BasePlugin):
         if not config_file:
             config_file = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "config", "webhook.json"
+                "workspace", "webhook.json"
             )
         
         self.config = WebhookConfig()
