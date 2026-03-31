@@ -1,10 +1,10 @@
 [
     {
-        "name": "device-ops",
+        "name": "remote_operation",
         "enabled": true,
         "command": "python",
         "args": [
-            "mcp_server/src/device_ops.py"
+            "mcp_server/src/remote_operation.py"
         ],
         "env": {
             "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
@@ -12,11 +12,11 @@
         "description": "设备远程运维服务"
     },
     {
-        "name": "device-terminal",
+        "name": "remote_terminal",
         "enabled": true,
         "command": "python",
         "args": [
-            "mcp_server/src/terminal.py"
+            "mcp_server/src/remote_terminal.py"
         ],
         "env": {
             "WS_BASE_URL": "wss://dev.xzrobot.com:10000"

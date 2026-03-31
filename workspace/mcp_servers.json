@@ -1,30 +1,46 @@
 [
-  {
-    "name": "default",
-    "enabled": false,
-    "command": "python",
-    "args": ["mcp_server/src/default.py"],
-    "env": {},
-    "description": "默认MCP服务 - 数据库查询和邮件发送"
-  },
-  {
-    "name": "device-ops",
-    "enabled": false,
-    "command": "python",
-    "args": ["mcp_server/src/device_ops.py"],
-    "env": {
-      "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
+    {
+        "name": "default",
+        "enabled": false,
+        "command": "python",
+        "args": [
+            "mcp_server/src/default.py"
+        ],
+        "env": {},
+        "description": "默认MCP服务 - 数据库查询和邮件发送"
     },
-    "description": "设备远程运维服务"
-  },
-  {
-    "name": "terminal",
-    "enabled": false,
-    "command": "python",
-    "args": ["mcp_server/src/terminal.py"],
-    "env": {
-      "WS_BASE_URL": "wss://dev.xzrobot.com:10000"
+    {
+        "name": "mysql_query",
+        "enabled": false,
+        "command": "python",
+        "args": [
+            "mcp_server/src/mysql_query.py"
+        ],
+        "env": {},
+        "description": "MySQL查询服务"
     },
-    "description": "WebSocket终端交互服务 - 通过WebSocket连接设备终端并执行命令"
-  }
+    {
+        "name": "remote_operation",
+        "enabled": false,
+        "command": "python",
+        "args": [
+            "mcp_server/src/device_ops.py"
+        ],
+        "env": {
+            "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
+        },
+        "description": "remote_operation"
+    },
+    {
+        "name": "remote_terminal",
+        "enabled": false,
+        "command": "python",
+        "args": [
+            "mcp_server/src/remote_terminal.py"
+        ],
+        "env": {
+            "WS_BASE_URL": "wss://dev.xzrobot.com:10000"
+        },
+        "description": "WebSocket终端交互服务 - 通过WebSocket连接设备终端并执行命令"
+    }
 ]

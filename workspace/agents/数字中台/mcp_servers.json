@@ -1,12 +1,22 @@
 [
     {
-        "name": "db",
+        "name": "default",
         "enabled": true,
         "command": "python",
         "args": [
             "mcp_server/src/default.py"
         ],
         "env": {},
-        "description": "默认MCP服务 - 数据库查询和邮件发送"
+        "description": "默认MCP服务 - 邮件发送"
+    },
+    {
+        "name": "mysql_query",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/mysql_query.py"
+        ],
+        "env": {},
+        "description": "MySQL查询服务"
     }
 ]
