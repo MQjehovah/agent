@@ -115,6 +115,50 @@ class SubagentManager:
             return self._active_subagents.get(session_id)
         return None
 
+    def get_sessions_by_template(self, template: str) -> List[Dict[str, Any]]:
+        """
+        获取指定模板的所有活跃session
+
+        Args:
+            template: 模板名称
+
+        Returns:
+            该模板的所有session信息列表
+        """
+        sessions = []
+        for session_id, instance in self._active_subagents.items():
+            if instance.template == template:
+                sessions.append({
+                    "session_id": session_id,
+                    "template": instance.template,
+                    "task_count": instance.task_count,
+                    "created_at": instance.created_at,
+                    "last_used": instance.last_used,
+                    "agent_id": instance.agent.agent_id
+                })
+        return sessions
+
+    def get_all_sessions(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        获取所有模板的session分组
+
+        Returns:
+            按模板名分组的session字典
+        """
+        grouped = {}
+        for session_id, instance in self._active_subagents.items():
+            template = instance.template or "未命名"
+            if template not in grouped:
+                grouped[template] = []
+            grouped[template].append({
+                "session_id": session_id,
+                "task_count": instance.task_count,
+                "created_at": instance.created_at,
+                "last_used": instance.last_used,
+                "agent_id": instance.agent.agent_id
+            })
+        return grouped
+
     async def get_or_create_subagent(
         self,
         template: str = "",

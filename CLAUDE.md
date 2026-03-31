@@ -43,7 +43,9 @@ docker run -p 8081:8081 agent
 - `/prompt` - 查看系统提示词
 - `/tools` - 列出可用工具
 - `/skills` - 列出可用技能
-- `/subagents` - 列出活跃子代理
+- `/subagents` - 列出所有活跃子代理
+- `/subagents all` - 按模板分组显示所有子代理会话
+- `/subagent <模板名>` - 查看指定模板的所有会话
 - `/subagents clear` - 清理所有子代理
 - `/sessions` - 列出所有会话
 - `/session <id>` - 查看指定会话详情
