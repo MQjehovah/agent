@@ -1,17 +1,13 @@
 import os
-import sys
 import uuid
 import asyncio
 import logging
 import signal
 import time
 import threading
-from typing import Dict, Any, List, Optional
+from typing import Optional
 from pathlib import Path
 
-from rich import box
-from rich.text import Text
-from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.console import Console
@@ -40,6 +36,7 @@ from agent import Agent
 from scheduler import SchedulerManager
 from plugins import PluginManager
 from config import validate_config, Config
+from cmd_handler import CommandHandler
 
 console = Console()
 
@@ -175,6 +172,10 @@ async def interactive_mode(agent: Agent):
     executor_running = True
     current_agent_task: Optional[asyncio.Task] = None
 
+    # 初始化命令处理器
+    cmd_handler = CommandHandler(agent, session_id, task_queue)
+    cmd_handler.set_cancel_event(_cancel_event)
+
     async def task_executor():
         """后台任务执行器"""
         nonlocal current_task_id, executor_running, current_agent_task
@@ -187,6 +188,7 @@ async def interactive_mode(agent: Agent):
 
                 task_id, question, sess_id = task_item
                 current_task_id = task_id
+                cmd_handler.set_current_task_id(task_id)
                 console.print(f"[dim cyan]▶ 开始执行任务 #{task_id}[/dim cyan]")
 
                 # 重置取消事件
@@ -231,6 +233,7 @@ async def interactive_mode(agent: Agent):
                     ))
 
                 current_task_id = None
+                cmd_handler.set_current_task_id(None)
                 current_agent_task = None
                 task_queue.task_done()
 
@@ -262,222 +265,17 @@ async def interactive_mode(agent: Agent):
             if not question.strip():
                 continue
 
-            if question.strip().lower() == "/prompt":
-                console.print(Panel.fit(
-                    f"[bold green]系统提示词:[/bold green]\n{agent.system_prompt}",
-                    border_style="green", box=box.ROUNDED
-                ))
+            # 处理命令
+            if cmd_handler.is_command(question):
+                handled, should_continue = await cmd_handler.handle(question)
+                if not should_continue:
+                    logger.info("再见!")
+                    esc_listener.stop()
+                    executor_running = False
+                    await task_queue.put(None)  # 发送退出信号
+                    await executor_task
+                    break
                 continue
-
-            if question.strip().lower() == "/tools":
-                table = Table(title="工具列表", show_header=True,
-                              header_style="bold magenta", box=box.ROUNDED)
-                table.add_column("名称", style="cyan", no_wrap=True)
-                table.add_column("描述", style="green")
-                for tool in agent.tool_defs:
-                    func = tool.get("function", {})
-                    name = func.get("name", "未知")
-                    desc = func.get("description", "无描述")
-                    table.add_row(name, desc)
-                console.print(table)
-                continue
-
-            if question.strip().lower() == "/skills":
-                if agent.skill_manager:
-                    table = Table(title="技能列表", show_header=True,
-                                  header_style="bold magenta", box=box.ROUNDED)
-                    table.add_column("名称", style="cyan")
-                    for skill_name in agent.skill_manager.list_skills():
-                        table.add_row(skill_name)
-                    console.print(table)
-                else:
-                    console.print("[yellow]无可用技能[/yellow]")
-                continue
-
-            if question.strip().lower() == "/tasks":
-                if current_task_id:
-                    console.print(f"[cyan]当前正在执行任务 #{current_task_id}[/cyan]")
-                pending = task_queue.qsize()
-                if pending > 0:
-                    console.print(f"[dim]队列中还有 {pending} 个任务等待[/dim]")
-                else:
-                    console.print("[dim]暂无任务[/dim]")
-                continue
-
-            if question.strip().lower() == "/cancel":
-                if current_task_id and current_agent_task:
-                    console.print(f"[yellow]取消任务 #{current_task_id}[/yellow]")
-                    _cancel_event.set()
-                else:
-                    console.print("[dim]当前没有正在执行的任务[/dim]")
-                continue
-
-            if question.strip().lower() == "/subagents":
-                if agent.subagent_manager:
-                    stats = agent.subagent_manager.get_stats()
-                    active = stats["active_subagents"]
-                    if active:
-                        table = Table(title=f"活跃子代理 (共 {len(active)} 个)", show_header=True,
-                                      header_style="bold magenta", box=box.ROUNDED)
-                        table.add_column("会话ID", style="cyan")
-                        table.add_column("模板", style="yellow")
-                        table.add_column("任务数", style="green", justify="right")
-                        for sub in active:
-                            table.add_row(sub["session_id"], sub["template"], str(sub["task_count"]))
-                        console.print(table)
-                    else:
-                        console.print("[yellow]暂无活跃子代理[/yellow]")
-                else:
-                    console.print("[yellow]子代理管理器未初始化[/yellow]")
-                continue
-
-            if question.strip().lower().startswith("/subagent "):
-                template_name = question.strip()[10:].strip()
-                if agent.subagent_manager:
-                    sessions = agent.subagent_manager.get_sessions_by_template(template_name)
-                    if sessions:
-                        table = Table(title=f"子代理 [{template_name}] 的所有会话 (共 {len(sessions)} 个)",
-                                      show_header=True, header_style="bold magenta", box=box.ROUNDED)
-                        table.add_column("会话ID", style="cyan")
-                        table.add_column("任务数", style="green", justify="right")
-                        table.add_column("Agent ID", style="yellow")
-                        for sess in sessions:
-                            table.add_row(
-                                sess["session_id"],
-                                str(sess["task_count"]),
-                                sess["agent_id"]
-                            )
-                        console.print(table)
-                    else:
-                        console.print(f"[yellow]子代理 [{template_name}] 暂无活跃会话[/yellow]")
-                else:
-                    console.print("[yellow]子代理管理器未初始化[/yellow]")
-                continue
-
-            if question.strip().lower() == "/subagents all":
-                if agent.subagent_manager:
-                    grouped = agent.subagent_manager.get_all_sessions()
-                    if grouped:
-                        for template, sessions in grouped.items():
-                            table = Table(title=f"[{template}] ({len(sessions)} 个会话)",
-                                          show_header=True, header_style="bold blue", box=box.ROUNDED)
-                            table.add_column("会话ID", style="cyan")
-                            table.add_column("任务数", style="green", justify="right")
-                            table.add_column("Agent ID", style="yellow")
-                            for sess in sessions:
-                                table.add_row(
-                                    sess["session_id"],
-                                    str(sess["task_count"]),
-                                    sess["agent_id"]
-                                )
-                            console.print(table)
-                    else:
-                        console.print("[yellow]暂无活跃子代理[/yellow]")
-                else:
-                    console.print("[yellow]子代理管理器未初始化[/yellow]")
-                continue
-
-            if question.strip().lower() == "/subagents clear":
-                if agent.subagent_manager:
-                    await agent.subagent_manager.cleanup_all()
-                    console.print("[green]已清理所有子代理[/green]")
-                continue
-
-            if question.strip().lower().startswith("/loglevel "):
-                level = question.strip()[10:].strip().upper()
-                valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-                if level in valid_levels:
-                    logging.getLogger("agent").setLevel(getattr(logging, level))
-                    console.print(f"[green]日志级别已设置为: {level}[/green]")
-                else:
-                    console.print(f"[red]无效的日志级别: {level}[/red]")
-                    console.print(f"[yellow]有效值: {', '.join(valid_levels)}[/yellow]")
-                continue
-
-            if question.strip().lower() == "/cache":
-                from cache import get_cache
-                cache = get_cache()
-                stats = cache.get_stats()
-                table = Table(title="缓存统计", show_header=True,
-                              header_style="bold magenta", box=box.ROUNDED)
-                table.add_column("指标", style="cyan")
-                table.add_column("值", style="green")
-                table.add_row("缓存大小", f"{stats['size']}/{stats['max_size']}")
-                table.add_row("总命中次数", str(stats['total_hits']))
-                console.print(table)
-                continue
-
-            if question.strip().lower() == "/cache clear":
-                from cache import get_cache
-                cache = get_cache()
-                cache.clear()
-                console.print("[green]缓存已清空[/green]")
-                continue
-
-            if question.strip().lower() == "/sessions":
-                if agent.session_manager:
-                    sessions = agent.session_manager.list_sessions()
-                    if sessions:
-                        table = Table(title=f"会话列表 (共 {len(sessions)} 个)", show_header=True,
-                                      header_style="bold magenta", box=box.ROUNDED)
-                        table.add_column("Session ID", style="cyan")
-                        table.add_column("消息数", style="green", justify="right")
-                        for sid in sessions:
-                            session = await agent.session_manager.get_session(sid)
-                            msg_count = len(session.messages) if session else 0
-                            table.add_row(sid, str(msg_count))
-                        console.print(table)
-                    else:
-                        console.print("[yellow]暂无会话[/yellow]")
-                else:
-                    console.print("[yellow]Session Manager 未初始化[/yellow]")
-                continue
-
-            if question.strip().lower().startswith("/session "):
-                target_id = question.strip()[9:].strip()
-                if agent.session_manager:
-                    session = await agent.session_manager.get_session(target_id)
-                    if session:
-                        table = Table(title=f"会话 {target_id} (共 {len(session.messages)} 条消息)",
-                                      show_header=True, header_style="bold magenta", box=box.ROUNDED)
-                        table.add_column("#", style="dim", width=3)
-                        table.add_column("角色", style="cyan", width=10)
-                        table.add_column("内容", style="green")
-                        for i, msg in enumerate(session.messages, 1):
-                            role = str(msg.get("role", "未知"))
-                            content = str(msg.get("content", "") or "")
-                            table.add_row(str(i), role, content)
-                        console.print(table)
-                    else:
-                        console.print(f"[yellow]会话 {target_id} 不存在[/yellow]")
-                else:
-                    console.print("[yellow]Session Manager 未初始化[/yellow]")
-                continue
-
-            if question.strip().lower().startswith("/messages"):
-                session = None
-                if agent.session_manager:
-                    session = await agent.session_manager.get_session(session_id)
-                messages = session.messages if session else []
-                table = Table(title=f"当前会话消息 (共 {len(messages)} 条)",
-                              show_header=True, header_style="bold magenta", box=box.ROUNDED)
-                table.add_column("#", style="dim", width=3)
-                table.add_column("角色", style="cyan", width=10)
-                table.add_column("内容", style="green")
-                for i, msg in enumerate(messages, 1):
-                    role = str(msg.get("role", "未知"))
-                    content = str(msg.get("content", "") or "")
-                    table.add_row(str(i), role, content)
-                console.print(table)
-                continue
-
-            if question.strip().lower() in ["quit", "exit", "q"]:
-                logger.info("再见!")
-                esc_listener.stop()
-                executor_running = False
-                await task_queue.put(None)  # 发送退出信号
-                await executor_task
-                break
 
             # 将任务加入队列
             task_counter += 1
