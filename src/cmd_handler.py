@@ -21,10 +21,13 @@ class CommandHandler:
         self.task_queue = task_queue
         self._current_task_id = current_task_id
         self._cancel_event = None
+        self._shutdown_event = None
 
     def set_cancel_event(self, cancel_event):
-        """设置取消事件"""
         self._cancel_event = cancel_event
+
+    def set_shutdown_event(self, shutdown_event):
+        self._shutdown_event = shutdown_event
 
     def set_current_task_id(self, task_id: Optional[int]):
         """设置当前任务ID"""
