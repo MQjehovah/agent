@@ -1,8 +1,9 @@
 """
 交互模式命令处理器
 """
+import asyncio
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 from rich import box
 from rich.table import Table
 from rich.panel import Panel
@@ -15,118 +16,63 @@ logger = logging.getLogger("agent.cmd")
 class CommandHandler:
     """命令处理器 - 处理所有以 / 开头的交互命令"""
 
-    def __init__(self, agent, session_id: str, current_task_id: Optional[int] = None):
+    def __init__(self, agent, session_id: str, shutdown_event: asyncio.Event = None):
         self.agent = agent
         self.session_id = session_id
-        self._current_task_id = current_task_id
+        self._current_task_id = None
+        self._shutdown_event = shutdown_event
+
+    def set_shutdown_event(self, event):
+        self._shutdown_event = event
 
     def set_current_task_id(self, task_id: Optional[int]):
         self._current_task_id = task_id
 
     def is_command(self, input_str: str) -> bool:
-        """检查是否是命令"""
         return input_str.strip().startswith("/")
 
-    async def handle(self, cmd: str) -> Tuple[bool, bool]:
-        """
-        处理命令
-
-        Returns:
-            (handled, should_continue) - 是否已处理，是否继续循环
-        """
+    async def handle(self, cmd: str):
+        """处理命令"""
         cmd_lower = cmd.strip().lower()
 
-        # 帮助命令
         if cmd_lower == "/help":
             self._show_help()
-            return True, True
-
-        # 系统提示词
-        if cmd_lower == "/prompt":
+        elif cmd_lower == "/prompt":
             self._show_prompt()
-            return True, True
-
-        # 工具列表
-        if cmd_lower == "/tools":
+        elif cmd_lower == "/tools":
             self._show_tools()
-            return True, True
-
-        # 技能列表
-        if cmd_lower == "/skills":
+        elif cmd_lower == "/skills":
             self._show_skills()
-            return True, True
-
-        # 任务状态
-        if cmd_lower == "/tasks":
+        elif cmd_lower == "/tasks":
             self._show_tasks()
-            return True, True
-
-        # 取消任务
-        if cmd_lower == "/cancel":
+        elif cmd_lower == "/cancel":
             self._cancel_task()
-            return True, True
-
-        # 子代理列表
-        if cmd_lower == "/subagents":
+        elif cmd_lower == "/subagents":
             self._show_subagents()
-            return True, True
-
-        # 指定模板的子代理会话
-        if cmd_lower.startswith("/subagent "):
-            template_name = cmd.strip()[10:].strip()
-            self._show_subagent_sessions(template_name)
-            return True, True
-
-        # 所有子代理会话
-        if cmd_lower == "/subagents all":
+        elif cmd_lower.startswith("/subagent "):
+            self._show_subagent_sessions(cmd.strip()[10:].strip())
+        elif cmd_lower == "/subagents all":
             self._show_all_subagents()
-            return True, True
-
-        # 清理子代理
-        if cmd_lower == "/subagents clear":
+        elif cmd_lower == "/subagents clear":
             await self._clear_subagents()
-            return True, True
-
-        # 日志级别
-        if cmd_lower.startswith("/loglevel "):
-            level = cmd.strip()[10:].strip().upper()
-            self._set_loglevel(level)
-            return True, True
-
-        # 缓存统计
-        if cmd_lower == "/cache":
+        elif cmd_lower.startswith("/loglevel "):
+            self._set_loglevel(cmd.strip()[10:].strip().upper())
+        elif cmd_lower == "/cache":
             self._show_cache()
-            return True, True
-
-        # 清空缓存
-        if cmd_lower == "/cache clear":
+        elif cmd_lower == "/cache clear":
             self._clear_cache()
-            return True, True
-
-        # 会话列表
-        if cmd_lower == "/sessions":
+        elif cmd_lower == "/sessions":
             await self._show_sessions()
-            return True, True
-
-        # 查看指定会话
-        if cmd_lower.startswith("/session "):
-            target_id = cmd.strip()[9:].strip()
-            await self._show_session(target_id)
-            return True, True
-
-        # 当前会话消息
-        if cmd_lower.startswith("/messages"):
+        elif cmd_lower.startswith("/session "):
+            await self._show_session(cmd.strip()[9:].strip())
+        elif cmd_lower.startswith("/messages"):
             await self._show_messages()
-            return True, True
-
-        # 退出
-        if cmd_lower in ["quit", "exit", "/q", "/quit", "/exit"]:
-            return True, False
-
-        # 未知命令
-        console.print(f"[red]未知命令: {cmd}[/red]")
-        console.print("[dim]输入 /help 查看可用命令[/dim]")
-        return True, True
+        elif cmd_lower in ["/q", "/quit", "/exit"]:
+            if self._shutdown_event:
+                self._shutdown_event.set()
+        else:
+            console.print(f"[red]未知命令: {cmd}[/red]")
+            console.print("[dim]输入 /help 查看可用命令[/dim]")
 
     def _show_help(self):
         """显示帮助信息"""
@@ -141,7 +87,6 @@ class CommandHandler:
             ("/tools", "列出可用工具"),
             ("/skills", "列出可用技能"),
             ("/tasks", "查看任务状态"),
-            ("/cancel", "取消当前任务"),
             ("/subagents", "列出活跃子代理"),
             ("/subagent <模板>", "查看指定模板的子代理会话"),
             ("/subagents all", "按模板分组显示所有子代理"),
@@ -152,7 +97,7 @@ class CommandHandler:
             ("/loglevel <level>", "设置日志级别"),
             ("/cache", "查看缓存统计"),
             ("/cache clear", "清空缓存"),
-            ("/quit /exit /q", "退出程序"),
+            ("/quit", "退出程序"),
         ]
         for cmd, desc in commands:
             table.add_row(cmd, desc)
@@ -175,7 +120,6 @@ class CommandHandler:
             func = tool.get("function", {})
             name = func.get("name", "未知")
             desc = func.get("description", "无描述")
-            # 截断过长的描述
             if len(desc) > 60:
                 desc = desc[:60] + "..."
             table.add_row(name, desc)
@@ -337,7 +281,6 @@ class CommandHandler:
                 for i, msg in enumerate(session.messages, 1):
                     role = str(msg.get("role", "未知"))
                     content = str(msg.get("content", "") or "")
-                    # 截断过长内容
                     if len(content) > 100:
                         content = content[:100] + "..."
                     table.add_row(str(i), role, content)
