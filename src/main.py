@@ -128,6 +128,31 @@ async def interactive_mode(agent: Agent):
                 console.print("[yellow]无可用技能[/yellow]")
             continue
 
+        if question.strip().lower() == "/subagents":
+            if agent.subagent_manager:
+                stats = agent.subagent_manager.get_stats()
+                active = stats["active_subagents"]
+                if active:
+                    table = Table(title=f"活跃子代理 (共 {len(active)} 个)", show_header=True,
+                                  header_style="bold magenta", box=box.ROUNDED)
+                    table.add_column("会话ID", style="cyan")
+                    table.add_column("模板", style="yellow")
+                    table.add_column("任务数", style="green", justify="right")
+                    for sub in active:
+                        table.add_row(sub["session_id"], sub["template"], str(sub["task_count"]))
+                    console.print(table)
+                else:
+                    console.print("[yellow]暂无活跃子代理[/yellow]")
+            else:
+                console.print("[yellow]子代理管理器未初始化[/yellow]")
+            continue
+
+        if question.strip().lower() == "/subagents clear":
+            if agent.subagent_manager:
+                await agent.subagent_manager.cleanup_all()
+                console.print("[green]已清理所有子代理[/green]")
+            continue
+
         if question.strip().lower().startswith("/loglevel "):
             level = question.strip()[10:].strip().upper()
             valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]

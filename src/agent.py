@@ -421,21 +421,27 @@ class Agent:
                 task=task,
                 template=args.get("template", ""),
                 name=args.get("name", ""),
+                session_id=args.get("session_id", ""),
                 system_prompt=args.get("system_prompt", ""),
                 tools=args.get("tools"),
                 mcp_servers=args.get("mcp_servers"),
                 client=self.client,
-                parent_agent=self
+                parent_agent=self,
+                keep_alive=args.get("keep_alive", True)
             )
         except Exception as e:
             logger.error(f"Subagent execution error: {e}")
             return json.dumps({"success": False, "error": f"子代理执行错误: {e}"}, ensure_ascii=False)
 
+        # 获取子代理实例信息
+        stats = self.subagent_manager.get_stats()
+
         return json.dumps({
             "success": result.status == "completed",
-            "name": result.agent_id,
+            "agent_id": result.agent_id,
             "status": result.status,
-            "result": result.result
+            "result": result.result,
+            "active_subagents": stats["active_count"]
         }, ensure_ascii=False)
 
     async def cleanup(self):
@@ -443,6 +449,10 @@ class Agent:
             task.cancel()
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
+        # 清理子代理（仅主代理执行）
+        if not self.parent_agent and self.subagent_manager:
+            await self.subagent_manager.cleanup_all()
 
         if self.memory and not self.parent_agent:
             self.memory.stop_daily_task()

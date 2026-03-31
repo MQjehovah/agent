@@ -43,9 +43,14 @@ docker run -p 8081:8081 agent
 - `/prompt` - 查看系统提示词
 - `/tools` - 列出可用工具
 - `/skills` - 列出可用技能
+- `/subagents` - 列出活跃子代理
+- `/subagents clear` - 清理所有子代理
 - `/sessions` - 列出所有会话
 - `/session <id>` - 查看指定会话详情
 - `/messages` - 查看当前会话消息历史
+- `/loglevel <level>` - 动态调整日志级别
+- `/cache` - 查看缓存统计
+- `/cache clear` - 清空缓存
 - `quit/exit/q` - 退出
 
 ## Architecture
@@ -65,6 +70,29 @@ docker run -p 8081:8081 agent
 内置工具：`todo`, `file`, `subagent`, `memory`, `shell`
 
 工具通过 `ToolRegistry` 注册，支持动态注册/注销。
+
+### 子代理系统 (src/subagent_manager.py)
+
+子代理支持持久化，保持上下文连续性：
+
+**核心特性：**
+- 子代理创建后保持存活，不会被自动释放
+- 通过 `session_id` 或模板名可复用已有子代理
+- 子代理拥有独立的会话上下文，支持连续对话
+- 仅在程序退出时统一清理
+
+**subagent 工具参数：**
+- `task` - 任务内容（必需）
+- `template` - 模板名称（如 设备运维, 数字中台）
+- `session_id` - 会话ID，用于复用已有子代理
+- `keep_alive` - 是否保持存活（默认 true）
+
+**示例：**
+```json
+{"task": "诊断设备SN123", "template": "设备运维"}
+{"task": "继续检查SN456", "template": "设备运维"}  // 复用同一子代理
+{"task": "一次性任务", "template": "IT运维", "keep_alive": false}
+```
 
 ### 技能系统 (src/skills/)
 
