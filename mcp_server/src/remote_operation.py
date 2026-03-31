@@ -29,6 +29,8 @@ mcp = FastMCP("Device Operations MCP Server")
 @dataclass
 class APIConfig:
     base_url: str = os.getenv("DEVICE_API_BASE_URL", "https://bms-cn.rosiwit.com")
+    username: Optional[str] = os.getenv("DEVICE_API_USERNAME","")
+    password: Optional[str] = os.getenv("DEVICE_API_PASSWORD","")
     token: Optional[str] = None  # 不硬编码 Token，通过登录获取或手动设置
     timeout: int = 30
 

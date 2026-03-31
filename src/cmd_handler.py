@@ -1,9 +1,8 @@
 """
 交互模式命令处理器
 """
-import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Callable
 from rich import box
 from rich.table import Table
 from rich.panel import Panel
@@ -16,14 +15,11 @@ logger = logging.getLogger("agent.cmd")
 class CommandHandler:
     """命令处理器 - 处理所有以 / 开头的交互命令"""
 
-    def __init__(self, agent, session_id: str, shutdown_event: asyncio.Event = None):
+    def __init__(self, agent, session_id: str, on_exit: Callable[[], None] = None):
         self.agent = agent
         self.session_id = session_id
         self._current_task_id = None
-        self._shutdown_event = shutdown_event
-
-    def set_shutdown_event(self, event):
-        self._shutdown_event = event
+        self._on_exit = on_exit
 
     def set_current_task_id(self, task_id: Optional[int]):
         self._current_task_id = task_id
@@ -68,8 +64,8 @@ class CommandHandler:
         elif cmd_lower.startswith("/messages"):
             await self._show_messages()
         elif cmd_lower in ["/q", "/quit", "/exit"]:
-            if self._shutdown_event:
-                self._shutdown_event.set()
+            if self._on_exit:
+                self._on_exit()
         else:
             console.print(f"[red]未知命令: {cmd}[/red]")
             console.print("[dim]输入 /help 查看可用命令[/dim]")

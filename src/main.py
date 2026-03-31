@@ -69,7 +69,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
     current_task: Optional[asyncio.Task] = None
     task_counter = 0
 
-    cmd_handler = CommandHandler(agent, session_id, shutdown_event)
+    cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set)
 
     async def run_task(task_id: int, question: str):
         """执行单个任务"""
