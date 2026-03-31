@@ -15,22 +15,12 @@ logger = logging.getLogger("agent.cmd")
 class CommandHandler:
     """命令处理器 - 处理所有以 / 开头的交互命令"""
 
-    def __init__(self, agent, session_id: str, task_queue, current_task_id: Optional[int] = None):
+    def __init__(self, agent, session_id: str, current_task_id: Optional[int] = None):
         self.agent = agent
         self.session_id = session_id
-        self.task_queue = task_queue
         self._current_task_id = current_task_id
-        self._cancel_event = None
-        self._shutdown_event = None
-
-    def set_cancel_event(self, cancel_event):
-        self._cancel_event = cancel_event
-
-    def set_shutdown_event(self, shutdown_event):
-        self._shutdown_event = shutdown_event
 
     def set_current_task_id(self, task_id: Optional[int]):
-        """设置当前任务ID"""
         self._current_task_id = task_id
 
     def is_command(self, input_str: str) -> bool:
@@ -206,21 +196,13 @@ class CommandHandler:
     def _show_tasks(self):
         """显示任务状态"""
         if self._current_task_id:
-            console.print(f"[cyan]当前正在执行任务 #{self._current_task_id}[/cyan]")
-        pending = self.task_queue.qsize()
-        if pending > 0:
-            console.print(f"[dim]队列中还有 {pending} 个任务等待[/dim]")
+            console.print(f"[cyan]正在执行任务 #{self._current_task_id}[/cyan]")
         else:
-            console.print("[dim]队列空闲[/dim]")
+            console.print("[dim]无正在执行的任务[/dim]")
 
     def _cancel_task(self):
         """取消当前任务"""
-        if self._current_task_id:
-            console.print(f"[yellow]取消任务 #{self._current_task_id}[/yellow]")
-            if self._cancel_event:
-                self._cancel_event.set()
-        else:
-            console.print("[dim]当前没有正在执行的任务[/dim]")
+        console.print("[dim]使用 Ctrl+C 中断任务[/dim]")
 
     def _show_subagents(self):
         """显示子代理列表"""
