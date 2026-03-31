@@ -47,7 +47,6 @@ class LLMClient:
             raise ValueError("API Key 未配置。请设置 OPENAI_API_KEY 环境变量或在初始化时传入 api_key 参数")
 
         if not resolved_base_url:
-            logger.warning("OPENAI_BASE_URL 未配置，使用默认值")
             resolved_base_url = "https://coding.dashscope.aliyuncs.com/v1"
 
         self.base_url = resolved_base_url
