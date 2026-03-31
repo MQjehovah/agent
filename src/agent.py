@@ -8,6 +8,9 @@ import re
 import json
 from openai.types.chat import ChatCompletionMessageParam
 
+from utils.frontmatter import extract_frontmatter
+from subagent_manager import SubagentManager
+
 if TYPE_CHECKING:
     from plugins import PluginManager
 
@@ -71,25 +74,6 @@ class Agent:
         self._init_subagents()
         self._init_memory()
 
-    def _extract_frontmatter(self, content: str) -> tuple:
-        pattern = r"^---\s*\n(.*?)\n---\s*\n?(.*)$"
-        match = re.match(pattern, content, re.DOTALL)
-
-        if not match:
-            return {}, content
-
-        frontmatter_str = match.group(1)
-        body = match.group(2)
-
-        import yaml
-        try:
-            frontmatter = yaml.safe_load(frontmatter_str) or {}
-        except yaml.YAMLError as e:
-            logger.error(f"YAML parse error: {e}")
-            return {}, content
-
-        return frontmatter, body
-
     def _load_system_prompt(self):
         prompt_file = os.path.join(self.workspace, "PROMPT.md")
 
@@ -101,7 +85,7 @@ class Agent:
         with open(prompt_file, "r", encoding="utf-8") as f:
             content = f.read()
 
-        frontmatter, body = self._extract_frontmatter(content)
+        frontmatter, body = extract_frontmatter(content)
 
         if frontmatter:
             self.agent_id = self.name = frontmatter.get("name", "")
@@ -290,7 +274,7 @@ class Agent:
                         if isinstance(func_args, str):
                             try:
                                 func_args = json.loads(func_args)
-                            except:
+                            except (json.JSONDecodeError, ValueError):
                                 func_args = {}
 
                         logger.debug(
@@ -367,9 +351,8 @@ class Agent:
                             json.loads(func_args)
                         except (json.JSONDecodeError, ValueError):
                             try:
-                                func_args = json.dumps(
-                                    func_args, ensure_ascii=False)
-                            except Exception:
+                                func_args = json.dumps(func_args, ensure_ascii=False)
+                            except (TypeError, ValueError):
                                 func_args = "{}"
                     elif isinstance(func_args, dict):
                         logger.warning(
@@ -466,115 +449,3 @@ class Agent:
         if self.mcp:
             await self.mcp.close()
         logger.info(f"Agent [{self.name}] cleaned up")
-
-
-class SubagentManager:
-    def __init__(self, base_dir: str):
-        self.base_dir = base_dir
-        self.templates: Dict[str, Dict[str, Any]] = {}
-        self._load_all()
-
-    def _extract_frontmatter(self, content: str) -> tuple:
-        import yaml
-        pattern = r'^---\s*\n(.*?)\n---\s*\n(.*)$'
-        match = re.match(pattern, content, re.DOTALL)
-
-        if not match:
-            return {}, content
-
-        frontmatter_str = match.group(1)
-        body = match.group(2)
-
-        try:
-            frontmatter = yaml.safe_load(frontmatter_str) or {}
-        except yaml.YAMLError as e:
-            logger.error(f"YAML parse error: {e}")
-            return {}, content
-
-        return frontmatter, body
-
-    def _load_all(self):
-        if not self.base_dir or not os.path.exists(self.base_dir):
-            logger.warning(f"Subagent directory not found: {self.base_dir}")
-            return
-
-        for dir in os.listdir(self.base_dir):
-            agent_dir = os.path.join(self.base_dir, dir)
-            if not os.path.isdir(agent_dir):
-                continue
-
-            prompt_file = os.path.join(agent_dir, "PROMPT.md")
-            if os.path.exists(prompt_file):
-                with open(prompt_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                frontmatter, body = self._extract_frontmatter(content)
-                if frontmatter:
-                    name = frontmatter.get("name", dir)
-                    description = frontmatter.get("description", "")
-                    template = {
-                        "name": name,
-                        "description": description,
-                        "workspace": agent_dir
-                    }
-                    self.templates[name] = template
-                    logger.debug(f"加载子代理模板: {name}")
-            else:
-                logger.warning(f"Subagent missing {prompt_file}")
-
-    def get_subagent_prompt(self) -> str:
-        if not self.templates:
-            return "没有可用的子代理"
-
-        lines = ["\n\n## 【SubAgent列表】\n"]
-        for template_data in self.templates.values():
-            lines.append(f"名称：[{template_data['name']}]\n")
-            lines.append(f"描述：{template_data['description']}\n")
-        lines.append("\n通过subagent工具调用激活\n")
-        return "\n".join(lines)
-
-    def list_templates(self) -> List[Dict[str, Any]]:
-        return [t['name'] for t in self.templates.values()]
-
-    async def run_subagent(
-        self,
-        task: str,
-        template: str = "",
-        name: str = "",
-        system_prompt: str = "",
-        tools: Optional[List[str]] = None,
-        mcp_servers: Optional[List[Dict[str, Any]]] = None,
-        client=None,
-        parent_agent: Agent = None
-    ) -> tuple:
-        template_data = self.templates.get(template or name)
-        workspace = template_data["workspace"] if template_data else None
-
-        agent = Agent(
-            workspace=workspace,
-            client=client,
-            parent_agent=parent_agent
-        )
-
-        if parent_agent:
-            agent.plugin_manager = parent_agent.plugin_manager
-
-        await agent.initialize()
-
-        # 没有模板数据则直接用预设参数初始化
-        if not template_data:
-            agent.name = name
-            agent.system_prompt = system_prompt
-
-        try:
-            result = await agent.run(task)
-        except Exception as e:
-            result = AgentResult(
-                agent_id=agent.agent_id,
-                status="failed",
-                result=f"子代理执行错误: {e}"
-            )
-            logger.error(f"子代理执行错误: {e}")
-        finally:
-            await agent.cleanup()
-
-        return result

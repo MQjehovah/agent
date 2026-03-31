@@ -11,11 +11,14 @@ logger = logging.getLogger("agent.tools")
 def decode_output(data: bytes) -> str:
     if not data:
         return ""
-    for encoding in ["utf-8", "gbk", "cp936", "latin-1"]:
+    # 按优先级尝试不同编码
+    encodings = ["utf-8", "gbk", "cp936", "latin-1"]
+    for encoding in encodings:
         try:
             return data.decode(encoding)
-        except:
+        except UnicodeDecodeError:
             continue
+    # 所有编码都失败，使用替换模式
     return data.decode("utf-8", errors="replace")
 
 

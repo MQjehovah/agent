@@ -8,6 +8,12 @@ from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger("agent")
 
+# MCP 连接配置
+MCP_CONNECT_TIMEOUT = 30  # 连接超时（秒）
+MCP_RECONNECT_DELAY = 5  # 重连延迟（秒）
+MCP_MAX_RECONNECT_ATTEMPTS = 3  # 最大重连次数
+MCP_HEALTH_CHECK_INTERVAL = 60  # 健康检查间隔（秒）
+
 
 class MCPServerConnection:
     """MCP服务器连接管理"""
@@ -19,8 +25,15 @@ class MCPServerConnection:
         self.session: Optional[ClientSession] = None
         self._exit_stack = None
         self.tool_defs: List[Dict[str, Any]] = []
+        self._connected = False
+        self._reconnect_attempts = 0
+        self._health_check_task: Optional[asyncio.Task] = None
 
-    async def connect(self) -> bool:
+    @property
+    def is_connected(self) -> bool:
+        return self._connected and self.session is not None
+
+    async def connect(self, timeout: int = MCP_CONNECT_TIMEOUT) -> bool:
         """连接MCP服务器"""
         from contextlib import AsyncExitStack
 
@@ -42,16 +55,19 @@ class MCPServerConnection:
 
         try:
             self._exit_stack = AsyncExitStack()
-            await self._exit_stack.__aenter__()
+            await asyncio.wait_for(
+                self._exit_stack.__aenter__(),
+                timeout=timeout
+            )
 
             try:
-                stdio_transport = await self._exit_stack.enter_async_context(
-                    stdio_client(server_params)
+                stdio_transport = await asyncio.wait_for(
+                    self._exit_stack.enter_async_context(stdio_client(server_params)),
+                    timeout=timeout
                 )
-            except asyncio.CancelledError:
-                logger.error(f"✗ MCP [{self.name}] 连接被取消（可能是超时或进程启动失败）")
-                await self._exit_stack.__aexit__(None, None, None)
-                self._exit_stack = None
+            except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+                logger.error(f"✗ MCP [{self.name}] 连接超时或被取消: {e}")
+                await self._safe_exit_stack_cleanup()
                 return False
 
             self.session = await self._exit_stack.enter_async_context(
@@ -60,6 +76,7 @@ class MCPServerConnection:
             await self.session.initialize()
 
             mcp_tools = await self.session.list_tools()
+            self.tool_defs = []
             for t in mcp_tools.tools:
                 self.tool_defs.append({
                     "type": "function",
@@ -70,38 +87,91 @@ class MCPServerConnection:
                     }
                 })
 
-            # logger.info(f"✓ MCP [{self.name}] 已加载 {len(mcp_tools.tools)} 个工具")
+            self._connected = True
+            self._reconnect_attempts = 0
+            logger.info(f"✓ MCP [{self.name}] 已连接，加载 {len(self.tool_defs)} 个工具")
             return True
+
+        except asyncio.TimeoutError:
+            logger.error(f"✗ MCP [{self.name}] 连接超时")
+            await self._safe_exit_stack_cleanup()
+            return False
         except Exception as e:
             logger.error(f"✗ MCP [{self.name}] 连接失败: {e}")
-            if self._exit_stack:
-                try:
-                    await self._exit_stack.__aexit__(None, None, None)
-                except:
-                    pass
-                self._exit_stack = None
+            await self._safe_exit_stack_cleanup()
             return False
 
-    async def close(self):
-        """关闭连接"""
+    async def _safe_exit_stack_cleanup(self):
+        """安全清理 ExitStack"""
         if self._exit_stack:
             try:
                 await self._exit_stack.__aexit__(None, None, None)
             except (RuntimeError, asyncio.CancelledError):
                 pass
             except Exception as e:
-                logger.debug(f"MCP [{self.name}] 关闭时出错: {e}")
+                logger.debug(f"MCP [{self.name}] ExitStack 清理时出错: {e}")
             finally:
                 self._exit_stack = None
                 self.session = None
+                self._connected = False
+
+    async def reconnect(self) -> bool:
+        """重连MCP服务器"""
+        if self._reconnect_attempts >= MCP_MAX_RECONNECT_ATTEMPTS:
+            logger.error(f"✗ MCP [{self.name}] 已达最大重连次数")
+            return False
+
+        self._reconnect_attempts += 1
+        logger.info(f"MCP [{self.name}] 尝试重连 ({self._reconnect_attempts}/{MCP_MAX_RECONNECT_ATTEMPTS})...")
+
+        await self.close()
+        await asyncio.sleep(MCP_RECONNECT_DELAY)
+
+        success = await self.connect()
+        if success:
+            logger.info(f"✓ MCP [{self.name}] 重连成功")
+        else:
+            logger.warning(f"✗ MCP [{self.name}] 重连失败")
+
+        return success
+
+    async def health_check(self) -> bool:
+        """健康检查"""
+        if not self.is_connected or not self.session:
+            return False
+
+        try:
+            # 尝试列出工具来验证连接
+            await asyncio.wait_for(
+                self.session.list_tools(),
+                timeout=10
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"MCP [{self.name}] 健康检查失败: {e}")
+            self._connected = False
+            return False
+
+    async def close(self):
+        """关闭连接"""
+        self._connected = False
+        if self._health_check_task:
+            self._health_check_task.cancel()
+            self._health_check_task = None
+
+        await self._safe_exit_stack_cleanup()
+        logger.debug(f"MCP [{self.name}] 连接已关闭")
 
     async def call_tool(self, name: str, args: Dict) -> str:
         """调用工具"""
-        if not self.session:
+        if not self.session or not self._connected:
             return "MCP未连接"
 
         try:
-            result = await self.session.call_tool(name, args)
+            result = await asyncio.wait_for(
+                self.session.call_tool(name, args),
+                timeout=60
+            )
             if hasattr(result, 'content') and result.content:
                 parts = []
                 for item in result.content:
@@ -112,7 +182,12 @@ class MCPServerConnection:
                         parts.append(item)
                 return "\n".join(parts)
             return "执行成功"
+        except asyncio.TimeoutError:
+            logger.error(f"MCP [{self.name}] 工具调用超时: {name}")
+            self._connected = False
+            return f"执行失败: 工具调用超时"
         except Exception as e:
+            logger.error(f"MCP [{self.name}] 工具调用失败: {name}, 错误: {e}")
             return f"执行失败: {e}"
 
 
@@ -125,6 +200,7 @@ class MCPManager:
         self.tool_defs: List[Dict[str, Any]] = []
         self._tool_to_server: Dict[str, str] = {}
         self._config_data: List[Dict[str, Any]] = []
+        self._health_check_task: Optional[asyncio.Task] = None
 
     def load_config(self) -> List[Dict[str, Any]]:
         """加载MCP配置文件"""
@@ -178,8 +254,45 @@ class MCPManager:
 
     async def close(self):
         """关闭所有MCP连接"""
+        if self._health_check_task:
+            self._health_check_task.cancel()
+            self._health_check_task = None
+
         for server in list(reversed(self.servers.values())):
             await server.close()
+
+    def start_health_check(self):
+        """启动健康检查任务"""
+        if self._health_check_task:
+            return
+        self._health_check_task = asyncio.create_task(self._health_check_loop())
+        logger.info("MCP 健康检查任务已启动")
+
+    def stop_health_check(self):
+        """停止健康检查任务"""
+        if self._health_check_task:
+            self._health_check_task.cancel()
+            self._health_check_task = None
+            logger.info("MCP 健康检查任务已停止")
+
+    async def _health_check_loop(self):
+        """定期健康检查"""
+        while True:
+            await asyncio.sleep(MCP_HEALTH_CHECK_INTERVAL)
+            try:
+                await self._check_all_servers()
+            except Exception as e:
+                logger.error(f"MCP 健康检查失败: {e}")
+
+    async def _check_all_servers(self):
+        """检查所有服务器健康状态"""
+        for name, server in list(self.servers.items()):
+            if not await server.health_check():
+                logger.warning(f"MCP [{name}] 健康检查失败，尝试重连")
+                if not await server.reconnect():
+                    logger.error(f"MCP [{name}] 重连失败")
+                else:
+                    self._refresh_tool_defs()
 
     def has_tool(self, name: str) -> bool:
         """检查是否有指定工具"""
@@ -193,13 +306,22 @@ class MCPManager:
 
         server = self.servers.get(server_name)
         if server:
+            # 如果服务器未连接，尝试重连
+            if not server.is_connected:
+                logger.warning(f"MCP [{server_name}] 未连接，尝试重连")
+                await server.reconnect()
+
             return await server.call_tool(name, args)
         return f"MCP服务 {server_name} 未连接"
 
     def list_servers(self) -> List[Dict[str, Any]]:
         """列出所有MCP服务器"""
         return [
-            {"name": name, "tools": len(s.tool_defs)}
+            {
+                "name": name,
+                "tools": len(s.tool_defs),
+                "connected": s.is_connected
+            }
             for name, s in self.servers.items()
         ]
 
@@ -223,11 +345,10 @@ class MCPManager:
         if success:
             self.servers[name] = server
             self._refresh_tool_defs()
-            logger.debug(
-                f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
+            logger.info(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
             return True
         else:
-            logger.debug(f"✗ MCP服务 [{name}] 动态连接失败")
+            logger.warning(f"✗ MCP服务 [{name}] 动态连接失败")
             return False
 
     async def disconnect_server(self, name: str) -> bool:

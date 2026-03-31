@@ -5,6 +5,7 @@ import asyncio
 import logging
 import signal
 from typing import Dict, Any, List, Optional
+from pathlib import Path
 
 from rich import box
 from rich.text import Text
@@ -14,12 +15,29 @@ from rich.prompt import Prompt
 from rich.console import Console
 from rich.logging import RichHandler
 
+# 加载 .env 文件
+from dotenv import load_dotenv
+
+# 从项目根目录加载 .env
+_project_root = Path(__file__).parent.parent
+_env_file = _project_root / ".env"
+if _env_file.exists():
+    load_dotenv(_env_file)
+    print(f"✓ 已加载环境配置: {_env_file}")
+else:
+    # 尝试加载 .env.example 作为后备
+    _env_example = _project_root / ".env.example"
+    if _env_example.exists():
+        load_dotenv(_env_example)
+        print(f"⚠ 使用示例配置: {_env_example}")
+
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
 from llm import LLMClient
 from agent import Agent
 from scheduler import SchedulerManager
 from plugins import PluginManager
-
-os.environ["PYTHONIOENCODING"] = "utf-8"
+from config import validate_config, Config
 
 console = Console()
 
@@ -110,6 +128,37 @@ async def interactive_mode(agent: Agent):
                 console.print("[yellow]无可用技能[/yellow]")
             continue
 
+        if question.strip().lower().startswith("/loglevel "):
+            level = question.strip()[10:].strip().upper()
+            valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+            if level in valid_levels:
+                logging.getLogger("agent").setLevel(getattr(logging, level))
+                console.print(f"[green]日志级别已设置为: {level}[/green]")
+            else:
+                console.print(f"[red]无效的日志级别: {level}[/red]")
+                console.print(f"[yellow]有效值: {', '.join(valid_levels)}[/yellow]")
+            continue
+
+        if question.strip().lower() == "/cache":
+            from cache import get_cache
+            cache = get_cache()
+            stats = cache.get_stats()
+            table = Table(title="缓存统计", show_header=True,
+                          header_style="bold magenta", box=box.ROUNDED)
+            table.add_column("指标", style="cyan")
+            table.add_column("值", style="green")
+            table.add_row("缓存大小", f"{stats['size']}/{stats['max_size']}")
+            table.add_row("总命中次数", str(stats['total_hits']))
+            console.print(table)
+            continue
+
+        if question.strip().lower() == "/cache clear":
+            from cache import get_cache
+            cache = get_cache()
+            cache.clear()
+            console.print("[green]缓存已清空[/green]")
+            continue
+
         if question.strip().lower() == "/sessions":
             if agent.session_manager:
                 sessions = agent.session_manager.list_sessions()
@@ -192,7 +241,18 @@ async def main():
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     parser.add_argument("--no-scheduler", action="store_true", help="禁用定时任务")
     parser.add_argument("--no-plugins", action="store_true", help="禁用插件")
+    parser.add_argument("--skip-config-check", action="store_true", help="跳过配置验证")
     args = parser.parse_args()
+
+    # 加载配置
+    Config.load_from_env()
+
+    # 配置验证
+    if not args.skip_config_check:
+        if not validate_config():
+            console.print("[red]配置验证失败，请检查 .env 文件[/red]")
+            console.print("[yellow]提示: 使用 --skip-config-check 跳过配置验证[/yellow]")
+            return
 
     if args.debug:
         logging.getLogger("agent").setLevel(logging.DEBUG)

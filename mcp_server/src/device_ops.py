@@ -29,17 +29,29 @@ mcp = FastMCP("Device Operations MCP Server")
 @dataclass
 class APIConfig:
     base_url: str = os.getenv("DEVICE_API_BASE_URL", "https://bms-cn.rosiwit.com")
-    token: Optional[str] = "eyJhbGciOiJIUzI1NiJ9.eyJqdGkiOiI0ODciLCJpc3MiOiIxX251bGwiLCJpYXQiOjE3NzQzMTgzNDQsInN1YiI6IldFQiIsImV4cCI6MTc3NDkyMzE0NH0.iVPL9AxWvV8WWmuvCsTg3PoJk9py5VVCXVk5ty2cy8o"
+    token: Optional[str] = None  # 不硬编码 Token，通过登录获取或手动设置
     timeout: int = 30
 
 
 api_config = APIConfig()
 
 
+def _validate_config():
+    """验证配置是否完整"""
+    if not api_config.base_url:
+        logger.warning("DEVICE_API_BASE_URL 未配置，使用默认值")
+    return True
+
+
+_validate_config()
+
+
 def _get_headers() -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if api_config.token:
         headers["token"] = api_config.token
+    else:
+        logger.warning("Token 未设置，请先调用 set_token 或 get_token 进行认证")
     return headers
 
 

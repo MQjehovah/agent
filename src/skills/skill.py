@@ -1,10 +1,11 @@
 import os
 import json
 import logging
-import re
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from utils.frontmatter import extract_frontmatter
 
 logger = logging.getLogger("agent.skills.skill")
 
@@ -95,7 +96,7 @@ class SkillManager:
             with open(skill_file, encoding="utf-8") as f:
                 content = f.read()
 
-            front_matter, prompt_template = self._parse_skill(content)
+            front_matter, prompt_template = extract_frontmatter(content)
             if not front_matter:
                 logger.warning(f"SKILL.md格式错误: {skill_file}")
                 return None
@@ -125,36 +126,6 @@ class SkillManager:
         except Exception as e:
             logger.error(f"加载技能失败: {skill_dir}, 错误: {e}")
             return None
-
-    def _parse_skill(self, content: str) -> tuple:
-        pattern = r'^---\s*\n(.*?)\n---\s*\n(.*)$'
-        match = re.match(pattern, content, re.DOTALL)
-
-        if not match:
-            return None, content
-
-        front_matter_str = match.group(1)
-        prompt_template = match.group(2).strip()
-
-        front_matter = {}
-        for line in front_matter_str.split('\n'):
-            if ':' in line:
-                key, value = line.split(':', 1)
-                key = key.strip()
-                value = value.strip()
-
-                if value.startswith('[') and value.endswith(']'):
-                    items = [item.strip().strip('"\'')
-                             for item in value[1:-1].split(',')]
-                    front_matter[key] = [item for item in items if item]
-                elif value.lower() == 'true':
-                    front_matter[key] = True
-                elif value.lower() == 'false':
-                    front_matter[key] = False
-                else:
-                    front_matter[key] = value.strip('"\'')
-
-        return front_matter, prompt_template
 
     def _load_references(self, skill_dir: str) -> List[Dict[str, str]]:
         references_dir = os.path.join(skill_dir, self.REFERENCE_DIR)
