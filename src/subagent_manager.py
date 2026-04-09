@@ -8,6 +8,8 @@ import uuid
 import time
 import logging
 import asyncio
+from enum import Enum
+from asyncio import Semaphore, Queue
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 
@@ -30,17 +32,58 @@ class SubagentInstance:
     task_count: int = 0
 
 
+class TaskStatus(Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class SubagentTask:
+    """子代理任务"""
+    task_id: str
+    task_content: str
+    template: str
+    status: TaskStatus = TaskStatus.PENDING
+    result: Optional["AgentResult"] = None
+    error: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    priority: int = 0  # 高: 1, 普通: 0, 低: -1
+
+
 class SubagentManager:
     """子代理管理器 - 支持持久化和会话复用"""
 
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, workspace: str = ""):
         self.base_dir = base_dir
+        self.workspace = workspace
         self.templates: Dict[str, Dict[str, Any]] = {}
         self._active_subagents: Dict[str, SubagentInstance] = {}  # session_id -> SubagentInstance
         self._name_to_session: Dict[str, str] = {}  # template/name -> session_id
         self._client = None
         self._parent_agent = None
+        
+        # 并发池
+        from config.subagent_pool import SubagentPoolConfig
+        self._pool_config = SubagentPoolConfig()
+        self._semaphore: Optional[Semaphore] = None
+        self._task_queue: Queue = Queue()
+        self._tasks: Dict[str, SubagentTask] = {}
+        self._task_counter = 0
+        
         self._load_all()
+        self._init_pool()
+
+    def _init_pool(self):
+        """初始化并发池"""
+        if self.workspace:
+            self._pool_config = SubagentPoolConfig.load(self.workspace)
+        self._semaphore = Semaphore(self._pool_config.max_concurrency)
+        logger.info(f"子代理并发池初始化: max_concurrency={self._pool_config.max_concurrency}")
 
     def _load_all(self):
         """加载所有子代理模板"""
