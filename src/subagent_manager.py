@@ -73,6 +73,7 @@ class SubagentManager:
         self._semaphore: Optional[Semaphore] = None
         self._task_queue: Queue = Queue()
         self._tasks: Dict[str, SubagentTask] = {}
+        self._task_kwargs: Dict[str, Dict] = {}
         self._task_counter = 0
         
         self._load_all()
@@ -415,8 +416,8 @@ class SubagentManager:
         
         self._tasks[task_id] = sub_task
         
-        # 提交到队列
-        await self._task_queue.put((priority, task_id, {
+        # 存储参数，按 task_id 索引
+        kwargs = {
             "task": task,
             "template": template,
             "name": name,
@@ -427,7 +428,11 @@ class SubagentManager:
             "client": client,
             "parent_agent": parent_agent,
             "keep_alive": keep_alive
-        }))
+        }
+        self._task_kwargs[task_id] = kwargs
+        
+        # 提交到队列（仅用于任务调度）
+        await self._task_queue.put((priority, task_id))
         
         # 启动后台执行
         asyncio.create_task(self._execute_queued_task(task_id))
@@ -445,9 +450,7 @@ class SubagentManager:
             task.started_at = time.time()
             
             try:
-                # 从队列获取参数
-                _, _, kwargs = await self._task_queue.get()
-                
+                kwargs = self._task_kwargs.pop(task_id, {})
                 result = await self.run_subagent(**kwargs)
                 
                 task.result = result
