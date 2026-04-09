@@ -1,0 +1,6 @@
+{
+  "max_concurrency": 3,
+  "queue_size": 50,
+  "timeout": 300,
+  "enable_priority": true
+}
