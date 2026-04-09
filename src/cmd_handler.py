@@ -63,6 +63,12 @@ class CommandHandler:
             await self._show_session(cmd.strip()[9:].strip())
         elif cmd_lower.startswith("/messages"):
             await self._show_messages()
+        elif cmd_lower == "/pool":
+            self._show_pool_stats()
+        elif cmd_lower.startswith("/pool task "):
+            self._show_pool_task(cmd.strip()[11:].strip())
+        elif cmd_lower == "/pool tasks":
+            self._show_pool_tasks()
         elif cmd_lower in ["/q", "/quit", "/exit"]:
             if self._on_exit:
                 self._on_exit()
@@ -93,6 +99,9 @@ class CommandHandler:
             ("/loglevel <level>", "设置日志级别"),
             ("/cache", "查看缓存统计"),
             ("/cache clear", "清空缓存"),
+            ("/pool", "查看并发池统计"),
+            ("/pool task <id>", "查看任务状态"),
+            ("/pool tasks", "列出所有任务"),
             ("/quit", "退出程序"),
         ]
         for cmd, desc in commands:
@@ -304,3 +313,69 @@ class CommandHandler:
                 content = content[:100] + "..."
             table.add_row(str(i), role, content)
         console.print(table)
+
+    def _show_pool_stats(self):
+        """显示并发池统计"""
+        if self.agent.subagent_manager:
+            stats = self.agent.subagent_manager.get_pool_stats()
+            table = Table(title="并发池统计", show_header=True,
+                          header_style="bold magenta", box=box.ROUNDED)
+            table.add_column("指标", style="cyan")
+            table.add_column("值", style="green")
+            table.add_row("最大并发", str(stats["max_concurrency"]))
+            table.add_row("正在执行", str(stats["active"]))
+            table.add_row("排队等待", str(stats["pending"]))
+            table.add_row("队列长度", str(stats["queue_size"]))
+            table.add_row("已完成", str(stats["completed"]))
+            table.add_row("失败", str(stats["failed"]))
+            table.add_row("总任务数", str(stats["total"]))
+            console.print(table)
+        else:
+            console.print("[yellow]子代理管理器未初始化[/yellow]")
+
+    def _show_pool_task(self, task_id: str):
+        """显示指定任务状态"""
+        if self.agent.subagent_manager:
+            task = self.agent.subagent_manager.get_task_status(task_id)
+            if task:
+                table = Table(title=f"任务 {task_id}", show_header=True,
+                              header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("属性", style="cyan")
+                table.add_column("值", style="green")
+                table.add_row("状态", task["status"])
+                table.add_row("内容", task["task_content"][:80])
+                table.add_row("模板", task["template"])
+                table.add_row("优先级", str(task["priority"]))
+                if task["error"]:
+                    table.add_row("错误", task["error"])
+                if task["result"]:
+                    table.add_row("结果", task["result"][:100])
+                console.print(table)
+            else:
+                console.print(f"[yellow]任务 {task_id} 不存在[/yellow]")
+        else:
+            console.print("[yellow]子代理管理器未初始化[/yellow]")
+
+    def _show_pool_tasks(self):
+        """显示所有任务"""
+        if self.agent.subagent_manager:
+            tasks = self.agent.subagent_manager.get_all_tasks()
+            if tasks:
+                table = Table(title=f"任务列表 (共 {len(tasks)} 个)", show_header=True,
+                              header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("任务ID", style="cyan")
+                table.add_column("状态", style="yellow")
+                table.add_column("模板", style="green")
+                table.add_column("内容", style="white")
+                for task in tasks[:20]:
+                    table.add_row(
+                        task["task_id"],
+                        task["status"],
+                        task["template"],
+                        task["task_content"][:50]
+                    )
+                console.print(table)
+            else:
+                console.print("[yellow]暂无任务[/yellow]")
+        else:
+            console.print("[yellow]子代理管理器未初始化[/yellow]")
