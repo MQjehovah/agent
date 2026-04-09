@@ -3,7 +3,7 @@ import uuid
 import asyncio
 import logging
 import signal
-from typing import Optional
+from typing import Dict, Optional
 from pathlib import Path
 
 from rich.panel import Panel
@@ -64,16 +64,15 @@ logger = logging.getLogger("agent.main")
 
 
 async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
-    """交互模式 - 任务后台执行"""
+    """交互模式 - 支持多任务并行"""
     session_id = str(uuid.uuid4())
-    current_task: Optional[asyncio.Task] = None
+    current_tasks: Dict[int, asyncio.Task] = {}
     task_counter = 0
 
     cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set)
 
     async def run_task(task_id: int, question: str):
         """执行单个任务"""
-        nonlocal current_task
         console.print(f"[dim cyan]▶ 任务 #{task_id}[/dim cyan]")
         cmd_handler.set_current_task_id(task_id)
 
@@ -83,9 +82,9 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                                      border_style="green"))
         except asyncio.CancelledError:
             console.print(f"[yellow]任务 #{task_id} 已取消[/yellow]")
-
-        cmd_handler.set_current_task_id(None)
-        current_task = None
+        finally:
+            cmd_handler.set_current_task_id(None)
+            current_tasks.pop(task_id, None)
 
     try:
         while not shutdown_event.is_set():
@@ -104,12 +103,12 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                 continue
 
             task_counter += 1
-            current_task = asyncio.create_task(run_task(task_counter, question))
-            console.print(f"[dim]任务 #{task_counter} 已提交[/dim]")
+            current_tasks[task_counter] = asyncio.create_task(run_task(task_counter, question))
+            console.print(f"[dim]任务 #{task_counter} 已提交 (当前运行: {len(current_tasks)} 个)[/dim]")
 
     finally:
-        if current_task:
-            current_task.cancel()
+        for task in current_tasks.values():
+            task.cancel()
 
 
 async def cleanup(plugin_manager, scheduler, agent):

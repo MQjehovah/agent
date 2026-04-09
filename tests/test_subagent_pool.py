@@ -16,9 +16,6 @@ def manager(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     
-    config = workspace / "subagent_pool.json"
-    config.write_text('{"max_concurrency": 2, "queue_size": 10}')
-    
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     
@@ -31,11 +28,11 @@ def manager(tmp_path):
 
 @pytest.mark.asyncio
 async def test_pool_initialization(manager):
-    """测试并发池初始化"""
+    """测试并发池初始化 - 无限制模式"""
     stats = manager.get_pool_stats()
-    assert stats["max_concurrency"] == 2
-    assert stats["active"] == 0
-    assert stats["pending"] == 0
+    assert stats["max_concurrency"] == "无限制 (asyncio)"
+    assert stats["running"] == 0
+    assert stats["completed"] == 0
 
 
 @pytest.mark.asyncio
@@ -51,7 +48,7 @@ async def test_concurrent_task_submission(manager):
     
     status = manager.get_task_status(task_id)
     assert status is not None
-    assert status["status"] in ["pending", "running"]
+    assert status["status"] in ["running", "completed", "failed"]
 
 
 @pytest.mark.asyncio
@@ -69,8 +66,8 @@ async def test_task_status_tracking(manager):
 
 
 @pytest.mark.asyncio
-async def test_priority_queue(manager):
-    """测试优先级队列"""
+async def test_priority_tracking(manager):
+    """测试优先级记录"""
     low_id = await manager.run_subagent_concurrent(
         task="low priority",
         template="test",
@@ -117,4 +114,30 @@ async def test_pool_stats_after_submission(manager):
     
     stats = manager.get_pool_stats()
     assert stats["total"] == 5
-    assert stats["active"] <= 2
+    assert stats["max_concurrency"] == "无限制 (asyncio)"
+
+
+@pytest.mark.asyncio
+async def test_tasks_run_in_parallel(manager):
+    """测试任务真正并行执行"""
+    execution_times = []
+    
+    async def fast_run_subagent(**kwargs):
+        execution_times.append(time.time())
+        await asyncio.sleep(0.1)
+        return MagicMock(result="done", status="success")
+    
+    with patch.object(manager, 'run_subagent', side_effect=fast_run_subagent):
+        task_ids = []
+        for i in range(3):
+            tid = await manager.run_subagent_concurrent(
+                task=f"parallel task {i}",
+                template="test"
+            )
+            task_ids.append(tid)
+        
+        await asyncio.sleep(0.3)
+    
+    assert len(execution_times) == 3
+    time_span = execution_times[-1] - execution_times[0]
+    assert time_span < 0.2, f"任务未并行执行，时间跨度: {time_span:.3f}s"

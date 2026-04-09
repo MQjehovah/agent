@@ -9,7 +9,6 @@ import time
 import logging
 import asyncio
 from enum import Enum
-from asyncio import Semaphore, Queue
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 
@@ -67,26 +66,10 @@ class SubagentManager:
         self._client = None
         self._parent_agent = None
         
-        # 并发池
-        from config.subagent_pool import SubagentPoolConfig
-        self._pool_config = SubagentPoolConfig()
-        self._semaphore: Optional[Semaphore] = None
-        self._task_queue: Queue = Queue()
         self._tasks: Dict[str, SubagentTask] = {}
-        self._task_kwargs: Dict[str, Dict] = {}
         self._task_counter = 0
-        
-        self._load_all()
-        self._init_pool()
 
-    def _init_pool(self):
-        """初始化并发池"""
-        from config.subagent_pool import SubagentPoolConfig
-        
-        if self.workspace:
-            self._pool_config = SubagentPoolConfig.load(self.workspace)
-        self._semaphore = Semaphore(self._pool_config.max_concurrency)
-        logger.info(f"子代理并发池初始化: max_concurrency={self._pool_config.max_concurrency}")
+        self._load_all()
 
     def _load_all(self):
         """加载所有子代理模板"""
@@ -401,7 +384,7 @@ class SubagentManager:
         priority: int = 0
     ) -> str:
         """
-        并发执行子代理（带队列和并发控制）
+        并发执行子代理 - 创建后台任务立即返回，真正并行执行
         
         Returns:
             task_id: 任务ID，用于查询状态
@@ -413,57 +396,48 @@ class SubagentManager:
             task_id=task_id,
             task_content=task,
             template=template or name,
-            priority=priority
+            status=TaskStatus.RUNNING,
+            priority=priority,
+            started_at=time.time()
         )
         
         self._tasks[task_id] = sub_task
         
-        # 存储参数，按 task_id 索引
-        kwargs = {
-            "task": task,
-            "template": template,
-            "name": name,
-            "session_id": session_id,
-            "system_prompt": system_prompt,
-            "tools": tools,
-            "mcp_servers": mcp_servers,
-            "client": client,
-            "parent_agent": parent_agent,
-            "keep_alive": keep_alive
-        }
-        self._task_kwargs[task_id] = kwargs
-        
-        # 提交到队列（仅用于任务调度）
-        await self._task_queue.put((priority, task_id))
-        
-        # 启动后台执行
-        asyncio.create_task(self._execute_queued_task(task_id))
+        # 创建后台任务，真正并行执行
+        asyncio.create_task(
+            self._run_subagent_background(
+                task_id,
+                task=task,
+                template=template,
+                name=name,
+                session_id=session_id,
+                system_prompt=system_prompt,
+                tools=tools,
+                mcp_servers=mcp_servers,
+                client=client,
+                parent_agent=parent_agent,
+                keep_alive=keep_alive
+            )
+        )
         
         return task_id
 
-    async def _execute_queued_task(self, task_id: str):
-        """执行队列中的任务（受信号量控制）"""
-        async with self._semaphore:
-            if task_id not in self._tasks:
-                return
+    async def _run_subagent_background(self, task_id: str, **kwargs):
+        """后台执行子代理任务"""
+        try:
+            result = await self.run_subagent(**kwargs)
             
             task = self._tasks[task_id]
-            task.status = TaskStatus.RUNNING
-            task.started_at = time.time()
+            task.result = result
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = time.time()
             
-            try:
-                kwargs = self._task_kwargs.pop(task_id, {})
-                result = await self.run_subagent(**kwargs)
-                
-                task.result = result
-                task.status = TaskStatus.COMPLETED
-                task.completed_at = time.time()
-                
-            except Exception as e:
-                task.error = str(e)
-                task.status = TaskStatus.FAILED
-                task.completed_at = time.time()
-                logger.error(f"任务 {task_id} 执行失败: {e}")
+        except Exception as e:
+            task = self._tasks[task_id]
+            task.error = str(e)
+            task.status = TaskStatus.FAILED
+            task.completed_at = time.time()
+            logger.error(f"任务 {task_id} 执行失败: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """获取子代理统计信息"""
@@ -503,16 +477,14 @@ class SubagentManager:
 
     def get_pool_stats(self) -> Dict[str, Any]:
         """获取并发池统计"""
-        active = sum(1 for t in self._tasks.values() if t.status == TaskStatus.RUNNING)
+        running = sum(1 for t in self._tasks.values() if t.status == TaskStatus.RUNNING)
         pending = sum(1 for t in self._tasks.values() if t.status == TaskStatus.PENDING)
         completed = sum(1 for t in self._tasks.values() if t.status == TaskStatus.COMPLETED)
         failed = sum(1 for t in self._tasks.values() if t.status == TaskStatus.FAILED)
         
         return {
-            "max_concurrency": self._pool_config.max_concurrency,
-            "active": active,
-            "pending": pending,
-            "queue_size": self._task_queue.qsize(),
+            "max_concurrency": "无限制 (asyncio)",
+            "running": running,
             "completed": completed,
             "failed": failed,
             "total": len(self._tasks)
