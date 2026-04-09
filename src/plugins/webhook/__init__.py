@@ -202,7 +202,8 @@ class WebhookPlugin(BasePlugin):
                 session_id=session_id,
                 callback_url=callback_url
             )
-            self.tasks[task_id] = task
+            with self._task_lock:
+                self.tasks[task_id] = task
             
             if not self.agent_executor:
                 task.status = "failed"
@@ -302,7 +303,8 @@ class WebhookPlugin(BasePlugin):
             logger.error(f"Callback failed for task {task.task_id}: {e}")
 
     def _handle_get_status(self, task_id: str):
-        task = self.tasks.get(task_id)
+        with self._task_lock:
+            task = self.tasks.get(task_id)
         if not task:
             return self._json_response({"error": "Task not found", "code": 404}, 404)
         
@@ -314,7 +316,8 @@ class WebhookPlugin(BasePlugin):
         })
 
     def _handle_get_result(self, task_id: str):
-        task = self.tasks.get(task_id)
+        with self._task_lock:
+            task = self.tasks.get(task_id)
         if not task:
             return self._json_response({"error": "Task not found", "code": 404}, 404)
         
@@ -335,8 +338,11 @@ class WebhookPlugin(BasePlugin):
         status_filter = request.args.get("status")
         limit = min(int(request.args.get("limit", 50)), 100)
         
+        with self._task_lock:
+            tasks_snapshot = list(self.tasks.values())
+        
         tasks = []
-        for task in list(self.tasks.values())[-limit:]:
+        for task in tasks_snapshot[-limit:]:
             if status_filter and task.status != status_filter:
                 continue
             tasks.append({
@@ -364,12 +370,15 @@ class WebhookPlugin(BasePlugin):
         logger.info("Webhook plugin stopped")
 
     def get_stats(self) -> Dict[str, Any]:
+        with self._task_lock:
+            tasks_values = list(self.tasks.values())
+        
         return {
-            "total_tasks": len(self.tasks),
-            "pending": sum(1 for t in self.tasks.values() if t.status == "pending"),
-            "running": sum(1 for t in self.tasks.values() if t.status == "running"),
-            "completed": sum(1 for t in self.tasks.values() if t.status == "completed"),
-            "failed": sum(1 for t in self.tasks.values() if t.status == "failed")
+            "total_tasks": len(tasks_values),
+            "pending": sum(1 for t in tasks_values if t.status == "pending"),
+            "running": sum(1 for t in tasks_values if t.status == "running"),
+            "completed": sum(1 for t in tasks_values if t.status == "completed"),
+            "failed": sum(1 for t in tasks_values if t.status == "failed")
         }
 
 
