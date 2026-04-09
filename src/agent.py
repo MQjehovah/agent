@@ -415,34 +415,62 @@ class Agent:
         task = args.get("task")
         if not task:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
-
+        
+        # 检查是否启用并发模式
+        concurrent = args.get("concurrent", False)
+        
         try:
-            result = await self.subagent_manager.run_subagent(
-                task=task,
-                template=args.get("template", ""),
-                name=args.get("name", ""),
-                session_id=args.get("session_id", ""),
-                system_prompt=args.get("system_prompt", ""),
-                tools=args.get("tools"),
-                mcp_servers=args.get("mcp_servers"),
-                client=self.client,
-                parent_agent=self,
-                keep_alive=args.get("keep_alive", True)
-            )
+            if concurrent and self.subagent_manager:
+                # 并发模式：立即返回 task_id
+                task_id = await self.subagent_manager.run_subagent_concurrent(
+                    task=task,
+                    template=args.get("template", ""),
+                    name=args.get("name", ""),
+                    session_id=args.get("session_id", ""),
+                    system_prompt=args.get("system_prompt", ""),
+                    tools=args.get("tools"),
+                    mcp_servers=args.get("mcp_servers"),
+                    client=self.client,
+                    parent_agent=self,
+                    keep_alive=args.get("keep_alive", True),
+                    priority=args.get("priority", 0)
+                )
+                
+                return json.dumps({
+                    "success": True,
+                    "mode": "concurrent",
+                    "task_id": task_id,
+                    "message": "任务已提交到并发池",
+                    "query_status": f'使用 {{"task_id": "{task_id}"}} 查询状态'
+                }, ensure_ascii=False)
+            else:
+                # 同步模式：等待完成
+                result = await self.subagent_manager.run_subagent(
+                    task=task,
+                    template=args.get("template", ""),
+                    name=args.get("name", ""),
+                    session_id=args.get("session_id", ""),
+                    system_prompt=args.get("system_prompt", ""),
+                    tools=args.get("tools"),
+                    mcp_servers=args.get("mcp_servers"),
+                    client=self.client,
+                    parent_agent=self,
+                    keep_alive=args.get("keep_alive", True)
+                )
+                
+                stats = self.subagent_manager.get_stats()
+                
+                return json.dumps({
+                    "success": result.status == "completed",
+                    "agent_id": result.agent_id,
+                    "status": result.status,
+                    "result": result.result,
+                    "active_subagents": stats["active_count"]
+                }, ensure_ascii=False)
+                
         except Exception as e:
             logger.error(f"Subagent execution error: {e}")
             return json.dumps({"success": False, "error": f"子代理执行错误: {e}"}, ensure_ascii=False)
-
-        # 获取子代理实例信息
-        stats = self.subagent_manager.get_stats()
-
-        return json.dumps({
-            "success": result.status == "completed",
-            "agent_id": result.agent_id,
-            "status": result.status,
-            "result": result.result,
-            "active_subagents": stats["active_count"]
-        }, ensure_ascii=False)
 
     async def cleanup(self):
         for task in list(self._background_tasks):
