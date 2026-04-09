@@ -4,9 +4,11 @@
 控制子代理并发池的最大并发数、队列大小、超时等参数
 """
 import json
+import logging
 import os
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
+
+logger = logging.getLogger("agent.config")
 
 
 @dataclass
@@ -33,7 +35,7 @@ class SubagentPoolConfig:
             try:
                 with open(config_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                return cls(**{k: v for k, v in data.items() if hasattr(cls, k)})
-            except Exception:
-                pass
+                return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to load subagent pool config: {e}")
         return cls()
