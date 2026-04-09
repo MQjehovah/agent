@@ -69,7 +69,7 @@ docker run -p 8081:8081 agent
 
 ### 工具系统 (src/tools/)
 
-内置工具：`todo`, `file`, `subagent`, `memory`, `shell`
+内置工具：`todo`, `file`, `subagent`, `subagent_pool`, `memory`, `shell`
 
 工具通过 `ToolRegistry` 注册，支持动态注册/注销。
 
@@ -95,6 +95,22 @@ docker run -p 8081:8081 agent
 {"task": "继续检查SN456", "template": "设备运维"}  // 复用同一子代理
 {"task": "一次性任务", "template": "IT运维", "keep_alive": false}
 ```
+
+**并发池控制：**
+- 配置文件：`workspace/subagent_pool.json`
+- 最大并发数：`max_concurrency` (默认 3)
+- 任务队列：超出并发限制的任务自动排队
+- 优先级支持：高(1)、普通(0)、低(-1)
+
+**并发模式调用：**
+```json
+{"task": "分析数据", "template": "数据分析师", "concurrent": true, "priority": 1}
+```
+
+**交互模式命令：**
+- `/pool` - 查看并发池统计
+- `/pool tasks` - 列出所有任务
+- `/pool task <id>` - 查看指定任务状态
 
 ### 技能系统 (src/skills/)
 
