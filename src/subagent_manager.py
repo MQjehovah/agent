@@ -81,6 +81,8 @@ class SubagentManager:
 
     def _init_pool(self):
         """初始化并发池"""
+        from config.subagent_pool import SubagentPoolConfig
+        
         if self.workspace:
             self._pool_config = SubagentPoolConfig.load(self.workspace)
         self._semaphore = Semaphore(self._pool_config.max_concurrency)
