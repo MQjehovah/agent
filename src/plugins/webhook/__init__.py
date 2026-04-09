@@ -4,6 +4,7 @@ import logging
 import threading
 import asyncio
 import uuid
+import concurrent.futures
 from typing import Optional, Dict, Any, Callable, List
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -229,13 +230,26 @@ class WebhookPlugin(BasePlugin):
 
     def _execute_sync(self, task: WebhookTask):
         """同步执行任务（等待完成）"""
-        task.status = "running"
+        with self._task_lock:
+            task.status = "running"
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._run_async_task(task),
                 self._loop
             )
-            future.result(timeout=self.config.callback_timeout)
+            try:
+                future.result(timeout=self.config.callback_timeout)
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                with self._task_lock:
+                    task.status = "failed"
+                    task.error = "Task timed out"
+                logger.error(f"Task {task.task_id} timed out after {self.config.callback_timeout}s")
+                return self._json_response({
+                    "task_id": task.task_id,
+                    "status": "failed",
+                    "error": "Task timed out"
+                }, 504)
 
             return self._json_response({
                 "task_id": task.task_id,
@@ -244,8 +258,9 @@ class WebhookPlugin(BasePlugin):
                 "error": task.error
             })
         except Exception as e:
-            task.status = "failed"
-            task.error = f"{type(e).__name__}: {e}"
+            with self._task_lock:
+                task.status = "failed"
+                task.error = f"{type(e).__name__}: {e}"
             logger.error(f"Task {task.task_id} failed: {e}")
             return self._json_response({
                 "task_id": task.task_id,
