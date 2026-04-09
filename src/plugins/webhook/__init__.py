@@ -3,7 +3,6 @@ import json
 import logging
 import threading
 import asyncio
-import concurrent.futures
 import uuid
 from typing import Optional, Dict, Any, Callable, List
 from dataclasses import dataclass, field
@@ -71,7 +70,29 @@ class WebhookPlugin(BasePlugin):
         self.tasks: Dict[str, WebhookTask] = {}
         self._thread: Optional[threading.Thread] = None
         self._app = None
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
+        self._task_lock = threading.Lock()
+
+    def _run_event_loop(self):
+        """运行持久化的 asyncio 事件循环"""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def start_event_loop(self):
+        """启动事件循环线程"""
+        self._loop_thread = threading.Thread(
+            target=self._run_event_loop,
+            daemon=True
+        )
+        self._loop_thread.start()
+
+        import time
+        while not self._loop:
+            time.sleep(0.1)
+
+        logger.info("Asyncio event loop started")
 
     def start(self):
         try:
@@ -79,7 +100,10 @@ class WebhookPlugin(BasePlugin):
         except ImportError:
             logger.error("flask is required. Install: pip install flask")
             return
-        
+
+        # 启动持久化事件循环
+        self.start_event_loop()
+
         logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
         self._app = Flask(__name__)
@@ -326,6 +350,13 @@ class WebhookPlugin(BasePlugin):
         self._app.run(host=host, port=port, threaded=True, use_reloader=False)
 
     def stop(self):
+        """停止事件循环和服务器"""
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+        if self._loop_thread and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=5)
+
         logger.info("Webhook plugin stopped")
 
     def get_stats(self) -> Dict[str, Any]:
