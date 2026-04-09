@@ -96,12 +96,14 @@ class Agent:
         self.system_prompt = body.strip() if body else ""
 
     def _init_tools(self):
-        from tools import ToolRegistry, TodoTool, FileTool, SubagentTool, MemoryTool, ShellTool
+        from tools import ToolRegistry, TodoTool, FileTool, SubagentTool, SubagentPoolTool, MemoryTool, ShellTool
 
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_tool(TodoTool())
         self.tool_registry.register_tool(FileTool())
         self.tool_registry.register_tool(SubagentTool())
+        self._subagent_pool_tool = SubagentPoolTool()
+        self.tool_registry.register_tool(self._subagent_pool_tool)
         self.tool_registry.register_tool(MemoryTool())
         self.tool_registry.register_tool(ShellTool())
 
@@ -147,11 +149,15 @@ class Agent:
     def _init_subagents(self):
         agents_dir = os.path.join(self.workspace, "agents")
         if os.path.exists(agents_dir):
-            self.subagent_manager = SubagentManager(agents_dir)
+            self.subagent_manager = SubagentManager(agents_dir, workspace=self.workspace)
             self.system_prompt = self.system_prompt + \
                 self.subagent_manager.get_subagent_prompt()
             logger.info(
                 f"Agent [{self.name}] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {self.subagent_manager.list_templates()}")
+            
+            # 注入 subagent_manager 到 SubagentPoolTool
+            if hasattr(self, '_subagent_pool_tool'):
+                self._subagent_pool_tool.set_subagent_manager(self.subagent_manager)
 
     def _init_memory(self):
         from memory import MemoryManager
