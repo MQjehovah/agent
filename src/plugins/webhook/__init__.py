@@ -4,6 +4,7 @@ import logging
 import threading
 import asyncio
 import uuid
+import time
 from typing import Optional, Dict, Any, Callable, List
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -73,12 +74,22 @@ class WebhookPlugin(BasePlugin):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._task_lock = threading.Lock()
+        self._loop_ready = threading.Event()
 
     def _run_event_loop(self):
         """运行持久化的 asyncio 事件循环"""
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop_ready.set()
+            self._loop.run_forever()
+        except Exception as e:
+            logger.error(f"Event loop error: {e}")
+        finally:
+            try:
+                self._loop.close()
+            except Exception:
+                pass
 
     def start_event_loop(self):
         """启动事件循环线程"""
@@ -88,10 +99,7 @@ class WebhookPlugin(BasePlugin):
         )
         self._loop_thread.start()
 
-        import time
-        while not self._loop:
-            time.sleep(0.1)
-
+        self._loop_ready.wait(timeout=10)
         logger.info("Asyncio event loop started")
 
     def start(self):
@@ -204,7 +212,10 @@ class WebhookPlugin(BasePlugin):
             if sync:
                 return self._execute_sync(task)
             else:
-                self._executor.submit(self._run_async_task, task)
+                asyncio.run_coroutine_threadsafe(
+                    self._run_async_task(task),
+                    self._loop
+                )
                 return self._json_response({
                     "task_id": task_id,
                     "status": "pending",
@@ -217,25 +228,20 @@ class WebhookPlugin(BasePlugin):
             return self._json_response({"error": str(e), "code": 500}, 500)
 
     def _execute_sync(self, task: WebhookTask):
+        """同步执行任务（等待完成）"""
         task.status = "running"
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(
-                self.agent_executor(task.session_id, task.content)
+            future = asyncio.run_coroutine_threadsafe(
+                self._run_async_task(task),
+                self._loop
             )
-            loop.close()
-            
-            task.status = "completed"
-            task.result = result
-            
-            if task.callback_url:
-                self._send_callback(task)
-            
+            future.result(timeout=self.config.callback_timeout)
+
             return self._json_response({
                 "task_id": task.task_id,
-                "status": "completed",
-                "result": result
+                "status": task.status,
+                "result": task.result,
+                "error": task.error
             })
         except Exception as e:
             task.status = "failed"
@@ -247,35 +253,33 @@ class WebhookPlugin(BasePlugin):
                 "error": task.error
             }, 500)
 
-    def _run_async_task(self, task: WebhookTask):
-        task.status = "running"
+    async def _run_async_task(self, task: WebhookTask):
+        """异步执行单个任务"""
+        with self._task_lock:
+            task.status = "running"
+
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                result = loop.run_until_complete(
-                    self.agent_executor(task.session_id, task.content)
-                )
+            result = await self.agent_executor(task.session_id, task.content)
+
+            with self._task_lock:
                 task.status = "completed"
                 task.result = result
-                logger.info(f"Task {task.task_id} completed")
-                
-                if task.callback_url:
-                    self._send_callback(task)
-            finally:
-                loop.close()
-        except Exception as e:
-            task.status = "failed"
-            task.error = f"{type(e).__name__}: {e}"
-            logger.error(f"Task {task.task_id} failed: {e}")
-            
-            if task.callback_url:
-                self._send_callback(task)
 
-    def _send_callback(self, task: WebhookTask):
+            logger.info(f"Task {task.task_id} completed")
+            await self._send_callback(task)
+
+        except Exception as e:
+            with self._task_lock:
+                task.status = "failed"
+                task.error = f"{type(e).__name__}: {e}"
+
+            logger.error(f"Task {task.task_id} failed: {e}")
+            await self._send_callback(task)
+
+    async def _send_callback(self, task: WebhookTask):
         if not task.callback_url:
             return
-        
+
         try:
             import httpx
             payload = {
@@ -285,15 +289,15 @@ class WebhookPlugin(BasePlugin):
                 "error": task.error,
                 "completed_at": datetime.now().isoformat()
             }
-            
+
             headers = {"Content-Type": "application/json; charset=utf-8"}
             if self.config.tokens:
                 headers["X-Webhook-Token"] = self.config.tokens[0]
-            
-            with httpx.Client(timeout=self.config.callback_timeout) as client:
-                response = client.post(task.callback_url, json=payload, headers=headers)
+
+            async with httpx.AsyncClient(timeout=self.config.callback_timeout) as client:
+                response = await client.post(task.callback_url, json=payload, headers=headers)
                 logger.info(f"Callback sent to {task.callback_url}, status: {response.status_code}")
-        
+
         except Exception as e:
             logger.error(f"Callback failed for task {task.task_id}: {e}")
 
