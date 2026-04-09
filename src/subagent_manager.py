@@ -383,10 +383,132 @@ class SubagentManager:
             await self.cleanup_subagent(session_id)
         logger.info(f"已清理所有子代理，共 {len(session_ids)} 个")
 
+    async def run_subagent_concurrent(
+        self,
+        task: str,
+        template: str = "",
+        name: str = "",
+        session_id: str = "",
+        system_prompt: str = "",
+        tools: Optional[List[str]] = None,
+        mcp_servers: Optional[List[Dict[str, Any]]] = None,
+        client=None,
+        parent_agent: "Agent" = None,
+        keep_alive: bool = True,
+        priority: int = 0
+    ) -> str:
+        """
+        并发执行子代理（带队列和并发控制）
+        
+        Returns:
+            task_id: 任务ID，用于查询状态
+        """
+        self._task_counter += 1
+        task_id = f"task_{self._task_counter}_{uuid.uuid4().hex[:6]}"
+        
+        sub_task = SubagentTask(
+            task_id=task_id,
+            task_content=task,
+            template=template or name,
+            priority=priority
+        )
+        
+        self._tasks[task_id] = sub_task
+        
+        # 提交到队列
+        await self._task_queue.put((priority, task_id, {
+            "task": task,
+            "template": template,
+            "name": name,
+            "session_id": session_id,
+            "system_prompt": system_prompt,
+            "tools": tools,
+            "mcp_servers": mcp_servers,
+            "client": client,
+            "parent_agent": parent_agent,
+            "keep_alive": keep_alive
+        }))
+        
+        # 启动后台执行
+        asyncio.create_task(self._execute_queued_task(task_id))
+        
+        return task_id
+
+    async def _execute_queued_task(self, task_id: str):
+        """执行队列中的任务（受信号量控制）"""
+        async with self._semaphore:
+            if task_id not in self._tasks:
+                return
+            
+            task = self._tasks[task_id]
+            task.status = TaskStatus.RUNNING
+            task.started_at = time.time()
+            
+            try:
+                # 从队列获取参数
+                _, _, kwargs = await self._task_queue.get()
+                
+                result = await self.run_subagent(**kwargs)
+                
+                task.result = result
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = time.time()
+                
+            except Exception as e:
+                task.error = str(e)
+                task.status = TaskStatus.FAILED
+                task.completed_at = time.time()
+                logger.error(f"任务 {task_id} 执行失败: {e}")
+
     def get_stats(self) -> Dict[str, Any]:
         """获取子代理统计信息"""
         return {
             "templates_count": len(self.templates),
             "active_count": len(self._active_subagents),
             "active_subagents": self.list_active_subagents()
+        }
+
+    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """获取任务状态"""
+        task = self._tasks.get(task_id)
+        if not task:
+            return None
+        
+        return {
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "task_content": task.task_content,
+            "template": task.template,
+            "priority": task.priority,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+            "error": task.error,
+            "result": task.result.result if task.result else None
+        }
+
+    def get_all_tasks(self, status_filter: Optional[TaskStatus] = None) -> List[Dict[str, Any]]:
+        """获取所有任务（可按状态过滤）"""
+        tasks = []
+        for task in self._tasks.values():
+            if status_filter and task.status != status_filter:
+                continue
+            tasks.append(self.get_task_status(task.task_id))
+        return sorted(tasks, key=lambda x: x["created_at"], reverse=True)
+
+    def get_pool_stats(self) -> Dict[str, Any]:
+        """获取并发池统计"""
+        active = sum(1 for t in self._tasks.values() if t.status == TaskStatus.RUNNING)
+        pending = sum(1 for t in self._tasks.values() if t.status == TaskStatus.PENDING)
+        completed = sum(1 for t in self._tasks.values() if t.status == TaskStatus.COMPLETED)
+        failed = sum(1 for t in self._tasks.values() if t.status == TaskStatus.FAILED)
+        
+        return {
+            "max_concurrency": self._pool_config.max_concurrency,
+            "active": active,
+            "pending": pending,
+            "queue_size": self._task_queue.qsize(),
+            "completed": completed,
+            "failed": failed,
+            "total": len(self._tasks)
         }
