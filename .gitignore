@@ -17,3 +17,5 @@ logs/
 .claude/
 
 .worktrees/
+
+.pytest_cache/
