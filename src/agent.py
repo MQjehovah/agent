@@ -129,6 +129,7 @@ class Agent:
         from tools.grep import GrepTool
         from tools.glob import GlobTool
         from tools.edit import EditTool
+        from tools.code_preview import CodePreviewTool
         from tools.web import WebSearchTool, WebFetchTool
         from tools.task import TaskCreateTool, TaskListTool, TaskGetTool, TaskCancelTool
         from tools.ask_user import AskUserTool
@@ -146,6 +147,7 @@ class Agent:
         self.tool_registry.register_tool(GrepTool())
         self.tool_registry.register_tool(GlobTool())
         self.tool_registry.register_tool(EditTool())
+        self.tool_registry.register_tool(CodePreviewTool())
 
         # 新增：Web 工具
         self.tool_registry.register_tool(WebSearchTool())

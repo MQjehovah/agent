@@ -118,6 +118,7 @@ from .shell import ShellTool
 from .grep import GrepTool
 from .glob import GlobTool
 from .edit import EditTool
+from .code_preview import CodePreviewTool
 
 # Web 工具
 from .web import WebSearchTool, WebFetchTool
@@ -133,7 +134,7 @@ __all__ = [
     # 核心
     'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
     # 搜索与编辑
-    'GrepTool', 'GlobTool', 'EditTool',
+    'GrepTool', 'GlobTool', 'EditTool', 'CodePreviewTool',
     # Web
     'WebSearchTool', 'WebFetchTool',
     # 后台任务
