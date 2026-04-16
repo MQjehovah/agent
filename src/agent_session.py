@@ -139,19 +139,20 @@ class AgentSessionManager:
                 use_cache=False
             )
             summary = response.choices[0].message.content or ""
+
+            compressed = [
+                *system_msgs,
+                {"role": "user", "content": f"[对话历史摘要]\n{summary}"},
+                {"role": "assistant", "content": "已了解历史上下文，请继续。"},
+                *recent_msgs,
+            ]
+
+            new_count = AgentSessionManager.estimate_tokens(compressed)
+            logger.info(f"上下文压缩完成: ~{token_count} → ~{new_count} tokens")
+            return compressed
         except Exception as e:
             logger.warning(f"上下文压缩失败，保留原始消息: {e}")
             return messages
-
-        compressed = [
-            *system_msgs,
-            {"role": "assistant", "content": f"[对话历史摘要]\n{summary}"},
-            *recent_msgs,
-        ]
-
-        new_count = AgentSessionManager.estimate_tokens(compressed)
-        logger.info(f"上下文压缩完成: ~{token_count} → ~{new_count} tokens")
-        return compressed
 
     def __init__(self, ttl_seconds: int = None, max_sessions: int = None):
         self.sessions: Dict[str, AgentSession] = {}

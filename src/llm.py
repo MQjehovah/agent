@@ -35,9 +35,9 @@ RATE_LIMIT_COOLDOWN = 60.0
 
 
 class LLMClient:
-    def __init__(self, model: str = "glm-5", base_url: Optional[str] = None,
+    def __init__(self, model: str = None, base_url: Optional[str] = None,
                  api_key: Optional[str] = None, enable_cache: bool = True):
-        self.model = model
+        self.model = model or os.getenv("MODEL_NAME", "glm-5")
         self.enable_cache = enable_cache
         self.usage_tracker = UsageTracker()
 
