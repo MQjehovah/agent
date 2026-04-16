@@ -13,6 +13,21 @@ logger = logging.getLogger("agent.tools")
 class GrepTool(BuiltinTool):
     """文件内容搜索工具 — 在指定目录中递归搜索匹配正则表达式的内容"""
 
+    MAX_MATCH_OUTPUT_CHARS = 50000
+
+    @staticmethod
+    def _truncate_matches(matches, max_chars=MAX_MATCH_OUTPUT_CHARS):
+        """截断匹配结果，防止撑爆上下文"""
+        total = 0
+        kept = []
+        for m in matches:
+            entry_chars = len(m.get("content", "")) + len(m.get("context", "")) + 100
+            if total + entry_chars > max_chars:
+                break
+            kept.append(m)
+            total += entry_chars
+        return kept
+
     @property
     def name(self) -> str:
         return "grep"
@@ -118,6 +133,7 @@ class GrepTool(BuiltinTool):
                         })
 
                         if len(matches) >= max_results:
+                            matches = self._truncate_matches(matches)
                             return json.dumps({
                                 "success": True,
                                 "pattern": pattern,
@@ -127,11 +143,16 @@ class GrepTool(BuiltinTool):
                                 "matches": matches
                             }, ensure_ascii=False)
 
+        # 截断保护
+        truncated = len(matches) > 0 and len(json.dumps(matches, ensure_ascii=False)) > self.MAX_MATCH_OUTPUT_CHARS
+        if truncated:
+            matches = self._truncate_matches(matches)
+
         return json.dumps({
             "success": True,
             "pattern": pattern,
             "files_searched": files_searched,
             "total_matches": len(matches),
-            "truncated": False,
+            "truncated": truncated,
             "matches": matches
         }, ensure_ascii=False)

@@ -66,10 +66,17 @@ class AgentSessionManager:
     MAX_ITERATIONS = 100
     CLEANUP_INTERVAL = 300  # 清理间隔: 5分钟
     MAX_CONTEXT_TOKENS = 100000  # 上下文 token 上限（按模型调整）
+    # microcompact 参数
+    KEEP_RECENT_TOOL_RESULTS = 5       # 保留最近 N 条工具结果的完整内容
+    TOOL_RESULT_COLLAPSE_CHARS = 300   # 旧工具结果截断到多少字符
+    # context collapse 参数
+    TEXT_BLOCK_COLLAPSE_THRESHOLD = 3000  # 超过此长度的文本块被折叠
+    TEXT_BLOCK_COLLAPSE_HEAD = 500        # 折叠后保留头部字符数
+    TEXT_BLOCK_COLLAPSE_TAIL = 300        # 折叠后保留尾部字符数
 
     @staticmethod
     def estimate_tokens(messages: list) -> int:
-        """粗略估算消息列表的 token 数（中文约 1.5 字/token）"""
+        """粗略估算消息列表的 token 数（中文约 1.5 字/token，英文约 4 字/token，取保守值）"""
         total = 0
         for msg in messages:
             content = msg.get("content", "")
@@ -79,7 +86,6 @@ class AgentSessionManager:
                 for part in content:
                     if isinstance(part, dict):
                         total += int(len(part.get("text", "")) / 1.5)
-            # 工具调用
             if msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})
@@ -87,23 +93,111 @@ class AgentSessionManager:
         return total
 
     @staticmethod
+    def microcompact(messages: list) -> list:
+        """轻量级压缩：将旧的工具结果截断，零成本不调用 LLM。
+
+        策略：
+        - 保留最近 KEEP_RECENT_TOOL_RESULTS 条工具结果不变
+        - 更早的工具结果截断到 TOOL_RESULT_COLLAPSE_CHARS 字符
+        """
+        # 先收集所有 tool 消息的索引
+        tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+
+        if len(tool_indices) <= AgentSessionManager.KEEP_RECENT_TOOL_RESULTS:
+            return messages
+
+        # 需要截断的旧 tool 消息索引（排除最近 N 条）
+        old_tool_indices = tool_indices[:-AgentSessionManager.KEEP_RECENT_TOOL_RESULTS]
+
+        result = list(messages)  # 浅拷贝
+        modified = False
+        for idx in old_tool_indices:
+            msg = result[idx]
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) > AgentSessionManager.TOOL_RESULT_COLLAPSE_CHARS:
+                # 获取工具名
+                tool_name = msg.get("name", "unknown")
+                truncated = (
+                    f"[旧结果已压缩 | 工具: {tool_name} | "
+                    f"原始 {len(content)} 字符]\n"
+                    f"{content[:AgentSessionManager.TOOL_RESULT_COLLAPSE_CHARS]}..."
+                )
+                result[idx] = {**msg, "content": truncated}
+                modified = True
+
+        if modified:
+            logger.debug(f"microcompact: 截断了 {len(old_tool_indices)} 条旧工具结果")
+        return result
+
+    @staticmethod
+    def context_collapse(messages: list) -> list:
+        """中等压缩：折叠超长文本块（不调用 LLM）。
+
+        对超过阈值的长消息，只保留头部 + 尾部 + 省略号。
+        """
+        threshold = AgentSessionManager.TEXT_BLOCK_COLLAPSE_THRESHOLD
+        head = AgentSessionManager.TEXT_BLOCK_COLLAPSE_HEAD
+        tail = AgentSessionManager.TEXT_BLOCK_COLLAPSE_TAIL
+
+        result = list(messages)
+        modified = False
+        # 跳过最后 4 条消息（最近上下文保持完整）
+        for i in range(len(result) - 4):
+            msg = result[i]
+            # 不折叠系统提示
+            if msg.get("role") == "system":
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) > threshold:
+                collapsed = (
+                    f"{content[:head]}\n"
+                    f"... [省略了 {len(content) - head - tail} 字符] ...\n"
+                    f"{content[-tail:]}"
+                )
+                result[i] = {**msg, "content": collapsed}
+                modified = True
+
+        if modified:
+            logger.debug("context_collapse: 折叠了超长文本块")
+        return result
+
+    @staticmethod
     async def compress_if_needed(
         messages: list,
         llm_client,
         max_tokens: int = None
     ) -> list:
-        """如果上下文过大，压缩历史消息"""
+        """三层渐进式上下文压缩。
+
+        Layer 1 (50%): microcompact — 截断旧工具结果，零成本
+        Layer 2 (65%): context_collapse — 折叠超长文本块，零成本
+        Layer 3 (80%): LLM 压缩 — 调用模型生成摘要，有成本
+        """
         max_tokens = max_tokens or AgentSessionManager.MAX_CONTEXT_TOKENS
         token_count = AgentSessionManager.estimate_tokens(messages)
 
-        if token_count < max_tokens * 0.8:
+        if token_count < max_tokens * 0.5:
             return messages
 
-        logger.info(f"上下文估计 {token_count} tokens，接近上限 {max_tokens}，开始压缩...")
+        # Layer 1: microcompact — 截断旧工具结果
+        if token_count >= max_tokens * 0.5:
+            messages = AgentSessionManager.microcompact(messages)
+            token_count = AgentSessionManager.estimate_tokens(messages)
+            if token_count < max_tokens * 0.65:
+                return messages
 
-        # 保留系统消息 + 最近 6 条消息
+        # Layer 2: context_collapse — 折叠超长文本块
+        if token_count >= max_tokens * 0.65:
+            messages = AgentSessionManager.context_collapse(messages)
+            token_count = AgentSessionManager.estimate_tokens(messages)
+            if token_count < max_tokens * 0.8:
+                return messages
+
+        # Layer 3: LLM 压缩 — 生成结构化摘要
+        logger.info(f"上下文估计 {token_count} tokens，接近上限 {max_tokens}，启动 LLM 压缩...")
+
         system_msgs = [m for m in messages if m.get("role") == "system"]
-        recent_msgs = messages[-6:]
+        recent_msgs = messages[-8:]  # 保留最近 4 轮（user+assistant+tool 可能占多条）
         history_msgs = [
             m for m in messages
             if m not in system_msgs and m not in recent_msgs
@@ -112,26 +206,34 @@ class AgentSessionManager:
         if not history_msgs:
             return messages
 
-        # 序列化历史用于压缩
+        # 序列化历史，限制输入长度
         history_text = ""
         for m in history_msgs:
             role = m.get("role", "unknown")
             content = m.get("content", "")
+            name = m.get("name", "")
+            prefix = f"[{role}{'/' + name if name else ''}]"
             if content:
-                history_text += f"[{role}] {content}\n"
+                # 每条消息最多取 1000 字符
+                snippet = content[:1000] + ("..." if len(content) > 1000 else "")
+                history_text += f"{prefix} {snippet}\n"
 
         if not history_text.strip():
             return messages
 
         try:
             summary_prompt = (
-                "你是一个对话压缩助手。请将以下对话历史压缩为简洁摘要，"
-                "保留关键决策、结论和未完成任务。\n\n"
-                f"对话历史：\n{history_text[:8000]}"
+                "请将以下 Agent 对话历史压缩为结构化摘要，保留以下信息：\n"
+                "1. 用户的核心请求和意图\n"
+                "2. 已完成的关键操作和结论\n"
+                "3. 发现的文件和代码关键位置（文件路径:行号）\n"
+                "4. 未完成的任务\n"
+                "5. 当前工作进度\n\n"
+                f"对话历史：\n{history_text[:10000]}"
             )
             response = await llm_client.chat(
                 messages=[
-                    {"role": "system", "content": "你是对话压缩助手，输出简洁的中文摘要。"},
+                    {"role": "system", "content": "你是上下文压缩助手。输出简洁的中文结构化摘要。"},
                     {"role": "user", "content": summary_prompt}
                 ],
                 tools=None,
@@ -140,7 +242,7 @@ class AgentSessionManager:
             )
             summary = response.choices[0].message.content or ""
         except Exception as e:
-            logger.warning(f"上下文压缩失败，保留原始消息: {e}")
+            logger.warning(f"LLM 上下文压缩失败，保留原始消息: {e}")
             return messages
 
         compressed = [
@@ -150,7 +252,7 @@ class AgentSessionManager:
         ]
 
         new_count = AgentSessionManager.estimate_tokens(compressed)
-        logger.info(f"上下文压缩完成: ~{token_count} → ~{new_count} tokens")
+        logger.info(f"LLM 压缩完成: ~{token_count} → ~{new_count} tokens")
         return compressed
 
     def __init__(self, ttl_seconds: int = None, max_sessions: int = None):
