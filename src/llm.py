@@ -188,8 +188,37 @@ class LLMClient:
 
         raise last_exception or Exception("Unknown error")
 
+    async def _create_stream(self, params: Dict[str, Any]):
+        """创建流式连接，失败时自动重试"""
+        last_exception = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                stream = await self.client.chat.completions.create(**params)
+                # 尝试消费第一个 chunk 以验证连接建立成功
+                first_chunk = await stream.__anext__()
+                return stream, first_chunk
+            except StopAsyncIteration:
+                # 空流，直接返回
+                return stream, None
+            except Exception as e:
+                last_exception = e
+                api_logger.error(f"流式API调用失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {e}")
+
+                if not self._should_retry(e):
+                    api_logger.error(f"不可重试的错误，放弃重试: {type(e).__name__}")
+                    raise e
+
+                if attempt < MAX_RETRIES - 1:
+                    delay = self._calculate_retry_delay(attempt, e)
+                    api_logger.info(f"将在 {delay:.1f} 秒后重试...")
+                    await asyncio.sleep(delay)
+                else:
+                    api_logger.error(f"已达最大重试次数 {MAX_RETRIES}")
+
+        raise last_exception or Exception("Unknown error")
+
     async def stream_chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None):
-        """流式聊天，逐 token 返回"""
+        """流式聊天，逐 token 返回，支持自动重试"""
         params = {
             "model": self.model,
             "messages": messages,
@@ -200,9 +229,17 @@ class LLMClient:
 
         self._log_request(params)
 
+        stream, first_chunk = await self._create_stream(params)
+
         total_tokens = 0
         chunks = 0
-        stream = await self.client.chat.completions.create(**params)
+
+        # 先 yield 第一个 chunk（_create_stream 中已预取）
+        if first_chunk is not None:
+            chunks += 1
+            if first_chunk.usage:
+                total_tokens = first_chunk.usage.total_tokens
+            yield first_chunk
 
         async for chunk in stream:
             chunks += 1
