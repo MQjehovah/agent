@@ -57,6 +57,10 @@ class CommandHandler:
             self._show_cache()
         elif cmd_lower == "/cache clear":
             self._clear_cache()
+        elif cmd_lower == "/usage":
+            self._show_usage()
+        elif cmd_lower == "/tasks":
+            self._show_bg_tasks()
         elif cmd_lower == "/sessions":
             await self._show_sessions()
         elif cmd_lower.startswith("/session "):
@@ -93,6 +97,8 @@ class CommandHandler:
             ("/loglevel <level>", "设置日志级别"),
             ("/cache", "查看缓存统计"),
             ("/cache clear", "清空缓存"),
+            ("/usage", "查看 LLM 用量统计"),
+            ("/tasks", "查看后台任务列表"),
             ("/quit", "退出程序"),
         ]
         for cmd, desc in commands:
@@ -303,4 +309,40 @@ class CommandHandler:
             if len(content) > 100:
                 content = content[:100] + "..."
             table.add_row(str(i), role, content)
+
+    def _show_usage(self):
+        """显示 LLM 用量统计"""
+        if hasattr(self.agent, 'client') and hasattr(self.agent.client, 'usage_tracker'):
+            summary = self.agent.client.usage_tracker.get_summary()
+            table = Table(title="LLM 用量统计", show_header=True,
+                          header_style="bold magenta", box=box.ROUNDED)
+            table.add_column("指标", style="cyan")
+            table.add_column("值", style="green")
+            table.add_row("调用次数", str(summary["total_calls"]))
+            table.add_row("输入 Token", f"{summary['total_prompt_tokens']:,}")
+            table.add_row("输出 Token", f"{summary['total_completion_tokens']:,}")
+            table.add_row("总 Token", f"{summary['total_tokens']:,}")
+            table.add_row("总费用", f"¥{summary['total_cost_cny']}")
+            console.print(table)
+        else:
+            console.print("[yellow]用量追踪未启用[/yellow]")
+
+    def _show_bg_tasks(self):
+        """显示后台任务列表"""
+        if hasattr(self.agent, 'task_manager'):
+            tasks = self.agent.task_manager.list_tasks()
+            if tasks:
+                table = Table(title=f"后台任务 (共 {len(tasks)} 个)", show_header=True,
+                              header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("ID", style="cyan")
+                table.add_column("描述", style="green")
+                table.add_column("状态", style="yellow")
+                table.add_column("创建时间", style="dim")
+                for t in tasks:
+                    table.add_row(t["id"], t["description"], t["status"], t["created_at"])
+                console.print(table)
+            else:
+                console.print("[dim]暂无后台任务[/dim]")
+        else:
+            console.print("[yellow]任务管理器未初始化[/yellow]")
         console.print(table)

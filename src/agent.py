@@ -31,7 +31,8 @@ class Agent:
         self,
         workspace: str,
         client,
-        parent_agent: "Agent" = None
+        parent_agent: "Agent" = None,
+        permission_mode: str = "auto",
     ):
         self.workspace = workspace
         self.client = client
@@ -55,6 +56,33 @@ class Agent:
 
         self.status = "pending"
         self.result: Optional[str] = None
+
+        # 权限系统
+        from permissions import PermissionChecker, PermissionConfig, PermissionMode
+        self.permission = PermissionChecker(PermissionConfig(
+            mode=PermissionMode(permission_mode)
+        ))
+
+        # 钩子系统
+        from hooks import HookManager
+        self.hooks = HookManager()
+
+        # 调用链路追踪
+        from tracing import Tracer
+        self.tracer = Tracer()
+
+        # 后台任务管理器
+        from tools.task import TaskManager
+        self.task_manager = TaskManager()
+
+        # 用户确认回调（外部注入，如交互模式中的 input()）
+        self.on_confirm = None
+
+        # 流式输出回调
+        self.on_token = None
+
+        # 连续错误计数
+        self._consecutive_errors = 0
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
@@ -96,17 +124,44 @@ class Agent:
         self.system_prompt = body.strip() if body else ""
 
     def _init_tools(self):
-        from tools import ToolRegistry, TodoTool, FileTool, SubagentTool, MemoryTool, ShellTool
+        from tools import ToolRegistry
+        from tools import TodoTool, FileTool, SubagentTool, MemoryTool, ShellTool
+        from tools.grep import GrepTool
+        from tools.glob import GlobTool
+        from tools.edit import EditTool
+        from tools.web import WebSearchTool, WebFetchTool
+        from tools.task import TaskCreateTool, TaskListTool, TaskGetTool, TaskCancelTool
+        from tools.ask_user import AskUserTool
 
         self.tool_registry = ToolRegistry()
+
+        # 核心工具
         self.tool_registry.register_tool(TodoTool())
         self.tool_registry.register_tool(FileTool())
         self.tool_registry.register_tool(SubagentTool())
         self.tool_registry.register_tool(MemoryTool())
         self.tool_registry.register_tool(ShellTool())
 
+        # 新增：搜索与编辑工具
+        self.tool_registry.register_tool(GrepTool())
+        self.tool_registry.register_tool(GlobTool())
+        self.tool_registry.register_tool(EditTool())
+
+        # 新增：Web 工具
+        self.tool_registry.register_tool(WebSearchTool())
+        self.tool_registry.register_tool(WebFetchTool())
+
+        # 新增：后台任务工具
+        self.tool_registry.register_tool(TaskCreateTool(self.task_manager))
+        self.tool_registry.register_tool(TaskListTool(self.task_manager))
+        self.tool_registry.register_tool(TaskGetTool(self.task_manager))
+        self.tool_registry.register_tool(TaskCancelTool(self.task_manager))
+
+        # 新增：用户交互工具
+        self.tool_registry.register_tool(AskUserTool())
+
         logger.info(
-            f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {[self.tool_registry.list_tools()]}")
+            f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}")
 
     def _init_skills(self):
         skills_dir = os.path.join(self.workspace, "skills")
@@ -190,8 +245,15 @@ class Agent:
 
     async def run(self, task: str, session_id: str = None) -> AgentResult:
         self.status = "running"
+        self._consecutive_errors = 0
 
-        from agent_session import AgentSession
+        # 开始追踪
+        self.tracer.start_trace(f"agent.run: {task[:50]}")
+
+        # 触发 AGENT_START 钩子
+        await self.hooks.fire("agent_start", metadata={"task": task})
+
+        from agent_session import AgentSession, AgentSessionManager
         session = None
 
         if self.session_manager:
@@ -256,46 +318,55 @@ class Agent:
                 logger.debug(
                     f"Agent [{self.name}] [{session.session_id}] iteration {i + 1}")
 
-                response = await self._think(session.messages)
+                try:
+                    # 上下文压缩检查
+                    session.messages = await AgentSessionManager.compress_if_needed(
+                        session.messages, self.client
+                    )
 
-                msg = response.get("message", {})
+                    # 思考
+                    self.tracer.start_span("agent.think")
+                    response = await self._think(session.messages)
+                    self.tracer.end_span()
 
-                session.add_message(
-                    "assistant",
-                    msg.get("content") or "",
-                    tool_calls=msg.get("tool_calls")
-                )
+                    msg = response.get("message", {})
 
-                if msg.get("tool_calls"):
-                    for tc in msg.get("tool_calls", []):
-                        func_name = tc.get("function", {}).get("name", "")
-                        func_args = tc.get("function", {}).get("arguments", {})
+                    session.add_message(
+                        "assistant",
+                        msg.get("content") or "",
+                        tool_calls=msg.get("tool_calls")
+                    )
 
-                        if isinstance(func_args, str):
-                            try:
-                                func_args = json.loads(func_args)
-                            except (json.JSONDecodeError, ValueError):
-                                func_args = {}
-
-                        logger.debug(
-                            f"Agent [{self.name}] [{session.session_id}] -> tool: {func_name} args: {func_args}")
-                        result = await self._execute_tool(func_name, func_args)
-                        logger.debug(
-                            f"Agent [{self.name}] [{session.session_id}] <- tool: {func_name} result: {result}")
-
-                        session.add_message(
-                            "tool",
-                            str(result),
-                            name=func_name,
-                            tool_call_id=tc.get("id", "")
+                    if msg.get("tool_calls"):
+                        # 并行执行工具
+                        await self._execute_tool_calls_parallel(
+                            msg["tool_calls"], session
                         )
+                        self._consecutive_errors = 0
+                        continue
 
+                    if msg.get("content"):
+                        self.status = "completed"
+                        self.result = msg.get("content")
+                        break
+
+                except Exception as e:
+                    self._consecutive_errors += 1
+                    logger.error(
+                        f"Agent [{self.name}] 第 {i+1} 轮出错: {e}")
+                    self.tracer.end_span(status="error")
+
+                    if self._consecutive_errors >= 3:
+                        self.status = "failed"
+                        self.result = f"连续 {self._consecutive_errors} 次思考出错"
+                        break
+
+                    # 将错误反馈给 LLM，让它重试
+                    session.add_message(
+                        "system",
+                        f"上一轮思考出错: {e}，请尝试用其他方式继续完成任务。"
+                    )
                     continue
-
-                if msg.get("content"):
-                    self.status = "completed"
-                    self.result = msg.get("content")
-                    break
             else:
                 self.status = "max_iterations"
                 self.result = "达到最大迭代次数"
@@ -306,14 +377,102 @@ class Agent:
             logger.error(
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
+        # 触发 AGENT_STOP 钩子
+        await self.hooks.fire("agent_stop", metadata={
+            "status": self.status,
+            "result_length": len(self.result) if self.result else 0,
+        })
+
+        self.tracer.end_span(status="ok" if self.status == "completed" else "error")
+
         logger.debug(
-            f"Agent [{self.name}] [{session.session_id}] 任务完成")
+            f"Agent [{self.name}] [{session.session_id}] 任务完成: {self.status}")
 
         return AgentResult(
             agent_id=self.agent_id,
             status=self.status,
             result=self.result or "",
         )
+
+    async def _execute_tool_calls_parallel(self, tool_calls: list, session):
+        """并行执行工具调用"""
+        if len(tool_calls) <= 1:
+            for tc in tool_calls:
+                func_name = tc.get("function", {}).get("name", "")
+                func_args = tc.get("function", {}).get("arguments", {})
+                if isinstance(func_args, str):
+                    try:
+                        func_args = json.loads(func_args)
+                    except (json.JSONDecodeError, ValueError):
+                        func_args = {}
+
+                result = await self._execute_tool_safe(func_name, func_args)
+                session.add_message("tool", str(result), name=func_name,
+                                    tool_call_id=tc.get("id", ""))
+            return
+
+        # 并行执行多个工具
+        async def _run_one(tc):
+            func_name = tc.get("function", {}).get("name", "")
+            func_args = tc.get("function", {}).get("arguments", {})
+            if isinstance(func_args, str):
+                try:
+                    func_args = json.loads(func_args)
+                except (json.JSONDecodeError, ValueError):
+                    func_args = {}
+            return tc, await self._execute_tool_safe(func_name, func_args)
+
+        results = await asyncio.gather(
+            *[_run_one(tc) for tc in tool_calls],
+            return_exceptions=True
+        )
+
+        for item in results:
+            if isinstance(item, Exception):
+                logger.error(f"工具执行异常: {item}")
+                session.add_message("tool", f"工具执行异常: {item}")
+            else:
+                tc, result = item
+                func_name = tc.get("function", {}).get("name", "")
+                session.add_message("tool", str(result), name=func_name,
+                                    tool_call_id=tc.get("id", ""))
+
+    async def _execute_tool_safe(self, name: str, args: Dict) -> str:
+        """带权限检查、钩子和错误恢复的工具执行"""
+        # 权限检查
+        perm_result = self.permission.check(name, args)
+        if not perm_result:
+            logger.warning(f"工具调用被拦截: {name}, 原因: {perm_result.reason}")
+            return json.dumps({"success": False, "error": perm_result.reason}, ensure_ascii=False)
+
+        # DEFAULT 模式需要用户确认
+        if perm_result.reason == "需要用户确认" and self.on_confirm:
+            confirmed = await self.on_confirm(name, args)
+            if not confirmed:
+                return json.dumps({"success": False, "error": "用户拒绝执行此操作"}, ensure_ascii=False)
+
+        # PreToolUse 钩子
+        await self.hooks.fire("pre_tool_use", tool_name=name, arguments=args)
+
+        # 追踪
+        self.tracer.start_span(f"tool.{name}")
+
+        try:
+            result = await self._execute_tool(name, args)
+            self.tracer.end_span(status="ok")
+            # PostToolUse 钩子
+            await self.hooks.fire("post_tool_use", tool_name=name,
+                                  arguments=args, result=result)
+            return result
+        except Exception as e:
+            self.tracer.end_span(status="error")
+            logger.error(f"工具 {name} 执行失败: {e}")
+            await self.hooks.fire("post_tool_use", tool_name=name,
+                                  arguments=args, error=e)
+            return json.dumps({
+                "success": False,
+                "error": f"工具执行失败: {type(e).__name__}: {e}"
+            }, ensure_ascii=False)
 
     async def _background_memory_extract(self):
         try:
@@ -327,15 +486,19 @@ class Agent:
 
     async def _think(self, messages: Sequence[ChatCompletionMessageParam]) -> Dict[str, Any]:
         try:
-            response = self.client.chat(
+            # 流式模式
+            if self.on_token:
+                return await self._think_stream(messages)
+
+            # 非流式模式
+            response = await self.client.chat(
                 messages,
                 self.tool_defs,
                 stream=False
             )
 
             if not response.choices:
-                logger.error(
-                    f"Agent [{self.name}] no choices returned from LLM")
+                logger.error(f"Agent [{self.name}] no choices returned from LLM")
                 raise Exception("No choices returned")
 
             choice = response.choices[0]
@@ -355,12 +518,10 @@ class Agent:
                             except (TypeError, ValueError):
                                 func_args = "{}"
                     elif isinstance(func_args, dict):
-                        logger.warning(
-                            f"Agent [{self.name}] function.arguments is dict, converting to JSON string")
+                        logger.warning(f"Agent [{self.name}] function.arguments is dict, converting to JSON string")
                         func_args = json.dumps(func_args, ensure_ascii=False)
                     else:
-                        logger.warning(
-                            f"Agent [{self.name}] function.arguments is {type(func_args)}, set to empty object")
+                        logger.warning(f"Agent [{self.name}] function.arguments is {type(func_args)}, set to empty object")
                         func_args = "{}"
                     tool_calls.append({
                         "id": tc.id,
@@ -381,10 +542,50 @@ class Agent:
             logger.error(f"Agent [{self.name}] think error: {e}")
             return {"message": {"content": f"思考出错: {e}"}}
 
+    async def _think_stream(self, messages):
+        """流式思考模式 — 实时推送 token 给调用方"""
+        content = ""
+        tool_calls_accumulator = {}
+
+        async for chunk in self.client.stream_chat(messages, self.tool_defs):
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+
+            if delta and delta.content:
+                content += delta.content
+                if self.on_token:
+                    await self.on_token(delta.content)
+
+            if delta and delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_accumulator:
+                        tool_calls_accumulator[idx] = {
+                            "id": tc.id or "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""}
+                        }
+                    if tc.function:
+                        if tc.function.name:
+                            tool_calls_accumulator[idx]["function"]["name"] += tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_accumulator[idx]["function"]["arguments"] += tc.function.arguments
+
+        tool_calls = list(tool_calls_accumulator.values()) if tool_calls_accumulator else None
+        return {"message": {"content": content or None, "tool_calls": tool_calls}}
+
     async def _execute_tool(self, name: str, args: Dict) -> str:
         try:
             if name == "subagent" and self.subagent_manager:
                 return await self._execute_subagent(args)
+
+            if name == "ask_user":
+                tool = self.tool_registry.get_tool("ask_user")
+                if tool and self.on_confirm:
+                    tool.set_input_handler(self.on_confirm)
+                return await self.tool_registry.execute(name, args)
 
             if self.tool_registry and self.tool_registry.has_tool(name):
                 return await self.tool_registry.execute(name, args)
@@ -397,8 +598,7 @@ class Agent:
 
             if self.plugin_manager:
                 for plugin in self.plugin_manager.plugins.values():
-                    logger.debug(
-                        f"检查插件 {plugin.name}, enabled={plugin.enabled}")
+                    logger.debug(f"检查插件 {plugin.name}, enabled={plugin.enabled}")
                     if plugin.enabled:
                         tool_defs = plugin.get_tool_defs()
                         logger.debug(
@@ -433,7 +633,6 @@ class Agent:
             logger.error(f"Subagent execution error: {e}")
             return json.dumps({"success": False, "error": f"子代理执行错误: {e}"}, ensure_ascii=False)
 
-        # 获取子代理实例信息
         stats = self.subagent_manager.get_stats()
 
         return json.dumps({
@@ -450,7 +649,6 @@ class Agent:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
-        # 清理子代理（仅主代理执行）
         if not self.parent_agent and self.subagent_manager:
             await self.subagent_manager.cleanup_all()
 

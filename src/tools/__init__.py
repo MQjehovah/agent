@@ -107,10 +107,37 @@ class ToolRegistry:
         return self._tools.get(name)
 
 
+# 核心工具
 from .todo import TodoTool
 from .file import FileTool
 from .subagent import SubagentTool
 from .memory import MemoryTool
 from .shell import ShellTool
 
-__all__ = ['ToolRegistry', 'BuiltinTool', 'ToolDefinition', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool']
+# 搜索与编辑工具
+from .grep import GrepTool
+from .glob import GlobTool
+from .edit import EditTool
+
+# Web 工具
+from .web import WebSearchTool, WebFetchTool
+
+# 后台任务工具
+from .task import TaskCreateTool, TaskListTool, TaskGetTool, TaskCancelTool
+
+# 用户交互工具
+from .ask_user import AskUserTool
+
+__all__ = [
+    'ToolRegistry', 'BuiltinTool', 'ToolDefinition',
+    # 核心
+    'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
+    # 搜索与编辑
+    'GrepTool', 'GlobTool', 'EditTool',
+    # Web
+    'WebSearchTool', 'WebFetchTool',
+    # 后台任务
+    'TaskCreateTool', 'TaskListTool', 'TaskGetTool', 'TaskCancelTool',
+    # 用户交互
+    'AskUserTool',
+]

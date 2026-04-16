@@ -20,8 +20,8 @@ class MemoryTool(BuiltinTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["save", "search", "list"],
-                    "description": "操作类型：save保存记忆，search搜索记忆，list列出记忆文件"
+                    "enum": ["save", "search", "list", "delete"],
+                    "description": "操作类型：save保存记忆，search搜索记忆，list列出记忆文件，delete删除记忆"
                 },
                 "content": {
                     "type": "string",
@@ -63,6 +63,8 @@ class MemoryTool(BuiltinTool):
             return await self._search(kwargs)
         elif action == "list":
             return await self._list(kwargs)
+        elif action == "delete":
+            return await self._delete(kwargs)
         else:
             return json.dumps({"success": False, "error": f"Unknown action: {action}"}, ensure_ascii=False)
     
@@ -94,7 +96,7 @@ class MemoryTool(BuiltinTool):
     
     async def _list(self, args: Dict[str, Any]) -> str:
         memory_type = args.get("memory_type", "daily")
-        
+
         if memory_type == "daily":
             files = self.memory_manager.list_daily_files()
             return json.dumps({"success": True, "files": sorted(files, reverse=True)}, ensure_ascii=False)
@@ -102,3 +104,13 @@ class MemoryTool(BuiltinTool):
             return json.dumps({"success": True, "files": [self.memory_manager.long_term_file]}, ensure_ascii=False)
         else:
             return json.dumps({"success": True, "files": []}, ensure_ascii=False)
+
+    async def _delete(self, args: Dict[str, Any]) -> str:
+        content = args.get("content", "")
+        if not content:
+            return json.dumps({"success": False, "error": "Content is required for deletion"}, ensure_ascii=False)
+        try:
+            self.memory_manager.remove_memory(content)
+            return json.dumps({"success": True, "message": "Memory deleted"}, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)

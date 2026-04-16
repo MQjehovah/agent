@@ -1,5 +1,6 @@
 import uuid
 import asyncio
+import json
 import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
@@ -64,6 +65,93 @@ class AgentSession:
 class AgentSessionManager:
     MAX_ITERATIONS = 100
     CLEANUP_INTERVAL = 300  # 清理间隔: 5分钟
+    MAX_CONTEXT_TOKENS = 100000  # 上下文 token 上限（按模型调整）
+
+    @staticmethod
+    def estimate_tokens(messages: list) -> int:
+        """粗略估算消息列表的 token 数（中文约 1.5 字/token）"""
+        total = 0
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                total += int(len(content) / 1.5)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        total += int(len(part.get("text", "")) / 1.5)
+            # 工具调用
+            if msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    total += int(len(json.dumps(func.get("arguments", ""), ensure_ascii=False)) / 1.5)
+        return total
+
+    @staticmethod
+    async def compress_if_needed(
+        messages: list,
+        llm_client,
+        max_tokens: int = None
+    ) -> list:
+        """如果上下文过大，压缩历史消息"""
+        max_tokens = max_tokens or AgentSessionManager.MAX_CONTEXT_TOKENS
+        token_count = AgentSessionManager.estimate_tokens(messages)
+
+        if token_count < max_tokens * 0.8:
+            return messages
+
+        logger.info(f"上下文估计 {token_count} tokens，接近上限 {max_tokens}，开始压缩...")
+
+        # 保留系统消息 + 最近 6 条消息
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        recent_msgs = messages[-6:]
+        history_msgs = [
+            m for m in messages
+            if m not in system_msgs and m not in recent_msgs
+        ]
+
+        if not history_msgs:
+            return messages
+
+        # 序列化历史用于压缩
+        history_text = ""
+        for m in history_msgs:
+            role = m.get("role", "unknown")
+            content = m.get("content", "")
+            if content:
+                history_text += f"[{role}] {content}\n"
+
+        if not history_text.strip():
+            return messages
+
+        try:
+            summary_prompt = (
+                "你是一个对话压缩助手。请将以下对话历史压缩为简洁摘要，"
+                "保留关键决策、结论和未完成任务。\n\n"
+                f"对话历史：\n{history_text[:8000]}"
+            )
+            response = await llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是对话压缩助手，输出简洁的中文摘要。"},
+                    {"role": "user", "content": summary_prompt}
+                ],
+                tools=None,
+                stream=False,
+                use_cache=False
+            )
+            summary = response.choices[0].message.content or ""
+        except Exception as e:
+            logger.warning(f"上下文压缩失败，保留原始消息: {e}")
+            return messages
+
+        compressed = [
+            *system_msgs,
+            {"role": "assistant", "content": f"[对话历史摘要]\n{summary}"},
+            *recent_msgs,
+        ]
+
+        new_count = AgentSessionManager.estimate_tokens(compressed)
+        logger.info(f"上下文压缩完成: ~{token_count} → ~{new_count} tokens")
+        return compressed
 
     def __init__(self, ttl_seconds: int = None, max_sessions: int = None):
         self.sessions: Dict[str, AgentSession] = {}
