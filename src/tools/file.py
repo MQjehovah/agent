@@ -8,6 +8,9 @@ from . import BuiltinTool
 logger = logging.getLogger("agent.tools")
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB 安全限制
+DEFAULT_READ_LIMIT = 200         # 默认读取行数
+MAX_READ_LIMIT = 2000            # 单次最大读取行数
+MAX_OUTPUT_CHARS = 50000         # 单次输出最大字符数
 
 
 class FileTool(BuiltinTool):
@@ -49,14 +52,15 @@ class FileTool(BuiltinTool):
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "读取的行数，默认读取全部"
+                    "description": f"读取的行数，默认{DEFAULT_READ_LIMIT}行，最大{MAX_READ_LIMIT}行",
+                    "default": DEFAULT_READ_LIMIT
                 }
             },
             "required": ["operation", "path"]
         }
 
     async def execute(self, operation: str, path: str, content: str = None,
-                      encoding: str = "utf-8", offset: int = 0, limit: int = None) -> str:
+                      encoding: str = "utf-8", offset: int = 0, limit: int = DEFAULT_READ_LIMIT) -> str:
         try:
             if operation == "read":
                 return self._read_file(path, encoding, offset, limit)
@@ -75,7 +79,7 @@ class FileTool(BuiltinTool):
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
-    def _read_file(self, path: str, encoding: str, offset: int = 0, limit: int = None) -> str:
+    def _read_file(self, path: str, encoding: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT) -> str:
         if not os.path.exists(path):
             return json.dumps({"success": False, "error": f"文件不存在: {path}"}, ensure_ascii=False)
 
@@ -92,11 +96,14 @@ class FileTool(BuiltinTool):
         with open(path, "r", encoding=encoding, errors="replace") as f:
             lines = f.readlines()
 
-        # 分段读取
-        if limit is not None:
-            end = offset + limit
-        else:
-            end = len(lines)
+        total_lines = len(lines)
+
+        # 强制 clamp limit
+        if limit is None or limit <= 0:
+            limit = DEFAULT_READ_LIMIT
+        limit = min(limit, MAX_READ_LIMIT)
+
+        end = min(offset + limit, total_lines)
         selected_lines = lines[offset:end]
 
         # 带行号输出
@@ -105,12 +112,26 @@ class FileTool(BuiltinTool):
             for i, line in enumerate(selected_lines)
         )
 
-        showing_end = min(end, len(lines))
+        # 输出截断保护
+        truncated = False
+        if len(numbered) > MAX_OUTPUT_CHARS:
+            numbered = numbered[:MAX_OUTPUT_CHARS] + "\n... [输出已截断]"
+            truncated = True
+
+        has_more = end < total_lines
+        hint = ""
+        if has_more or truncated:
+            hint = f"文件共 {total_lines} 行，当前显示 {offset + 1}-{end} 行。"
+            if has_more:
+                hint += f" 使用 offset={end} 继续读取。"
+
         return json.dumps({
             "success": True,
             "path": path,
-            "total_lines": len(lines),
-            "showing": f"{offset + 1}-{showing_end}",
+            "total_lines": total_lines,
+            "showing": f"{offset + 1}-{end}",
+            "has_more": has_more,
+            "hint": hint if hint else None,
             "content": numbered
         }, ensure_ascii=False)
 
