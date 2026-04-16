@@ -457,8 +457,21 @@ class Agent:
         # 追踪
         self.tracer.start_span(f"tool.{name}")
 
+        # 截断过长的参数用于日志显示
+        args_preview = json.dumps(args, ensure_ascii=False)
+        if len(args_preview) > 500:
+            args_preview = args_preview[:500] + "..."
+
+        logger.debug(f"[工具调用] {name} | 输入: {args_preview}")
+
         try:
             result = await self._execute_tool(name, args)
+
+            result_preview = result
+            if len(result_preview) > 500:
+                result_preview = result_preview[:500] + "..."
+            logger.debug(f"[工具返回] {name} | 输出: {result_preview}")
+
             self.tracer.end_span(status="ok")
             # PostToolUse 钩子
             await self.hooks.fire("post_tool_use", tool_name=name,
@@ -466,7 +479,7 @@ class Agent:
             return result
         except Exception as e:
             self.tracer.end_span(status="error")
-            logger.error(f"工具 {name} 执行失败: {e}")
+            logger.error(f"[工具异常] {name} | 错误: {type(e).__name__}: {e}")
             await self.hooks.fire("post_tool_use", tool_name=name,
                                   arguments=args, error=e)
             return json.dumps({
@@ -503,6 +516,10 @@ class Agent:
 
             choice = response.choices[0]
             msg = choice.message
+
+            # LLM 响应 debug 日志
+            content_preview = (msg.content or "")[:200]
+            logger.debug(f"[LLM响应] content: {content_preview or '(空)'} | tool_calls: {len(msg.tool_calls) if msg.tool_calls else 0}")
 
             tool_calls = None
             if msg.tool_calls:
