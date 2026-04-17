@@ -1,7 +1,8 @@
 import os
+import re
 import logging
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 
 logger = logging.getLogger("agent.memory")
 
@@ -127,3 +128,89 @@ class MemoryArchiver:
             logger.info(f"Cleaned up {deleted} old files (older than {retention_days} days)")
 
         return deleted
+
+    async def score_and_prune(self, long_term_file: str, llm_client) -> int:
+        if not os.path.exists(long_term_file):
+            return 0
+
+        with open(long_term_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        if len(content) < 200:
+            return 0
+
+        lines = content.split("\n")
+        entries = []
+        current_section = ""
+        current_entry_lines = []
+
+        for line in lines:
+            if line.startswith("# ") and not line.startswith("## "):
+                if current_entry_lines:
+                    entries.append((current_section, "\n".join(current_entry_lines)))
+                current_section = line
+                current_entry_lines = [line]
+            elif line.startswith("## "):
+                if current_entry_lines:
+                    entries.append((current_section, "\n".join(current_entry_lines)))
+                current_section = line
+                current_entry_lines = [line]
+            else:
+                current_entry_lines.append(line)
+
+        if current_entry_lines:
+            entries.append((current_section, "\n".join(current_entry_lines)))
+
+        if len(entries) <= 3:
+            return 0
+
+        numbered = ""
+        for i, (section, text) in enumerate(entries):
+            preview = text[:80].replace("\n", " ")
+            numbered += f"[{i}] {preview}\n"
+
+        prompt = (
+            f"对以下 {len(entries)} 条记忆逐条评分(1-5分):\n"
+            f"5=关键不可删(用户偏好/核心知识/重要纠正)\n"
+            f"3=一般(普通事实/可能过时的待办)\n"
+            f"1=可删除(已完成待办/重复/过时/低价值闲聊)\n\n"
+            f"记忆条目:\n{numbered}\n"
+            f"只输出: 编号=分数, 如 0=5 1=3 2=1"
+        )
+
+        try:
+            response = await llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是记忆质量评估助手。严格评分，低价值条目给低分。"},
+                    {"role": "user", "content": prompt}
+                ],
+                tools=None, stream=False, use_cache=False
+            )
+            text = response.choices[0].message.content or ""
+
+            scores = {}
+            for match in re.finditer(r'(\d+)\s*=\s*(\d)', text):
+                idx, score = int(match.group(1)), int(match.group(2))
+                if 0 <= idx < len(entries) and 1 <= score <= 5:
+                    scores[idx] = score
+
+            if not scores:
+                return 0
+
+            pruned = [entries[i] for i in range(len(entries)) if scores.get(i, 3) >= 2]
+
+            pruned_count = len(entries) - len(pruned)
+            if pruned_count == 0:
+                return 0
+
+            new_content = "\n".join(text for _, text in pruned)
+
+            with open(long_term_file, "w", encoding="utf-8") as f:
+                f.write(new_content)
+
+            logger.info(f"记忆质量淘汰: 共{len(entries)}条, 删除{pruned_count}条低价值条目")
+            return pruned_count
+
+        except Exception as e:
+            logger.warning(f"记忆质量淘汰失败: {e}")
+            return 0

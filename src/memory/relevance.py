@@ -12,11 +12,10 @@ async def find_relevant_memories(
     llm_client=None,
     max_results: int = 5,
 ) -> list[str]:
-    """根据任务内容筛选相关记忆
-
-    策略：优先关键词匹配，可选 LLM 语义匹配
-    """
     keyword_results = _keyword_search(query, memory_manager, max_results)
+
+    shared_results = _search_shared_knowledge(query, memory_manager, max_results=2)
+    keyword_results.extend(r for r in shared_results if r not in keyword_results)
 
     if llm_client and len(keyword_results) < max_results:
         try:
@@ -103,3 +102,30 @@ async def _semantic_search(
 
     indices = [int(x) for x in re.findall(r'\d+', text) if int(x) < len(paragraphs)]
     return [paragraphs[i] for i in indices[:max_results]]
+
+
+def _search_shared_knowledge(query: str, memory_manager, max_results: int = 2) -> list[str]:
+    shared = memory_manager.load_shared_knowledge()
+    if not shared:
+        return []
+
+    keywords = set(
+        query.replace("的", " ").replace("了", " ")
+        .replace("在", " ").replace("是", " ")
+        .replace("和", " ").replace("与", " ")
+        .replace("及", " ").replace("把", " ")
+        .split()
+    )
+    keywords = {k for k in keywords if len(k) >= 2}
+    if not keywords:
+        return []
+
+    lines = [l for l in shared.split("\n") if l.strip().startswith("-")]
+    scored = []
+    for line in lines:
+        score = sum(1 for k in keywords if k in line)
+        if score > 0:
+            scored.append((score, line))
+
+    scored.sort(key=lambda x: -x[0])
+    return [line for _, line in scored[:max_results]]

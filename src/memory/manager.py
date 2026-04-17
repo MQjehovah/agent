@@ -14,6 +14,7 @@ class MemoryManager:
         self.memory_dir = os.path.join(workspace, "memory")
         self.daily_dir = os.path.join(self.memory_dir, "daily")
         self.long_term_file = os.path.join(self.memory_dir, "memory.md")
+        self.shared_knowledge_file = os.path.join(self.memory_dir, "shared_knowledge.md")
         self._daily_task = None
         self._llm_client = None
 
@@ -30,6 +31,9 @@ class MemoryManager:
     def _ensure_dirs(self):
         os.makedirs(self.memory_dir, exist_ok=True)
         os.makedirs(self.daily_dir, exist_ok=True)
+        if not os.path.exists(self.shared_knowledge_file):
+            with open(self.shared_knowledge_file, "w", encoding="utf-8") as f:
+                f.write("# 共享知识库\n\n跨代理共享的经验和知识。\n\n")
     
     def start_daily_task(self):
         if self._daily_task:
@@ -89,6 +93,10 @@ class MemoryManager:
         archiver.cleanup_old_files(retention_days=7)
         archiver.archive_daily_to_long_term(days_threshold=1)
         await self._consolidate_long_term(self.long_term_file)
+        if self._llm_client:
+            from .archiver import MemoryArchiver as Arch
+            prune_archiver = Arch(self.memory_dir)
+            await prune_archiver.score_and_prune(self.long_term_file, self._llm_client)
 
         # 子 agent 归档
         agents_dir = os.path.join(self.memory_dir, "agents")
@@ -101,6 +109,8 @@ class MemoryManager:
                     sub_archiver.archive_daily_to_long_term(days_threshold=1)
                     sub_long_term = os.path.join(agent_memory_dir, "memory.md")
                     await self._consolidate_long_term(sub_long_term)
+                    if self._llm_client:
+                        await sub_archiver.score_and_prune(sub_long_term, self._llm_client)
                     logger.debug(f"子 agent [{agent_name}] 记忆归档完成")
 
         logger.info("所有 agent 记忆归档完成")
@@ -182,6 +192,31 @@ class MemoryManager:
     def add_todo(self, todo: str):
         self._append_to_memory("待办事项", todo)
     
+    def add_failure_lesson(self, tool_name: str, args_summary: str, error: str):
+        self._append_to_memory("避坑经验", f"{tool_name}({args_summary}) 失败: {error}")
+
+    def add_correction(self, context: str, correction: str):
+        self._append_to_memory("用户纠正", f"场景: {context} | 纠正: {correction}")
+
+    def add_reflection(self, knowledge: str):
+        self._append_to_memory("自学习", knowledge)
+
+    def share_knowledge(self, from_agent: str, knowledge: str):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        entry = f"- [{timestamp}][{from_agent}] {knowledge}\n"
+        with open(self.shared_knowledge_file, "a", encoding="utf-8") as f:
+            f.write(entry)
+        logger.debug(f"Shared knowledge from [{from_agent}]: {knowledge[:80]}")
+
+    def load_shared_knowledge(self) -> str:
+        if not os.path.exists(self.shared_knowledge_file):
+            return ""
+        with open(self.shared_knowledge_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        if content.strip() == "# 共享知识库\n\n跨代理共享的经验和知识。\n":
+            return ""
+        return content
+    
     def load_memory(self, task: str = "") -> str:
         parts = []
         
@@ -192,6 +227,10 @@ class MemoryManager:
         daily = self._load_recent_daily(days=3)
         if daily:
             parts.append(f"【近期记忆】\n{daily}")
+        
+        shared = self.load_shared_knowledge()
+        if shared:
+            parts.append(f"【共享知识】\n{shared}")
         
         if parts:
             return "\n\n".join(parts)

@@ -20,8 +20,8 @@ class MemoryTool(BuiltinTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["save", "search", "list", "delete"],
-                    "description": "操作类型：save保存记忆，search搜索记忆，list列出记忆文件，delete删除记忆"
+                    "enum": ["save", "search", "list", "delete", "share"],
+                    "description": "操作类型：save保存记忆，search搜索记忆，list列出记忆文件，delete删除记忆，share共享知识到跨代理知识库"
                 },
                 "content": {
                     "type": "string",
@@ -29,7 +29,7 @@ class MemoryTool(BuiltinTool):
                 },
                 "category": {
                     "type": "string",
-                    "enum": ["preference", "key_info", "todo", "knowledge"],
+                    "enum": ["preference", "key_info", "todo", "knowledge", "failure_lesson", "correction", "reflection"],
                     "description": "记忆分类（action=save时使用）"
                 },
                 "query": {
@@ -65,6 +65,8 @@ class MemoryTool(BuiltinTool):
             return await self._list(kwargs)
         elif action == "delete":
             return await self._delete(kwargs)
+        elif action == "share":
+            return await self._share(kwargs)
         else:
             return json.dumps({"success": False, "error": f"Unknown action: {action}"}, ensure_ascii=False)
     
@@ -83,6 +85,12 @@ class MemoryTool(BuiltinTool):
             self.memory_manager.add_todo(content)
         elif category == "knowledge":
             self.memory_manager.add_key_info(f"[知识] {content}")
+        elif category == "failure_lesson":
+            self.memory_manager.add_failure_lesson("manual", content, "")
+        elif category == "correction":
+            self.memory_manager.add_correction(content, "")
+        elif category == "reflection":
+            self.memory_manager.add_reflection(content)
         
         return json.dumps({"success": True, "message": f"Memory saved to {category}"}, ensure_ascii=False)
     
@@ -112,5 +120,16 @@ class MemoryTool(BuiltinTool):
         try:
             self.memory_manager.remove_memory(content)
             return json.dumps({"success": True, "message": "Memory deleted"}, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+    async def _share(self, args: Dict[str, Any]) -> str:
+        content = args.get("content", "")
+        if not content:
+            return json.dumps({"success": False, "error": "Content is required for sharing"}, ensure_ascii=False)
+        try:
+            agent_id = self.memory_manager.agent_id or "unknown"
+            self.memory_manager.share_knowledge(agent_id, content)
+            return json.dumps({"success": True, "message": "Knowledge shared to cross-agent knowledge base"}, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
