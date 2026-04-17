@@ -67,20 +67,21 @@ class MemoryManager:
                         else:
                             logger.debug(f"Agent [{agent_id}] 无需提取记忆")
                     # 提取完成后，归档过期每日记忆到长期记忆
-                    self._archive_to_long_term()
+                    await self._archive_to_long_term()
                 else:
                     logger.debug("Storage未初始化，无法提取记忆")
             except Exception as e:
                 logger.error(f"记忆提取失败: {e}")
 
-    def _archive_to_long_term(self):
-        """将过期的每日记忆归档到长期记忆（主 agent + 所有子 agent）"""
+    async def _archive_to_long_term(self):
+        """将过期的每日记忆归档到长期记忆（主 agent + 所有子 agent），归档后整理"""
         from .archiver import MemoryArchiver
 
         # 主 agent 归档
         archiver = MemoryArchiver(self.memory_dir)
         archiver.archive_daily_to_long_term(days_threshold=1)
         archiver.cleanup_old_sessions(retention_days=7)
+        await self._consolidate_long_term(self.long_term_file)
 
         # 子 agent 归档
         agents_dir = os.path.join(self.memory_dir, "agents")
@@ -91,9 +92,48 @@ class MemoryManager:
                     sub_archiver = MemoryArchiver(agent_memory_dir)
                     sub_archiver.archive_daily_to_long_term(days_threshold=1)
                     sub_archiver.cleanup_old_sessions(retention_days=7)
+                    sub_long_term = os.path.join(agent_memory_dir, "memory.md")
+                    await self._consolidate_long_term(sub_long_term)
                     logger.debug(f"子 agent [{agent_name}] 记忆归档完成")
 
         logger.info("所有 agent 记忆归档完成")
+
+    async def _consolidate_long_term(self, file_path: str):
+        """用 LLM 整理长期记忆：去重、合并同类、删除过时信息"""
+        if not self._llm_client or not os.path.exists(file_path):
+            return
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        if len(content) < 100:
+            return
+
+        prompt = (
+            "请整理以下长期记忆，要求：\n"
+            "1. 合并重复或高度相似的信息\n"
+            "2. 删除明显已过时的信息（如已完成的待办）\n"
+            "3. 保持分类结构，无内容的分类省略\n"
+            "4. 每条信息保持简洁，用一句话概括\n\n"
+            f"原始记忆：\n{content}\n\n"
+            "只输出整理后的结果，保持 markdown 格式。"
+        )
+
+        try:
+            response = await self._llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是记忆整理助手。保持信息完整，去除冗余。"},
+                    {"role": "user", "content": prompt}
+                ],
+                tools=None, stream=False, use_cache=False
+            )
+            result = response.choices[0].message.content or ""
+            if result.strip():
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(result)
+                logger.info(f"长期记忆整理完成: {file_path}")
+        except Exception as e:
+            logger.warning(f"长期记忆整理失败: {e}")
 
     def _append_to_memory(self, category: str, content: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -266,10 +306,10 @@ class MemoryManager:
         logger.info(f"Daily memory saved: {daily_file}")
         return True
 
-    CHUNK_SIZE = 6000  # 每个分片的最大字符数（留余量给 prompt 模板）
+    CHUNK_SIZE = 50000  # 每个分片的最大字符数（留余量给 prompt 模板）
 
     async def _llm_extract_daily(self, session_text: str, agent_id: str) -> str:
-        """用 LLM 从对话中提取关键信息，超长文本分片提取后合并"""
+        """用 LLM 从对话中提取关键信息，超长文本分片提取后直接拼接"""
         if not self._llm_client:
             return ""
 
@@ -290,11 +330,7 @@ class MemoryManager:
         if not results:
             return ""
 
-        # 多片结果合并去重
-        if len(results) == 1:
-            return results[0]
-
-        return await self._llm_merge_results(results, agent_id)
+        return "\n\n".join(results)
 
     async def _llm_extract_chunk(self, chunk: str, agent_id: str) -> str:
         """提取单个分片的关键信息"""
@@ -327,32 +363,6 @@ class MemoryManager:
         except Exception as e:
             logger.warning(f"LLM 记忆提取失败: {e}")
             return ""
-
-    async def _llm_merge_results(self, results: list[str], agent_id: str) -> str:
-        """合并多个分片的提取结果，去重整合"""
-        combined = "\n\n---\n\n".join(results)
-        prompt = (
-            f"以下是同一 Agent [{agent_id}] 从不同对话片段中分别提取的记忆，请合并去重：\n\n"
-            f"{combined}\n\n"
-            f"要求：\n"
-            f"1. 相同或重复的信息只保留一条\n"
-            f"2. 保持分类结构（关键决策、用户偏好、重要事实、待办事项）\n"
-            f"3. 无内容的分类省略\n"
-            f"只输出合并结果，不要额外说明。"
-        )
-
-        try:
-            response = await self._llm_client.chat(
-                messages=[
-                    {"role": "system", "content": "你是记忆合并助手。输出简洁的结构化摘要。"},
-                    {"role": "user", "content": prompt}
-                ],
-                tools=None, stream=False, use_cache=False
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            logger.warning(f"LLM 记忆合并失败: {e}")
-            return "\n\n".join(results)
 
     def _split_by_messages(self, text: str) -> list[str]:
         """按消息边界分割文本，每片不超过 CHUNK_SIZE"""
