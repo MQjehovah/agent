@@ -662,7 +662,7 @@ class Agent:
         if len(args_preview) > 500:
             args_preview = args_preview[:500] + "..."
 
-        logger.debug(f"[工具调用] {name} | 输入: {args_preview}")
+        logger.info(f"[工具调用] {name} | 输入: {args_preview}")
 
         try:
             result = await self._execute_tool(name, args)
@@ -682,7 +682,7 @@ class Agent:
             result_preview = result
             if len(result_preview) > 500:
                 result_preview = result_preview[:500] + "..."
-            logger.debug(f"[工具返回] {name} | 输出: {result_preview}")
+            logger.info(f"[工具返回] {name} | 输出: {result_preview}")
 
             self.tracer.end_span(status="ok")
             # PostToolUse 钩子
@@ -729,9 +729,9 @@ class Agent:
             choice = response.choices[0]
             msg = choice.message
 
-            # LLM 响应 debug 日志
+            # LLM 响应 info 日志
             content_preview = (msg.content or "")[:200]
-            logger.debug(f"[LLM响应] content: {content_preview or '(空)'} | tool_calls: {len(msg.tool_calls) if msg.tool_calls else 0}")
+            logger.info(f"[LLM响应] content: {content_preview or '(空)'} | tool_calls: {len(msg.tool_calls) if msg.tool_calls else 0}")
 
             tool_calls = None
             if msg.tool_calls:
