@@ -90,7 +90,7 @@ def validate_config() -> bool:
         logger.info(f"请复制 .env.example 为 .env 并填入实际配置值")
         return False
 
-    logger.info("配置验证通过")
+    logger.info("读取配置成功")
     return True
 
 

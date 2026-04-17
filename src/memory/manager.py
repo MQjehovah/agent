@@ -43,18 +43,19 @@ class MemoryManager:
             self._daily_task = None
             logger.info("每日记忆提取任务已停止")
     
-    DAILY_EXTRACT_INTERVAL = 120  # 提取间隔（秒），默认 12 小时
 
     async def _daily_extract_loop(self):
         while True:
-            # now = datetime.now()
-            # tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=30, second=0, microsecond=0)
-            # seconds_until_midnight = (tomorrow - now).total_seconds()
-            
-            # logger.debug(f"下次记忆提取: {tomorrow} ({seconds_until_midnight:.0f}秒后)")
-            # await asyncio.sleep(seconds_until_midnight)
+            # DAILY_EXTRACT_INTERVAL = 120  # 提取间隔（秒），默认 12 小时
+            # await asyncio.sleep(self.DAILY_EXTRACT_INTERVAL)
 
-            await asyncio.sleep(self.DAILY_EXTRACT_INTERVAL)
+            now = datetime.now()
+            tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=30, second=0, microsecond=0)
+            seconds_until_midnight = (tomorrow - now).total_seconds()
+            
+            logger.debug(f"下次记忆提取: {tomorrow} ({seconds_until_midnight:.0f}秒后)")
+            await asyncio.sleep(seconds_until_midnight)
+
 
             try:
                 logger.info("开始记忆提取...")
@@ -79,8 +80,8 @@ class MemoryManager:
 
         # 主 agent 归档
         archiver = MemoryArchiver(self.memory_dir)
+        archiver.cleanup_old_files(retention_days=7)
         archiver.archive_daily_to_long_term(days_threshold=1)
-        archiver.cleanup_old_sessions(retention_days=7)
         await self._consolidate_long_term(self.long_term_file)
 
         # 子 agent 归档
@@ -90,8 +91,8 @@ class MemoryManager:
                 agent_memory_dir = os.path.join(agents_dir, agent_name)
                 if os.path.isdir(agent_memory_dir):
                     sub_archiver = MemoryArchiver(agent_memory_dir)
+                    sub_archiver.cleanup_old_files(retention_days=7)
                     sub_archiver.archive_daily_to_long_term(days_threshold=1)
-                    sub_archiver.cleanup_old_sessions(retention_days=7)
                     sub_long_term = os.path.join(agent_memory_dir, "memory.md")
                     await self._consolidate_long_term(sub_long_term)
                     logger.debug(f"子 agent [{agent_name}] 记忆归档完成")

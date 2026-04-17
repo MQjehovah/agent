@@ -17,15 +17,15 @@ class MemoryArchiver:
         if not os.path.exists(self.daily_dir):
             logger.warning("Daily memory directory not found")
             return False
-        
+
         files_to_archive = self._get_files_to_archive(days_threshold)
         if not files_to_archive:
             logger.info("No files to archive")
             return True
-        
+
         for daily_file in files_to_archive:
             self._archive_single_file(daily_file)
-        
+
         logger.info(f"Archived {len(files_to_archive)} daily memories")
         return True
     
@@ -96,26 +96,34 @@ class MemoryArchiver:
         
         return "\n".join(result)
     
-    def cleanup_old_sessions(self, retention_days: int = 7) -> int:
-        sessions_dir = os.path.join(self.memory_dir, "sessions")
-        if not os.path.exists(sessions_dir):
-            return 0
-        
+    def cleanup_old_files(self, retention_days: int = 7) -> int:
+        """清理超过保留天数的 sessions/ 和 daily/ 文件"""
         threshold = datetime.now() - timedelta(days=retention_days)
         deleted = 0
-        
-        for filename in os.listdir(sessions_dir):
-            if not filename.endswith(".md"):
+
+        for subdir in ["sessions", "daily"]:
+            dir_path = os.path.join(self.memory_dir, subdir)
+            if not os.path.exists(dir_path):
                 continue
-            
-            filepath = os.path.join(sessions_dir, filename)
-            mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
-            
-            if mtime < threshold:
-                os.remove(filepath)
-                deleted += 1
-        
+
+            for filename in os.listdir(dir_path):
+                if not filename.endswith(".md"):
+                    continue
+
+                filepath = os.path.join(dir_path, filename)
+                # 从文件名解析日期（格式：YYYY-MM-DD.md）
+                date_str = filename.replace(".md", "")
+                try:
+                    file_date = datetime.strptime(date_str, "%Y-%m-%d")
+                except ValueError:
+                    # 非日期格式文件，按修改时间判断
+                    file_date = datetime.fromtimestamp(os.path.getmtime(filepath))
+
+                if file_date < threshold:
+                    os.remove(filepath)
+                    deleted += 1
+
         if deleted > 0:
-            logger.info(f"Cleaned up {deleted} old session files")
-        
+            logger.info(f"Cleaned up {deleted} old files (older than {retention_days} days)")
+
         return deleted
