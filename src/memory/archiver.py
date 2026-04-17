@@ -38,7 +38,7 @@ class MemoryArchiver:
             if not filename.endswith(".md"):
                 continue
             date_str = filename.replace(".md", "")
-            if date_str < threshold_str:
+            if date_str <= threshold_str:
                 files.append(os.path.join(self.daily_dir, filename))
         
         return sorted(files)

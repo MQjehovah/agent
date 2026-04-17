@@ -8,13 +8,14 @@ logger = logging.getLogger("agent.memory")
 
 
 class MemoryManager:
-    def __init__(self, workspace: str):
+    def __init__(self, workspace: str, agent_id: str = ""):
         self.workspace = workspace
+        self.agent_id = agent_id
         self.memory_dir = os.path.join(workspace, "memory")
         self.daily_dir = os.path.join(self.memory_dir, "daily")
         self.long_term_file = os.path.join(self.memory_dir, "memory.md")
         self._daily_task = None
-        
+
         self._ensure_dirs()
     
     def _get_storage(self):
@@ -37,6 +38,8 @@ class MemoryManager:
             self._daily_task = None
             logger.info("每日记忆提取任务已停止")
     
+    DAILY_EXTRACT_INTERVAL = 12 * 3600  # 提取间隔（秒），默认 12 小时
+
     async def _daily_extract_loop(self):
         while True:
             now = datetime.now()
@@ -46,22 +49,47 @@ class MemoryManager:
             logger.debug(f"下次记忆提取: {tomorrow} ({seconds_until_midnight:.0f}秒后)")
             
             await asyncio.sleep(seconds_until_midnight)
-            
+            # await asyncio.sleep(self.DAILY_EXTRACT_INTERVAL)
+
             try:
-                logger.info("开始每日记忆提取...")
+                logger.info("开始记忆提取...")
                 storage = self._get_storage()
                 if storage:
                     agent_ids = storage.get_all_agent_ids()
                     for agent_id in agent_ids:
                         if self.extract_daily_for_agent(agent_id):
-                            logger.info(f"Agent [{agent_id}] 每日记忆提取完成")
+                            logger.info(f"Agent [{agent_id}] 记忆提取完成")
                         else:
                             logger.debug(f"Agent [{agent_id}] 无需提取记忆")
+                    # 提取完成后，归档过期每日记忆到长期记忆
+                    self._archive_to_long_term()
                 else:
                     logger.debug("Storage未初始化，无法提取记忆")
             except Exception as e:
-                logger.error(f"每日记忆提取失败: {e}")
-    
+                logger.error(f"记忆提取失败: {e}")
+
+    def _archive_to_long_term(self):
+        """将过期的每日记忆归档到长期记忆（主 agent + 所有子 agent）"""
+        from .archiver import MemoryArchiver
+
+        # 主 agent 归档
+        archiver = MemoryArchiver(self.memory_dir)
+        archiver.archive_daily_to_long_term(days_threshold=1)
+        archiver.cleanup_old_sessions(retention_days=7)
+
+        # 子 agent 归档
+        agents_dir = os.path.join(self.memory_dir, "agents")
+        if os.path.exists(agents_dir):
+            for agent_name in os.listdir(agents_dir):
+                agent_memory_dir = os.path.join(agents_dir, agent_name)
+                if os.path.isdir(agent_memory_dir):
+                    sub_archiver = MemoryArchiver(agent_memory_dir)
+                    sub_archiver.archive_daily_to_long_term(days_threshold=1)
+                    sub_archiver.cleanup_old_sessions(retention_days=7)
+                    logger.debug(f"子 agent [{agent_name}] 记忆归档完成")
+
+        logger.info("所有 agent 记忆归档完成")
+
     def _append_to_memory(self, category: str, content: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         
@@ -188,10 +216,14 @@ class MemoryManager:
         if not date_str:
             yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
             date_str = yesterday
-        
-        agent_daily_dir = os.path.join(self.memory_dir, "agents", target_agent_id, "daily")
-        os.makedirs(agent_daily_dir, exist_ok=True)
-        daily_file = os.path.join(agent_daily_dir, f"{date_str}.md")
+
+        # 主 agent 存到自己的 daily/ 目录，子 agent 存到 agents/<id>/daily/
+        if target_agent_id == self.agent_id:
+            daily_dir = self.daily_dir
+        else:
+            daily_dir = os.path.join(self.memory_dir, "agents", target_agent_id, "daily")
+        os.makedirs(daily_dir, exist_ok=True)
+        daily_file = os.path.join(daily_dir, f"{date_str}.md")
         
         messages = storage.get_messages_by_date(date_str, agent_id=target_agent_id)
         if not messages:

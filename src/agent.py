@@ -224,7 +224,7 @@ class Agent:
 
     def _init_memory(self):
         from memory import MemoryManager
-        self.memory = MemoryManager(self.workspace)
+        self.memory = MemoryManager(self.workspace, agent_id=self.agent_id)
 
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
