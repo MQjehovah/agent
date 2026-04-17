@@ -61,8 +61,26 @@ def describe_table(table_name: str):
 def execute_query(query: str):
     """执行SQL查询（仅支持SELECT）"""
     query = query.strip()
+
+    # 去掉开头的注释和空白，找到实际 SQL 起始位置
+    import re
+    # 反复去掉开头的单行注释(--)、多行注释(/* */)、空白和换行
+    while True:
+        query = query.strip()
+        if query.startswith("--"):
+            # 去掉单行注释
+            query = re.sub(r'^--[^\n]*\n?', '', query, count=1).strip()
+        elif query.startswith("/*"):
+            # 去掉多行注释
+            query = re.sub(r'^/\*.*?\*/', '', query, count=1, flags=re.DOTALL).strip()
+        elif query.startswith("#"):
+            # 去掉 MySQL 风格的单行注释
+            query = re.sub(r'^#[^\n]*\n?', '', query, count=1).strip()
+        else:
+            break
+
     if not query.upper().startswith("SELECT"):
-        logger.warning("拒绝非SELECT查询")
+        logger.warning(f"拒绝非SELECT查询: {query[:50]}")
         return {"error": "只允许SELECT查询"}
     
     logger.info(f"执行查询: {query[:100]}...")
