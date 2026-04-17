@@ -225,6 +225,7 @@ class Agent:
     def _init_memory(self):
         from memory import MemoryManager
         self.memory = MemoryManager(self.workspace, agent_id=self.agent_id)
+        self.memory.set_llm_client(self.client)
 
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
@@ -248,17 +249,17 @@ class Agent:
         )
         self._prompt_builder.add(
             "工具列表", self._get_tool_summary(),
-            is_static=True, priority=30
+            is_static=True, priority=10
         )
         self._prompt_builder.add(
             "工具使用指南", self._get_tool_guidelines(),
-            is_static=True, priority=10
+            is_static=True, priority=20
         )
 
         # === 动态区 (每轮可能变化) ===
         self._prompt_builder.add(
             "环境上下文", self._get_env_context(),
-            is_static=False, priority=40
+            is_static=False, priority=30
         )
 
         # 技能列表
@@ -267,7 +268,7 @@ class Agent:
             if skills_prompt:
                 self._prompt_builder.add(
                     "技能列表", skills_prompt,
-                    is_static=False, priority=60
+                    is_static=False, priority=40
                 )
 
         # 子代理列表
@@ -276,7 +277,7 @@ class Agent:
             if subagent_prompt:
                 self._prompt_builder.add(
                     "子代理列表", subagent_prompt,
-                    is_static=False, priority=70
+                    is_static=False, priority=50
                 )
 
                 # 记忆上下文（按任务相关性筛选）
@@ -287,7 +288,7 @@ class Agent:
             if memory_context:
                 self._prompt_builder.add(
                     "记忆上下文", memory_context,
-                    is_static=False, priority=50
+                    is_static=False, priority=60
                 )
 
         self.system_prompt = self._prompt_builder.build_full()
@@ -702,7 +703,7 @@ class Agent:
         try:
             await asyncio.sleep(0.1)
             if self.memory:
-                self.memory.extract_daily(self.client)
+                await self.memory.extract_daily()
                 logger.debug(
                     f"Agent [{self.name}] memory extraction completed")
         except Exception as e:
