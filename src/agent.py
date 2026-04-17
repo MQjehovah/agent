@@ -175,8 +175,8 @@ class Agent:
         self.tool_registry.register_tool(TaskGetTool(self.task_manager))
         self.tool_registry.register_tool(TaskCancelTool(self.task_manager))
 
-        # 新增：用户交互工具
-        self.tool_registry.register_tool(AskUserTool())
+        # 新增：用户交互工具（暂时禁用）
+        # self.tool_registry.register_tool(AskUserTool())
 
         logger.info(
             f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}")

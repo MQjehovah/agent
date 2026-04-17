@@ -56,7 +56,7 @@ class LLMClient:
         self.client = AsyncOpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
-            timeout=60.0
+            timeout=180.0
         )
 
     def _log_request(self, params: Dict[str, Any]):
