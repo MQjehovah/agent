@@ -113,6 +113,9 @@ class MemoryManager:
                         await sub_archiver.score_and_prune(sub_long_term, self._llm_client)
                     logger.debug(f"子 agent [{agent_name}] 记忆归档完成")
 
+        # 提示词自优化（每7天执行一次）
+        await self._maybe_optimize_prompt()
+
         logger.info("所有 agent 记忆归档完成")
 
     async def _consolidate_long_term(self, file_path: str):
@@ -442,3 +445,54 @@ class MemoryManager:
         if not os.path.exists(self.daily_dir):
             return []
         return [f for f in os.listdir(self.daily_dir) if f.endswith(".md")]
+
+    async def _maybe_optimize_prompt(self):
+        if not self._llm_client:
+            return
+        marker_file = os.path.join(self.memory_dir, ".last_prompt_optimization")
+        now_str = datetime.now().strftime("%Y-%m-%d")
+        if os.path.exists(marker_file):
+            with open(marker_file, "r") as f:
+                last_date = f.read().strip()
+            if last_date >= now_str:
+                return
+            last = datetime.strptime(last_date, "%Y-%m-%d")
+            if (datetime.now() - last).days < 7:
+                return
+        prompt_file = os.path.join(self.workspace, "PROMPT.md")
+        if not os.path.exists(prompt_file):
+            return
+        long_term = self._load_long_term("")
+        corrections = [l for l in long_term.split("\n") if "用户纠正" in l or "避坑经验" in l]
+        if len(corrections) < 3:
+            return
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            current_prompt = f.read()
+        prompt = (
+            "基于以下从实际使用中积累的纠正和避坑经验，优化系统提示词。\n"
+            "要求：\n"
+            "1. 在适当位置增加注意事项/避坑规则（用 ### 注意事项 段落）\n"
+            "2. 不要删除原有内容，只增加\n"
+            "3. 每条规则简洁，不超过2行\n"
+            "4. 去除重复的规则\n\n"
+            f"积累的纠正和避坑经验：\n{chr(10).join(corrections[:20])}\n\n"
+            f"当前提示词：\n{current_prompt}\n\n"
+            "输出优化后的完整提示词（包含frontmatter），不要额外说明。"
+        )
+        try:
+            resp = await self._llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是提示词优化助手。只在原有基础上增加注意事项，不删除任何内容。"},
+                    {"role": "user", "content": prompt}
+                ],
+                tools=None, stream=False, use_cache=False
+            )
+            optimized = resp.choices[0].message.content or ""
+            if optimized.strip() and len(optimized) > len(current_prompt) * 0.8:
+                with open(prompt_file, "w", encoding="utf-8") as f:
+                    f.write(optimized)
+                with open(marker_file, "w") as f:
+                    f.write(now_str)
+                logger.info("[自学习] Prompt自优化完成")
+        except Exception as e:
+            logger.warning(f"Prompt自优化失败: {e}")

@@ -96,6 +96,8 @@ class Agent:
         # 连续错误计数
         self._consecutive_errors = 0
         self._current_task: str = ""
+        self._task_tools_used: List[str] = []
+        self._pattern_tracker = None
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
@@ -115,6 +117,10 @@ class Agent:
 
         self._init_subagents()
         self._init_memory()
+
+        if not self.parent_agent and self.memory:
+            from memory.patterns import TaskPatternTracker
+            self._pattern_tracker = TaskPatternTracker(self.memory.memory_dir)
 
         # 构建分层 prompt（必须在所有初始化完成后）
         await self._build_prompt()
@@ -151,6 +157,7 @@ class Agent:
         from tools.web import WebSearchTool, WebFetchTool
         from tools.task import TaskCreateTool, TaskListTool, TaskGetTool, TaskCancelTool
         from tools.ask_user import AskUserTool
+        from tools.auto_learning import AutoLearningTool
 
         self.tool_registry = ToolRegistry()
 
@@ -179,6 +186,10 @@ class Agent:
 
         # 新增：用户交互工具
         self.tool_registry.register_tool(AskUserTool())
+
+        # 新增：自学习工具
+        auto_learning_tool = AutoLearningTool(self)
+        self.tool_registry.register_tool(auto_learning_tool)
 
         logger.info(
             f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}")
@@ -453,6 +464,7 @@ class Agent:
         self.status = "running"
         self._consecutive_errors = 0
         self._current_task = task
+        self._task_tools_used = []
 
         if self.memory:
             self._learn_from_user_feedback(task)
@@ -584,6 +596,15 @@ class Agent:
             logger.error(
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
+        # 记录任务模式
+        if self._pattern_tracker and self._current_task:
+            self._pattern_tracker.record_task(
+                task=self._current_task,
+                tools_used=self._task_tools_used,
+                success=self.status == "completed",
+                result_summary=(self.result or "")[:200]
+            )
+
         # 触发 AGENT_STOP 钩子
         await self.hooks.fire("agent_stop", metadata={
             "status": self.status,
@@ -691,6 +712,9 @@ class Agent:
                 result_preview = result_preview[:500] + "..."
             logger.info(f"[工具返回] {name} | 输出: {result_preview}")
 
+            if self._current_task and name not in self._task_tools_used:
+                self._task_tools_used.append(name)
+
             self.tracer.end_span(status="ok")
             # PostToolUse 钩子
             await self.hooks.fire("post_tool_use", tool_name=name,
@@ -718,6 +742,77 @@ class Agent:
 
     CORRECTION_KEYWORDS = ["不对", "错了", "不是这样", "重新", "搞错了", "搞反了", "不准确", "有问题", "弄错了", "记错了"]
     REFLECT_SKIP_TOOLS = {"file_operation", "grep", "glob", "todo", "memory"}
+
+    async def optimize_prompt_from_experience(self):
+        if not self.memory or not self.client:
+            return
+        long_term_file = self.memory.long_term_file
+        if not os.path.exists(long_term_file):
+            return
+        with open(long_term_file, "r", encoding="utf-8") as f:
+            memories = f.read()
+        corrections = [l for l in memories.split("\n") if "用户纠正" in l or "避坑经验" in l]
+        if len(corrections) < 3:
+            return
+        prompt_file = os.path.join(self.workspace, "PROMPT.md")
+        if not os.path.exists(prompt_file):
+            return
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            current_prompt = f.read()
+        prompt = (
+            "基于以下从实际使用中积累的纠正和避坑经验，优化系统提示词。\n"
+            "要求：\n"
+            "1. 在适当位置增加注意事项/避坑规则（用 ### 注意事项 段落）\n"
+            "2. 不要删除原有内容，只增加\n"
+            "3. 每条规则简洁，不超过2行\n"
+            "4. 去除重复的规则\n\n"
+            f"积累的纠正和避坑经验：\n{chr(10).join(corrections[:20])}\n\n"
+            f"当前提示词：\n{current_prompt}\n\n"
+            "输出优化后的完整提示词（包含frontmatter），不要额外说明。"
+        )
+        try:
+            resp = await self.client.chat(
+                messages=[
+                    {"role": "system", "content": "你是提示词优化助手。只在原有基础上增加注意事项，不删除任何内容。"},
+                    {"role": "user", "content": prompt}
+                ],
+                tools=None, stream=False, use_cache=False
+            )
+            optimized = resp.choices[0].message.content or ""
+            if optimized.strip() and len(optimized) > len(current_prompt) * 0.8:
+                with open(prompt_file, "w", encoding="utf-8") as f:
+                    f.write(optimized)
+                logger.info("[自学习] Prompt自优化完成")
+        except Exception as e:
+            logger.warning(f"Prompt自优化失败: {e}")
+
+    def get_auto_learning_suggestions(self) -> list:
+        if not self._pattern_tracker:
+            return []
+        return self._pattern_tracker.get_suggestions()
+
+    async def apply_auto_learning(self, action: str, task_type: str) -> str:
+        if not self._pattern_tracker:
+            return json.dumps({"success": False, "error": "模式追踪未启用"}, ensure_ascii=False)
+        try:
+            if action == "create_skill" and self.skill_manager:
+                skill_dir = await self._pattern_tracker.auto_create_skill(task_type, self.skill_manager)
+                if skill_dir:
+                    return json.dumps({"success": True, "action": "create_skill", "task_type": task_type, "path": skill_dir}, ensure_ascii=False)
+                return json.dumps({"success": False, "error": "模式数据不足"}, ensure_ascii=False)
+            elif action == "create_subagent" and self.subagent_manager:
+                agents_dir = os.path.join(self.workspace, "agents") if not self.parent_agent else os.path.join(self.parent_agent.workspace, "agents")
+                agent_dir = await self._pattern_tracker.auto_create_subagent(task_type, self.subagent_manager, os.path.join(agents_dir, ".."))
+                if agent_dir:
+                    return json.dumps({"success": True, "action": "create_subagent", "task_type": task_type, "path": agent_dir}, ensure_ascii=False)
+                return json.dumps({"success": False, "error": "模式数据不足"}, ensure_ascii=False)
+            elif action == "optimize_prompt":
+                await self.optimize_prompt_from_experience()
+                return json.dumps({"success": True, "action": "optimize_prompt"}, ensure_ascii=False)
+            else:
+                return json.dumps({"success": False, "error": f"未知操作: {action}"}, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
     def _learn_from_user_feedback(self, task: str):
         if any(kw in task for kw in self.CORRECTION_KEYWORDS):
