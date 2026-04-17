@@ -254,10 +254,6 @@ class Agent:
             "工具使用指南", self._get_tool_guidelines(),
             is_static=True, priority=10
         )
-        self._prompt_builder.add(
-            "代码分析方法论", self._get_code_analysis_guidelines(),
-            is_static=True, priority=20
-        )
 
         # === 动态区 (每轮可能变化) ===
         self._prompt_builder.add(
@@ -399,25 +395,6 @@ class Agent:
    - 执行危险操作前请求确认
    - 需要用户提供额外信息时
    - 展示中间结果请用户决策"""
-
-    def _get_code_analysis_guidelines(self) -> str:
-        return """### 代码分析方法论
-
-分析、理解或修改代码时，遵循以下步骤：
-
-**第一步：定位目标文件（不读内容）**
-glob("**/*.py")     → 找到相关文件列表
-grep("class |def ") → 快速了解接口
-
-**第二步：定向读取（只读需要的部分）**
-file_operation(read, path="main.py", offset=10, limit=50) → 只读核心逻辑
-
-**第三步：按需深入**
-grep("function_name") → 找调用链
-edit(path="...", old_text="...", new_text="...") → 精确修改
-
-禁止：逐文件 file_operation(read) 全量读取 → 会撑爆上下文
-推荐：glob → grep → file_operation(read, offset, limit)"""
 
     def _get_tool_summary(self) -> str:
         """生成工具描述汇总"""
