@@ -278,9 +278,16 @@ class MCPManager:
     async def _health_check_loop(self):
         """定期健康检查"""
         while True:
-            await asyncio.sleep(MCP_HEALTH_CHECK_INTERVAL)
+            try:
+                await asyncio.sleep(MCP_HEALTH_CHECK_INTERVAL)
+            except asyncio.CancelledError:
+                logger.info("MCP 健康检查循环被取消")
+                return
             try:
                 await self._check_all_servers()
+            except asyncio.CancelledError:
+                logger.info("MCP 健康检查被取消")
+                return
             except Exception as e:
                 logger.error(f"MCP 健康检查失败: {e}")
 

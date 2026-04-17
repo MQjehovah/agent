@@ -280,9 +280,16 @@ class AgentSessionManager:
     async def _cleanup_loop(self):
         """定期清理过期会话"""
         while True:
-            await asyncio.sleep(CLEANUP_INTERVAL)
+            try:
+                await asyncio.sleep(CLEANUP_INTERVAL)
+            except asyncio.CancelledError:
+                logger.info("会话清理循环被取消")
+                return
             try:
                 await self._cleanup_expired_sessions()
+            except asyncio.CancelledError:
+                logger.info("会话清理被取消")
+                return
             except Exception as e:
                 logger.error(f"会话清理失败: {e}")
 

@@ -114,11 +114,16 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
 
 async def cleanup(plugin_manager, scheduler, agent):
     """统一清理资源"""
-    if plugin_manager:
-        plugin_manager.stop_all()
-    if scheduler:
-        scheduler.stop()
-    await agent.cleanup()
+    try:
+        if plugin_manager:
+            plugin_manager.stop_all()
+        if scheduler:
+            scheduler.stop()
+        await agent.cleanup()
+    except asyncio.CancelledError:
+        logger.warning("清理过程被取消")
+    except Exception as e:
+        logger.error(f"清理过程出错: {e}")
 
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     if tasks:
@@ -179,6 +184,8 @@ async def main():
         await interactive_mode(agent, shutdown_event)
     except asyncio.CancelledError:
         logger.info("任务取消")
+    except Exception as e:
+        logger.error(f"程序异常退出: {e}", exc_info=True)
     finally:
         logger.info("清理资源...")
         await cleanup(plugin_manager, scheduler, agent)

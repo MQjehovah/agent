@@ -105,6 +105,7 @@ class Agent:
         from agent_session import AgentSessionManager
         from storage import init_storage
         self.session_manager = AgentSessionManager()
+        await self.session_manager.start_cleanup_task()
 
         if self.parent_agent and self.parent_agent.storage:
             self.storage = self.parent_agent.storage
@@ -175,8 +176,8 @@ class Agent:
         self.tool_registry.register_tool(TaskGetTool(self.task_manager))
         self.tool_registry.register_tool(TaskCancelTool(self.task_manager))
 
-        # 新增：用户交互工具（暂时禁用）
-        # self.tool_registry.register_tool(AskUserTool())
+        # 新增：用户交互工具
+        self.tool_registry.register_tool(AskUserTool())
 
         logger.info(
             f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}")
@@ -572,6 +573,9 @@ class Agent:
                 self.result = "达到最大迭代次数"
                 logger.warning(f"Agent [{self.name}] max iterations reached")
 
+        except asyncio.CancelledError:
+            logger.warning(f"Agent [{self.name}] 任务被取消")
+            self.status = "cancelled"
         except Exception as e:
             self.status = "failed"
             logger.error(
@@ -877,6 +881,9 @@ class Agent:
             task.cancel()
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
+        if self.session_manager:
+            self.session_manager.stop_cleanup_task()
 
         if not self.parent_agent and self.subagent_manager:
             await self.subagent_manager.cleanup_all()

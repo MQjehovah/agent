@@ -45,8 +45,10 @@ class SchedulerManager:
             result = await self._task_executor(task)
             logger.info(f"✓ 定时任务完成: {name}")
             logger.debug(f"结果: {result}")
+        except asyncio.CancelledError:
+            logger.info(f"定时任务被取消: {name}")
         except Exception as e:
-            logger.error(f"✗ 定时任务失败: {name}, 错误: {e}")
+            logger.error(f"✗ 定时任务失败: {name}, 错误: {e}", exc_info=True)
 
     def start(self):
         self.scheduler = AsyncIOScheduler()

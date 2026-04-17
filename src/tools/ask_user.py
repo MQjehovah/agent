@@ -1,4 +1,5 @@
 import json
+import sys
 import asyncio
 import logging
 from typing import Dict, Any, Callable, Optional
@@ -62,13 +63,45 @@ class AskUserTool(BuiltinTool):
         if not question:
             return json.dumps({"success": False, "error": "问题不能为空"}, ensure_ascii=False)
 
+        if not self._input_handler and not sys.stdin.isatty():
+            logger.warning("ask_user: 非交互式环境，无法获取用户输入，使用默认值")
+            answer = default or ""
+            return json.dumps({
+                "success": True,
+                "question": question,
+                "answer": answer,
+                "auto": True,
+                "note": "非交互式环境，自动使用默认值"
+            }, ensure_ascii=False)
+
         if self._input_handler:
-            answer = await self._input_handler(question, options, default)
+            try:
+                answer = await self._input_handler(question, options, default)
+            except Exception as e:
+                logger.error(f"ask_user: 输入处理失败: {e}")
+                answer = default or ""
+                return json.dumps({
+                    "success": True,
+                    "question": question,
+                    "answer": answer,
+                    "auto": True,
+                    "note": f"输入处理异常，使用默认值: {e}"
+                }, ensure_ascii=False)
         else:
-            # 默认控制台交互
-            answer = await asyncio.get_event_loop().run_in_executor(
-                None, self._console_input, question, options, default
-            )
+            try:
+                answer = await asyncio.get_event_loop().run_in_executor(
+                    None, self._console_input, question, options, default
+                )
+            except (EOFError, KeyboardInterrupt, OSError) as e:
+                logger.warning(f"ask_user: 控制台输入失败({type(e).__name__})，使用默认值")
+                answer = default or ""
+                return json.dumps({
+                    "success": True,
+                    "question": question,
+                    "answer": answer,
+                    "auto": True,
+                    "note": f"控制台输入不可用({type(e).__name__})，自动使用默认值"
+                }, ensure_ascii=False)
 
         return json.dumps({
             "success": True,

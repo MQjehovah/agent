@@ -46,18 +46,18 @@ class MemoryManager:
 
     async def _daily_extract_loop(self):
         while True:
-            # DAILY_EXTRACT_INTERVAL = 120  # 提取间隔（秒），默认 12 小时
-            # await asyncio.sleep(self.DAILY_EXTRACT_INTERVAL)
-
-            now = datetime.now()
-            tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=30, second=0, microsecond=0)
-            seconds_until_midnight = (tomorrow - now).total_seconds()
-            
-            logger.debug(f"下次记忆提取: {tomorrow} ({seconds_until_midnight:.0f}秒后)")
-            await asyncio.sleep(seconds_until_midnight)
-
-
             try:
+                now = datetime.now()
+                tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=30, second=0, microsecond=0)
+                seconds_until_midnight = (tomorrow - now).total_seconds()
+                
+                logger.debug(f"下次记忆提取: {tomorrow} ({seconds_until_midnight:.0f}秒后)")
+                try:
+                    await asyncio.sleep(seconds_until_midnight)
+                except asyncio.CancelledError:
+                    logger.info("记忆提取循环被取消")
+                    return
+
                 logger.info("开始记忆提取...")
                 storage = self._get_storage()
                 if storage:
@@ -67,12 +67,18 @@ class MemoryManager:
                             logger.info(f"Agent [{agent_id}] 记忆提取完成")
                         else:
                             logger.debug(f"Agent [{agent_id}] 无需提取记忆")
-                    # 提取完成后，归档过期每日记忆到长期记忆
                     await self._archive_to_long_term()
                 else:
                     logger.debug("Storage未初始化，无法提取记忆")
+            except asyncio.CancelledError:
+                logger.info("记忆提取循环被取消")
+                return
             except Exception as e:
-                logger.error(f"记忆提取失败: {e}")
+                logger.error(f"记忆提取失败: {e}", exc_info=True)
+                try:
+                    await asyncio.sleep(300)
+                except asyncio.CancelledError:
+                    return
 
     async def _archive_to_long_term(self):
         """将过期的每日记忆归档到长期记忆（主 agent + 所有子 agent），归档后整理"""
