@@ -1,7 +1,10 @@
 import logging
 import asyncio
+import platform
+import subprocess
 from typing import Optional, Dict, Any, List, TYPE_CHECKING, cast, Sequence
 from dataclasses import dataclass, field
+from collections import OrderedDict
 from datetime import datetime
 import os
 import re
@@ -10,6 +13,7 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from utils.frontmatter import extract_frontmatter
 from subagent_manager import SubagentManager
+from prompt import PromptBuilder
 
 if TYPE_CHECKING:
     from plugins import PluginManager
@@ -42,7 +46,15 @@ class Agent:
         self.name = ""
         self.description = ""
         self.system_prompt = ""
+        self.system_prompt_raw = ""  # PROMPT.md 原始内容（不含技能/子代理追加）
         self.max_iterations = 100
+
+        # Prompt 分层拼装器
+        self._prompt_builder: Optional[PromptBuilder] = None
+
+        # 压缩后状态恢复：最近读取的文件
+        self._recent_files: OrderedDict[str, str] = OrderedDict()
+        self._max_recent_files = 5
 
         self.tool_registry = None
         self.mcp = None
@@ -102,6 +114,9 @@ class Agent:
         self._init_subagents()
         self._init_memory()
 
+        # 构建分层 prompt（必须在所有初始化完成后）
+        await self._build_prompt()
+
     def _load_system_prompt(self):
         prompt_file = os.path.join(self.workspace, "PROMPT.md")
 
@@ -122,6 +137,7 @@ class Agent:
                 self.description = self.description.strip()
 
         self.system_prompt = body.strip() if body else ""
+        self.system_prompt_raw = self.system_prompt
 
     def _init_tools(self):
         from tools import ToolRegistry
@@ -170,8 +186,6 @@ class Agent:
         if os.path.exists(skills_dir):
             from skills import SkillManager
             self.skill_manager = SkillManager(skills_dir)
-            self.system_prompt = self.system_prompt + \
-                self.skill_manager.get_skills_prompt()
             logger.info(
                 f"Agent [{self.name}] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
@@ -205,8 +219,6 @@ class Agent:
         agents_dir = os.path.join(self.workspace, "agents")
         if os.path.exists(agents_dir):
             self.subagent_manager = SubagentManager(agents_dir)
-            self.system_prompt = self.system_prompt + \
-                self.subagent_manager.get_subagent_prompt()
             logger.info(
                 f"Agent [{self.name}] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {self.subagent_manager.list_templates()}")
 
@@ -214,16 +226,230 @@ class Agent:
         from memory import MemoryManager
         self.memory = MemoryManager(self.workspace)
 
-        memory_context = self.memory.load_memory("")
-        if memory_context:
-            self.system_prompt += f"\n\n## 【记忆上下文】\n{memory_context}"
-
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
 
         if not self.parent_agent:
             self.memory.start_daily_task()
+
+    # ------------------------------------------------------------------ #
+    #  Prompt 分层拼装
+    # ------------------------------------------------------------------ #
+
+    async def _build_prompt(self, task: str = ""):
+        """使用 PromptBuilder 构建分层 prompt"""
+        self._prompt_builder = PromptBuilder()
+
+        # === 静态区 (可被 LLM prompt cache 缓存) ===
+        self._prompt_builder.add(
+            "角色定义", self.system_prompt_raw,
+            is_static=True, priority=0
+        )
+        self._prompt_builder.add(
+            "工具列表", self._get_tool_summary(),
+            is_static=True, priority=30
+        )
+        self._prompt_builder.add(
+            "工具使用指南", self._get_tool_guidelines(),
+            is_static=True, priority=10
+        )
+        self._prompt_builder.add(
+            "代码分析方法论", self._get_code_analysis_guidelines(),
+            is_static=True, priority=20
+        )
+
+        # === 动态区 (每轮可能变化) ===
+        self._prompt_builder.add(
+            "环境上下文", self._get_env_context(),
+            is_static=False, priority=40
+        )
+
+        # 技能列表
+        if self.skill_manager:
+            skills_prompt = self.skill_manager.get_skills_prompt()
+            if skills_prompt:
+                self._prompt_builder.add(
+                    "技能列表", skills_prompt,
+                    is_static=False, priority=60
+                )
+
+        # 子代理列表
+        if self.subagent_manager:
+            subagent_prompt = self.subagent_manager.get_subagent_prompt()
+            if subagent_prompt:
+                self._prompt_builder.add(
+                    "子代理列表", subagent_prompt,
+                    is_static=False, priority=70
+                )
+
+                # 记忆上下文（按任务相关性筛选）
+        
+        # 记忆系统
+        if self.memory:
+            memory_context = await self._get_memory_context(task)
+            if memory_context:
+                self._prompt_builder.add(
+                    "记忆上下文", memory_context,
+                    is_static=False, priority=50
+                )
+
+        self.system_prompt = self._prompt_builder.build_full()
+
+    async def _update_dynamic_prompt(self, task: str = ""):
+        """每轮更新动态 prompt 区块"""
+        if not self._prompt_builder:
+            return
+
+        # 更新环境上下文
+        self._prompt_builder.add(
+            "环境上下文", self._get_env_context(),
+            is_static=False, priority=40
+        )
+
+        # 根据任务更新记忆上下文
+        if self.memory:
+            memory_context = await self._get_memory_context(task)
+            if memory_context:
+                self._prompt_builder.add(
+                    "记忆上下文", memory_context,
+                    is_static=False, priority=50
+                )
+
+        # 注入最近文件恢复上下文
+        recent_context = self._get_recent_files_context()
+        if recent_context:
+            self._prompt_builder.add(
+                "最近读取文件", recent_context,
+                is_static=False, priority=45
+            )
+
+        self.system_prompt = self._prompt_builder.build_full()
+
+    def _get_env_context(self) -> str:
+        """动态生成环境上下文"""
+        cwd = self.workspace
+        is_git = os.path.exists(os.path.join(cwd, ".git"))
+        branch = ""
+        if is_git:
+            try:
+                branch = subprocess.check_output(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    stderr=subprocess.DEVNULL, timeout=5,
+                    cwd=cwd
+                ).decode().strip()
+            except Exception:
+                pass
+
+        return (
+            f"工作目录: {cwd}\n"
+            f"Git 仓库: {'是' if is_git else '否'}\n"
+            f"当前分支: {branch or 'N/A'}\n"
+            f"平台: {platform.system()} {platform.release()}\n"
+            f"模型: {self.client.model}"
+        )
+
+    async def _get_memory_context(self, task: str) -> str:
+        """获取与当前任务相关的记忆（优先使用相关性搜索）"""
+        if not task:
+            return self.memory.load_memory("")
+
+        try:
+            from memory.relevance import find_relevant_memories
+            relevant = await find_relevant_memories(
+                task, self.memory, self.client
+            )
+            if relevant:
+                return "以下是与当前任务相关的记忆:\n" + "\n\n".join(relevant)
+        except Exception:
+            pass
+
+        return self.memory.load_memory(task)
+
+    def _get_tool_guidelines(self) -> str:
+        return """### 工具使用规则
+
+1. **优先使用专用工具而非 shell 命令：**
+   - 读文件 → file_operation(read) 而非 cat/head/tail
+   - 编辑文件 → edit 而非 sed/awk
+   - 写文件 → file_operation(write) 而非 echo/heredoc
+   - 搜索文件名 → glob 而非 find/ls
+   - 搜索内容 → grep 而非 grep/rg 命令
+   - shell 仅用于没有专用工具的系统命令
+
+2. **代码分析遵循 "先搜后读" 策略：**
+   - 第一步：glob 找文件列表 → grep 搜索关键函数/类
+   - 第二步：file_operation(read, offset=行号, limit=50) 精确读取
+   - 禁止一次性读取整个项目
+
+3. **file_operation(read) 使用规则：**
+   - 默认只读 200 行，可通过 offset 和 limit 分段读取大文件
+   - 大文件先用 grep 找行号，再用 offset+limit 精确读取
+   - 多个文件并行读取时，每个 limit 控制在 50-100 行
+
+4. **edit 使用规则：**
+   - old_text 必须精确匹配，提供足够上下文使其唯一
+   - 修改前先 file_operation(read) 确认内容
+
+5. **多工具调用：**
+   - 独立的操作可以并行调用
+   - 有依赖关系的操作必须顺序执行
+
+6. **ask_user 使用场景：**
+   - 执行危险操作前请求确认
+   - 需要用户提供额外信息时
+   - 展示中间结果请用户决策"""
+
+    def _get_code_analysis_guidelines(self) -> str:
+        return """### 代码分析方法论
+
+分析、理解或修改代码时，遵循以下步骤：
+
+**第一步：定位目标文件（不读内容）**
+glob("**/*.py")     → 找到相关文件列表
+grep("class |def ") → 快速了解接口
+
+**第二步：定向读取（只读需要的部分）**
+file_operation(read, path="main.py", offset=10, limit=50) → 只读核心逻辑
+
+**第三步：按需深入**
+grep("function_name") → 找调用链
+edit(path="...", old_text="...", new_text="...") → 精确修改
+
+禁止：逐文件 file_operation(read) 全量读取 → 会撑爆上下文
+推荐：glob → grep → file_operation(read, offset, limit)"""
+
+    def _get_tool_summary(self) -> str:
+        """生成工具描述汇总"""
+        if not self.tool_registry:
+            return ""
+        lines = ["以下是你可以使用的工具："]
+        for tool in self.tool_registry._tools.values():
+            lines.append(f"- **{tool.name}**: {tool.description}")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------ #
+    #  压缩后文件状态恢复
+    # ------------------------------------------------------------------ #
+
+    def track_file_read(self, path: str, content: str):
+        """记录最近读取的文件（用于压缩后恢复）"""
+        if len(content) > 5000:
+            content = content[:5000] + "\n... [截断]"
+
+        self._recent_files[path] = content
+        self._recent_files.move_to_end(path)
+        while len(self._recent_files) > self._max_recent_files:
+            self._recent_files.popitem(last=False)
+
+    def _get_recent_files_context(self) -> str:
+        """生成最近文件的上下文（用于压缩后注入）"""
+        if not self._recent_files:
+            return ""
+        parts = ["以下是本次会话中最近读取的文件（压缩后恢复）："]
+        for path, preview in self._recent_files.items():
+            parts.append(f"\n### {path}\n```\n{preview}\n```")
+        return "\n".join(parts)
 
     @property
     def tool_defs(self) -> List[Dict[str, Any]]:
@@ -248,6 +474,9 @@ class Agent:
     async def run(self, task: str, session_id: str = None) -> AgentResult:
         self.status = "running"
         self._consecutive_errors = 0
+
+        # 根据当前任务重新拼装 prompt
+        await self._build_prompt(task)
 
         # 开始追踪
         self.tracer.start_trace(f"agent.run: {task[:50]}")
@@ -287,13 +516,6 @@ class Agent:
                     system_prompt=self.system_prompt,
                 )
                 session_id = session.session_id
-                if self.memory:
-                    memory_context = self.memory.load_memory(task)
-                    if memory_context:
-                        session.messages.insert(0, {
-                            "role": "system",
-                            "content": f"## 【记忆上下文】\n{memory_context}"
-                        })
                 session.add_message("user", task)
                 logger.info(f"Agent [{self.name}] 创建随机session: {session_id}")
 
@@ -303,13 +525,6 @@ class Agent:
                 session_id=session_id or "temp",
                 system_prompt=self.system_prompt
             )
-            if self.memory:
-                memory_context = self.memory.load_memory(task)
-                if memory_context:
-                    session.messages.insert(0, {
-                        "role": "system",
-                        "content": f"## 【记忆上下文】\n{memory_context}"
-                    })
             session.add_message("user", task)
 
         logger.info(
@@ -325,6 +540,11 @@ class Agent:
                     session.messages = await AgentSessionManager.compress_if_needed(
                         session.messages, self.client
                     )
+
+                    # 每轮更新动态 prompt 区块
+                    await self._update_dynamic_prompt(task)
+                    if session.messages and session.messages[0].get("role") == "system":
+                        session.messages[0]["content"] = self.system_prompt
 
                     # 思考
                     self.tracer.start_span("agent.think")
@@ -468,6 +688,18 @@ class Agent:
 
         try:
             result = await self._execute_tool(name, args)
+
+            # 跟踪文件读取（用于压缩后恢复）
+            if name == "file_operation" and args.get("operation") == "read":
+                path = args.get("path", "")
+                if path and '"success": true' in result:
+                    try:
+                        parsed = json.loads(result)
+                        content = parsed.get("content", "")
+                        if content:
+                            self.track_file_read(path, content)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
 
             result_preview = result
             if len(result_preview) > 500:

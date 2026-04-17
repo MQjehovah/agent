@@ -20,7 +20,18 @@ class FileTool(BuiltinTool):
 
     @property
     def description(self) -> str:
-        return "文件操作工具。支持读取、写入、追加、删除文件内容，以及检查文件是否存在、列出目录内容。读取支持分段读取和行号显示。"
+        return (
+            "文件操作工具。支持读取、写入、追加、删除文件内容，以及检查文件是否存在、列出目录内容。\n"
+            "使用规则：\n"
+            "- 默认读取 200 行，可通过 offset 和 limit 分段读取大文件\n"
+            "- 大文件先用 grep 找到目标行号，再用 offset+limit 精确读取\n"
+            "- 修改文件前先 read 确认内容\n"
+            "- 写文件会覆盖原内容，追加用 append\n"
+            "示例：\n"
+            "file_operation(read, path='/src/main.py') — 读取前 200 行\n"
+            "file_operation(read, path='/src/main.py', offset=100, limit=50) — 读取第 101-150 行\n"
+            "file_operation(write, path='/tmp/out.txt', content='hello') — 写入文件"
+        )
 
     @property
     def parameters(self) -> Dict[str, Any]:
