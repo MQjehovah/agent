@@ -95,6 +95,10 @@ class Agent:
         # 流式输出回调
         self.on_token = None
 
+        # 缓存环境上下文（避免每轮都执行 git 命令）
+        self._env_context_cache: str = ""
+        self._env_context_time: float = 0.0
+
         # 连续错误计数
         self._consecutive_errors = 0
         self._current_task: str = ""
@@ -119,7 +123,7 @@ class Agent:
         self._init_memory()
 
         # 构建分层 prompt（必须在所有初始化完成后）
-        await self._build_prompt()
+        self._build_prompt()
 
     def _load_system_prompt(self):
         prompt_file = os.path.join(self.workspace, "PROMPT.md")
@@ -245,7 +249,7 @@ class Agent:
     #  Prompt 分层拼装
     # ------------------------------------------------------------------ #
 
-    async def _build_prompt(self, task: str = ""):
+    def _build_prompt(self, task: str = ""):
         """使用 PromptBuilder 构建分层 prompt"""
         self._prompt_builder = PromptBuilder()
 
@@ -291,7 +295,7 @@ class Agent:
         
         # 记忆系统
         if self.memory:
-            memory_context = await self._get_memory_context(task)
+            memory_context = self._load_memory_context_sync(task)
             if memory_context:
                 self._prompt_builder.add(
                     "记忆上下文", memory_context,
@@ -300,7 +304,7 @@ class Agent:
 
         self.system_prompt = self._prompt_builder.build_full()
 
-    async def _update_dynamic_prompt(self, task: str = ""):
+    def _update_dynamic_prompt(self, task: str = ""):
         """每轮更新动态 prompt 区块"""
         if not self._prompt_builder:
             return
@@ -311,15 +315,7 @@ class Agent:
             is_static=False, priority=40
         )
 
-        # 根据任务更新记忆上下文
-        if self.memory:
-            memory_context = await self._get_memory_context(task)
-            if memory_context:
-                self._prompt_builder.add(
-                    "记忆上下文", memory_context,
-                    is_static=False, priority=50
-                )
-
+        # 记忆上下文仅在首轮构建，迭代中不再重复搜索
         # 注入最近文件恢复上下文
         recent_context = self._get_recent_files_context()
         if recent_context:
@@ -331,7 +327,12 @@ class Agent:
         self.system_prompt = self._prompt_builder.build_full()
 
     def _get_env_context(self) -> str:
-        """动态生成环境上下文"""
+        """动态生成环境上下文（结果缓存30秒，避免每轮都执行git命令）"""
+        import time
+        now = time.time()
+        if self._env_context_cache and (now - self._env_context_time) < 30:
+            return self._env_context_cache
+
         cwd = self.workspace
         is_git = os.path.exists(os.path.join(cwd, ".git"))
         branch = ""
@@ -345,13 +346,15 @@ class Agent:
             except Exception:
                 pass
 
-        return (
+        self._env_context_cache = (
             f"工作目录: {cwd}\n"
             f"Git 仓库: {'是' if is_git else '否'}\n"
             f"当前分支: {branch or 'N/A'}\n"
             f"平台: {platform.system()} {platform.release()}\n"
             f"模型: {self.client.model}"
         )
+        self._env_context_time = now
+        return self._env_context_cache
 
     async def _get_memory_context(self, task: str) -> str:
         """获取与当前任务相关的记忆（优先使用相关性搜索）"""
@@ -365,6 +368,27 @@ class Agent:
             )
             if relevant:
                 return "以下是与当前任务相关的记忆:\n" + "\n\n".join(relevant)
+        except Exception:
+            pass
+
+        return self.memory.load_memory(task)
+
+    def _load_memory_context_sync(self, task: str) -> str:
+        """同步加载记忆上下文（纯关键词匹配，不调用LLM）"""
+        if not self.memory:
+            return ""
+
+        if not task:
+            return self.memory.load_memory("")
+
+        try:
+            from memory.relevance import _keyword_search, _search_shared_knowledge
+            keyword_results = _keyword_search(task, self.memory, max_results=5)
+            shared_results = _search_shared_knowledge(task, self.memory, max_results=2)
+            keyword_results.extend(r for r in shared_results if r not in keyword_results)
+
+            if keyword_results:
+                return "以下是与当前任务相关的记忆:\n" + "\n\n".join(keyword_results)
         except Exception:
             pass
 
@@ -460,7 +484,7 @@ class Agent:
             self._learn_from_user_feedback(task)
 
         # 根据当前任务重新拼装 prompt
-        await self._build_prompt(task)
+        self._build_prompt(task)
 
         # 开始追踪
         self.tracer.start_trace(f"agent.run: {task[:50]}")
@@ -526,7 +550,7 @@ class Agent:
                     )
 
                     # 每轮更新动态 prompt 区块
-                    await self._update_dynamic_prompt(task)
+                    self._update_dynamic_prompt(task)
                     if session.messages and session.messages[0].get("role") == "system":
                         session.messages[0]["content"] = self.system_prompt
 
