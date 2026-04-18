@@ -242,20 +242,15 @@ class Agent:
             self.memory.shared_knowledge_file = self.parent_agent.memory.shared_knowledge_file
 
         # 初始化自学习模块
-        shared_knowledge = self.memory.shared_knowledge_file
         self.learner = Learner(
-            memory_dir=self.memory.memory_dir,
-            agent_id=self.agent_id,
+            memory_manager=self.memory,
             llm_client=self.client,
-            shared_knowledge_file=shared_knowledge,
+            agent_id=self.agent_id,
         )
-        self.memory.set_writer(self.learner.writer)
 
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
-        if memory_tool and hasattr(memory_tool, 'set_memory_writer'):
-            memory_tool.set_memory_writer(self.learner.writer)
 
         if not self.parent_agent:
             self.memory.start_daily_task()

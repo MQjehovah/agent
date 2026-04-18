@@ -1,7 +1,6 @@
 import json
 from typing import Dict, Any
 from . import BuiltinTool
-from learning.categories import MemoryCategory
 
 
 class MemoryTool(BuiltinTool):
@@ -45,18 +44,17 @@ class MemoryTool(BuiltinTool):
             "required": ["action"]
         }
 
-    def __init__(self, memory_manager=None, memory_writer=None):
+    def __init__(self, memory_manager=None):
         self.memory_manager = memory_manager
-        self.memory_writer = memory_writer
 
     def set_memory_manager(self, manager):
         self.memory_manager = manager
 
-    def set_memory_writer(self, writer):
-        self.memory_writer = writer
-
     async def execute(self, **kwargs) -> str:
         action = kwargs.get("action")
+
+        if not self.memory_manager:
+            return json.dumps({"success": False, "error": "Memory manager not initialized"}, ensure_ascii=False)
 
         if action == "save":
             return self._save(kwargs)
@@ -70,38 +68,30 @@ class MemoryTool(BuiltinTool):
             return json.dumps({"success": False, "error": f"Unknown action: {action}"}, ensure_ascii=False)
 
     def _save(self, args: Dict[str, Any]) -> str:
-        if not self.memory_writer:
-            return json.dumps({"success": False, "error": "Memory writer not initialized"}, ensure_ascii=False)
-
         category = args.get("category", "key_info")
         content = args.get("content", "")
 
         if not content:
             return json.dumps({"success": False, "error": "Content is required"}, ensure_ascii=False)
 
-        category_map = {
-            "preference": MemoryCategory.PREFERENCE,
-            "key_info": MemoryCategory.KEY_INFO,
-            "todo": MemoryCategory.TODO,
-            "knowledge": MemoryCategory.KEY_INFO,
-            "failure_lesson": MemoryCategory.FAILURE_LESSON,
-            "correction": MemoryCategory.CORRECTION,
-            "reflection": MemoryCategory.REFLECTION,
-        }
+        if category == "preference":
+            self.memory_manager.add_preference(content)
+        elif category == "key_info":
+            self.memory_manager.add_key_info(content)
+        elif category == "todo":
+            self.memory_manager.add_todo(content)
+        elif category == "knowledge":
+            self.memory_manager.add_key_info(f"[知识] {content}")
+        elif category == "failure_lesson":
+            self.memory_manager.add_failure_lesson("manual", content, "")
+        elif category == "correction":
+            self.memory_manager.add_correction(content, "")
+        elif category == "reflection":
+            self.memory_manager.add_reflection(content)
 
-        mem_category = category_map.get(category, MemoryCategory.KEY_INFO)
-        if category == "knowledge":
-            content = f"[知识] {content}"
-
-        ok = self.memory_writer.write(mem_category, content)
-        if ok:
-            return json.dumps({"success": True, "message": f"Memory saved to {mem_category.value}"}, ensure_ascii=False)
-        return json.dumps({"success": False, "error": "Failed to write memory"}, ensure_ascii=False)
+        return json.dumps({"success": True, "message": f"Memory saved to {category}"}, ensure_ascii=False)
 
     def _search(self, args: Dict[str, Any]) -> str:
-        if not self.memory_manager:
-            return json.dumps({"success": False, "error": "Memory manager not initialized"}, ensure_ascii=False)
-
         query = args.get("query", "")
         results = self.memory_manager.load_memory(query)
 
@@ -110,9 +100,6 @@ class MemoryTool(BuiltinTool):
         return json.dumps({"success": True, "results": "No matching memories found"}, ensure_ascii=False)
 
     def _list(self, args: Dict[str, Any]) -> str:
-        if not self.memory_manager:
-            return json.dumps({"success": False, "error": "Memory manager not initialized"}, ensure_ascii=False)
-
         memory_type = args.get("memory_type", "daily")
 
         if memory_type == "daily":
@@ -123,15 +110,10 @@ class MemoryTool(BuiltinTool):
         return json.dumps({"success": True, "files": []}, ensure_ascii=False)
 
     def _share(self, args: Dict[str, Any]) -> str:
-        if not self.memory_writer:
-            return json.dumps({"success": False, "error": "Memory writer not initialized"}, ensure_ascii=False)
-
         content = args.get("content", "")
         if not content:
             return json.dumps({"success": False, "error": "Content is required for sharing"}, ensure_ascii=False)
 
-        agent_id = self.memory_manager.agent_id if self.memory_manager else "unknown"
-        ok = self.memory_writer.share_knowledge(agent_id, content)
-        if ok:
-            return json.dumps({"success": True, "message": "Knowledge shared"}, ensure_ascii=False)
-        return json.dumps({"success": False, "error": "Failed to share knowledge"}, ensure_ascii=False)
+        agent_id = self.memory_manager.agent_id or "unknown"
+        self.memory_manager.share_knowledge(agent_id, content)
+        return json.dumps({"success": True, "message": "Knowledge shared"}, ensure_ascii=False)

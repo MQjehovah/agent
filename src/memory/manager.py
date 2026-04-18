@@ -17,7 +17,6 @@ class MemoryManager:
         self.shared_knowledge_file = os.path.join(self.memory_dir, "shared_knowledge.md")
         self._daily_task = None
         self._llm_client = None
-        self._writer = None
 
         self._ensure_dirs()
 
@@ -174,22 +173,22 @@ class MemoryManager:
                     pass
 
     def add_preference(self, preference: str):
-        self._write("用户偏好", preference)
+        self._append_to_memory("用户偏好", preference)
 
     def add_key_info(self, info: str):
-        self._write("关键信息", info)
+        self._append_to_memory("关键信息", info)
 
     def add_todo(self, todo: str):
-        self._write("待办事项", todo)
+        self._append_to_memory("待办事项", todo)
 
     def add_failure_lesson(self, tool_name: str, args_summary: str, error: str):
-        self._write("避坑经验", f"{tool_name}({args_summary}) 失败: {error}")
+        self._append_to_memory("避坑经验", f"{tool_name}({args_summary}) 失败: {error}")
 
     def add_correction(self, context: str, correction: str):
-        self._write("用户纠正", f"场景: {context} | 纠正: {correction}")
+        self._append_to_memory("用户纠正", f"场景: {context} | 纠正: {correction}")
 
     def add_reflection(self, knowledge: str):
-        self._write("自学习", knowledge)
+        self._append_to_memory("自学习", knowledge)
 
     def share_knowledge(self, from_agent: str, knowledge: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -198,24 +197,7 @@ class MemoryManager:
             f.write(entry)
         logger.debug(f"Shared knowledge from [{from_agent}]: {knowledge[:80]}")
 
-    def _write(self, category: str, content: str):
-        """写入记忆 — 如果有 MemoryWriter 走新路径，否则走本地写入"""
-        if self._writer:
-            from learning.categories import MemoryCategory
-            cat_map = {
-                "用户偏好": MemoryCategory.PREFERENCE,
-                "关键信息": MemoryCategory.KEY_INFO,
-                "待办事项": MemoryCategory.TODO,
-                "避坑经验": MemoryCategory.FAILURE_LESSON,
-                "用户纠正": MemoryCategory.CORRECTION,
-                "自学习": MemoryCategory.REFLECTION,
-            }
-            self._writer.write(cat_map.get(category, MemoryCategory.KEY_INFO), content)
-            return
-        self._append_to_memory(category, content)
-
     def _append_to_memory(self, category: str, content: str):
-        """本地写入（当 MemoryWriter 不可用时的后备路径）"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         try:
             self._ensure_dirs()
@@ -244,10 +226,6 @@ class MemoryManager:
             logger.info(f"Memory saved: [{category}] {content[:80]}")
         except Exception as e:
             logger.error(f"Memory write error: [{category}] {e}")
-
-    def set_writer(self, writer):
-        """注入 MemoryWriter，接管写入职责"""
-        self._writer = writer
 
     def load_shared_knowledge(self) -> str:
         if not os.path.exists(self.shared_knowledge_file):

@@ -1,15 +1,3 @@
-from enum import Enum
-
-
-class MemoryCategory(Enum):
-    PREFERENCE = "用户偏好"
-    KEY_INFO = "关键信息"
-    TODO = "待办事项"
-    FAILURE_LESSON = "避坑经验"
-    CORRECTION = "用户纠正"
-    REFLECTION = "自学习"
-
-
 CORRECTION_KEYWORDS = [
     "不对", "错了", "不是这样", "重新", "搞错了",
     "搞反了", "不准确", "有问题", "弄错了", "记错了",
