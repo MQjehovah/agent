@@ -14,7 +14,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from utils.frontmatter import extract_frontmatter
 from subagent_manager import SubagentManager
 from prompt import PromptBuilder
-from learning import Learner, ContextCollector
+from learning import Learner
 
 if TYPE_CHECKING:
     from plugins import PluginManager
@@ -68,7 +68,6 @@ class Agent:
         self.plugin_manager: Optional["PluginManager"] = None
         self.memory = None
         self.learner: Optional[Learner] = None
-        self.collector = ContextCollector()
         self._background_tasks: set = set()
 
         self.status = "pending"
@@ -98,11 +97,9 @@ class Agent:
         # 流式输出回调
         self.on_token = None
 
-        # 缓存环境上下文（避免每轮都执行 git 命令）
         self._env_context_cache: str = ""
         self._env_context_time: float = 0.0
 
-        # 连续错误计数
         self._consecutive_errors = 0
         self._current_task: str = ""
 
@@ -489,7 +486,6 @@ class Agent:
         self.status = "running"
         self._consecutive_errors = 0
         self._current_task = task
-        self.collector.reset()
 
         if self.learner:
             self.learner.check_user_correction(task)
@@ -622,9 +618,9 @@ class Agent:
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
         # 任务结束后批量反思
-        if self.learner and self.collector.entry_count > 0:
+        if self.learner and session and len(session.messages) > 1:
             try:
-                saved = await self.learner.reflect_on_task(task, self.collector)
+                saved = await self.learner.reflect_on_task(task, session.messages)
                 if saved > 0:
                     logger.info(f"[自学习] 任务反思完成，保存了 {saved} 条经验")
             except Exception as e:
@@ -745,10 +741,6 @@ class Agent:
             # PostToolUse 钩子
             await self.hooks.fire("post_tool_use", tool_name=name,
                                   arguments=args, result=result)
-
-            # 收集工具调用上下文（用于任务结束后批量反思）
-            success = '"success": true' in result or '"success":true' in result
-            self.collector.record_tool_call(name, args, result, success)
 
             return result
         except Exception as e:

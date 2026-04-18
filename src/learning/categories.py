@@ -1,3 +1,6 @@
+import re
+import logging
+
 CORRECTION_KEYWORDS = [
     "不对", "错了", "不是这样", "重新", "搞错了",
     "搞反了", "不准确", "有问题", "弄错了", "记错了",
@@ -24,3 +27,6 @@ REFLECT_PROMPT = (
 )
 
 REFLECT_SYSTEM_PROMPT = "你是经验提取助手。只有真正有通用价值的知识才保存。用 SAVE: 或 SKIP 回复。兼容中英文冒号。"
+
+MAX_SUMMARY_LENGTH = 6000
+TOOL_RESULT_MAX = 300

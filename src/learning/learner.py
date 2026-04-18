@@ -1,9 +1,10 @@
 import re
 import logging
-from typing import Optional
 
-from .categories import CORRECTION_KEYWORDS, REFLECT_PROMPT, REFLECT_SYSTEM_PROMPT
-from .collector import ContextCollector
+from .categories import (
+    CORRECTION_KEYWORDS, REFLECT_PROMPT, REFLECT_SYSTEM_PROMPT,
+    REFLECT_SKIP_TOOLS, MAX_SUMMARY_LENGTH, TOOL_RESULT_MAX,
+)
 
 logger = logging.getLogger("agent.learning")
 
@@ -30,8 +31,8 @@ class Learner:
     def record_failure(self, tool_name: str, args_summary: str, error: str):
         self.memory.add_failure_lesson(tool_name, args_summary[:80], error[:150])
 
-    async def reflect_on_task(self, task: str, collector: ContextCollector) -> int:
-        summary = collector.get_summary()
+    async def reflect_on_task(self, task: str, messages: list) -> int:
+        summary = self._summarize_messages(messages)
         if not summary:
             return 0
 
@@ -55,6 +56,50 @@ class Learner:
         except Exception as e:
             logger.warning(f"[自学习] 反思失败: {e}")
             return 0
+
+    def _summarize_messages(self, messages: list) -> str:
+        """从 session.messages 生成执行摘要，只保留有价值的信息"""
+        lines = []
+        total_len = 0
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            name = msg.get("name", "")
+
+            if role == "system":
+                continue
+
+            if role == "user":
+                line = f"用户: {(content or '')[:200]}"
+            elif role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    for tc in tool_calls:
+                        func = tc.get("function", {})
+                        tname = func.get("name", "")
+                        targs = func.get("arguments", "")
+                        if isinstance(targs, str) and len(targs) > 100:
+                            targs = targs[:100] + "..."
+                        line = f"调用: {tname}({targs})"
+                else:
+                    line = f"助手: {(content or '')[:200]}"
+            elif role == "tool":
+                tool_name = name or "tool"
+                if tool_name in REFLECT_SKIP_TOOLS:
+                    continue
+                line = f"[{tool_name}] {(content or '')[:TOOL_RESULT_MAX]}"
+            else:
+                continue
+
+            if total_len + len(line) > MAX_SUMMARY_LENGTH:
+                lines.append("... (后续内容省略)")
+                break
+
+            lines.append(line)
+            total_len += len(line)
+
+        return "\n".join(lines) if lines else ""
 
     def _parse_reflection(self, text: str) -> int:
         saved = 0
