@@ -250,7 +250,7 @@ class Agent:
             memory_tool.set_memory_manager(self.memory)
 
         if not self.parent_agent:
-            self.memory.start_daily_task()
+            self.learner.start_daily_task()
 
     # ------------------------------------------------------------------ #
     #  Prompt 分层拼装
@@ -617,14 +617,12 @@ class Agent:
             logger.error(
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
-        # 任务结束后批量反思
+# 任务结束后批量反思（后台异步，不阻塞结果返回）
         if self.learner and session and len(session.messages) > 1:
-            try:
-                saved = await self.learner.reflect_on_task(task, session.messages)
-                if saved > 0:
-                    logger.info(f"[自学习] 任务反思完成，保存了 {saved} 条经验")
-            except Exception as e:
-                logger.debug(f"[自学习] 任务反思失败(不影响主流程): {e}")
+            task_copy = task
+            messages_copy = list(session.messages)
+            learner = self.learner
+            asyncio.create_task(self._run_reflection(learner, task_copy, messages_copy))
 
         # 触发 AGENT_STOP 钩子
         await self.hooks.fire("agent_stop", metadata={
@@ -765,6 +763,18 @@ class Agent:
                     f"Agent [{self.name}] memory extraction completed")
         except Exception as e:
             logger.error(f"Agent [{self.name}] memory extraction failed: {e}")
+
+    async def _run_reflection(self, learner, task: str, messages: list):
+        """后台执行任务反思，不阻塞主流程"""
+        try:
+            logger.info(f"[自学习] 开始任务反思, 消息数: {len(messages)}")
+            saved = await learner.reflect_on_task(task, messages)
+            if saved > 0:
+                logger.info(f"[自学习] 任务反思完成，保存了 {saved} 条经验")
+            else:
+                logger.info("[自学习] 任务反思完成，无新经验保存")
+        except Exception as e:
+            logger.warning(f"[自学习] 任务反思失败: {e}", exc_info=True)
 
     async def _think(self, messages: Sequence[ChatCompletionMessageParam]) -> Dict[str, Any]:
         try:
@@ -936,7 +946,7 @@ class Agent:
             await self.subagent_manager.cleanup_all()
 
         if self.memory and not self.parent_agent:
-            self.memory.stop_daily_task()
+            self.learner.stop_daily_task()
         if self.mcp:
             await self.mcp.close()
         logger.info(f"Agent [{self.name}] cleaned up")
