@@ -1,3 +1,4 @@
+import os
 import re
 import asyncio
 import logging
@@ -121,6 +122,17 @@ class Learner:
         date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         agent_ids = storage.get_all_agent_ids()
 
+        # 构建 agent_id -> workspace 映射（用于定位子代理记忆目录）
+        subagent_workspaces = {}
+        workspace_root = self.memory.workspace
+        for agent_id in agent_ids:
+            if agent_id == self.memory.agent_id:
+                continue
+            # 子代理的 workspace 在 agents/<agent_id> 下
+            sub_ws = os.path.join(workspace_root, "agents", agent_id)
+            if os.path.isdir(sub_ws):
+                subagent_workspaces[agent_id] = sub_ws
+
         for agent_id in agent_ids:
             messages = storage.get_messages_by_date(date_str, agent_id=agent_id)
             if not messages:
@@ -134,15 +146,16 @@ class Learner:
             extracted = await self._extract_daily_text(session_text, agent_id)
             if extracted:
                 header = f"# 每日记忆 - {date_str}\n\n"
-                self.memory.save_daily(agent_id, date_str, header + extracted)
+                ws = subagent_workspaces.get(agent_id)
+                self.memory.save_daily(agent_id, date_str, header + extracted, workspace=ws)
                 logger.info(f"[每日提取] Agent [{agent_id}] 提取完成")
             else:
                 logger.debug(f"[每日提取] Agent [{agent_id}] 无关键信息")
 
         # 归档与整理
-        await self.memory.archive_to_long_term()
-        await self.memory.consolidate_long_term()
-        await self.memory.prune_long_term()
+        await self.memory.archive_to_long_term(subagent_workspaces=subagent_workspaces)
+        await self.memory.consolidate_long_term(subagent_workspaces=subagent_workspaces)
+        await self.memory.prune_long_term(subagent_workspaces=subagent_workspaces)
 
     async def _extract_daily_text(self, session_text: str, agent_id: str) -> str:
         """用 LLM 从对话文本提取关键信息，失败则回退到简单截断"""

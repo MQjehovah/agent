@@ -38,8 +38,9 @@ class MemoryManager:
     #  归档与整理 — 纯文件操作，不涉及 LLM
     # ------------------------------------------------------------------ #
 
-    async def archive_to_long_term(self):
-        """归档所有每日记忆到长期记忆"""
+    async def archive_to_long_term(self, subagent_workspaces: dict = None):
+        """归档主 agent + 子 agent 的每日记忆到长期记忆。
+        subagent_workspaces: {agent_id: workspace_path} 映射"""
         from .archiver import MemoryArchiver
 
         # 主 agent
@@ -47,24 +48,44 @@ class MemoryManager:
         archiver.cleanup_old_files(retention_days=7)
         archiver.archive_daily_to_long_term(days_threshold=1)
 
-        # 子 agent
-        agents_dir = os.path.join(self.memory_dir, "agents")
-        if os.path.exists(agents_dir):
-            for agent_name in os.listdir(agents_dir):
-                agent_memory_dir = os.path.join(agents_dir, agent_name)
-                if os.path.isdir(agent_memory_dir):
-                    sub_archiver = MemoryArchiver(agent_memory_dir)
+        # 子 agent — 优先从 workspace 映射找，兼容旧的 agents/ 子目录
+        if subagent_workspaces:
+            for agent_id, ws in subagent_workspaces.items():
+                sub_memory_dir = os.path.join(ws, "memory")
+                if os.path.isdir(sub_memory_dir):
+                    sub_archiver = MemoryArchiver(sub_memory_dir)
                     sub_archiver.cleanup_old_files(retention_days=7)
                     sub_archiver.archive_daily_to_long_term(days_threshold=1)
+        else:
+            agents_dir = os.path.join(self.memory_dir, "agents")
+            if os.path.exists(agents_dir):
+                for agent_name in os.listdir(agents_dir):
+                    agent_memory_dir = os.path.join(agents_dir, agent_name)
+                    if os.path.isdir(agent_memory_dir):
+                        sub_archiver = MemoryArchiver(agent_memory_dir)
+                        sub_archiver.cleanup_old_files(retention_days=7)
+                        sub_archiver.archive_daily_to_long_term(days_threshold=1)
 
         logger.info("每日记忆归档完成")
 
-    async def consolidate_long_term(self, file_path: str = None):
-        """用 LLM 整理长期记忆"""
+    async def consolidate_long_term(self, file_path: str = None, subagent_workspaces: dict = None):
+        """整理长期记忆：合并重复条目"""
         if not self._llm_client:
             return
 
+        # 主 agent
         target = file_path or self.long_term_file
+        await self._consolidate_one(target)
+
+        # 子 agent
+        if subagent_workspaces:
+            for agent_id, ws in subagent_workspaces.items():
+                sub_long_term = os.path.join(ws, "memory", "memory.md")
+                if os.path.isfile(sub_long_term):
+                    await self._consolidate_one(sub_long_term)
+
+    async def _consolidate_one(self, target: str):
+        """整理单个长期记忆文件"""
         if not os.path.exists(target):
             return
 
@@ -118,15 +139,26 @@ class MemoryManager:
                 except Exception:
                     pass
 
-    async def prune_long_term(self, file_path: str = None):
+    async def prune_long_term(self, file_path: str = None, subagent_workspaces: dict = None):
         """用 LLM 评估并删除低价值记忆条目"""
         if not self._llm_client:
             return
 
-        target = file_path or self.long_term_file
         from .archiver import MemoryArchiver
+
+        # 主 agent
+        target = file_path or self.long_term_file
         archiver = MemoryArchiver(self.memory_dir)
         await archiver.score_and_prune(target, self._llm_client)
+
+        # 子 agent
+        if subagent_workspaces:
+            for agent_id, ws in subagent_workspaces.items():
+                sub_memory_dir = os.path.join(ws, "memory")
+                sub_long_term = os.path.join(sub_memory_dir, "memory.md")
+                if os.path.isfile(sub_long_term):
+                    sub_archiver = MemoryArchiver(sub_memory_dir)
+                    await sub_archiver.score_and_prune(sub_long_term, self._llm_client)
 
     # ------------------------------------------------------------------ #
     #  写入方法
@@ -187,11 +219,14 @@ class MemoryManager:
             f.write(entry)
         logger.debug(f"Shared knowledge from [{from_agent}]: {knowledge[:80]}")
 
-    def save_daily(self, agent_id: str, date_str: str, content: str):
-        """保存每日记忆文件"""
-        if agent_id == self.agent_id:
+    def save_daily(self, agent_id: str, date_str: str, content: str, workspace: str = None):
+        """保存每日记忆文件。workspace 指定目标 agent 的 workspace 目录。"""
+        if workspace:
+            daily_dir = os.path.join(workspace, "memory", "daily")
+        elif agent_id == self.agent_id:
             daily_dir = self.daily_dir
         else:
+            # 其他 agent 但未指定 workspace，按旧逻辑兼容
             daily_dir = os.path.join(self.memory_dir, "agents", agent_id, "daily")
         os.makedirs(daily_dir, exist_ok=True)
         daily_file = os.path.join(daily_dir, f"{date_str}.md")
