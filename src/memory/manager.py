@@ -17,6 +17,7 @@ class MemoryManager:
         self.shared_knowledge_file = os.path.join(self.memory_dir, "shared_knowledge.md")
         self._daily_task = None
         self._llm_client = None
+        self._writer = None
 
         self._ensure_dirs()
 
@@ -116,7 +117,7 @@ class MemoryManager:
         logger.info("所有 agent 记忆归档完成")
 
     async def _consolidate_long_term(self, file_path: str):
-        """用 LLM 整理长期记忆：去重、合并同类、删除过时信息"""
+        """整理长期记忆：合并重复条目，但保留所有原始条目以防丢失"""
         if not self._llm_client or not os.path.exists(file_path):
             return
 
@@ -126,12 +127,18 @@ class MemoryManager:
         if len(content) < 100:
             return
 
+        # 先备份
+        backup_path = file_path + ".bak"
+        with open(backup_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
         prompt = (
             "请整理以下长期记忆，要求：\n"
             "1. 合并重复或高度相似的信息\n"
             "2. 删除明显已过时的信息（如已完成的待办）\n"
             "3. 保持分类结构，无内容的分类省略\n"
-            "4. 每条信息保持简洁，用一句话概括\n\n"
+            "4. 每条信息保持简洁，用一句话概括\n"
+            "5. 不要删除任何有效的经验、偏好或关键信息\n\n"
             f"原始记忆：\n{content}\n\n"
             "只输出整理后的结果，保持 markdown 格式。"
         )
@@ -139,7 +146,7 @@ class MemoryManager:
         try:
             response = await self._llm_client.chat(
                 messages=[
-                    {"role": "system", "content": "你是记忆整理助手。保持信息完整，去除冗余。"},
+                    {"role": "system", "content": "你是记忆整理助手。保持信息完整，去除冗余。不要删除任何有用的信息。"},
                     {"role": "user", "content": prompt}
                 ],
                 tools=None, stream=False, use_cache=False
@@ -148,58 +155,41 @@ class MemoryManager:
             if result.strip():
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(result)
+                    f.flush()
+                    os.fsync(f.fileno())
                 logger.info(f"长期记忆整理完成: {file_path}")
         except Exception as e:
-            logger.warning(f"长期记忆整理失败: {e}")
+            # 整理失败时从备份恢复
+            if os.path.exists(backup_path):
+                with open(backup_path, "r", encoding="utf-8") as bf:
+                    original = bf.read()
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(original)
+            logger.warning(f"长期记忆整理失败（已恢复备份）: {e}")
+        finally:
+            if os.path.exists(backup_path):
+                try:
+                    os.remove(backup_path)
+                except Exception:
+                    pass
 
-    def _append_to_memory(self, category: str, content: str):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        
-        if not os.path.exists(self.long_term_file):
-            with open(self.long_term_file, "w", encoding="utf-8") as f:
-                f.write(f"# 长期记忆\n\n## {category}\n\n- [{timestamp}] {content}\n")
-            return
-        
-        with open(self.long_term_file, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        
-        category_header = f"## {category}\n"
-        category_idx = -1
-        for i, line in enumerate(lines):
-            if line.strip() == category_header.strip():
-                category_idx = i
-                break
-        
-        if category_idx == -1:
-            lines.append(f"\n## {category}\n\n- [{timestamp}] {content}\n")
-        else:
-            insert_idx = category_idx + 1
-            while insert_idx < len(lines) and not lines[insert_idx].startswith("## "):
-                insert_idx += 1
-            lines.insert(insert_idx, f"- [{timestamp}] {content}\n")
-        
-        with open(self.long_term_file, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-        
-        logger.debug(f"Memory saved: [{category}] {content}")
-    
     def add_preference(self, preference: str):
-        self._append_to_memory("用户偏好", preference)
-    
+        self._write("用户偏好", preference)
+
     def add_key_info(self, info: str):
-        self._append_to_memory("关键信息", info)
-    
+        self._write("关键信息", info)
+
     def add_todo(self, todo: str):
-        self._append_to_memory("待办事项", todo)
-    
+        self._write("待办事项", todo)
+
     def add_failure_lesson(self, tool_name: str, args_summary: str, error: str):
-        self._append_to_memory("避坑经验", f"{tool_name}({args_summary}) 失败: {error}")
+        self._write("避坑经验", f"{tool_name}({args_summary}) 失败: {error}")
 
     def add_correction(self, context: str, correction: str):
-        self._append_to_memory("用户纠正", f"场景: {context} | 纠正: {correction}")
+        self._write("用户纠正", f"场景: {context} | 纠正: {correction}")
 
     def add_reflection(self, knowledge: str):
-        self._append_to_memory("自学习", knowledge)
+        self._write("自学习", knowledge)
 
     def share_knowledge(self, from_agent: str, knowledge: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -207,6 +197,57 @@ class MemoryManager:
         with open(self.shared_knowledge_file, "a", encoding="utf-8") as f:
             f.write(entry)
         logger.debug(f"Shared knowledge from [{from_agent}]: {knowledge[:80]}")
+
+    def _write(self, category: str, content: str):
+        """写入记忆 — 如果有 MemoryWriter 走新路径，否则走本地写入"""
+        if self._writer:
+            from learning.categories import MemoryCategory
+            cat_map = {
+                "用户偏好": MemoryCategory.PREFERENCE,
+                "关键信息": MemoryCategory.KEY_INFO,
+                "待办事项": MemoryCategory.TODO,
+                "避坑经验": MemoryCategory.FAILURE_LESSON,
+                "用户纠正": MemoryCategory.CORRECTION,
+                "自学习": MemoryCategory.REFLECTION,
+            }
+            self._writer.write(cat_map.get(category, MemoryCategory.KEY_INFO), content)
+            return
+        self._append_to_memory(category, content)
+
+    def _append_to_memory(self, category: str, content: str):
+        """本地写入（当 MemoryWriter 不可用时的后备路径）"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            self._ensure_dirs()
+            if not os.path.exists(self.long_term_file):
+                with open(self.long_term_file, "w", encoding="utf-8") as f:
+                    f.write(f"# 长期记忆\n\n## {category}\n\n- [{timestamp}] {content}\n")
+                logger.info(f"Memory created: [{category}] {content[:80]}")
+                return
+            with open(self.long_term_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            category_header = f"## {category}"
+            category_idx = -1
+            for i, line in enumerate(lines):
+                if line.strip() == category_header:
+                    category_idx = i
+                    break
+            if category_idx == -1:
+                lines.append(f"\n## {category}\n\n- [{timestamp}] {content}\n")
+            else:
+                insert_idx = category_idx + 1
+                while insert_idx < len(lines) and not lines[insert_idx].strip().startswith("## "):
+                    insert_idx += 1
+                lines.insert(insert_idx, f"- [{timestamp}] {content}\n")
+            with open(self.long_term_file, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            logger.info(f"Memory saved: [{category}] {content[:80]}")
+        except Exception as e:
+            logger.error(f"Memory write error: [{category}] {e}")
+
+    def set_writer(self, writer):
+        """注入 MemoryWriter，接管写入职责"""
+        self._writer = writer
 
     def load_shared_knowledge(self) -> str:
         if not os.path.exists(self.shared_knowledge_file):

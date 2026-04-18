@@ -14,6 +14,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from utils.frontmatter import extract_frontmatter
 from subagent_manager import SubagentManager
 from prompt import PromptBuilder
+from learning import Learner, ContextCollector
 
 if TYPE_CHECKING:
     from plugins import PluginManager
@@ -66,6 +67,8 @@ class Agent:
         self.storage = None
         self.plugin_manager: Optional["PluginManager"] = None
         self.memory = None
+        self.learner: Optional[Learner] = None
+        self.collector = ContextCollector()
         self._background_tasks: set = set()
 
         self.status = "pending"
@@ -238,9 +241,21 @@ class Agent:
         if self.parent_agent and self.parent_agent.memory:
             self.memory.shared_knowledge_file = self.parent_agent.memory.shared_knowledge_file
 
+        # 初始化自学习模块
+        shared_knowledge = self.memory.shared_knowledge_file
+        self.learner = Learner(
+            memory_dir=self.memory.memory_dir,
+            agent_id=self.agent_id,
+            llm_client=self.client,
+            shared_knowledge_file=shared_knowledge,
+        )
+        self.memory.set_writer(self.learner.writer)
+
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
+        if memory_tool and hasattr(memory_tool, 'set_memory_writer'):
+            memory_tool.set_memory_writer(self.learner.writer)
 
         if not self.parent_agent:
             self.memory.start_daily_task()
@@ -479,9 +494,10 @@ class Agent:
         self.status = "running"
         self._consecutive_errors = 0
         self._current_task = task
+        self.collector.reset()
 
-        if self.memory:
-            self._learn_from_user_feedback(task)
+        if self.learner:
+            self.learner.check_user_correction(task)
 
         # 根据当前任务重新拼装 prompt
         self._build_prompt(task)
@@ -610,6 +626,15 @@ class Agent:
             logger.error(
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
+        # 任务结束后批量反思
+        if self.learner and self.collector.entry_count > 0:
+            try:
+                saved = await self.learner.reflect_on_task(task, self.collector)
+                if saved > 0:
+                    logger.info(f"[自学习] 任务反思完成，保存了 {saved} 条经验")
+            except Exception as e:
+                logger.debug(f"[自学习] 任务反思失败(不影响主流程): {e}")
+
         # 触发 AGENT_STOP 钩子
         await self.hooks.fire("agent_stop", metadata={
             "status": self.status,
@@ -726,11 +751,9 @@ class Agent:
             await self.hooks.fire("post_tool_use", tool_name=name,
                                   arguments=args, result=result)
 
-            if self._current_task and self.memory:
-                try:
-                    await self._reflect_and_learn(self._current_task, name, args, result)
-                except Exception:
-                    pass
+            # 收集工具调用上下文（用于任务结束后批量反思）
+            success = '"success": true' in result or '"success":true' in result
+            self.collector.record_tool_call(name, args, result, success)
 
             return result
         except Exception as e:
@@ -738,58 +761,13 @@ class Agent:
             logger.error(f"[工具异常] {name} | 错误: {type(e).__name__}: {e}")
             await self.hooks.fire("post_tool_use", tool_name=name,
                                   arguments=args, error=e)
-            if self.memory:
+            if self.learner:
                 args_summary = json.dumps(args, ensure_ascii=False)[:100]
-                self.memory.add_failure_lesson(name, args_summary, f"{type(e).__name__}: {e}"[:150])
+                self.learner.record_failure(name, args_summary, f"{type(e).__name__}: {e}"[:150])
             return json.dumps({
                 "success": False,
                 "error": f"工具执行失败: {type(e).__name__}: {e}"
             }, ensure_ascii=False)
-
-    CORRECTION_KEYWORDS = ["不对", "错了", "不是这样", "重新", "搞错了", "搞反了", "不准确", "有问题", "弄错了", "记错了"]
-    REFLECT_SKIP_TOOLS = {"file_operation", "grep", "glob", "todo", "memory"}
-
-    def _learn_from_user_feedback(self, task: str):
-        if any(kw in task for kw in self.CORRECTION_KEYWORDS):
-            self.memory.add_correction(
-                context=task[:200],
-                correction="之前的方法不被认可，需要换思路"
-            )
-            logger.info(f"[自学习] 检测到用户纠正信号")
-
-    async def _reflect_and_learn(self, task: str, tool_name: str, args: dict, result: str):
-        if not self.memory or not self.client:
-            return
-        if tool_name in self.REFLECT_SKIP_TOOLS:
-            return
-        if '"success": false' in result or '"success":False' in result:
-            return
-        try:
-            args_brief = json.dumps(args, ensure_ascii=False)[:80]
-            result_brief = result[:200] if len(result) > 200 else result
-            prompt = (
-                f"任务: {task[:150]}\n工具: {tool_name}({args_brief})\n结果: {result_brief}\n\n"
-                "判断这条经验是否值得长期记住。如果值得，用一句话概括关键知识点，"
-                "不要包含具体数据，只保留方法论或规律性认识。\n"
-                "格式: SAVE: <知识点> 或 SKIP"
-            )
-            resp = await self.client.chat(
-                messages=[
-                    {"role": "system", "content": "你是经验提取助手。只有真正有通用价值的知识才保存。"},
-                    {"role": "user", "content": prompt}
-                ],
-                tools=None, stream=False, use_cache=False
-            )
-            text = (resp.choices[0].message.content or "").strip()
-            if text.upper().startswith("SAVE:"):
-                knowledge = text[5:].strip()
-                if knowledge:
-                    self.memory.add_reflection(knowledge)
-                    logger.info(f"[自学习] 反思提取: {knowledge[:80]}")
-                    if self.subagent_manager:
-                        self.memory.share_knowledge(self.agent_id or "主代理", knowledge)
-        except Exception as e:
-            logger.debug(f"反思提取失败(不影响主流程): {e}")
 
     async def _background_memory_extract(self):
         try:

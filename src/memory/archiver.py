@@ -66,22 +66,37 @@ class MemoryArchiver:
         return True
     
     def _extract_valuable_content(self, content: str) -> str:
+        """提取有价值的内容 — 保留所有分类，只排除空段落"""
         lines = content.split("\n")
         valuable = []
-        
+        current_section_has_content = False
+
         for line in lines:
-            if line.startswith("## ") and "洞察" not in line and "偏好" not in line:
+            if line.startswith("# ") and not line.startswith("## "):
+                # 顶级标题，保留
                 valuable.append(line)
-            elif valuable and not line.startswith("# "):
-                if line.strip() and not line.startswith("## "):
-                    valuable.append(line)
-                elif line.startswith("## "):
-                    if "洞察" not in line and "偏好" not in line:
-                        valuable.append(line)
-                    else:
-                        break
-        
-        return "\n".join(valuable) if valuable else ""
+                current_section_has_content = False
+            elif line.startswith("## "):
+                # 二级分类标题，保留
+                valuable.append(line)
+                current_section_has_content = False
+            elif line.strip():
+                valuable.append(line)
+                current_section_has_content = True
+
+        # 移除没有内容的空段落（标题后无实质内容）
+        result = []
+        i = 0
+        while i < len(valuable):
+            line = valuable[i]
+            if line.startswith("## ") and i + 1 < len(valuable) and valuable[i + 1].startswith("## "):
+                # 空段落：分类标题后紧跟下一个分类标题
+                pass  # skip empty section
+            else:
+                result.append(line)
+            i += 1
+
+        return "\n".join(result) if result else ""
     
     def _merge_to_long_term(self, existing: str, new_content: str) -> str:
         if not existing:
@@ -164,6 +179,14 @@ class MemoryArchiver:
         if len(entries) <= 3:
             return 0
 
+        # 保护最近24小时内的条目（含当天日期的条目不删除）
+        from datetime import date
+        today_str = date.today().strftime("%Y-%m-%d")
+        protected_indices = set()
+        for i, (_, text) in enumerate(entries):
+            if today_str in text:
+                protected_indices.add(i)
+
         numbered = ""
         for i, (section, text) in enumerate(entries):
             preview = text[:80].replace("\n", " ")
@@ -197,16 +220,29 @@ class MemoryArchiver:
             if not scores:
                 return 0
 
-            pruned = [entries[i] for i in range(len(entries)) if scores.get(i, 3) >= 2]
+            # 保护最近条目：最近条目最低3分
+            pruned = []
+            for i in range(len(entries)):
+                final_score = scores.get(i, 3)
+                if i in protected_indices:
+                    final_score = max(final_score, 3)
+                if final_score >= 2:
+                    pruned.append(entries[i])
 
             pruned_count = len(entries) - len(pruned)
             if pruned_count == 0:
                 return 0
 
-            new_content = "\n".join(text for _, text in pruned)
+            # 备份后再写入
+            backup_path = long_term_file + ".bak"
+            with open(backup_path, "w", encoding="utf-8") as f:
+                f.write(content)
 
+            new_content = "\n".join(text for _, text in pruned)
             with open(long_term_file, "w", encoding="utf-8") as f:
                 f.write(new_content)
+                f.flush()
+                os.fsync(f.fileno())
 
             logger.info(f"记忆质量淘汰: 共{len(entries)}条, 删除{pruned_count}条低价值条目")
             return pruned_count
