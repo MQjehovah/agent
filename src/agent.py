@@ -324,12 +324,12 @@ class Agent:
 
         # 记忆上下文仅在首轮构建，迭代中不再重复搜索
         # 注入最近文件恢复上下文
-        recent_context = self._get_recent_files_context()
-        if recent_context:
-            self._prompt_builder.add(
-                "最近读取文件", recent_context,
-                is_static=False, priority=45
-            )
+        # recent_context = self._get_recent_files_context()
+        # if recent_context:
+        #     self._prompt_builder.add(
+        #         "最近读取文件", recent_context,
+        #         is_static=False, priority=100
+        #     )
 
         self.system_prompt = self._prompt_builder.build_full()
 

@@ -244,7 +244,10 @@ class MemoryManager:
             return ""
         with open(self.shared_knowledge_file, "r", encoding="utf-8") as f:
             content = f.read()
-        if content.strip() == "# 共享知识库\n\n跨代理共享的经验和知识。\n":
+        if content.strip() in (
+            "# 共享知识库\n\n跨代理共享的经验和知识。",
+            "# 共享知识库\n\n跨代理共享的经验和知识。\n",
+        ):
             return ""
         return content
 

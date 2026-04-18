@@ -315,6 +315,9 @@ class Learner:
         saved = 0
         for line in text.split("\n"):
             line = line.strip()
+            if not line:
+                continue
+
             save_match = re.match(
                 r'(?:SAVE|保存)\s*[:：]\s*(.+)', line, re.IGNORECASE
             )
@@ -324,11 +327,5 @@ class Learner:
                     self.memory.add_reflection(knowledge)
                     self.memory.share_knowledge(self.agent_id or "主代理", knowledge)
                     logger.info(f"[自学习] 反思提取: {knowledge[:80]}")
-                    saved += 1
-            elif line.strip() and not line.upper().startswith("SKIP"):
-                if len(line) > 5 and not line.startswith(("-", "*", "#", "1.", "2.")):
-                    self.memory.add_reflection(line.strip())
-                    self.memory.share_knowledge(self.agent_id or "主代理", line.strip())
-                    logger.info(f"[自学习] 反思提取: {line.strip()[:80]}")
                     saved += 1
         return saved
