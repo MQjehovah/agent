@@ -617,7 +617,7 @@ class Agent:
             logger.error(
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
-# 任务结束后批量反思（后台异步，不阻塞结果返回）
+        # 任务结束后批量反思（后台异步，不阻塞结果返回）
         if self.learner and session and len(session.messages) > 1:
             task_copy = task
             messages_copy = list(session.messages)
@@ -753,16 +753,6 @@ class Agent:
                 "success": False,
                 "error": f"工具执行失败: {type(e).__name__}: {e}"
             }, ensure_ascii=False)
-
-    async def _background_memory_extract(self):
-        try:
-            await asyncio.sleep(0.1)
-            if self.memory:
-                await self.memory.extract_daily()
-                logger.debug(
-                    f"Agent [{self.name}] memory extraction completed")
-        except Exception as e:
-            logger.error(f"Agent [{self.name}] memory extraction failed: {e}")
 
     async def _run_reflection(self, learner, task: str, messages: list):
         """后台执行任务反思，不阻塞主流程"""
