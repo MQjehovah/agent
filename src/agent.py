@@ -30,6 +30,8 @@ class AgentResult:
         default_factory=lambda: datetime.now().isoformat())
 
 
+MAX_TOOL_OUTPUT_CHARS = 3000
+
 class Agent:
     def __init__(
         self,
@@ -690,6 +692,10 @@ class Agent:
             if len(result_preview) > 500:
                 result_preview = result_preview[:500] + "..."
             logger.info(f"[工具返回] {name} | 输出: {result_preview}")
+
+            # 全局工具输出截断保护
+            if len(result) > MAX_TOOL_OUTPUT_CHARS:
+                result = result[:MAX_TOOL_OUTPUT_CHARS] + f"\n... [工具输出已截断，原始长度 {len(result)} 字符]"
 
             self.tracer.end_span(status="ok")
             # PostToolUse 钩子

@@ -42,10 +42,18 @@ class Skill:
             return ""
 
         prompt = self.prompt_template
-        # for key, value in variables.items():
-        #     prompt = prompt.replace("{{" + key + "}}", str(value))
-        #     prompt = prompt.replace("{" + key + "}", str(value))
-        prompt = prompt + "\n".join(self.references)
+        for key, value in variables.items():
+            prompt = prompt.replace("{{" + key + "}}", str(value))
+            prompt = prompt.replace("{" + key + "}", str(value))
+
+        if self.references:
+            ref_lines = []
+            for ref in self.references:
+                if isinstance(ref, dict):
+                    ref_lines.append(json.dumps(ref, ensure_ascii=False))
+                else:
+                    ref_lines.append(str(ref))
+            prompt = prompt + "\n\n## 参考资料\n" + "\n".join(ref_lines)
 
         return prompt
 
@@ -191,11 +199,20 @@ class SkillManager:
         skill = self.skills.get(skill_name)
         if not skill:
             available = self.list_skills()
-            return json.dumps({"error": f"Skill not found: {skill_name}", "available_skills": available})
+            return json.dumps({"error": f"Skill not found: {skill_name}", "available_skills": available}, ensure_ascii=False)
 
-        result = skill.render_prompt({"user_input": user_input})
+        prompt = skill.render_prompt({"user_input": user_input})
 
-        logger.debug(f"Executing Skill: {skill_name} executed successfully")
+        if not prompt:
+            return json.dumps({"error": f"技能 {skill_name} 没有可用的提示词模板"}, ensure_ascii=False)
+
+        result = (
+            f"已激活技能: {skill_name}\n\n"
+            f"请按照以下指导处理用户的请求:\n\n"
+            f"{prompt}"
+        )
+
+        logger.info(f"Skill executed: {skill_name}")
         return result
 
     def list_skills(self) -> List[str]:
