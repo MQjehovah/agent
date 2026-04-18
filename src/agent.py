@@ -179,8 +179,8 @@ class Agent:
         self.tool_registry.register_tool(TaskGetTool(self.task_manager))
         self.tool_registry.register_tool(TaskCancelTool(self.task_manager))
 
-        # 新增：用户交互工具
-        self.tool_registry.register_tool(AskUserTool())
+        # 用户交互工具暂不注册（当前流程不支持交互式确认）
+        # self.tool_registry.register_tool(AskUserTool())
 
         logger.info(
             f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}")
@@ -877,12 +877,6 @@ class Agent:
         try:
             if name == "subagent" and self.subagent_manager:
                 return await self._execute_subagent(args)
-
-            if name == "ask_user":
-                tool = self.tool_registry.get_tool("ask_user")
-                if tool and self.on_confirm:
-                    tool.set_input_handler(self.on_confirm)
-                return await self.tool_registry.execute(name, args)
 
             if self.tool_registry and self.tool_registry.has_tool(name):
                 return await self.tool_registry.execute(name, args)
