@@ -3,12 +3,17 @@ import re
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from typing import Optional, TYPE_CHECKING
 
 from .categories import (
     CORRECTION_KEYWORDS, REFLECT_PROMPT, REFLECT_SYSTEM_PROMPT,
     REFLECT_SKIP_TOOLS, MAX_SUMMARY_LENGTH, TOOL_RESULT_MAX,
     DAILY_EXTRACT_PROMPT, DAILY_EXTRACT_SYSTEM_PROMPT, CHUNK_SIZE,
 )
+
+if TYPE_CHECKING:
+    from skills.skill import SkillManager
+    from subagent_manager import SubagentManager
 
 logger = logging.getLogger("agent.learning")
 
@@ -22,8 +27,51 @@ class Learner:
         self.agent_id = agent_id
         self._daily_task = None
 
+        self._pattern_tracker = None
+        self._auto_creator = None
+        self._skill_manager: Optional["SkillManager"] = None
+        self._subagent_manager: Optional["SubagentManager"] = None
+        self._workspace = ""
+
     def set_llm_client(self, client):
         self.llm_client = client
+        if self._pattern_tracker:
+            self._pattern_tracker.set_llm_client(client)
+        if self._auto_creator:
+            self._auto_creator.set_llm_client(client)
+
+    def init_auto_creation(
+        self,
+        workspace: str,
+        skill_manager: "SkillManager" = None,
+        subagent_manager: "SubagentManager" = None,
+    ):
+        """初始化模式追踪和自动创建（由 Agent._init_memory 调用）"""
+        from .pattern_tracker import PatternTracker
+        from .auto_creator import AutoCreator
+
+        self._workspace = workspace
+        self._skill_manager = skill_manager
+        self._subagent_manager = subagent_manager
+
+        memory_dir = os.path.join(workspace, "memory") if workspace else ""
+        skills_dir = os.path.join(workspace, "skills") if workspace else ""
+        agents_dir = os.path.join(workspace, "agents") if workspace else ""
+
+        self._pattern_tracker = PatternTracker(memory_dir, llm_client=self.llm_client)
+        self._auto_creator = AutoCreator(
+            memory_dir=memory_dir,
+            skills_dir=skills_dir,
+            agents_dir=agents_dir,
+            llm_client=self.llm_client,
+            skill_manager=skill_manager,
+            subagent_manager=subagent_manager,
+        )
+
+        logger.info(
+            f"[自学习] 自动创建模块已初始化 "
+            f"(skills={bool(skill_manager)}, subagents={bool(subagent_manager)})"
+        )
 
     # ------------------------------------------------------------------ #
     #  每日提取定时任务
@@ -99,10 +147,36 @@ class Learner:
 
         try:
             text = await self._call_llm(REFLECT_SYSTEM_PROMPT, prompt)
-            return self._parse_reflection(text)
+            saved = self._parse_reflection(text)
+
+            # 模式追踪：记录任务并检测是否需要自动创建
+            if self._pattern_tracker and self._auto_creator:
+                try:
+                    pattern_info = await self._pattern_tracker.record_task(task, summary)
+                    if pattern_info:
+                        await self._auto_create(pattern_info)
+                except Exception as e:
+                    logger.warning(f"[自学习] 模式追踪/自动创建失败: {e}")
+
+            return saved
         except Exception as e:
             logger.warning(f"[自学习] 反思失败: {e}")
             return 0
+
+    async def _auto_create(self, pattern_info: dict):
+        """执行自动创建并标记"""
+        result_path = await self._auto_creator.create_from_pattern(pattern_info)
+        if result_path:
+            self._pattern_tracker.mark_created(pattern_info["pattern_key"])
+            logger.info(
+                f"[自学习] 已自动创建 "
+                f"{pattern_info['category']}: {pattern_info['suggested_name']} "
+                f"-> {result_path}"
+            )
+        else:
+            logger.warning(
+                f"[自学习] 自动创建失败: {pattern_info.get('pattern_key', 'unknown')}"
+            )
 
     # ------------------------------------------------------------------ #
     #  每日提取（凌晨定时调用，由 MemoryManager 的定时任务触发）

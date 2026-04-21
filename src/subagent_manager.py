@@ -347,3 +347,13 @@ class SubagentManager:
             "active_count": len(self._active_subagents),
             "active_subagents": self.list_active_subagents()
         }
+
+    def reload_templates(self):
+        """重新加载所有子代理模板（热加载新增的模板）"""
+        old_count = len(self.templates)
+        self._load_all()
+        new_count = len(self.templates)
+        if new_count > old_count:
+            new_names = set(self.templates.keys()) - set()
+            logger.info(f"热加载子代理模板: 新增 {new_count - old_count} 个，当前共 {new_count} 个")
+        return new_count

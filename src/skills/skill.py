@@ -274,3 +274,10 @@ description: {description or f"{name} skill"}
 
         logger.info(f"创建技能目录: {skill_dir}")
         return skill_dir
+
+    def reload_skill(self, skill_dir: str) -> Optional[Skill]:
+        """热加载指定目录的技能（如果已存在则覆盖）"""
+        skill = self._load_skill(skill_dir)
+        if skill:
+            logger.info(f"热加载技能: {skill.name}")
+        return skill

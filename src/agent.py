@@ -245,6 +245,14 @@ class Agent:
             agent_id=self.agent_id,
         )
 
+        # 初始化自动创建模块（仅主代理）
+        if not self.parent_agent:
+            self.learner.init_auto_creation(
+                workspace=self.workspace,
+                skill_manager=self.skill_manager,
+                subagent_manager=self.subagent_manager,
+            )
+
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
