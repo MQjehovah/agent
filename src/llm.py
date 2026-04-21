@@ -11,6 +11,7 @@ from openai import (
     RateLimitError,
     APITimeoutError
 )
+import httpx
 
 from cache import get_cache
 from usage import UsageTracker
@@ -29,9 +30,13 @@ api_logger.addHandler(handler)
 
 # 重试配置
 MAX_RETRIES = 3
-RETRY_DELAY_BASE = 1.0
-RETRY_DELAY_MAX = 30.0
+RETRY_DELAY_BASE = 2.0
+RETRY_DELAY_MAX = 60.0
 RATE_LIMIT_COOLDOWN = 60.0
+
+# 超时配置（秒）
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300"))
+LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "30"))
 
 
 class LLMClient:
@@ -56,7 +61,13 @@ class LLMClient:
         self.client = AsyncOpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
-            timeout=180.0
+            timeout=httpx.Timeout(
+                connect=LLM_CONNECT_TIMEOUT,
+                read=LLM_TIMEOUT,
+                write=LLM_CONNECT_TIMEOUT,
+                pool=LLM_CONNECT_TIMEOUT,
+            ),
+            max_retries=0,
         )
 
     def _log_request(self, params: Dict[str, Any]):
@@ -116,6 +127,8 @@ class LLMClient:
     def _calculate_retry_delay(self, attempt: int, exception: Exception) -> float:
         if isinstance(exception, RateLimitError):
             return RATE_LIMIT_COOLDOWN
+        if isinstance(exception, APITimeoutError):
+            return min(RETRY_DELAY_BASE * (2 ** attempt) + 5, RETRY_DELAY_MAX)
         return min(RETRY_DELAY_BASE * (2 ** attempt), RETRY_DELAY_MAX)
 
     def _should_retry(self, exception: Exception) -> bool:
@@ -173,7 +186,20 @@ class LLMClient:
 
             except Exception as e:
                 last_exception = e
-                api_logger.error(f"API调用失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {e}")
+                retry_type = type(e).__name__
+                if isinstance(e, APITimeoutError):
+                    api_logger.warning(
+                        f"API超时 (尝试 {attempt + 1}/{MAX_RETRIES}, "
+                        f"timeout={LLM_TIMEOUT}s): {retry_type}"
+                    )
+                elif isinstance(e, (APIConnectionError, RateLimitError)):
+                    api_logger.warning(
+                        f"API调用失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {retry_type}: {e}"
+                    )
+                else:
+                    api_logger.error(
+                        f"API调用失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {retry_type}: {e}"
+                    )
 
                 if not self._should_retry(e):
                     api_logger.error(f"不可重试的错误，放弃重试: {type(e).__name__}")

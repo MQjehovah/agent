@@ -65,7 +65,7 @@ class AgentSession:
 class AgentSessionManager:
     MAX_ITERATIONS = 100
     CLEANUP_INTERVAL = 300  # 清理间隔: 5分钟
-    MAX_CONTEXT_TOKENS = 100000  # 上下文 token 上限（按模型调整）
+    MAX_CONTEXT_TOKENS = 100 * 1000  # 上下文 token 上限（按模型调整）
     # microcompact 参数
     KEEP_RECENT_TOOL_RESULTS = 5       # 保留最近 N 条工具结果的完整内容
     TOOL_RESULT_COLLAPSE_CHARS = 300   # 旧工具结果截断到多少字符
@@ -75,22 +75,23 @@ class AgentSessionManager:
     TEXT_BLOCK_COLLAPSE_TAIL = 300        # 折叠后保留尾部字符数
 
     @staticmethod
-    def estimate_tokens(messages: list) -> int:
-        """粗略估算消息列表的 token 数（中文约 1.5 字/token，英文约 4 字/token，取保守值）"""
-        total = 0
-        for msg in messages:
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                total += int(len(content) / 1.5)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        total += int(len(part.get("text", "")) / 1.5)
-            if msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    func = tc.get("function", {})
-                    total += int(len(json.dumps(func.get("arguments", ""), ensure_ascii=False)) / 1.5)
-        return total
+    def estimate_tokens(messages: list, tool_defs: list = None) -> int:
+        """估算上下文 token 数。
+
+        基于序列化后的 UTF-8 字节数估算。OpenAI 的 cl100k_base tokenizer
+        大致为 ~3.5 字节/token（中英混合内容），取 3 保守估计以确保
+        不会低估上下文大小。
+
+        包含：消息完整 JSON 结构 + 工具定义。
+        """
+        BYTES_PER_TOKEN = 3.5
+
+        payload_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+
+        if tool_defs:
+            payload_bytes += len(json.dumps(tool_defs, ensure_ascii=False).encode("utf-8"))
+
+        return max(1, int(payload_bytes / BYTES_PER_TOKEN))
 
     @staticmethod
     def microcompact(messages: list) -> list:
@@ -165,7 +166,8 @@ class AgentSessionManager:
     async def compress_if_needed(
         messages: list,
         llm_client,
-        max_tokens: int = None
+        max_tokens: int = None,
+        tool_defs: list = None
     ) -> list:
         """三层渐进式上下文压缩。
 
@@ -174,7 +176,7 @@ class AgentSessionManager:
         Layer 3 (80%): LLM 压缩 — 调用模型生成摘要，有成本
         """
         max_tokens = max_tokens or AgentSessionManager.MAX_CONTEXT_TOKENS
-        token_count = AgentSessionManager.estimate_tokens(messages)
+        token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
 
         if token_count < max_tokens * 0.5:
             return messages
@@ -182,14 +184,14 @@ class AgentSessionManager:
         # Layer 1: microcompact — 截断旧工具结果
         if token_count >= max_tokens * 0.5:
             messages = AgentSessionManager.microcompact(messages)
-            token_count = AgentSessionManager.estimate_tokens(messages)
+            token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
             if token_count < max_tokens * 0.65:
                 return messages
 
         # Layer 2: context_collapse — 折叠超长文本块
         if token_count >= max_tokens * 0.65:
             messages = AgentSessionManager.context_collapse(messages)
-            token_count = AgentSessionManager.estimate_tokens(messages)
+            token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
             if token_count < max_tokens * 0.8:
                 return messages
 
@@ -249,7 +251,7 @@ class AgentSessionManager:
                 *recent_msgs,
             ]
 
-            new_count = AgentSessionManager.estimate_tokens(compressed)
+            new_count = AgentSessionManager.estimate_tokens(compressed, tool_defs)
             logger.info(f"上下文压缩完成: ~{token_count} → ~{new_count} tokens")
             return compressed
         except Exception as e:

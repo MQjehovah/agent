@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
@@ -10,6 +11,16 @@ from .categories import (
 )
 
 logger = logging.getLogger("agent.learning.pattern")
+
+_PATTERN_ENTRY_DEFAULTS = {
+    "count": 0,
+    "category": "skill",
+    "suggested_name": "",
+    "description": "",
+    "examples": [],
+    "created": False,
+    "first_seen": "",
+}
 
 
 class PatternTracker:
@@ -28,8 +39,23 @@ class PatternTracker:
     def _load(self):
         if os.path.exists(self.patterns_file):
             try:
-                with open(self.patterns_file, "r", encoding="utf-8") as f:
-                    self._patterns = json.load(f)
+                with open(self.patterns_file, encoding="utf-8") as f:
+                    raw = json.load(f)
+                if not isinstance(raw, dict):
+                    logger.warning("任务模式文件格式错误，重置为空")
+                    self._patterns = {}
+                    return
+                for key, entry in raw.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    defaults = dict(_PATTERN_ENTRY_DEFAULTS)
+                    defaults.update(entry)
+                    defaults["examples"] = entry.get("examples", defaults["examples"] or [])
+                    try:
+                        defaults["count"] = int(defaults["count"])
+                    except (ValueError, TypeError):
+                        defaults["count"] = 0
+                    self._patterns[key] = defaults
                 logger.debug(f"已加载 {len(self._patterns)} 个任务模式")
             except Exception as e:
                 logger.warning(f"加载任务模式文件失败: {e}")
@@ -52,22 +78,25 @@ class PatternTracker:
 
         try:
             classification = await self._classify_task(task, summary)
-            if not classification:
+            if not classification or not isinstance(classification, dict):
                 return None
 
             pattern_key = classification.get("pattern_key", "")
+            if not pattern_key:
+                return None
+
             category = classification.get("category", "skill")
             suggested_name = classification.get("suggested_name", "")
             description = classification.get("description", "")
 
-            if not pattern_key:
-                return None
+            if category not in ("skill", "subagent"):
+                category = "skill"
 
             return self._update_pattern(
                 pattern_key, category, suggested_name, description, task
             )
         except Exception as e:
-            logger.warning(f"任务模式记录失败: {e}")
+            logger.warning(f"任务模式记录失败: {e}", exc_info=True)
             return None
 
     def _update_pattern(
@@ -84,16 +113,20 @@ class PatternTracker:
             if entry.get("created"):
                 return None
 
-            entry["count"] += 1
-            if len(entry.get("examples", [])) < PATTERN_MAX_EXAMPLES:
-                entry["examples"].append(task)
+            count = entry.get("count", 0) + 1
+            entry["count"] = count
+            examples = entry.get("examples", [])
+            if len(examples) < PATTERN_MAX_EXAMPLES:
+                examples.append(task)
+                entry["examples"] = examples
             if suggested_name:
                 entry["suggested_name"] = suggested_name
             if description:
                 entry["description"] = description
         else:
+            count = 1
             self._patterns[pattern_key] = {
-                "count": 1,
+                "count": count,
                 "category": category,
                 "suggested_name": suggested_name,
                 "description": description,
@@ -105,18 +138,19 @@ class PatternTracker:
         self._save()
 
         entry = self._patterns[pattern_key]
-        if entry["count"] >= PATTERN_TRIGGER_THRESHOLD and not entry["created"]:
+        entry_count = entry.get("count", 0)
+        if entry_count >= PATTERN_TRIGGER_THRESHOLD and not entry.get("created"):
             logger.info(
                 f"[模式检测] 模式 '{pattern_key}' 已达阈值 "
-                f"({entry['count']}/{PATTERN_TRIGGER_THRESHOLD})，建议创建为 {category}"
+                f"({entry_count}/{PATTERN_TRIGGER_THRESHOLD})，建议创建为 {category}"
             )
             return {
                 "pattern_key": pattern_key,
-                "category": entry["category"],
-                "suggested_name": entry["suggested_name"],
-                "description": entry["description"],
-                "examples": entry["examples"],
-                "count": entry["count"],
+                "category": entry.get("category", category),
+                "suggested_name": entry.get("suggested_name", suggested_name),
+                "description": entry.get("description", description),
+                "examples": entry.get("examples", []),
+                "count": entry_count,
             }
 
         return None
@@ -143,31 +177,61 @@ class PatternTracker:
     def _parse_classification(self, text: str) -> Optional[Dict[str, Any]]:
         """解析 LLM 返回的分类 JSON"""
         text = text.strip()
+        if not text:
+            return None
 
+        text = self._strip_code_block(text)
+
+        result = self._extract_json(text)
+        if result and isinstance(result, dict) and "pattern_key" in result:
+            if result.get("category") not in ("skill", "subagent"):
+                result["category"] = "skill"
+            return result
+
+        logger.warning(f"无法解析分类结果: {text[:200]}")
+        return None
+
+    def _strip_code_block(self, text: str) -> str:
+        """从 LLM 输出中移除 markdown 代码块标记"""
+        text = text.strip()
+        pattern = re.compile(r'^```(?:\w+)?\s*\n(.*?)\n\s*```', re.DOTALL)
+        match = pattern.search(text)
+        if match:
+            return match.group(1).strip()
         if text.startswith("```"):
             lines = text.split("\n")
-            text = "\n".join(lines[1:-1])
+            if len(lines) >= 3:
+                return "\n".join(lines[1:-1]).strip()
+        return text
 
+    def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
+        """从文本中提取 JSON 对象，尝试多种方式"""
         try:
             result = json.loads(text)
-            if "pattern_key" in result and "category" in result:
-                if result["category"] not in ("skill", "subagent"):
-                    result["category"] = "skill"
+            if isinstance(result, dict):
                 return result
+            if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
+                return result[0]
         except json.JSONDecodeError:
             pass
 
-        import re
-        json_match = re.search(r'\{[^{}]+\}', text)
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
         if json_match:
             try:
                 result = json.loads(json_match.group())
-                if "pattern_key" in result:
+                if isinstance(result, dict):
                     return result
             except json.JSONDecodeError:
                 pass
 
-        logger.warning(f"无法解析分类结果: {text[:200]}")
+        for match in re.finditer(r'\{[^{}]+\}', text):
+            try:
+                result = json.loads(match.group())
+                if isinstance(result, dict):
+                    return result
+            except json.JSONDecodeError:
+                continue
+
         return None
 
     def get_all_patterns(self) -> Dict[str, Dict[str, Any]]:
@@ -178,7 +242,7 @@ class PatternTracker:
         return [
             {"pattern_key": k, **v}
             for k, v in self._patterns.items()
-            if v["count"] >= PATTERN_TRIGGER_THRESHOLD and not v["created"]
+            if v.get("count", 0) >= PATTERN_TRIGGER_THRESHOLD and not v.get("created")
         ]
 
     def get_stats(self) -> Dict[str, Any]:
@@ -201,4 +265,7 @@ class PatternTracker:
             stream=False,
             use_cache=False,
         )
-        return (response.choices[0].message.content or "").strip()
+        content = response.choices[0].message.content
+        if not content:
+            return ""
+        return content.strip()

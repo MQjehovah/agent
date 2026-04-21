@@ -63,7 +63,7 @@ PATTERN_CLASSIFY_PROMPT = (
     "   - subagent: 需要独立上下文、专业工具、多步骤深度操作的任务\n"
     "3. 给出建议的中文名称（2-6个字）和一句描述\n\n"
     "严格按以下JSON格式输出，不要输出其他内容：\n"
-    '{"pattern_key": "xxx", "category": "skill", "suggested_name": "名称", "description": "描述"}\n\n'
+    '{{"pattern_key": "xxx", "category": "skill", "suggested_name": "名称", "description": "描述"}}\n\n'
     "任务: {task}\n"
     "执行摘要:\n{summary}"
 )

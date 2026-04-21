@@ -73,6 +73,8 @@ def validate_config() -> bool:
     validator.validate_optional("MAX_SESSIONS", "100", "最大会话数")
     validator.validate_optional("CACHE_MAX_SIZE", "1000", "缓存大小")
     validator.validate_optional("CACHE_TTL_SECONDS", "3600", "缓存过期时间")
+    validator.validate_optional("LLM_TIMEOUT", "300", "LLM 请求超时（秒）")
+    validator.validate_optional("LLM_CONNECT_TIMEOUT", "30", "LLM 连接超时（秒）")
     validator.validate_optional("LOG_LEVEL", "INFO", "日志级别")
 
     report = validator.get_report()
@@ -129,6 +131,10 @@ class Config:
     CACHE_MAX_SIZE: int = 1000
     CACHE_TTL_SECONDS: int = 3600
 
+    # LLM 配置
+    LLM_TIMEOUT: float = 300.0
+    LLM_CONNECT_TIMEOUT: float = 30.0
+
     # 日志级别
     LOG_LEVEL: str = "INFO"
 
@@ -139,4 +145,6 @@ class Config:
         cls.MAX_SESSIONS = get_config_value("MAX_SESSIONS", 100, int)
         cls.CACHE_MAX_SIZE = get_config_value("CACHE_MAX_SIZE", 1000, int)
         cls.CACHE_TTL_SECONDS = get_config_value("CACHE_TTL_SECONDS", 3600, int)
+        cls.LLM_TIMEOUT = get_config_value("LLM_TIMEOUT", 300, float)
+        cls.LLM_CONNECT_TIMEOUT = get_config_value("LLM_CONNECT_TIMEOUT", 30, float)
         cls.LOG_LEVEL = get_config_value("LOG_LEVEL", "INFO", str)

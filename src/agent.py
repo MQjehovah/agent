@@ -561,8 +561,19 @@ class Agent:
                 try:
                     # 上下文压缩检查
                     session.messages = await AgentSessionManager.compress_if_needed(
-                        session.messages, self.client
+                        session.messages, self.client, tool_defs=self.tool_defs
                     )
+
+                    # 追踪上下文大小
+                    ctx_tokens = AgentSessionManager.estimate_tokens(
+                        session.messages, self.tool_defs
+                    )
+                    self.tracer.record_context_size(ctx_tokens)
+                    if i == 0 or (i + 1) % 5 == 0:
+                        logger.info(
+                            f"[{session.session_id}] 上下文大小: {ctx_tokens:,} tokens "
+                            f"(轮次 {i + 1}/{self.max_iterations})"
+                        )
 
                     # 每轮更新动态 prompt 区块
                     self._update_dynamic_prompt(task)
@@ -571,6 +582,15 @@ class Agent:
 
                     # 思考
                     self.tracer.start_span("agent.think")
+                    usage_summary = self.client.usage_tracker.get_summary()
+                    logger.info(
+                        f"[{session.session_id}] 开始思考 | "
+                        f"轮次 {i + 1}/{self.max_iterations} | "
+                        f"上下文 {ctx_tokens:,}tok | "
+                        f"累计 {usage_summary['total_calls']}次 "
+                        f"{usage_summary['total_prompt_tokens']:,}+{usage_summary['total_completion_tokens']:,}tok "
+                        f"¥{usage_summary['total_cost_cny']}"
+                    )
                     response = await self._think(session.messages)
                     self.tracer.end_span()
 
@@ -639,6 +659,17 @@ class Agent:
         })
 
         self.tracer.end_span(status="ok" if self.status == "completed" else "error")
+
+        # 输出上下文统计
+        ctx_stats = self.tracer.get_context_stats()
+        if ctx_stats["samples"] > 0:
+            logger.info(
+                f"[{session.session_id if session else ''}] 上下文统计: "
+                f"峰值={ctx_stats['peak']:,}tok, "
+                f"最终={ctx_stats['final']:,}tok, "
+                f"均值={ctx_stats['avg']:,}tok, "
+                f"采样数={ctx_stats['samples']}"
+            )
 
         logger.debug(
             f"Agent [{self.name}] [{session.session_id}] 任务完成: {self.status}")
