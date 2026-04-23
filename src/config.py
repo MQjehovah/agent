@@ -76,6 +76,7 @@ def validate_config() -> bool:
     validator.validate_optional("LLM_TIMEOUT", "300", "LLM 请求超时（秒）")
     validator.validate_optional("LLM_CONNECT_TIMEOUT", "30", "LLM 连接超时（秒）")
     validator.validate_optional("LOG_LEVEL", "INFO", "日志级别")
+    validator.validate_optional("AUTONOMOUS_DISCOVERY_INTERVAL", "1800", "自主巡检间隔（秒）")
 
     report = validator.get_report()
 
@@ -138,6 +139,9 @@ class Config:
     # 日志级别
     LOG_LEVEL: str = "INFO"
 
+    # 自主模式配置
+    AUTONOMOUS_DISCOVERY_INTERVAL: int = 1800
+
     @classmethod
     def load_from_env(cls):
         """从环境变量加载配置"""
@@ -148,3 +152,6 @@ class Config:
         cls.LLM_TIMEOUT = get_config_value("LLM_TIMEOUT", 300, float)
         cls.LLM_CONNECT_TIMEOUT = get_config_value("LLM_CONNECT_TIMEOUT", 30, float)
         cls.LOG_LEVEL = get_config_value("LOG_LEVEL", "INFO", str)
+        cls.AUTONOMOUS_DISCOVERY_INTERVAL = get_config_value(
+            "AUTONOMOUS_DISCOVERY_INTERVAL", 1800, int
+        )

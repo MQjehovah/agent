@@ -112,6 +112,79 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
             current_task.cancel()
 
 
+async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
+    """自主模式 - 感知-规划-执行-校验循环"""
+    from autonomous.eventbus import EventBus
+    from autonomous.goal import GoalManager
+    from autonomous.perceiver import Perceiver
+    from autonomous.planner import Planner
+    from autonomous.executor import Executor
+    from autonomous.verifier import Verifier
+    from autonomous.reporter import Reporter, DingTalkReporter
+    from autonomous.loop import AutonomousLoop
+
+    workspace = agent.workspace
+    db_path = os.path.join(workspace, "autonomous.db")
+
+    event_bus = EventBus()
+    goal_manager = GoalManager(db_path)
+
+    tool_summary = ""
+    if hasattr(agent, "_get_tool_summary"):
+        tool_summary = agent._get_tool_summary()
+
+    subagent_summary = ""
+    if agent.subagent_manager:
+        subagent_summary = agent.subagent_manager.get_subagent_prompt()
+
+    perceiver = Perceiver(event_bus=event_bus, agent=agent)
+    planner = Planner(
+        client=agent.client,
+        tool_summary=tool_summary,
+        subagent_summary=subagent_summary,
+    )
+
+    dingtalk_plugin = None
+    if agent.plugin_manager:
+        dingtalk_plugin = agent.plugin_manager.get_plugin("dingtalk")
+
+    if (
+        dingtalk_plugin
+        and hasattr(dingtalk_plugin, "sessions")
+        and dingtalk_plugin.sessions
+    ):
+        reporter = DingTalkReporter(dingtalk_plugin=dingtalk_plugin)
+    else:
+        reporter = Reporter()
+
+    executor = Executor(agent=agent, reporter=reporter)
+    verifier = Verifier(client=agent.client)
+
+    auto_loop = AutonomousLoop(
+        event_bus=event_bus,
+        agent=agent,
+        goal_manager=goal_manager,
+        planner=planner,
+        executor=executor,
+        verifier=verifier,
+        reporter=reporter,
+        perceiver=perceiver,
+        shutdown_event=shutdown_event,
+    )
+
+    console.print(
+        Panel.fit(
+            "[bold green]自主模式已启动[/bold green]\n"
+            f"目标数据库: {db_path}\n"
+            f"自主巡检间隔: {auto_loop._discovery_interval}s\n"
+            "等待事件...",
+            border_style="green",
+        )
+    )
+
+    await auto_loop.run()
+
+
 async def cleanup(plugin_manager, scheduler, agent):
     """统一清理资源"""
     try:
@@ -142,6 +215,13 @@ async def main():
     parser.add_argument("--no-plugins", action="store_true")
     parser.add_argument("--no-scheduler", action="store_true")
     parser.add_argument("--skip-config-check", action="store_true")
+    parser.add_argument(
+        "--mode",
+        "-m",
+        choices=["interactive", "autonomous"],
+        default="interactive",
+        help="运行模式",
+    )
     args = parser.parse_args()
 
     Config.load_from_env()
@@ -181,7 +261,10 @@ async def main():
             pass
 
     try:
-        await interactive_mode(agent, shutdown_event)
+        if args.mode == "autonomous":
+            await autonomous_mode(agent, shutdown_event, args)
+        else:
+            await interactive_mode(agent, shutdown_event)
     except asyncio.CancelledError:
         logger.info("任务取消")
     except Exception as e:
