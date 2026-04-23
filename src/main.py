@@ -145,8 +145,25 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     )
 
     dingtalk_plugin = None
-    if agent.plugin_manager:
-        dingtalk_plugin = agent.plugin_manager.get_plugin("dingtalk")
+    if not args.no_plugins:
+        plugin_manager = PluginManager(os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"))
+        plugin_manager.load_all()
+        agent.plugin_manager = plugin_manager
+
+        async def _plugin_to_perceiver(session_id: str, content: str):
+            await perceiver.handle_dingtalk_message({
+                "text": content,
+                "session_id": session_id,
+                "sender_nick": "用户",
+            })
+            return "已收到，正在处理中..."
+
+        plugin_manager.register_executor(_plugin_to_perceiver)
+        plugin_manager.start_all()
+
+        dingtalk_plugin = plugin_manager.get_plugin("dingtalk")
+    else:
+        plugin_manager = None
 
     if (
         dingtalk_plugin
@@ -156,6 +173,16 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
         reporter = DingTalkReporter(dingtalk_plugin=dingtalk_plugin)
     else:
         reporter = Reporter()
+
+    scheduler = None
+    if not args.no_scheduler:
+        scheduler = SchedulerManager(os.path.join(workspace, "schedules.json"))
+
+        async def _schedule_to_perceiver(schedule_task: str):
+            await perceiver.handle_schedule({"name": "定时任务", "task": schedule_task})
+
+        scheduler.set_executor(_schedule_to_perceiver)
+        scheduler.start()
 
     executor = Executor(agent=agent, reporter=reporter)
     verifier = Verifier(client=agent.client)
@@ -172,17 +199,25 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
         shutdown_event=shutdown_event,
     )
 
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            asyncio.get_running_loop().add_signal_handler(sig, shutdown_event.set)
+        except NotImplementedError:
+            pass
+
     console.print(
         Panel.fit(
             "[bold green]自主模式已启动[/bold green]\n"
             f"目标数据库: {db_path}\n"
             f"自主巡检间隔: {auto_loop._discovery_interval}s\n"
+            "信号源: 钉钉消息 | Webhook | 定时任务 | 自主巡检\n"
             "等待事件...",
             border_style="green",
         )
     )
 
     await auto_loop.run()
+    return scheduler, plugin_manager
 
 
 async def cleanup(plugin_manager, scheduler, agent):
@@ -240,30 +275,30 @@ async def main():
     await agent.initialize()
 
     scheduler = None
-    if not args.no_scheduler:
-        scheduler = SchedulerManager(os.path.join(workspace, "schedules.json"))
-        scheduler.set_executor(lambda t: agent.run(t))
-        scheduler.start()
-
     plugin_manager = None
-    if not args.no_plugins:
-        plugin_manager = PluginManager(os.path.join(src_dir, "plugins"))
-        plugin_manager.load_all()
-        plugin_manager.register_executor(lambda sid, c: agent.run(c, session_id=sid))
-        plugin_manager.start_all()
-        agent.plugin_manager = plugin_manager
-
-    # 信号处理
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            asyncio.get_running_loop().add_signal_handler(sig, shutdown_event.set)
-        except NotImplementedError:
-            pass
 
     try:
         if args.mode == "autonomous":
-            await autonomous_mode(agent, shutdown_event, args)
+            scheduler, plugin_manager = await autonomous_mode(agent, shutdown_event, args)
         else:
+            if not args.no_scheduler:
+                scheduler = SchedulerManager(os.path.join(workspace, "schedules.json"))
+                scheduler.set_executor(lambda t: agent.run(t))
+                scheduler.start()
+
+            if not args.no_plugins:
+                plugin_manager = PluginManager(os.path.join(src_dir, "plugins"))
+                plugin_manager.load_all()
+                plugin_manager.register_executor(lambda sid, c: agent.run(c, session_id=sid))
+                plugin_manager.start_all()
+                agent.plugin_manager = plugin_manager
+
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    asyncio.get_running_loop().add_signal_handler(sig, shutdown_event.set)
+                except NotImplementedError:
+                    pass
+
             await interactive_mode(agent, shutdown_event)
     except asyncio.CancelledError:
         logger.info("任务取消")

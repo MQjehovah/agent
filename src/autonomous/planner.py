@@ -13,14 +13,16 @@ PLAN_PROMPT = """\
 描述：{description}
 {context_section}\
 {tools_section}
-
+\
 请返回JSON格式的步骤列表：
 {{"steps": [{{"task": "步骤描述", "requires_confirmation": false}}, ...]}}
 
 要求：
-- 每个步骤应该是一个明确的、可执行的任务
-- 步骤之间有合理的执行顺序
-- 仅在需要人工确认时设置 requires_confirmation 为 true
+- 简单目标（如查询、搜索、问答）只需1个步骤，不要拆分
+- 中等复杂度目标拆成2-3步
+- 复杂目标（涉及多个系统、多人协作）拆成3-5步，最多不超过5步
+- 每个步骤必须包含足够的上下文信息，确保独立执行时能理解完整任务
+- 仅在涉及删除数据、发送外部消息等高风险操作时设置 requires_confirmation 为 true
 - 只返回JSON，不要其他内容
 """
 

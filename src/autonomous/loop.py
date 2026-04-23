@@ -3,7 +3,7 @@ import contextlib
 import logging
 
 from autonomous.eventbus import EventBus
-from autonomous.goal import Goal, GoalManager
+from autonomous.goal import Goal, GoalManager, PlanStep
 
 logger = logging.getLogger("agent.autonomous.loop")
 
@@ -83,9 +83,17 @@ class AutonomousLoop:
                     failed_steps = [
                         s for s in executed_steps if s.status != "completed"
                     ]
+                    if not failed_steps and not feedback:
+                        break
                     plan = await self.planner.replan(
                         goal, feedback, completed_steps, failed_steps
                     )
+
+                if not plan.steps:
+                    logger.warning(f"目标 [{goal.id}] 规划结果为空，直接执行整个目标")
+                    plan.steps = [PlanStep(
+                        task_description=goal.description, order=0
+                    )]
 
                 self.goal_manager.save_plan(goal.id, plan)
                 self.goal_manager.update_status(goal.id, "executing")
@@ -112,7 +120,28 @@ class AutonomousLoop:
 
         self.goal_manager.update_status(goal.id, "failed")
         goal.status = "failed"
+
+        best_result = self._collect_best_result(executed_steps)
+        if best_result:
+            logger.info(f"目标 [{goal.id}] 失败，但存在部分结果，推送最佳结果")
+            await self.reporter.report_failure_with_partial(goal, best_result)
+        else:
+            await self.reporter.report_failure(goal, type("V", (), {
+                "summary": "所有尝试均失败", "feedback": "请稍后重试或联系管理员"
+            })())
+
         return goal
+
+    def _collect_best_result(self, steps: list) -> str:
+        completed = [s for s in steps if s.status == "completed" and s.result]
+        if completed:
+            last = completed[-1]
+            return f"步骤「{last.task_description}」的结果:\n{last.result}"
+        all_with_result = [s for s in steps if s.result]
+        if all_with_result:
+            last = all_with_result[-1]
+            return f"步骤「{last.task_description}」的部分结果:\n{last.result}"
+        return ""
 
     async def _self_discovery_loop(self):
         while not self.shutdown_event.is_set():

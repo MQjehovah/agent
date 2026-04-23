@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any
 
 from autonomous.eventbus import Event, EventBus
@@ -8,6 +9,15 @@ logger = logging.getLogger("agent.autonomous.perceiver")
 
 URGENCY_KEYWORDS = ("紧急", "告警", "异常", "故障")
 HIGH_SEVERITY_LEVELS = ("high", "critical", "urgent")
+
+
+def _strip_json_block(text: str) -> str:
+    """去除 LLM 返回的 markdown 代码块包裹（```json ... ```）"""
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return text
 
 
 class Perceiver:
@@ -67,14 +77,15 @@ class Perceiver:
             if client is None:
                 return
             response = await client.chat(
-                model=getattr(client, "model", "glm-5"),
-                messages=[
-                    {"role": "system", "content": "你是运维助手。分析以下记忆内容，判断是否需要主动执行某项任务。如果需要，返回JSON: {\"need_action\": true, \"title\": \"...\", \"description\": \"...\"}。如果不需要，返回 {\"need_action\": false}"},
+                [
+                    {"role": "system", "content": '你是运维助手。分析以下记忆内容，判断是否需要主动执行某项任务。如果需要，返回JSON: {"need_action": true, "title": "...", "description": "..."}。如果不需要，返回 {"need_action": false}'},
                     {"role": "user", "content": memory_content[:4000]},
                 ],
+                tools=[],
+                stream=False,
             )
             content = response.choices[0].message.content
-            result = json.loads(content)
+            result = json.loads(_strip_json_block(content))
             if result.get("need_action"):
                 event = Event(
                     type="self_discovery",
@@ -105,8 +116,7 @@ class Perceiver:
             return None
         text = payload.get("text", "")
         response = await client.chat(
-            model=getattr(client, "model", "glm-5"),
-            messages=[
+            [
                 {
                     "role": "system",
                     "content": (
@@ -117,10 +127,12 @@ class Perceiver:
                 },
                 {"role": "user", "content": text},
             ],
+            tools=[],
+            stream=False,
         )
         content = response.choices[0].message.content
         try:
-            return json.loads(content)
+            return json.loads(_strip_json_block(content))
         except json.JSONDecodeError:
             logger.warning("解析目标判断结果失败: %s", content)
             return None

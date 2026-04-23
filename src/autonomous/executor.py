@@ -13,6 +13,7 @@ class Executor:
     async def execute_plan(self, plan: Plan) -> list[PlanStep]:
         executed = []
         sorted_steps = sorted(plan.steps, key=lambda s: s.order)
+        previous_results: list[str] = []
 
         for step in sorted_steps:
             if step.status == "completed":
@@ -20,10 +21,20 @@ class Executor:
 
             step.status = "running"
 
+            task_with_context = step.task_description
+            if previous_results:
+                context_block = "\n\n---\n以下是前序步骤的执行结果，请在此基础上继续：\n" + "\n".join(previous_results)
+                task_with_context = step.task_description + context_block
+
             try:
-                result = await self.agent.run(step.task_description)
+                result = await self.agent.run(task_with_context)
                 step.status = result.status
                 step.result = result.result
+                if step.result:
+                    result_preview = step.result[:3000]
+                    previous_results.append(
+                        f"【步骤{step.order}】{step.task_description}\n结果: {result_preview}"
+                    )
             except Exception as e:
                 step.status = "failed"
                 step.result = str(e)

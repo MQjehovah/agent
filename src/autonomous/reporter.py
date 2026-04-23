@@ -24,6 +24,12 @@ class Reporter:
             verification.summary,
         )
 
+    async def report_failure_with_partial(self, goal, partial_result: str) -> None:
+        logger.info(
+            "目标部分失败，推送最佳结果: %s",
+            goal.title,
+        )
+
     async def ask_confirmation(self, step: PlanStep) -> bool:
         logger.info("确认步骤: %s (自动确认)", step.task_description)
         return True
@@ -48,12 +54,18 @@ class DingTalkReporter(Reporter):
 
     async def report_failure(self, goal, verification) -> None:
         await super().report_failure(goal, verification)
-        title = "目标失败"
+        title = "目标未达成"
         content = (
             f"## {title}\n\n**{goal.title}**\n\n"
             f"**摘要:** {verification.summary}\n\n"
             f"**反馈:** {verification.feedback}"
         )
+        await self._send_markdown(title, content)
+
+    async def report_failure_with_partial(self, goal, partial_result: str) -> None:
+        await super().report_failure_with_partial(goal, partial_result)
+        title = "任务完成（部分结果）"
+        content = f"## {title}\n\n**{goal.title}**\n\n{partial_result[:8000]}"
         await self._send_markdown(title, content)
 
     async def _send_markdown(self, title: str, content: str) -> None:
