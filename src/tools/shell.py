@@ -32,6 +32,16 @@ def decode_output(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _close_transport(process: asyncio.subprocess.Process):
+    """显式关闭子进程 pipe，避免 Event loop 关闭后 GC 触发 RuntimeError"""
+    try:
+        for pipe in (process.stdout, process.stderr, process.stdin):
+            if pipe is not None:
+                pipe.close()
+    except Exception:
+        pass
+
+
 class ShellTool(BuiltinTool):
     @property
     def name(self) -> str:
@@ -110,6 +120,7 @@ class ShellTool(BuiltinTool):
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
+                _close_transport(process)
                 logger.warning(f"命令执行超时: {command}")
                 return json.dumps({
                     "success": False,
@@ -118,6 +129,7 @@ class ShellTool(BuiltinTool):
 
             stdout_str = decode_output(stdout)
             stderr_str = decode_output(stderr)
+            _close_transport(process)
 
             # 按最大输出长度截断
             if len(stdout_str) > max_output:

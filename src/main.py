@@ -238,6 +238,10 @@ async def cleanup(plugin_manager, scheduler, agent):
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    # 关闭事件循环前执行一次 GC，让 subprocess transport 在循环还活着时被回收
+    import gc
+    gc.collect()
+
 
 async def run_team_mode(workspace: str, agent: Agent):
     """Team mode - TeamLead orchestrates AI development team."""
