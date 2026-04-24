@@ -90,8 +90,8 @@ class GrepTool(BuiltinTool):
         if not pattern:
             return json.dumps({"success": False, "error": "搜索模式不能为空"}, ensure_ascii=False)
 
-        if not os.path.isdir(search_path):
-            return json.dumps({"success": False, "error": f"目录不存在: {search_path}"}, ensure_ascii=False)
+        if not os.path.exists(search_path):
+            return json.dumps({"success": False, "error": f"路径不存在: {search_path}"}, ensure_ascii=False)
 
         try:
             flags = re.IGNORECASE if case_insensitive else 0
@@ -103,45 +103,39 @@ class GrepTool(BuiltinTool):
         files_searched = 0
         skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode'}
 
-        for root, dirs, files in os.walk(search_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in skip_dirs]
+        if os.path.isfile(search_path):
+            file_matches, _ = self._search_file(search_path, regex, file_pattern, context_lines)
+            files_searched = 1
+            matches = file_matches[:max_results]
+            if len(file_matches) > max_results:
+                return json.dumps({
+                    "success": True,
+                    "pattern": pattern,
+                    "files_searched": files_searched,
+                    "total_matches": len(matches),
+                    "truncated": True,
+                    "matches": matches
+                }, ensure_ascii=False)
+        else:
+            for root, dirs, files in os.walk(search_path):
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in skip_dirs]
 
-            for filename in files:
-                if not fnmatch.fnmatch(filename, file_pattern):
-                    continue
+                for filename in files:
+                    filepath = os.path.join(root, filename)
+                    file_matches, searched = self._search_file(filepath, regex, file_pattern, context_lines)
+                    files_searched += searched
+                    matches.extend(file_matches)
 
-                filepath = os.path.join(root, filename)
-                files_searched += 1
-
-                try:
-                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                        lines = f.readlines()
-                except (OSError, PermissionError):
-                    continue
-
-                for i, line in enumerate(lines):
-                    if regex.search(line):
-                        start = max(0, i - context_lines)
-                        end = min(len(lines), i + context_lines + 1)
-                        context = "".join(lines[start:end])
-
-                        matches.append({
-                            "file": filepath,
-                            "line": i + 1,
-                            "content": line.rstrip(),
-                            "context": context.rstrip()
-                        })
-
-                        if len(matches) >= max_results:
-                            matches = self._truncate_matches(matches)
-                            return json.dumps({
-                                "success": True,
-                                "pattern": pattern,
-                                "files_searched": files_searched,
-                                "total_matches": len(matches),
-                                "truncated": True,
-                                "matches": matches
-                            }, ensure_ascii=False)
+                    if len(matches) >= max_results:
+                        matches = matches[:max_results]
+                        return json.dumps({
+                            "success": True,
+                            "pattern": pattern,
+                            "files_searched": files_searched,
+                            "total_matches": len(matches),
+                            "truncated": True,
+                            "matches": matches
+                        }, ensure_ascii=False)
 
         # 截断保护
         truncated = len(matches) > 0 and len(json.dumps(matches, ensure_ascii=False)) > self.MAX_MATCH_OUTPUT_CHARS
@@ -156,3 +150,30 @@ class GrepTool(BuiltinTool):
             "truncated": truncated,
             "matches": matches
         }, ensure_ascii=False)
+
+    def _search_file(self, filepath, regex, file_pattern, context_lines):
+        """搜索单个文件，返回 (matches, files_searched)"""
+        filename = os.path.basename(filepath)
+        if not fnmatch.fnmatch(filename, file_pattern):
+            return [], 0
+
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+        except (OSError, PermissionError):
+            return [], 0
+
+        matches = []
+        for i, line in enumerate(lines):
+            if regex.search(line):
+                start = max(0, i - context_lines)
+                end = min(len(lines), i + context_lines + 1)
+                context = "".join(lines[start:end])
+                matches.append({
+                    "file": filepath,
+                    "line": i + 1,
+                    "content": line.rstrip(),
+                    "context": context.rstrip()
+                })
+
+        return matches, 1
