@@ -25,6 +25,7 @@ class CompileError(FallbackAction):
 
 
 class TestError(FallbackAction):
+    __test__ = False
     stage: str = "test"
 
     def __init__(self, message: str = ""):
