@@ -19,3 +19,7 @@ logs/
 .worktrees/
 
 .pytest_cache/
+
+.venv
+
+workspace/project/

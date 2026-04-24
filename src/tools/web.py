@@ -1,6 +1,7 @@
 import html
 import json
 import logging
+import os
 import re
 from typing import Dict, Any
 from urllib.parse import unquote
@@ -11,11 +12,52 @@ from . import BuiltinTool
 
 logger = logging.getLogger("agent.tools")
 
+_SEARCH_BACKENDS = [
+    "tavily",
+    "serper",
+    "bing",
+    "searxng",
+    "duckduckgo",
+    "duckduckgo_api",
+]
+
+
+def _get_env(key: str, default: str = "") -> str:
+    return os.getenv(key, default)
+
+
+def _get_env_int(key: str, default: int = 0) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _get_ordered_backends() -> list:
+    order_str = _get_env("SEARCH_BACKENDS", "").strip()
+    if not order_str:
+        backends = []
+        if _get_env("TAVILY_API_KEY"):
+            backends.append("tavily")
+        if _get_env("SERPER_API_KEY"):
+            backends.append("serper")
+        if _get_env("BING_SEARCH_API_KEY"):
+            backends.append("bing")
+        if _get_env("SEARXNG_URL"):
+            backends.append("searxng")
+        backends.extend(["duckduckgo", "duckduckgo_api"])
+        return backends
+    configured = [b.strip() for b in order_str.split(",") if b.strip()]
+    return [b for b in configured if b in _SEARCH_BACKENDS] or ["duckduckgo", "duckduckgo_api"]
+
 
 class WebSearchTool(BuiltinTool):
-    """网络搜索工具 — 搜索互联网获取最新信息"""
+    """网络搜索工具 — 多后端容错，按优先级依次尝试"""
 
     DUCKDUCKGO_HTML_URL = "https://html.duckduckgo.com/html/"
+    TAVILY_URL = "https://api.tavily.com/search"
+    SERPER_URL = "https://google.serper.dev/search"
+    BING_URL = "https://api.bing.microsoft.com/v7.0/search"
 
     @property
     def name(self) -> str:
@@ -56,18 +98,40 @@ class WebSearchTool(BuiltinTool):
         if not query:
             return json.dumps({"success": False, "error": "搜索关键词不能为空"}, ensure_ascii=False)
 
-        results = await self._search_duckduckgo(query, max_results)
+        backends = _get_ordered_backends()
+        results = []
+        backend_name = ""
 
-        if not results:
-            results = await self._search_duckduckgo_api(query, max_results)
+        for backend in backends:
+            method = getattr(self, f"_search_{backend}", None)
+            if method is None:
+                continue
+            try:
+                if backend == "searxng":
+                    results = await method(_get_env("SEARXNG_URL"), query, max_results)
+                elif backend == "tavily":
+                    results = await method(_get_env("TAVILY_API_KEY"), query, max_results)
+                elif backend == "serper":
+                    results = await method(_get_env("SERPER_API_KEY"), query, max_results)
+                elif backend == "bing":
+                    results = await method(_get_env("BING_SEARCH_API_KEY"), query, max_results)
+                else:
+                    results = await method(query, max_results)
+                if results:
+                    backend_name = backend
+                    break
+            except Exception as e:
+                logger.warning(f"搜索后端 {backend} 失败: {e}")
+                continue
 
         if not results:
             return json.dumps({
                 "success": False,
-                "error": f"未找到相关结果: {query}",
-                "query": query
+                "error": f"所有搜索后端均未返回结果: {query}",
+                "query": query,
             }, ensure_ascii=False)
 
+        logger.info(f"搜索成功，后端: {backend_name}，结果数: {len(results)}")
         return json.dumps({
             "success": True,
             "query": query,
@@ -75,8 +139,178 @@ class WebSearchTool(BuiltinTool):
             "results": results[:max_results]
         }, ensure_ascii=False)
 
+    # ── Tavily ──────────────────────────────────────────
+
+    async def _search_tavily(self, api_key: str, query: str, max_results: int) -> list:
+        """Tavily 搜索 API — 专为 AI Agent 设计"""
+        if not api_key:
+            return []
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
+            ) as client:
+                resp = await client.post(
+                    self.TAVILY_URL,
+                    json={
+                        "api_key": api_key,
+                        "query": query,
+                        "max_results": max_results,
+                        "search_depth": "basic",
+                        "include_answer": False,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            results = []
+            for item in data.get("results", [])[:max_results]:
+                title = (item.get("title") or "").strip()
+                snippet = (item.get("content") or "").strip()
+                link = (item.get("url") or "").strip()
+                if not title or not link:
+                    continue
+                results.append({
+                    "title": title[:200],
+                    "snippet": snippet[:500],
+                    "url": link,
+                })
+            return results
+        except Exception as e:
+            logger.warning(f"Tavily 搜索失败: {e}")
+            return []
+
+    # ── Serper (Google) ─────────────────────────────────
+
+    async def _search_serper(self, api_key: str, query: str, max_results: int) -> list:
+        """Serper.dev 搜索 API — Google 搜索结果"""
+        if not api_key:
+            return []
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10, read=15, write=10, pool=10),
+            ) as client:
+                resp = await client.post(
+                    self.SERPER_URL,
+                    headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                    json={"q": query, "num": max_results, "gl": "cn", "hl": "zh-cn"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            results = []
+            for item in data.get("organic", [])[:max_results]:
+                title = (item.get("title") or "").strip()
+                snippet = (item.get("snippet") or "").strip()
+                link = (item.get("link") or "").strip()
+                if not title or not link:
+                    continue
+                results.append({
+                    "title": title[:200],
+                    "snippet": snippet[:500],
+                    "url": link,
+                })
+
+            for item in data.get("knowledgeGraph", {}).get("description", []):
+                pass
+
+            answer_box = data.get("answerBox")
+            if answer_box and answer_box.get("snippet"):
+                link = answer_box.get("link", "")
+                if link:
+                    results.insert(0, {
+                        "title": (answer_box.get("title") or "Answer Box")[:200],
+                        "snippet": (answer_box.get("snippet") or "")[:500],
+                        "url": link,
+                    })
+
+            return results[:max_results]
+        except Exception as e:
+            logger.warning(f"Serper 搜索失败: {e}")
+            return []
+
+    # ── Bing Search API ────────────────────────────────
+
+    async def _search_bing(self, api_key: str, query: str, max_results: int) -> list:
+        """Bing Web Search API — 微软官方"""
+        if not api_key:
+            return []
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10, read=15, write=10, pool=10),
+            ) as client:
+                resp = await client.get(
+                    self.BING_URL,
+                    headers={"Ocp-Apim-Subscription-Key": api_key},
+                    params={
+                        "q": query,
+                        "count": max_results,
+                        "responseFilter": "Webpages",
+                        "setLang": "zh-Hans",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            results = []
+            for item in data.get("webPages", {}).get("value", [])[:max_results]:
+                title = (item.get("name") or "").strip()
+                snippet = (item.get("snippet") or "").strip()
+                link = (item.get("url") or "").strip()
+                if not title or not link:
+                    continue
+                results.append({
+                    "title": title[:200],
+                    "snippet": snippet[:500],
+                    "url": link,
+                })
+            return results
+        except Exception as e:
+            logger.warning(f"Bing Search API 搜索失败: {e}")
+            return []
+
+    # ── SearXNG ─────────────────────────────────────────
+
+    async def _search_searxng(self, base_url: str, query: str, max_results: int) -> list:
+        """SearXNG 自建搜索引擎 JSON API"""
+        if not base_url:
+            return []
+        try:
+            url = base_url.rstrip("/") + "/search"
+            params = {
+                "q": query,
+                "format": "json",
+                "engines": _get_env("SEARXNG_ENGINES", "google,bing,duckduckgo"),
+            }
+            timeout = _get_env_int("SEARXNG_TIMEOUT", 10)
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10, read=timeout, write=10, pool=10),
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+
+            results = []
+            for item in data.get("results", [])[:max_results]:
+                title = (item.get("title") or "").strip()
+                snippet = (item.get("content") or "").strip()
+                link = (item.get("url") or "").strip()
+                if not title or not link:
+                    continue
+                results.append({
+                    "title": title[:200],
+                    "snippet": snippet[:500],
+                    "url": link,
+                })
+            return results
+        except Exception as e:
+            logger.warning(f"SearXNG 搜索失败: {e}")
+            return []
+
+    # ── DuckDuckGo HTML ─────────────────────────────────
+
     async def _search_duckduckgo(self, query: str, max_results: int) -> list:
-        """DuckDuckGo HTML 搜索（真正的关键词搜索）"""
+        """DuckDuckGo HTML 爬虫搜索"""
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
@@ -96,6 +330,47 @@ class WebSearchTool(BuiltinTool):
         except Exception as e:
             logger.warning(f"DuckDuckGo HTML搜索失败: {e}")
             return []
+
+    # ── DuckDuckGo Instant Answer API ───────────────────
+
+    async def _search_duckduckgo_api(self, query: str, max_results: int) -> list:
+        """DuckDuckGo Instant Answer API（结果有限）"""
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    "https://api.duckduckgo.com/",
+                    params={
+                        "q": query,
+                        "format": "json",
+                        "no_html": 1,
+                        "skip_disambig": 1,
+                    }
+                )
+                data = resp.json()
+
+                results = []
+                abstract = data.get("Abstract")
+                if abstract:
+                    results.append({
+                        "title": data.get("Heading", ""),
+                        "snippet": abstract,
+                        "url": data.get("AbstractURL", ""),
+                    })
+
+                for topic in (data.get("RelatedTopics") or [])[:max_results]:
+                    if isinstance(topic, dict) and "Text" in topic:
+                        results.append({
+                            "title": topic.get("Text", "")[:80],
+                            "snippet": topic.get("Text", ""),
+                            "url": topic.get("FirstURL", ""),
+                        })
+
+                return results
+        except Exception as e:
+            logger.warning(f"DuckDuckGo Instant API 搜索失败: {e}")
+            return []
+
+    # ── DuckDuckGo HTML 解析 ────────────────────────────
 
     def _parse_ddg_html(self, html_text: str, max_results: int) -> list:
         """解析 DuckDuckGo HTML 搜索结果"""
@@ -179,43 +454,6 @@ class WebSearchTool(BuiltinTool):
             except Exception:
                 return url
         return url
-
-    async def _search_duckduckgo_api(self, query: str, max_results: int) -> list:
-        """DuckDuckGo Instant Answer API（备用，结果有限）"""
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(
-                    "https://api.duckduckgo.com/",
-                    params={
-                        "q": query,
-                        "format": "json",
-                        "no_html": 1,
-                        "skip_disambig": 1,
-                    }
-                )
-                data = resp.json()
-
-                results = []
-                abstract = data.get("Abstract")
-                if abstract:
-                    results.append({
-                        "title": data.get("Heading", ""),
-                        "snippet": abstract,
-                        "url": data.get("AbstractURL", ""),
-                    })
-
-                for topic in (data.get("RelatedTopics") or [])[:max_results]:
-                    if isinstance(topic, dict) and "Text" in topic:
-                        results.append({
-                            "title": topic.get("Text", "")[:80],
-                            "snippet": topic.get("Text", ""),
-                            "url": topic.get("FirstURL", ""),
-                        })
-
-                return results
-        except Exception as e:
-            logger.warning(f"DuckDuckGo Instant API 搜索失败: {e}")
-            return []
 
 
 class WebFetchTool(BuiltinTool):

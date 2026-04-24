@@ -78,6 +78,32 @@ def validate_config() -> bool:
     validator.validate_optional("LOG_LEVEL", "INFO", "日志级别")
     validator.validate_optional("AUTONOMOUS_DISCOVERY_INTERVAL", "1800", "自主巡检间隔（秒）")
 
+    searxng_url = os.getenv("SEARXNG_URL", "")
+    if searxng_url:
+        if not searxng_url.startswith(("http://", "https://")):
+            validator.errors.append(f"SEARXNG_URL 不是有效的 URL: {searxng_url}")
+        else:
+            logger.info(f"SearXNG 搜索已启用: {searxng_url}")
+
+    if os.getenv("TAVILY_API_KEY"):
+        logger.info("Tavily 搜索已启用")
+    if os.getenv("SERPER_API_KEY"):
+        logger.info("Serper 搜索已启用")
+    if os.getenv("BING_SEARCH_API_KEY"):
+        logger.info("Bing Search API 已启用")
+
+    if not any([searxng_url, os.getenv("TAVILY_API_KEY"),
+                os.getenv("SERPER_API_KEY"), os.getenv("BING_SEARCH_API_KEY")]):
+        logger.info("所有搜索 API 均未配置，搜索将使用 DuckDuckGo（稳定性较低）")
+
+    validator.validate_optional("SEARCH_BACKENDS", "", "搜索后端优先级")
+    validator.validate_optional("TAVILY_API_KEY", "", "Tavily API 密钥")
+    validator.validate_optional("SERPER_API_KEY", "", "Serper API 密钥")
+    validator.validate_optional("BING_SEARCH_API_KEY", "", "Bing Search API 密钥")
+    validator.validate_optional("SEARXNG_URL", "", "SearXNG 实例地址")
+    validator.validate_optional("SEARXNG_ENGINES", "google,bing,duckduckgo", "SearXNG 搜索引擎")
+    validator.validate_optional("SEARXNG_TIMEOUT", "10", "SearXNG 搜索超时（秒）")
+
     report = validator.get_report()
 
     # 输出警告
@@ -142,6 +168,17 @@ class Config:
     # 自主模式配置
     AUTONOMOUS_DISCOVERY_INTERVAL: int = 1800
 
+    # SearXNG 搜索配置
+    SEARXNG_URL: str = ""
+    SEARXNG_ENGINES: str = "google,bing,duckduckgo"
+    SEARXNG_TIMEOUT: int = 10
+
+    # 搜索 API 配置
+    TAVILY_API_KEY: str = ""
+    SERPER_API_KEY: str = ""
+    BING_SEARCH_API_KEY: str = ""
+    SEARCH_BACKENDS: str = ""
+
     @classmethod
     def load_from_env(cls):
         """从环境变量加载配置"""
@@ -155,3 +192,10 @@ class Config:
         cls.AUTONOMOUS_DISCOVERY_INTERVAL = get_config_value(
             "AUTONOMOUS_DISCOVERY_INTERVAL", 1800, int
         )
+        cls.SEARXNG_URL = get_config_value("SEARXNG_URL", "", str)
+        cls.SEARXNG_ENGINES = get_config_value("SEARXNG_ENGINES", "google,bing,duckduckgo", str)
+        cls.SEARXNG_TIMEOUT = get_config_value("SEARXNG_TIMEOUT", 10, int)
+        cls.TAVILY_API_KEY = get_config_value("TAVILY_API_KEY", "", str)
+        cls.SERPER_API_KEY = get_config_value("SERPER_API_KEY", "", str)
+        cls.BING_SEARCH_API_KEY = get_config_value("BING_SEARCH_API_KEY", "", str)
+        cls.SEARCH_BACKENDS = get_config_value("SEARCH_BACKENDS", "", str)
