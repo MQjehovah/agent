@@ -1,9 +1,9 @@
 import logging
 
-from src.memory.manager import MemoryManager
-from src.subagent_manager import SubagentManager
-from src.team.errors import classify_failure
-from src.team.pipeline import Pipeline, PipelineStage
+from memory.manager import MemoryManager
+from subagent_manager import SubagentManager
+from team.errors import classify_failure
+from team.pipeline import Pipeline, PipelineStage
 
 logger = logging.getLogger("agent.team.executor")
 
@@ -38,6 +38,8 @@ class TeamExecutor:
                     member_name=stage.agent,
                     task=task,
                 )
+                if result.startswith("ERROR:"):
+                    raise RuntimeError(result)
                 stage.record_attempt(success=True, result=result)
                 self.context[stage.name] = result
                 self._save_to_memory(stage, result)
