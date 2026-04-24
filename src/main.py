@@ -1,17 +1,16 @@
-import os
-import uuid
 import asyncio
 import logging
+import os
 import signal
-from typing import Optional
+import sys
+import uuid
 from pathlib import Path
 
-from rich.panel import Panel
-from rich.prompt import Prompt
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
-
-from dotenv import load_dotenv
+from rich.panel import Panel
+from rich.prompt import Prompt
 
 # 加载环境配置
 _project_root = Path(__file__).parent.parent
@@ -25,12 +24,12 @@ else:
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
-from llm import LLMClient
 from agent import Agent
-from scheduler import SchedulerManager
-from plugins import PluginManager
-from config import validate_config, Config
 from cmd_handler import CommandHandler
+from config import Config, validate_config
+from llm import LLMClient
+from plugins import PluginManager
+from scheduler import SchedulerManager
 
 console = Console()
 
@@ -66,7 +65,7 @@ logger = logging.getLogger("agent.main")
 async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
     """交互模式 - 任务后台执行"""
     session_id = str(uuid.uuid4())
-    current_task: Optional[asyncio.Task] = None
+    current_task: asyncio.Task | None = None
     task_counter = 0
 
     cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set)
@@ -115,13 +114,13 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
 async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     """自主模式 - 感知-规划-执行-校验循环"""
     from autonomous.eventbus import EventBus
+    from autonomous.executor import Executor
     from autonomous.goal import GoalManager
+    from autonomous.loop import AutonomousLoop
     from autonomous.perceiver import Perceiver
     from autonomous.planner import Planner
-    from autonomous.executor import Executor
+    from autonomous.reporter import DingTalkReporter, Reporter
     from autonomous.verifier import Verifier
-    from autonomous.reporter import Reporter, DingTalkReporter
-    from autonomous.loop import AutonomousLoop
 
     workspace = agent.workspace
     db_path = os.path.join(workspace, "autonomous.db")
@@ -240,6 +239,28 @@ async def cleanup(plugin_manager, scheduler, agent):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def run_team_mode(workspace: str, agent: Agent):
+    """Team mode - TeamLead orchestrates AI development team."""
+    from src.team.team_lead import TeamLeadAgent
+
+    user_request = " ".join(sys.argv[sys.argv.index("--") + 1:]) if "--" in sys.argv else ""
+    if not user_request:
+        user_request = input("请输入项目目标: ")
+
+    lead = TeamLeadAgent(
+        workspace=workspace,
+        llm_client=agent.client,
+        subagent_manager=agent.subagent_manager,
+        memory_manager=agent.memory,
+    )
+
+    console.print("\n[bold cyan]Team Lead 启动[/bold cyan]")
+    console.print(f"目标: {user_request}\n")
+
+    result = await lead.run(user_request)
+    console.print(result)
+
+
 async def main():
     shutdown_event = asyncio.Event()
 
@@ -253,7 +274,7 @@ async def main():
     parser.add_argument(
         "--mode",
         "-m",
-        choices=["interactive", "autonomous"],
+        choices=["interactive", "autonomous", "team"],
         default="interactive",
         help="运行模式",
     )
@@ -273,6 +294,10 @@ async def main():
 
     agent = Agent(workspace=workspace, client=LLMClient())
     await agent.initialize()
+
+    if args.mode == "team":
+        await run_team_mode(workspace, agent)
+        return
 
     scheduler = None
     plugin_manager = None
