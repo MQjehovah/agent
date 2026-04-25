@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any
 
@@ -36,9 +37,20 @@ class TeamOrchestrator:
         self.memory = memory_manager
         self.context: TeamContext | None = None
         self.dag: ExecutionDAG | None = None
+        self.project_dir: str = ""
 
     async def run(self, task: str) -> str:
         self.context = TeamContext(self.team_name, task)
+        
+        project_path = self._extract_project_path(task)
+        if project_path:
+            self.project_dir = project_path
+        else:
+            workspace = self.config.get("workspace", "")
+            projects_dir = os.path.join(workspace, "projects")
+            os.makedirs(projects_dir, exist_ok=True)
+            self.project_dir = os.path.join(projects_dir, uuid.uuid4().hex[:8])
+        
         self._init_project_dir()
         
         self.context.set_blackboard("项目路径", self.project_dir)
@@ -78,6 +90,22 @@ class TeamOrchestrator:
             f"团队 [{self.team_name}] 达到最大迭代次数 {self.context.max_iterations}"
         )
         return self._build_report()
+
+    def _extract_project_path(self, task: str) -> str:
+        patterns = [
+            r'在\s*[`"]?([^`"\s]+)[`"]?\s*项目中',
+            r'项目[路径目录][:：]\s*[`"]?([^`"\s]+)[`"]?',
+            r'workspace/project/[\w]+',
+            r'/home/[\w/]+/project/[\w]+',
+            r'/[\w/]+/workspace/project/[\w]+',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, task)
+            if match:
+                path = match.group(1) if match.lastindex else match.group(0)
+                if os.path.isabs(path):
+                    return path
+        return ""
 
     async def _plan_dag(self, task: str) -> ExecutionDAG:
         member_list = "\n".join(
@@ -129,12 +157,18 @@ class TeamOrchestrator:
         return await self._build_dag_from_llm(prompt)
 
     def _init_project_dir(self):
+        if self.project_dir and os.path.isabs(self.project_dir):
+            if not os.path.exists(self.project_dir):
+                os.makedirs(self.project_dir, exist_ok=True)
+            logger.info(f"团队项目路径(任务指定): {self.project_dir}")
+            return
+        
         workspace = self.config.get("workspace", "")
         projects_dir = os.path.join(workspace, "projects")
         os.makedirs(projects_dir, exist_ok=True)
         self.project_dir = os.path.join(projects_dir, uuid.uuid4().hex[:8])
         os.makedirs(self.project_dir, exist_ok=True)
-        logger.info(f"团队共享项目目录: {self.project_dir}")
+        logger.info(f"团队项目路径(自动创建): {self.project_dir}")
 
     async def _execute_dag(self) -> bool:
         async def executor(node: DAGNode) -> str:
