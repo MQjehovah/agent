@@ -244,28 +244,16 @@ async def cleanup(plugin_manager, scheduler, agent):
 
 
 async def run_team_mode(workspace: str, agent: Agent):
-    """Team mode - TeamLead orchestrates AI development team."""
-    from team.team_lead import TeamLeadAgent
-
+    """Team mode - 使用统一的子代理入口调用团队编排。"""
     user_request = " ".join(sys.argv[sys.argv.index("--") + 1:]) if "--" in sys.argv else ""
     if not user_request:
         user_request = input("请输入项目目标: ")
 
-    agent.subagent_manager._client = agent.client
-    agent.subagent_manager._parent_agent = agent
-
-    lead = TeamLeadAgent(
-        workspace=workspace,
-        llm_client=agent.client,
-        subagent_manager=agent.subagent_manager,
-        memory_manager=agent.memory,
-    )
-
-    console.print("\n[bold cyan]Team Lead 启动[/bold cyan]")
+    console.print("\n[bold cyan]团队模式启动[/bold cyan]")
     console.print(f"目标: {user_request}\n")
 
-    result = await lead.run(user_request)
-    console.print(result)
+    result = await agent.run(f"请使用 subagent 工具将以下任务交给「AI开发团队」:\n{user_request}")
+    console.print(result.result if hasattr(result, "result") else result)
 
 
 async def main():

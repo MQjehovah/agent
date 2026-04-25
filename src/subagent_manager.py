@@ -30,7 +30,7 @@ class SubagentInstance:
 
 
 class SubagentManager:
-    """子代理管理器 - 支持持久化和会话复用"""
+    """子代理管理器 - 支持持久化和会话复用，统一管理个人子代理和团队"""
 
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
@@ -38,12 +38,14 @@ class SubagentManager:
         self._active_subagents: dict[str, SubagentInstance] = {}  # session_id -> SubagentInstance
         self._name_to_session: dict[str, str] = {}  # template/name -> session_id
         self._team_member_cache: dict[str, dict[str, Any]] = {}
+        self._team_configs: dict[str, dict[str, Any]] = {}
+        self._team_members: dict[str, dict[str, dict[str, Any]]] = {}
         self._client = None
         self._parent_agent = None
         self._load_all()
 
     def _load_all(self):
-        """加载所有子代理模板（跳过团队目录）"""
+        """加载所有子代理模板（包括个人和团队）"""
         if not self.base_dir or not os.path.exists(self.base_dir):
             logger.warning(f"Subagent directory not found: {self.base_dir}")
             return
@@ -53,9 +55,11 @@ class SubagentManager:
             if not os.path.isdir(agent_dir):
                 continue
 
-            # 跳过团队目录（包含 TEAM.md）
-            if os.path.exists(os.path.join(agent_dir, "TEAM.md")):
-                logger.debug(f"跳过团队目录: {dir_name}")
+            team_file = os.path.join(agent_dir, "TEAM.md")
+            agents_dir = os.path.join(agent_dir, "agents")
+
+            if os.path.exists(team_file) and os.path.isdir(agents_dir):
+                self._load_team(dir_name, agent_dir, team_file, agents_dir)
                 continue
 
             prompt_file = os.path.join(agent_dir, "PROMPT.md")
@@ -77,11 +81,57 @@ class SubagentManager:
             else:
                 logger.warning(f"Subagent missing {prompt_file}")
 
+    def _load_team(self, dir_name: str, agent_dir: str, team_file: str, agents_dir: str):
+        """加载团队配置和成员模板"""
+        with open(team_file, encoding="utf-8") as f:
+            content = f.read()
+
+        frontmatter, body = extract_frontmatter(content)
+        if not frontmatter:
+            return
+
+        name = frontmatter.get("name", dir_name)
+
+        prompt_file = os.path.join(agent_dir, "PROMPT.md")
+        prompt_body = ""
+        if os.path.exists(prompt_file):
+            with open(prompt_file, encoding="utf-8") as f:
+                _, prompt_body = extract_frontmatter(f.read())
+
+        config = {
+            "name": name,
+            "description": frontmatter.get("description", ""),
+            "leader": frontmatter.get("leader", ""),
+            "workspace": agent_dir,
+            "team_body": body,
+            "leader_prompt": prompt_body,
+            "dir_name": dir_name,
+        }
+        self._team_configs[name] = config
+
+        members: dict[str, dict[str, Any]] = {}
+        for member_name in os.listdir(agents_dir):
+            member_path = os.path.join(agents_dir, member_name)
+            if not os.path.isdir(member_path):
+                continue
+            template = self.get_team_member_template(dir_name, member_name)
+            if template:
+                members[member_name] = template
+        self._team_members[name] = members
+
+        self.templates[name] = {
+            "name": name,
+            "description": config["description"],
+            "workspace": agent_dir,
+            "is_team": True,
+        }
+        logger.info(f"加载团队: {name}, 成员: {list(members.keys())}")
+
     def scan_teams(self) -> dict[str, list[str]]:
         """
         扫描 workspace/agents/ 下的团队目录。
 
-        识别规则: 目录包含 TEAM.md 和 members/ 子目录则视为团队。
+        识别规则: 目录包含 TEAM.md 和 agents/ 子目录则视为团队。
 
         Returns:
             {team_name: [member_names]}
@@ -96,13 +146,13 @@ class SubagentManager:
                 continue
 
             team_file = os.path.join(agent_dir, "TEAM.md")
-            members_dir = os.path.join(agent_dir, "members")
-            if not (os.path.exists(team_file) and os.path.isdir(members_dir)):
+            agents_dir = os.path.join(agent_dir, "agents")
+            if not (os.path.exists(team_file) and os.path.isdir(agents_dir)):
                 continue
 
             members = []
-            for member_name in os.listdir(members_dir):
-                member_path = os.path.join(members_dir, member_name)
+            for member_name in os.listdir(agents_dir):
+                member_path = os.path.join(agents_dir, member_name)
                 if os.path.isdir(member_path):
                     members.append(member_name)
 
@@ -123,7 +173,7 @@ class SubagentManager:
         Returns:
             {name, description, workspace} 或 None
         """
-        member_dir = os.path.join(self.base_dir, team_name, "members", member_name)
+        member_dir = os.path.join(self.base_dir, team_name, "agents", member_name)
         prompt_file = os.path.join(member_dir, "PROMPT.md")
         if not os.path.exists(prompt_file):
             return None
@@ -229,7 +279,7 @@ class SubagentManager:
             return f"ERROR: 团队子代理 {member_name} 执行异常: {e}"
 
     def get_subagent_prompt(self) -> str:
-        """生成子代理列表提示词（排除团队成员模板）"""
+        """生成子代理列表提示词（包含个人和团队）"""
         if not self.templates:
             return "没有可用的子代理"
 
@@ -237,7 +287,8 @@ class SubagentManager:
         for key, template_data in self.templates.items():
             if "/" in key:
                 continue
-            lines.append(f"名称：[{template_data['name']}]\n")
+            tag = " [团队]" if template_data.get("is_team") else ""
+            lines.append(f"名称：[{template_data['name']}]{tag}\n")
             lines.append(f"描述：{template_data['description']}\n")
         lines.append("\n通过subagent工具调用激活\n")
         return "\n".join(lines)
@@ -249,6 +300,10 @@ class SubagentManager:
     def get_template(self, name: str) -> dict[str, Any] | None:
         """获取指定子代理模板"""
         return self.templates.get(name)
+
+    def is_team(self, name: str) -> bool:
+        """判断指定名称是否为团队"""
+        return name in self._team_configs
 
     def list_active_subagents(self) -> list[dict[str, Any]]:
         """列出所有活跃的子代理"""
@@ -412,13 +467,13 @@ class SubagentManager:
         session_id: str = "",
         system_prompt: str = "",
         tools: list[str] | None = None,
-        mcp_servers: list[dict[str, Any]] | None = None,
+        mcp_servers: list[str, Any] | None = None,
         client=None,
         parent_agent: "Agent" = None,
         keep_alive: bool = True
     ) -> "AgentResult":
         """
-        运行子代理
+        运行子代理（统一入口：个人子代理和团队均通过此方法调用）
 
         Args:
             task: 任务内容
@@ -437,6 +492,19 @@ class SubagentManager:
         """
         from agent import AgentResult
 
+        # 保存引用
+        if client:
+            self._client = client
+        if parent_agent:
+            self._parent_agent = parent_agent
+
+        template_name = template or name
+
+        # 团队路由：如果是团队，使用 TeamOrchestrator
+        if self.is_team(template_name):
+            return await self._run_team_orchestrator(task, template_name)
+
+        # 个人子代理：原有逻辑
         try:
             instance, is_new = await self.get_or_create_subagent(
                 template=template,
@@ -476,6 +544,47 @@ class SubagentManager:
                 result=f"子代理错误: {e}"
             )
 
+    async def _run_team_orchestrator(self, task: str, team_name: str) -> "AgentResult":
+        """通过 TeamOrchestrator 运行团队"""
+        from agent import AgentResult
+        from team.orchestrator import TeamOrchestrator
+
+        config = self._team_configs.get(team_name)
+        members = self._team_members.get(team_name, {})
+
+        if not config or not members:
+            return AgentResult(
+                agent_id="",
+                status="failed",
+                result=f"团队 {team_name} 配置无效或无成员"
+            )
+
+        logger.info(f"启动团队编排: {team_name}, 成员: {list(members.keys())}")
+
+        orchestrator = TeamOrchestrator(
+            team_name=team_name,
+            team_config=config,
+            members=members,
+            subagent_manager=self,
+            llm_client=self._client,
+            memory_manager=getattr(self._parent_agent, "memory", None) if self._parent_agent else None,
+        )
+        try:
+            result = await orchestrator.run(task)
+            status = "completed" if not result.startswith("ERROR:") else "failed"
+            return AgentResult(
+                agent_id=f"team:{team_name}",
+                status=status,
+                result=result,
+            )
+        except Exception as e:
+            logger.error(f"团队编排异常: {e}")
+            return AgentResult(
+                agent_id=f"team:{team_name}",
+                status="failed",
+                result=f"团队执行错误: {e}",
+            )
+
     async def cleanup_subagent(self, session_id: str):
         """清理指定的子代理"""
         if session_id not in self._active_subagents:
@@ -501,6 +610,7 @@ class SubagentManager:
         """获取子代理统计信息"""
         return {
             "templates_count": len(self.templates),
+            "team_count": len(self._team_configs),
             "active_count": len(self._active_subagents),
             "active_subagents": self.list_active_subagents()
         }

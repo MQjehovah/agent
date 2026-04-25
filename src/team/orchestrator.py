@@ -1,0 +1,267 @@
+import json
+import logging
+from typing import Any
+
+from team.context import TeamContext
+from team.dag import DAGNode, ExecutionDAG
+
+logger = logging.getLogger("agent.team.orchestrator")
+
+
+def _extract_json_from_llm(content: str) -> str:
+    content = content.strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
+    return content.strip()
+
+
+class TeamOrchestrator:
+    def __init__(
+        self,
+        team_name: str,
+        team_config: dict[str, Any],
+        members: dict[str, dict[str, Any]],
+        subagent_manager,
+        llm_client,
+        memory_manager=None,
+    ):
+        self.team_name = team_name
+        self.config = team_config
+        self.members = members
+        self.leader = team_config.get("leader", "")
+        self.subagent_manager = subagent_manager
+        self.llm = llm_client
+        self.memory = memory_manager
+        self.context: TeamContext | None = None
+        self.dag: ExecutionDAG | None = None
+
+    async def run(self, task: str) -> str:
+        self.context = TeamContext(self.team_name, task)
+
+        self.dag = await self._plan_dag(task)
+        if not self.dag.nodes:
+            return "ERROR: 无法规划任务 DAG，请检查团队成员配置"
+
+        for iteration in range(self.context.max_iterations):
+            self.context.iteration = iteration + 1
+            logger.info(
+                f"团队 [{self.team_name}] 第 {iteration + 1} 轮执行, "
+                f"DAG 节点数: {len(self.dag.nodes)}"
+            )
+
+            success = await self._execute_dag()
+            if not success:
+                logger.warning(f"团队 [{self.team_name}] DAG 执行未全部成功")
+
+            confirmed, feedback = await self._leader_review()
+            if confirmed:
+                logger.info(f"团队 [{self.team_name}] Leader 确认任务完成")
+                return self._build_report()
+
+            logger.info(
+                f"团队 [{self.team_name}] Leader 要求返工: {feedback[:100]}"
+            )
+            self.context.set_leader_feedback(feedback)
+
+            self.dag = await self._replan(feedback)
+            if not self.dag.nodes:
+                logger.info(f"团队 [{self.team_name}] 重规划无新任务，结束")
+                return self._build_report()
+
+        logger.warning(
+            f"团队 [{self.team_name}] 达到最大迭代次数 {self.context.max_iterations}"
+        )
+        return self._build_report()
+
+    async def _plan_dag(self, task: str) -> ExecutionDAG:
+        member_list = "\n".join(
+            f"- {m['name']}: {m.get('description', '')}"
+            for m in self.members.values()
+        )
+        prompt = f"""你是团队 "{self.team_name}" 的任务规划师。
+根据以下任务和团队成员，规划执行 DAG。
+
+## 任务
+{task}
+
+## 团队成员
+{member_list}
+
+## 要求
+返回 JSON 数组，每个元素包含:
+- "id": 节点唯一标识 (如 "step1", "step2")
+- "task": 分配给该成员的具体子任务描述
+- "assignee": 成员 name（必须在上面的成员列表中）
+- "dependencies": 依赖的前置节点 id 列表 (可为空数组 [])
+
+规则:
+- 合理利用每个成员的专长分配任务
+- 无依赖的节点可以并行执行
+- 任务粒度适中，每个节点对应一个成员的一项工作
+- 只返回 JSON 数组，不要其他文本
+
+示例:
+[{{"id":"step1","task":"研究算法方案","assignee":"成员名","dependencies":[]}}]"""
+
+        return await self._build_dag_from_llm(prompt)
+
+    async def _execute_dag(self) -> bool:
+        async def executor(node: DAGNode) -> str:
+            member_context = self.context.get_context_for_member(node.assignee)
+            full_task = f"{member_context}\n\n## 你的具体任务\n{node.task}"
+
+            logger.info(
+                f"执行节点 [{node.id}] -> {node.assignee}: {node.task[:60]}"
+            )
+
+            result = await self.subagent_manager.run_team_agent(
+                team_name=self.team_name,
+                member_name=node.assignee,
+                task=full_task,
+            )
+            if result.startswith("ERROR:"):
+                raise RuntimeError(result)
+
+            self.context.add_node_result(node.id, node.assignee, result)
+            self._save_to_memory(node, result)
+            return result
+
+        return await self.dag.execute(executor)
+
+    async def _leader_review(self) -> tuple[bool, str]:
+        if not self.leader or self.leader not in self.members:
+            logger.debug("无 Leader 配置，自动确认")
+            return True, ""
+
+        summary = self.context.get_summary()
+        dag_info = "\n".join(
+            f"- {n.status}: [{n.id}] {n.assignee} - {n.task[:60]}"
+            for n in self.dag.nodes.values()
+        )
+
+        leader_prompt = self.config.get("leader_prompt", "")
+        leader_context = ""
+        if leader_prompt:
+            leader_context = f"\n## Leader 角色说明\n{leader_prompt}\n"
+
+        prompt = f"""你是团队 "{self.team_name}" 的 Leader ({self.leader})。
+{leader_context}
+请审核团队执行结果。
+
+## 执行概要
+{dag_info}
+
+## 详细产出
+{summary}
+
+## 原始任务
+{self.context.original_task}
+
+请判断任务是否完成。返回 JSON:
+{{"confirmed": true/false, "feedback": "如果不通过，说明需要修改什么以及由谁修改"}}
+
+如果所有子任务都已完成且质量合格，confirmed 设为 true。
+如果有问题需要返工，confirmed 设为 false 并在 feedback 中说明。
+只返回 JSON。"""
+
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            resp = await self.llm.chat(messages)
+            content = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
+            result = json.loads(_extract_json_from_llm(content))
+            return result.get("confirmed", True), result.get("feedback", "")
+        except Exception as e:
+            logger.warning(f"Leader 审核解析失败: {e}")
+            return True, ""
+
+    async def _replan(self, feedback: str) -> ExecutionDAG:
+        summary = self.context.get_summary()
+        member_list = "\n".join(
+            f"- {m['name']}: {m.get('description', '')}"
+            for m in self.members.values()
+        )
+
+        prompt = f"""你是团队 "{self.team_name}" 的任务规划师。
+上一轮执行未通过 Leader 审核，需要补充或修改。
+
+## 原始任务
+{self.context.original_task}
+
+## 上一轮产出摘要
+{summary}
+
+## Leader 反馈
+{feedback}
+
+## 团队成员
+{member_list}
+
+请规划新的 DAG 节点来处理 Leader 反馈。
+只需包含需要补充/修改的任务节点。
+返回 JSON 数组（同规划格式）。
+如果不需要新任务，返回空数组 []。
+只返回 JSON。"""
+
+        return await self._build_dag_from_llm(prompt)
+
+    async def _build_dag_from_llm(self, prompt: str) -> ExecutionDAG:
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            resp = await self.llm.chat(messages)
+            content = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
+            nodes_data = json.loads(_extract_json_from_llm(content))
+        except Exception as e:
+            logger.error(f"DAG 规划解析失败: {e}")
+            return ExecutionDAG()
+
+        if not isinstance(nodes_data, list):
+            logger.error(f"DAG 规划返回非数组: {type(nodes_data)}")
+            return ExecutionDAG()
+
+        dag = ExecutionDAG()
+        valid_names = set(self.members.keys())
+        for item in nodes_data:
+            if not isinstance(item, dict):
+                continue
+            assignee = item.get("assignee", "")
+            if assignee not in valid_names:
+                logger.warning(f"跳过无效成员: {assignee}")
+                continue
+            node_id = item.get("id", f"node_{len(dag.nodes)}")
+            dag.add_node(DAGNode(
+                id=node_id,
+                task=item.get("task", ""),
+                assignee=assignee,
+                dependencies=item.get("dependencies", []),
+            ))
+        return dag
+
+    def _save_to_memory(self, node: DAGNode, result: str):
+        if not self.memory:
+            return
+        try:
+            self.memory.share_knowledge(
+                from_agent=f"{self.team_name}/{node.assignee}",
+                knowledge=f"[{node.id}] {result[:500]}",
+            )
+        except Exception as e:
+            logger.warning(f"保存共享记忆失败: {e}")
+
+    def _build_report(self) -> str:
+        parts = [
+            f"# 团队执行报告: {self.team_name}",
+            f"## 原始任务\n{self.context.original_task}",
+            f"## 执行轮次: {self.context.iteration}",
+        ]
+        if self.dag and self.dag.nodes:
+            parts.append("## 执行 DAG")
+            for node in self.dag.nodes.values():
+                status_mark = "✓" if node.status == "completed" else "✗"
+                parts.append(
+                    f"- {status_mark} [{node.id}] {node.assignee}: {node.task[:80]}"
+                )
+        if self.context.node_results:
+            parts.append("\n## 产出")
+            for node_id, result in self.context.node_results.items():
+                parts.append(f"### {node_id}\n{result[:1000]}")
+        return "\n\n".join(parts)
