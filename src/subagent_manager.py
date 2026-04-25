@@ -231,8 +231,7 @@ class SubagentManager:
                 raise ValueError(f"团队 {team_name} 中未找到成员 {member_name}")
             self._team_member_cache[cache_key] = template_data
 
-        template_data = self._team_member_cache[cache_key]
-        workspace = template_data["workspace"]
+        workspace = self._team_member_cache[cache_key]["workspace"]
 
         agent = Agent(
             workspace=workspace,
