@@ -85,12 +85,28 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         cmd_handler.set_current_task_id(None)
         current_task = None
 
+    def handle_signal():
+        shutdown_event.set()
+        if current_task and not current_task.done():
+            current_task.cancel()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            asyncio.get_running_loop().add_signal_handler(sig, handle_signal)
+        except NotImplementedError:
+            pass
+
     try:
         while not shutdown_event.is_set():
             try:
-                question = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: Prompt.ask("\n[bold cyan]?[/bold cyan] [cyan]任务[/cyan]")
+                question = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, lambda: Prompt.ask("\n[bold cyan]?[/bold cyan] [cyan]任务[/cyan]")
+                    ),
+                    timeout=0.5
                 )
+            except asyncio.TimeoutError:
+                continue
             except (KeyboardInterrupt, EOFError):
                 break
 
@@ -106,8 +122,12 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
             console.print(f"[dim]任务 #{task_counter} 已提交[/dim]")
 
     finally:
-        if current_task:
+        if current_task and not current_task.done():
             current_task.cancel()
+            try:
+                await current_task
+            except asyncio.CancelledError:
+                pass
 
 
 async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
@@ -320,12 +340,6 @@ async def main():
                 plugin_manager.register_executor(lambda sid, c: agent.run(c, session_id=sid))
                 plugin_manager.start_all()
                 agent.plugin_manager = plugin_manager
-
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                try:
-                    asyncio.get_running_loop().add_signal_handler(sig, shutdown_event.set)
-                except NotImplementedError:
-                    pass
 
             await interactive_mode(agent, shutdown_event)
     except asyncio.CancelledError:

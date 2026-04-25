@@ -569,11 +569,6 @@ class Agent:
                         session.messages, self.tool_defs
                     )
                     self.tracer.record_context_size(ctx_tokens)
-                    if i == 0 or (i + 1) % 5 == 0:
-                        logger.info(
-                            f"[{session.session_id}] 上下文大小: {ctx_tokens:,} tokens "
-                            f"(轮次 {i + 1}/{self.max_iterations})"
-                        )
 
                     # 每轮更新动态 prompt 区块
                     self._update_dynamic_prompt(task)
@@ -584,7 +579,7 @@ class Agent:
                     self.tracer.start_span("agent.think")
                     usage_summary = self.client.usage_tracker.get_summary()
                     logger.info(
-                        f"[{session.session_id}] 开始思考 | "
+                        f"[{self.name}] [{session.session_id}] 开始思考 | "
                         f"轮次 {i + 1}/{self.max_iterations} | "
                         f"上下文 {ctx_tokens:,}tok | "
                         f"累计 {usage_summary['total_calls']}次 "
@@ -708,20 +703,27 @@ class Agent:
                     func_args = {}
             return tc, await self._execute_tool_safe(func_name, func_args)
 
-        results = await asyncio.gather(
-            *[_run_one(tc) for tc in tool_calls],
-            return_exceptions=True
-        )
-
-        for item in results:
-            if isinstance(item, Exception):
-                logger.error(f"工具执行异常: {item}")
-                session.add_message("tool", f"工具执行异常: {item}")
-            else:
-                tc, result = item
-                func_name = tc.get("function", {}).get("name", "")
-                session.add_message("tool", str(result), name=func_name,
-                                    tool_call_id=tc.get("id", ""))
+        tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, item in enumerate(results):
+                if isinstance(item, asyncio.CancelledError):
+                    logger.warning(f"工具执行被取消")
+                    session.add_message("tool", "工具执行被取消", name=tool_calls[i].get("function", {}).get("name", ""))
+                elif isinstance(item, Exception):
+                    logger.error(f"工具执行异常: {item}")
+                    session.add_message("tool", f"工具执行异常: {item}")
+                else:
+                    tc, result = item
+                    func_name = tc.get("function", {}).get("name", "")
+                    session.add_message("tool", str(result), name=func_name,
+                                        tool_call_id=tc.get("id", ""))
+        except asyncio.CancelledError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     async def _execute_tool_safe(self, name: str, args: Dict) -> str:
         """带权限检查、钩子和错误恢复的工具执行"""
