@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import signal
-import sys
 import uuid
 from pathlib import Path
 
@@ -243,19 +242,6 @@ async def cleanup(plugin_manager, scheduler, agent):
     gc.collect()
 
 
-async def run_team_mode(workspace: str, agent: Agent):
-    """Team mode - 使用统一的子代理入口调用团队编排。"""
-    user_request = " ".join(sys.argv[sys.argv.index("--") + 1:]) if "--" in sys.argv else ""
-    if not user_request:
-        user_request = input("请输入项目目标: ")
-
-    console.print("\n[bold cyan]团队模式启动[/bold cyan]")
-    console.print(f"目标: {user_request}\n")
-
-    result = await agent.run(f"请使用 subagent 工具将以下任务交给「AI开发团队」:\n{user_request}")
-    console.print(result.result if hasattr(result, "result") else result)
-
-
 async def main():
     shutdown_event = asyncio.Event()
 
@@ -269,9 +255,20 @@ async def main():
     parser.add_argument(
         "--mode",
         "-m",
-        choices=["interactive", "autonomous", "team"],
+        choices=["interactive", "autonomous"],
         default="interactive",
         help="运行模式",
+    )
+    parser.add_argument(
+        "--agent",
+        "-a",
+        default="",
+        help="指定子代理名称执行任务",
+    )
+    parser.add_argument(
+        "task",
+        nargs="*",
+        help="要执行的任务内容",
     )
     args = parser.parse_args()
 
@@ -290,8 +287,19 @@ async def main():
     agent = Agent(workspace=workspace, client=LLMClient())
     await agent.initialize()
 
-    if args.mode == "team":
-        await run_team_mode(workspace, agent)
+    if args.agent:
+        agent_name = args.agent
+        task = " ".join(args.task) if args.task else ""
+        if not task:
+            task = input("请输入任务内容: ")
+
+        console.print(f"\n[bold cyan]子代理模式[/bold cyan]: {agent_name}")
+        console.print(f"任务: {task}\n")
+
+        result = await agent.run(
+            f"请使用 subagent 工具将以下任务交给「{agent_name}」:\n{task}"
+        )
+        console.print(result.result if hasattr(result, "result") else result)
         return
 
     scheduler = None
