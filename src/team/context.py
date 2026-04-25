@@ -23,6 +23,19 @@ class TeamContext:
         self.iteration: int = 0
         self.max_iterations = max_iterations
         self._leader_feedback: str = ""
+        self.blackboard: dict[str, str] = {}
+
+    def set_blackboard(self, key: str, value: str):
+        self.blackboard[key] = value
+        logger.info(f"团队黑板更新: {key} = {value}")
+
+    def get_blackboard(self) -> str:
+        if not self.blackboard:
+            return ""
+        lines = ["## 团队共享信息（所有成员必读）"]
+        for key, value in self.blackboard.items():
+            lines.append(f"- **{key}**: {value}")
+        return "\n".join(lines)
 
     def add_node_result(self, node_id: str, assignee: str, result: str):
         self.node_results[node_id] = result
@@ -35,7 +48,13 @@ class TeamContext:
         logger.info(f"团队消息: {from_member} -> {to_member}: {content[:80]}")
 
     def get_context_for_member(self, member_name: str) -> str:
-        parts = [f"## 团队任务\n{self.original_task}"]
+        parts = []
+        
+        blackboard_info = self.get_blackboard()
+        if blackboard_info:
+            parts.append(blackboard_info)
+
+        parts.append(f"## 团队任务\n{self.original_task}")
 
         upstream = self._get_relevant_results(member_name)
         if upstream:

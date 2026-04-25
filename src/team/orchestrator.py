@@ -40,6 +40,9 @@ class TeamOrchestrator:
     async def run(self, task: str) -> str:
         self.context = TeamContext(self.team_name, task)
         self._init_project_dir()
+        
+        self.context.set_blackboard("项目路径", self.project_dir)
+        self.context.set_blackboard("团队名称", self.team_name)
 
         self.dag = await self._plan_dag(task)
         if not self.dag.nodes:
@@ -136,12 +139,7 @@ class TeamOrchestrator:
     async def _execute_dag(self) -> bool:
         async def executor(node: DAGNode) -> str:
             member_context = self.context.get_context_for_member(node.assignee)
-            project_hint = (
-                f"\n\n## 团队共享项目目录\n"
-                f"所有产出文件（代码、测试、文档、配置等）必须写入此目录: {self.project_dir}\n"
-                f"不要写入你自己的工作目录。\n"
-            )
-            full_task = f"{member_context}{project_hint}\n## 你的具体任务\n{node.task}"
+            full_task = f"{member_context}\n## 你的具体任务\n{node.task}"
 
             logger.info(
                 f"执行节点 [{node.id}] -> {node.assignee}: {node.task[:60]}"
@@ -237,11 +235,20 @@ class TeamOrchestrator:
 {member_list}
 {role_constraint}
 
-请规划新的 DAG 节点来处理 Leader 反馈。
-只需包含需要补充/修改的任务节点。
-返回 JSON 数组（同规划格式）。
-如果不需要新任务，返回空数组 []。
-只返回 JSON。"""
+## 要求
+返回 JSON 数组，每个元素包含:
+- "id": 节点唯一标识 (如 "step1", "step2")
+- "task": 分配给该成员的具体子任务描述
+- "assignee": 成员名称，必须是以下之一: {list(self.members.keys())}
+- "dependencies": 依赖的前置节点 id 列表 (可为空数组 [])
+
+规则:
+- 只返回 JSON 数组，不要其他文本
+- 如果不需要新任务，返回空数组 []
+- assignee 必须完全匹配上面的成员名称
+
+示例:
+[{{"id":"fix1","task":"修复XX问题","assignee":"代码工程师","dependencies":[]}}]"""
 
         return await self._build_dag_from_llm(prompt)
 
@@ -251,6 +258,7 @@ class TeamOrchestrator:
             resp = await self.llm.chat(messages)
             content = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
             nodes_data = json.loads(_extract_json_from_llm(content))
+            logger.debug(f"DAG 规划返回: {nodes_data}")
         except Exception as e:
             logger.error(f"DAG 规划解析失败: {e}")
             return ExecutionDAG()
@@ -261,12 +269,14 @@ class TeamOrchestrator:
 
         dag = ExecutionDAG()
         valid_names = set(self.members.keys())
+        logger.debug(f"有效成员名: {valid_names}")
         for item in nodes_data:
             if not isinstance(item, dict):
+                logger.warning(f"跳过非字典项: {item}")
                 continue
             assignee = item.get("assignee", "")
             if assignee not in valid_names:
-                logger.warning(f"跳过无效成员: {assignee}")
+                logger.warning(f"跳过无效成员: '{assignee}' (类型: {type(assignee).__name__}, 有效成员: {valid_names})")
                 continue
             node_id = item.get("id", f"node_{len(dag.nodes)}")
             dag.add_node(DAGNode(
