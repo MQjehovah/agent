@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import uuid
 from typing import Any
 
 from team.context import TeamContext
@@ -37,6 +39,7 @@ class TeamOrchestrator:
 
     async def run(self, task: str) -> str:
         self.context = TeamContext(self.team_name, task)
+        self._init_project_dir()
 
         self.dag = await self._plan_dag(task)
         if not self.dag.nodes:
@@ -122,10 +125,23 @@ class TeamOrchestrator:
 
         return await self._build_dag_from_llm(prompt)
 
+    def _init_project_dir(self):
+        workspace = self.config.get("workspace", "")
+        projects_dir = os.path.join(workspace, "projects")
+        os.makedirs(projects_dir, exist_ok=True)
+        self.project_dir = os.path.join(projects_dir, uuid.uuid4().hex[:8])
+        os.makedirs(self.project_dir, exist_ok=True)
+        logger.info(f"团队共享项目目录: {self.project_dir}")
+
     async def _execute_dag(self) -> bool:
         async def executor(node: DAGNode) -> str:
             member_context = self.context.get_context_for_member(node.assignee)
-            full_task = f"{member_context}\n\n## 你的具体任务\n{node.task}"
+            project_hint = (
+                f"\n\n## 团队共享项目目录\n"
+                f"所有产出文件（代码、测试、文档、配置等）必须写入此目录: {self.project_dir}\n"
+                f"不要写入你自己的工作目录。\n"
+            )
+            full_task = f"{member_context}{project_hint}\n## 你的具体任务\n{node.task}"
 
             logger.info(
                 f"执行节点 [{node.id}] -> {node.assignee}: {node.task[:60]}"
@@ -276,6 +292,7 @@ class TeamOrchestrator:
         parts = [
             f"# 团队执行报告: {self.team_name}",
             f"## 原始任务\n{self.context.original_task}",
+            f"## 项目目录\n{self.project_dir}",
             f"## 执行轮次: {self.context.iteration}",
         ]
         if self.dag and self.dag.nodes:
