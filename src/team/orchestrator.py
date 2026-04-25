@@ -78,6 +78,22 @@ class TeamOrchestrator:
             f"- {m['name']}: {m.get('description', '')}"
             for m in self.members.values()
         )
+        team_roles = self.config.get("team_roles", "")
+        role_constraint = ""
+        if team_roles:
+            role_constraint = f"""
+## 成员角色与边界（严格遵守）
+{team_roles}
+
+**关键约束**: 每个成员只能做自己角色范围内的工作。
+- 代码工程师 只写代码，不写测试
+- 测试工程师 只做测试（单元/功能/性能），不修改业务代码
+- 软件架构师 只做架构设计，不写实现代码
+- 算法研究员 只做调研分析，不写代码
+- DevOps工程师 只做环境部署，不写业务代码
+- 文档专员 只写文档，不写代码
+如果某个角色对当前任务不需要，就不要为它创建节点。"""
+
         prompt = f"""你是团队 "{self.team_name}" 的任务规划师。
 根据以下任务和团队成员，规划执行 DAG。
 
@@ -86,22 +102,23 @@ class TeamOrchestrator:
 
 ## 团队成员
 {member_list}
+{role_constraint}
 
 ## 要求
 返回 JSON 数组，每个元素包含:
 - "id": 节点唯一标识 (如 "step1", "step2")
-- "task": 分配给该成员的具体子任务描述
+- "task": 分配给该成员的具体子任务描述（仅限该成员角色范围内的工作）
 - "assignee": 成员 name（必须在上面的成员列表中）
 - "dependencies": 依赖的前置节点 id 列表 (可为空数组 [])
 
 规则:
-- 合理利用每个成员的专长分配任务
+- 严格遵守角色边界，不要把不属于某成员的工作分配给他
 - 无依赖的节点可以并行执行
 - 任务粒度适中，每个节点对应一个成员的一项工作
 - 只返回 JSON 数组，不要其他文本
 
 示例:
-[{{"id":"step1","task":"研究算法方案","assignee":"成员名","dependencies":[]}}]"""
+[{{"id":"step1","task":"研究算法方案","assignee":"算法研究员","dependencies":[]}}]"""
 
         return await self._build_dag_from_llm(prompt)
 
@@ -180,6 +197,13 @@ class TeamOrchestrator:
             f"- {m['name']}: {m.get('description', '')}"
             for m in self.members.values()
         )
+        team_roles = self.config.get("team_roles", "")
+        role_constraint = ""
+        if team_roles:
+            role_constraint = f"""
+## 成员角色与边界（严格遵守）
+{team_roles}
+**约束**: 每个成员只做自己角色范围内的工作，不要跨角色分配任务。"""
 
         prompt = f"""你是团队 "{self.team_name}" 的任务规划师。
 上一轮执行未通过 Leader 审核，需要补充或修改。
@@ -195,6 +219,7 @@ class TeamOrchestrator:
 
 ## 团队成员
 {member_list}
+{role_constraint}
 
 请规划新的 DAG 节点来处理 Leader 反馈。
 只需包含需要补充/修改的任务节点。

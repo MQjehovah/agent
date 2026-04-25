@@ -10,7 +10,7 @@ members:
   - name: 代码工程师
     role: 代码实现与编译
   - name: 测试工程师
-    role: 单元与集成测试
+    role: 单元测试、功能测试与性能测试
   - name: DevOps工程师
     role: 环境搭建与部署
   - name: 文档专员

@@ -92,6 +92,17 @@ class SubagentManager:
 
         name = frontmatter.get("name", dir_name)
 
+        raw_members = frontmatter.get("members", [])
+        team_roles = ""
+        if isinstance(raw_members, list):
+            role_lines = []
+            for m in raw_members:
+                if isinstance(m, dict):
+                    role_lines.append(f"- {m.get('name', '')}: {m.get('role', '')}")
+                else:
+                    role_lines.append(f"- {m}")
+            team_roles = "\n".join(role_lines)
+
         prompt_file = os.path.join(agent_dir, "PROMPT.md")
         prompt_body = ""
         if os.path.exists(prompt_file):
@@ -104,6 +115,7 @@ class SubagentManager:
             "leader": frontmatter.get("leader", ""),
             "workspace": agent_dir,
             "team_body": body,
+            "team_roles": team_roles,
             "leader_prompt": prompt_body,
             "dir_name": dir_name,
         }
