@@ -66,6 +66,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
     session_id = str(uuid.uuid4())
     current_task: asyncio.Task | None = None
     task_counter = 0
+    input_queue: asyncio.Queue[str] = asyncio.Queue()
+    input_task: asyncio.Task | None = None
 
     cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set)
 
@@ -85,10 +87,29 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         cmd_handler.set_current_task_id(None)
         current_task = None
 
+    async def input_reader():
+        """后台读取用户输入"""
+        loop = asyncio.get_event_loop()
+        while not shutdown_event.is_set():
+            try:
+                question = await loop.run_in_executor(
+                    None,
+                    lambda: Prompt.ask("\n[bold cyan]?[/bold cyan] [cyan]任务[/cyan]")
+                )
+                await input_queue.put(question)
+            except (KeyboardInterrupt, EOFError):
+                shutdown_event.set()
+                break
+            except Exception:
+                if shutdown_event.is_set():
+                    break
+
     def handle_signal():
         shutdown_event.set()
         if current_task and not current_task.done():
             current_task.cancel()
+        if input_task and not input_task.done():
+            input_task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -96,19 +117,14 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         except NotImplementedError:
             pass
 
+    input_task = asyncio.create_task(input_reader())
+
     try:
         while not shutdown_event.is_set():
             try:
-                question = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
-                        None, lambda: Prompt.ask("\n[bold cyan]?[/bold cyan] [cyan]任务[/cyan]")
-                    ),
-                    timeout=0.5
-                )
+                question = await asyncio.wait_for(input_queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
-            except (KeyboardInterrupt, EOFError):
-                break
 
             if not question.strip():
                 continue
@@ -122,6 +138,12 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
             console.print(f"[dim]任务 #{task_counter} 已提交[/dim]")
 
     finally:
+        if input_task and not input_task.done():
+            input_task.cancel()
+            try:
+                await input_task
+            except asyncio.CancelledError:
+                pass
         if current_task and not current_task.done():
             current_task.cancel()
             try:
