@@ -308,6 +308,22 @@ async def main():
         help="指定子代理名称执行任务",
     )
     parser.add_argument(
+        "--web",
+        action="store_true",
+        help="启动Web UI前端",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=8080,
+        help="Web UI端口 (默认8080)",
+    )
+    parser.add_argument(
+        "--no-web",
+        action="store_true",
+        help="禁用Web UI前端",
+    )
+    parser.add_argument(
         "task",
         nargs="*",
         help="要执行的任务内容",
@@ -344,10 +360,21 @@ async def main():
         console.print(result.result if hasattr(result, "result") else result)
         return
 
+    web_server = None
     scheduler = None
     plugin_manager = None
 
     try:
+        # 启动 Web UI（默认在 autonomous 模式或指定 --web 时启动）
+        start_web = args.web or (args.mode == "autonomous" and not args.no_web)
+
+        if start_web:
+            from web import WebServer
+            web_server = WebServer(port=args.web_port)
+            web_server.set_agent(agent)
+            web_server.start()
+            console.print(f"[bold green]Web UI:[/bold green] http://localhost:{args.web_port}")
+
         if args.mode == "autonomous":
             scheduler, plugin_manager = await autonomous_mode(agent, shutdown_event, args)
         else:
@@ -370,6 +397,8 @@ async def main():
         logger.error(f"程序异常退出: {e}", exc_info=True)
     finally:
         logger.info("清理资源...")
+        if web_server:
+            web_server.stop()
         await cleanup(plugin_manager, scheduler, agent)
         logger.info("清理完成")
 
