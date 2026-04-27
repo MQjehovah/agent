@@ -20,6 +20,7 @@
     const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory'), wsPanel = $('#wsPanel'), wsSubagents = $('#wsSubagents');
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
     const logContent = $('#logContent');
+    const elTodoList = $('#todoList');
 
     // ==================== INIT ====================
     document.addEventListener('DOMContentLoaded', () => {
@@ -94,7 +95,7 @@
 
     // ==================== FETCH ====================
     async function fetchAll() {
-        await Promise.all([fetchStatus(), fetchPanelTasks()]);
+        await Promise.all([fetchStatus(), fetchPanelTasks(), fetchTodos()]);
     }
 
     async function fetchStatus() {
@@ -197,6 +198,26 @@
             h += '</div></div>';
             return h;
         }).join('');
+    }
+
+    // ==================== TODOS ====================
+    async function fetchTodos() {
+        try {
+            const r = await fetch(API + '/api/todos');
+            if (!r.ok) return;
+            const d = await r.json();
+            const todos = d.todos || [];
+            if (!todos.length) { elTodoList.innerHTML = '<div class="empty-state">No todos</div>'; return; }
+            elTodoList.innerHTML = todos.map(t => {
+                const sc = t.priority === 'high' ? 'var(--accent-red)' : t.priority === 'medium' ? 'var(--accent-orange)' : 'var(--text-muted)';
+                const icon = t.status === 'completed' ? '&#10003;' : t.status === 'in_progress' ? '&#9654;' : t.status === 'cancelled' ? '&#10005;' : '&#9679;';
+                const cls = t.status === 'completed' ? ' todo-done' : t.status === 'cancelled' ? ' todo-cancelled' : '';
+                return '<div class="todo-item' + cls + '">' +
+                    '<span class="todo-dot" style="color:' + sc + '">' + icon + '</span>' +
+                    '<span class="todo-text">' + esc(t.content) + '</span>' +
+                    '</div>';
+            }).join('');
+        } catch {}
     }
 
     // ==================== CHAT ====================

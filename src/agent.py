@@ -613,7 +613,8 @@ class Agent:
                     session.add_message(
                         "assistant",
                         msg.get("content") or "",
-                        tool_calls=msg.get("tool_calls")
+                        tool_calls=msg.get("tool_calls"),
+                        reasoning_content=msg.get("reasoning_content")
                     )
 
                     if msg.get("tool_calls"):
@@ -880,7 +881,8 @@ class Agent:
             return {
                 "message": {
                     "content": msg.content,
-                    "tool_calls": tool_calls
+                    "tool_calls": tool_calls,
+                    "reasoning_content": getattr(msg, "reasoning_content", None)
                 }
             }
         except Exception as e:
@@ -890,6 +892,7 @@ class Agent:
     async def _think_stream(self, messages):
         """流式思考模式 — 实时推送 token 给调用方"""
         content = ""
+        reasoning_content = ""
         tool_calls_accumulator = {}
 
         async for chunk in self.client.stream_chat(messages, self.tool_defs):
@@ -897,6 +900,9 @@ class Agent:
                 continue
 
             delta = chunk.choices[0].delta
+
+            if delta and getattr(delta, "reasoning_content", None):
+                reasoning_content += delta.reasoning_content
 
             if delta and delta.content:
                 content += delta.content
@@ -919,7 +925,13 @@ class Agent:
                             tool_calls_accumulator[idx]["function"]["arguments"] += tc.function.arguments
 
         tool_calls = list(tool_calls_accumulator.values()) if tool_calls_accumulator else None
-        return {"message": {"content": content or None, "tool_calls": tool_calls}}
+        return {
+            "message": {
+                "content": content or None,
+                "tool_calls": tool_calls,
+                "reasoning_content": reasoning_content or None
+            }
+        }
 
     async def _execute_tool(self, name: str, args: Dict) -> str:
         try:

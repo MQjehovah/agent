@@ -326,6 +326,17 @@ class WebServer:
                 return self._json({"success": True})
             return self._json({"error": "Task not found"}, 404)
 
+        # Todo API
+        @self._app.route("/api/todos", methods=["GET"])
+        def todo_list():
+            if not self.agent or not self.agent.tool_registry:
+                return self._json({"error": "Agent not initialized"}, 503)
+            todo_tool = self.agent.tool_registry.get_tool("todo")
+            if not todo_tool:
+                return self._json({"todos": []})
+            data = todo_tool.get_todos("all")
+            return self._json({"todos": data, "count": len(data)})
+
     def _json(self, data: Any, status: int = 200) -> "Response":
         from flask import Response
         return Response(
