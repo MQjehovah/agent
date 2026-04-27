@@ -161,6 +161,10 @@ class LLMClient:
         }
         if tools:
             params["tools"] = tools
+        # DeepSeek/DashScope thinking mode
+        if any(k in (self.model or "").lower() for k in ("deepseek", "glm")):
+            params["reasoning_effort"] = "high"
+            params["extra_body"] = {"thinking": {"type": "enabled"}}
 
         self._log_request(params)
 

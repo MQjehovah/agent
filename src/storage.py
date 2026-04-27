@@ -55,6 +55,7 @@ class Storage:
                     tool_calls TEXT,
                     tool_call_id TEXT,
                     name TEXT,
+                    reasoning_content TEXT,
                     created_at TEXT
                 );
 
@@ -62,6 +63,11 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
             """)
+            # migration: add reasoning_content column if missing
+            try:
+                conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     def _init_pool(self):
         """初始化连接池"""
@@ -138,8 +144,8 @@ class Storage:
 
         with self._get_connection() as conn:
             conn.executemany("""
-                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     item['agent_id'],
@@ -149,6 +155,7 @@ class Storage:
                     json.dumps(item['tool_calls']) if item.get('tool_calls') else None,
                     item.get('tool_call_id', ''),
                     item.get('name', ''),
+                    item.get('reasoning_content', ''),
                     item['created_at']
                 )
                 for item in batch
@@ -159,7 +166,7 @@ class Storage:
 
     def save_message(self, agent_id: str, session_id: str, role: str, content: str,
                      tool_calls: Optional[List] = None,
-                     tool_call_id: str = "", name: str = ""):
+                     tool_call_id: str = "", name: str = "", reasoning_content: str = ""):
         """保存消息到写入队列（异步写入）"""
         self._write_queue.put({
             'agent_id': agent_id,
@@ -169,28 +176,29 @@ class Storage:
             'tool_calls': tool_calls,
             'tool_call_id': tool_call_id,
             'name': name,
+            'reasoning_content': reasoning_content or "",
             'created_at': datetime.now().isoformat()
         })
 
     def save_message_sync(self, agent_id: str, session_id: str, role: str, content: str,
                           tool_calls: Optional[List] = None,
-                          tool_call_id: str = "", name: str = ""):
+                          tool_call_id: str = "", name: str = "", reasoning_content: str = ""):
         """同步保存消息（立即写入）"""
         with self._get_connection() as conn:
             conn.execute("""
-                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent_id, session_id, role, content or "",
                 json.dumps(tool_calls) if tool_calls else None,
-                tool_call_id, name, datetime.now().isoformat()
+                tool_call_id, name, reasoning_content or "", datetime.now().isoformat()
             ))
             conn.commit()
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         with self._get_connection() as conn:
             rows = conn.execute("""
-                SELECT role, content, tool_calls, tool_call_id, name
+                SELECT role, content, tool_calls, tool_call_id, name, reasoning_content
                 FROM messages WHERE session_id = ? ORDER BY id
             """, (session_id,)).fetchall()
 
@@ -203,6 +211,8 @@ class Storage:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["name"]:
                 msg["name"] = row["name"]
+            if row["reasoning_content"]:
+                msg["reasoning_content"] = row["reasoning_content"]
             messages.append(msg)
         return messages
 
@@ -210,14 +220,14 @@ class Storage:
         with self._get_connection() as conn:
             if agent_id:
                 rows = conn.execute("""
-                    SELECT session_id, role, content, tool_calls, tool_call_id, name
+                    SELECT session_id, role, content, tool_calls, tool_call_id, name, reasoning_content
                     FROM messages
                     WHERE DATE(created_at) = ? AND agent_id = ?
                     ORDER BY session_id, id
                 """, (date_str, agent_id)).fetchall()
             else:
                 rows = conn.execute("""
-                    SELECT session_id, role, content, tool_calls, tool_call_id, name
+                    SELECT session_id, role, content, tool_calls, tool_call_id, name, reasoning_content
                     FROM messages
                     WHERE DATE(created_at) = ?
                     ORDER BY session_id, id
@@ -232,6 +242,8 @@ class Storage:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["name"]:
                 msg["name"] = row["name"]
+            if row["reasoning_content"]:
+                msg["reasoning_content"] = row["reasoning_content"]
             messages.append(msg)
         return messages
 

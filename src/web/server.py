@@ -331,7 +331,7 @@ class WebServer:
         def todo_list():
             if not self.agent or not self.agent.tool_registry:
                 return self._json({"error": "Agent not initialized"}, 503)
-            todo_tool = self.agent.tool_registry.get_tool("todo")
+            todo_tool = self.agent.tool_registry.get_tool("todowrite")
             if not todo_tool:
                 return self._json({"todos": []})
             data = todo_tool.get_todos("all")

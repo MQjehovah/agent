@@ -5,6 +5,7 @@
     let currentSessionId = null;
     let isStreaming = false;
     let activeTab = 'chat';
+    currentSessionId = sessionStorage.getItem('agent_session_id') || null;
 
     const $ = s => document.querySelector(s);
 
@@ -26,6 +27,7 @@
     document.addEventListener('DOMContentLoaded', () => {
         bind();
         fetchAll();
+        loadChatHistory();
         setInterval(fetchAll, 4000);
         initResize();
     });
@@ -201,6 +203,25 @@
     }
 
     // ==================== TODOS ====================
+    async function loadChatHistory() {
+        if (!currentSessionId) return;
+        try {
+            const r = await fetch(API + '/api/sessions/' + currentSessionId + '/messages');
+            if (!r.ok) return;
+            const d = await r.json();
+            if (!d.messages || !d.messages.length) return;
+            const w = chatMsgs.querySelector('.welcome-text'); if (w) w.remove();
+            d.messages.forEach(m => {
+                if (m.role === 'system') return;
+                const el = document.createElement('div');
+                el.className = 'msg ' + (m.role === 'user' ? 'user' : 'assistant');
+                el.innerHTML = '<div class="msg-avatar">' + (m.role === 'user' ? 'U' : 'A') + '</div>' +
+                    '<div class="msg-body"><div class="msg-bubble">' + md(m.content || '') + '</div></div>';
+                chatMsgs.appendChild(el);
+            });
+            chatMsgs.scrollTop = chatMsgs.scrollHeight;
+        } catch {}
+    }
     async function fetchTodos() {
         try {
             const r = await fetch(API + '/api/todos');
@@ -259,7 +280,10 @@
         setAvatar('thinking');
         elDot.className = 'status-dot running';
 
-        if (!currentSessionId) currentSessionId = 'web_' + Math.random().toString(36).slice(2,10);
+        if (!currentSessionId) {
+            currentSessionId = 'web_' + Math.random().toString(36).slice(2,10);
+            sessionStorage.setItem('agent_session_id', currentSessionId);
+        }
         addMsg('user', msg);
         addMsg('assistant', '', true);
 
