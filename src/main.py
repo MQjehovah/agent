@@ -1,7 +1,10 @@
 import asyncio
+import gc
 import logging
 import os
 import signal
+import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -9,7 +12,6 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
-from rich.prompt import Prompt
 
 # 加载环境配置
 _project_root = Path(__file__).parent.parent
@@ -88,15 +90,52 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         current_task = None
 
     async def input_reader():
-        """后台读取用户输入"""
+        """后台读取用户输入 — Windows 使用 msvcrt 字符级读取，Unix 用 StreamReader"""
         loop = asyncio.get_event_loop()
+
+        if sys.platform == "win32":
+            import msvcrt
+
+        async def _readline():
+            if sys.platform == "win32":
+                line = []
+                while not shutdown_event.is_set():
+                    ch = await loop.run_in_executor(None, msvcrt.getwch)
+                    if ch in ("\r", "\n"):
+                        sys.stdout.write("\n")
+                        break
+                    elif ch in ("\x08", "\x7f"):  # backspace
+                        if line:
+                            removed = line.pop()
+                            # CJK 字符占 2 列宽度，退格需要额外清理
+                            if '\u1100' <= removed <= '\u9fff' or '\uac00' <= removed <= '\ud7af' or '\uf900' <= removed <= '\uffff' or ord(removed) > 0x20000:
+                                sys.stdout.write("\b\b  \b\b")
+                            else:
+                                sys.stdout.write("\b \b")
+                    elif ch == "\x03":
+                        raise KeyboardInterrupt
+                    elif ch == "\x1a":
+                        raise EOFError
+                    elif ch.isprintable():
+                        line.append(ch)
+                        sys.stdout.write(ch)
+                    sys.stdout.flush()
+                return "".join(line)
+            else:
+                reader = asyncio.StreamReader()
+                protocol = asyncio.StreamReaderProtocol(reader)
+                await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+                question = await reader.readline()
+                return question.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
+
         while not shutdown_event.is_set():
             try:
-                question = await loop.run_in_executor(
-                    None,
-                    lambda: Prompt.ask("\n[bold cyan]?[/bold cyan] [cyan]任务[/cyan]")
-                )
-                await input_queue.put(question)
+                sys.stdout.write("\n? 任务: ")
+                sys.stdout.flush()
+                question = await _readline()
+                if not question:
+                    continue
+                await input_queue.put(question.strip())
             except (KeyboardInterrupt, EOFError):
                 shutdown_event.set()
                 break
