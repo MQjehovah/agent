@@ -104,6 +104,8 @@ class Agent:
         self._current_task: str = ""
         self._retry_context: str = ""
 
+        self._learning_per_round = os.environ.get("LEARNING_PER_ROUND", "false").lower() in ("true", "1", "yes")
+
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
         self._init_tools()
@@ -509,7 +511,7 @@ class Agent:
         self._consecutive_errors = 0
         self._current_task = task
 
-        if self.learner:
+        if self.learner and self._learning_per_round:
             self.learner.check_user_correction(task)
 
         # 根据当前任务重新拼装 prompt
@@ -660,7 +662,7 @@ class Agent:
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
         # 任务结束后批量反思（后台异步，不阻塞结果返回）
-        if self.learner and session and len(session.messages) > 1:
+        if self.learner and self._learning_per_round and session and len(session.messages) > 1:
             task_copy = task
             messages_copy = list(session.messages)
             learner = self.learner
@@ -808,7 +810,7 @@ class Agent:
             logger.error(f"[工具异常] {name} | 错误: {type(e).__name__}: {e}")
             await self.hooks.fire("post_tool_use", tool_name=name,
                                   arguments=args, error=e)
-            if self.learner:
+            if self.learner and self._learning_per_round:
                 args_summary = json.dumps(args, ensure_ascii=False)[:100]
                 self.learner.record_failure(name, args_summary, f"{type(e).__name__}: {e}"[:150])
             return json.dumps({
