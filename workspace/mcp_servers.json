@@ -42,5 +42,20 @@
             "WS_BASE_URL": "wss://dev.xzrobot.com:10000"
         },
         "description": "WebSocket终端交互服务 - 通过WebSocket连接设备终端并执行命令"
+    },
+    {
+        "name": "dingtalk",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/dingtalk.py"
+        ],
+        "env": {
+            "DINGTALK_APP_KEY": "ding3xmu1gbsy11jbks3",
+            "DINGTALK_APP_SECRET": "VOJtrR834FJ3C59lf2kftdvlD_FGZpRJTZKxsbVTjTNMXjd2yVZXxIoH3CxLu66l",
+            "DINGTALK_AGENT_ID": "",
+            "DINGTALK_ROBOT_CODE": "ding3xmu1gbsy11jbks3"
+        },
+        "description": "钉钉消息推送服务 - 支持工作通知、机器人单聊/群聊消息、Webhook、通讯录查询等"
     }
 ]
