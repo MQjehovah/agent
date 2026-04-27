@@ -586,7 +586,9 @@ class Agent:
 
                     # 每轮更新动态 prompt 区块
                     self._update_dynamic_prompt(task)
-                    if session.messages and session.messages[0].get("role") == "system":
+                    if not session.messages or session.messages[0].get("role") != "system":
+                        session.messages.insert(0, {"role": "system", "content": self.system_prompt})
+                    else:
                         session.messages[0]["content"] = self.system_prompt
 
                     # 思考
