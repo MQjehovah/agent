@@ -28,6 +28,7 @@ class WebServer:
         self.host = host
         self.port = port
         self.agent = None
+        self.panel = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._loop_ready = threading.Event()
@@ -50,6 +51,9 @@ class WebServer:
 
     def set_agent(self, agent):
         self.agent = agent
+
+    def set_panel(self, panel):
+        self.panel = panel
 
     def start(self):
         try:
@@ -270,6 +274,39 @@ class WebServer:
             with self._session_lock:
                 self._sessions.pop(session_id, None)
             return self._json({"success": True})
+
+        # 任务面板 API
+        @self._app.route("/api/panel", methods=["GET"])
+        def panel_list():
+            if not self.panel:
+                return self._json({"error": "Panel not available"}, 503)
+            tasks = self.panel.list_all()
+            stats = self.panel.get_stats()
+            return self._json({"stats": stats, "tasks": [t.to_dict() for t in tasks]})
+
+        @self._app.route("/api/panel", methods=["POST"])
+        def panel_add():
+            if not self.panel:
+                return self._json({"error": "Panel not available"}, 503)
+            data = request.get_json()
+            if not data or "title" not in data:
+                return self._json({"error": "Missing title"}, 400)
+            task = self.panel.add_task(
+                title=data["title"],
+                description=data.get("description", ""),
+                priority=data.get("priority", 3),
+                interval=data.get("interval"),
+                source="user",
+            )
+            return self._json({"task": task.to_dict()})
+
+        @self._app.route("/api/panel/<task_id>", methods=["DELETE"])
+        def panel_remove(task_id):
+            if not self.panel:
+                return self._json({"error": "Panel not available"}, 503)
+            if self.panel.remove_task(task_id):
+                return self._json({"success": True})
+            return self._json({"error": "Task not found"}, 404)
 
     def _json(self, data: Any, status: int = 200) -> "Response":
         from flask import Response

@@ -253,7 +253,7 @@ class CommandHandler:
             console.print(Panel.fit(
                 "[dim]任务面板为空[/dim]\n"
                 "使用 [cyan]/panel add <任务>[/cyan] 添加\n"
-                "LLM 会根据角色自动生成初始任务",
+                "启动时已根据角色自动生成，部分纯响应型角色无需主动任务",
                 border_style="dim", box=box.ROUNDED
             ))
             return

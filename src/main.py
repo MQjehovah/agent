@@ -152,7 +152,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                 pass
 
 
-async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
+async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, panel=None):
     """自主模式 - 感知-规划-执行-校验循环"""
     from autonomous.eventbus import EventBus
     from autonomous.executor import Executor
@@ -170,7 +170,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
 
     event_bus = EventBus(db_path=db_path)
     goal_manager = GoalManager(db_path)
-    panel = TaskPanel(panel_path)
+    panel = TaskPanel(panel_path) if panel is None else panel
 
     tool_summary = ""
     if hasattr(agent, "_get_tool_summary"):
@@ -349,6 +349,10 @@ async def main():
     agent = Agent(workspace=workspace, client=LLMClient())
     await agent.initialize()
 
+    # 任务面板（Web UI 和自主模式共用）
+    from autonomous.panel import TaskPanel
+    panel = TaskPanel(os.path.join(workspace, "task_panel.json"))
+
     if args.agent:
         agent_name = args.agent
         task = " ".join(args.task) if args.task else ""
@@ -376,11 +380,12 @@ async def main():
             from web import WebServer
             web_server = WebServer(port=args.web_port)
             web_server.set_agent(agent)
+            web_server.set_panel(panel)
             web_server.start()
             console.print(f"[bold green]Web UI:[/bold green] http://localhost:{args.web_port}")
 
         if args.mode == "autonomous":
-            scheduler, plugin_manager = await autonomous_mode(agent, shutdown_event, args)
+            scheduler, plugin_manager = await autonomous_mode(agent, shutdown_event, args, panel=panel)
         else:
             if not args.no_scheduler:
                 scheduler = SchedulerManager(os.path.join(workspace, "schedules.json"))
