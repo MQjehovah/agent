@@ -1,13 +1,13 @@
 import logging
 import asyncio
 import platform
+import re
 import subprocess
 from typing import Optional, Dict, Any, List, TYPE_CHECKING, cast, Sequence
 from dataclasses import dataclass, field
 from collections import OrderedDict
 from datetime import datetime
 import os
-import re
 import json
 from openai.types.chat import ChatCompletionMessageParam
 
@@ -102,6 +102,7 @@ class Agent:
 
         self._consecutive_errors = 0
         self._current_task: str = ""
+        self._retry_context: str = ""
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
@@ -144,8 +145,19 @@ class Agent:
             if isinstance(self.description, str):
                 self.description = self.description.strip()
 
-        self.system_prompt = body.strip() if body else ""
+        self.system_prompt = self._expand_env_vars(body.strip()) if body else ""
         self.system_prompt_raw = self.system_prompt
+
+    @staticmethod
+    def _expand_env_vars(text: str) -> str:
+        """替换 ${VAR:default} 或 ${VAR} 为环境变量值"""
+        def _replace(match):
+            full = match.group(1).strip()
+            if ":" in full:
+                var, default = full.split(":", 1)
+                return os.environ.get(var, default)
+            return os.environ.get(full, "")
+        return re.sub(r'\$\{([^}]+)\}', _replace, text)
 
     def _init_tools(self):
         from tools import ToolRegistry
@@ -217,6 +229,7 @@ class Agent:
                 else:
                     logger.debug(
                         f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
+            self.mcp.start_health_check()
 
             connected = [c.get("name", "unnamed")
                          for c in self.mcp_configs if c.get("enabled", True)]
@@ -227,6 +240,7 @@ class Agent:
         agents_dir = os.path.join(self.workspace, "agents")
         if os.path.exists(agents_dir):
             self.subagent_manager = SubagentManager(agents_dir)
+            self.subagent_manager.start_cleanup_task()
             logger.info(
                 f"Agent [{self.name}] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {self.subagent_manager.list_templates()}")
 
@@ -586,7 +600,12 @@ class Agent:
                         f"{usage_summary['total_prompt_tokens']:,}+{usage_summary['total_completion_tokens']:,}tok "
                         f"¥{usage_summary['total_cost_cny']}"
                     )
-                    response = await self._think(session.messages)
+                    think_messages = session.messages
+                    if self._retry_context:
+                        think_messages = list(session.messages)
+                        think_messages.append({"role": "user", "content": self._retry_context})
+                        self._retry_context = ""
+                    response = await self._think(think_messages)
                     self.tracer.end_span()
 
                     msg = response.get("message", {})
@@ -608,6 +627,7 @@ class Agent:
                     if msg.get("content"):
                         self.status = "completed"
                         self.result = msg.get("content")
+                        self._retry_context = ""
                         break
 
                 except Exception as e:
@@ -621,11 +641,7 @@ class Agent:
                         self.result = f"连续 {self._consecutive_errors} 次思考出错"
                         break
 
-                    # 将错误反馈给 LLM，让它重试
-                    session.add_message(
-                        "system",
-                        f"上一轮思考出错: {e}，请尝试用其他方式继续完成任务。"
-                    )
+                    self._retry_context = f"上一轮思考出错: {e}，请尝试用其他方式继续完成任务。"
                     continue
             else:
                 self.status = "max_iterations"
@@ -645,7 +661,9 @@ class Agent:
             task_copy = task
             messages_copy = list(session.messages)
             learner = self.learner
-            asyncio.create_task(self._run_reflection(learner, task_copy, messages_copy))
+            bg_task = asyncio.create_task(self._run_reflection(learner, task_copy, messages_copy))
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
 
         # 触发 AGENT_STOP 钩子
         await self.hooks.fire("agent_stop", metadata={
@@ -974,6 +992,7 @@ class Agent:
             self.session_manager.stop_cleanup_task()
 
         if not self.parent_agent and self.subagent_manager:
+            self.subagent_manager.stop_cleanup_task()
             await self.subagent_manager.cleanup_all()
 
         if self.memory and not self.parent_agent:

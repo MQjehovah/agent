@@ -53,7 +53,7 @@
         "env": {
             "DINGTALK_APP_KEY": "ding3xmu1gbsy11jbks3",
             "DINGTALK_APP_SECRET": "VOJtrR834FJ3C59lf2kftdvlD_FGZpRJTZKxsbVTjTNMXjd2yVZXxIoH3CxLu66l",
-            "DINGTALK_AGENT_ID": "",
+            "DINGTALK_AGENT_ID": "4389947271",
             "DINGTALK_ROBOT_CODE": "ding3xmu1gbsy11jbks3"
         },
         "description": "钉钉消息推送服务 - 支持工作通知、机器人单聊/群聊消息、Webhook、通讯录查询等"

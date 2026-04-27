@@ -6,6 +6,7 @@
 import logging
 import os
 import time
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,9 @@ class SubagentInstance:
 class SubagentManager:
     """子代理管理器 - 支持持久化和会话复用，统一管理个人子代理和团队"""
 
+    CLEANUP_INTERVAL = 300  # 清理间隔: 5分钟
+    SUBAGENT_TTL = 3600  # 子代理存活时间: 1小时
+
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
         self.templates: dict[str, dict[str, Any]] = {}
@@ -42,6 +46,8 @@ class SubagentManager:
         self._team_members: dict[str, dict[str, dict[str, Any]]] = {}
         self._client = None
         self._parent_agent = None
+        self._lock = asyncio.Lock()
+        self._cleanup_task = None
         self._load_all()
 
     def _load_all(self):
@@ -319,7 +325,7 @@ class SubagentManager:
     def list_active_subagents(self) -> list[dict[str, Any]]:
         """列出所有活跃的子代理"""
         result = []
-        for session_id, instance in self._active_subagents.items():
+        for session_id, instance in list(self._active_subagents.items()):
             result.append({
                 "session_id": session_id,
                 "template": instance.template,
@@ -350,7 +356,7 @@ class SubagentManager:
             该模板的所有session信息列表
         """
         sessions = []
-        for session_id, instance in self._active_subagents.items():
+        for session_id, instance in list(self._active_subagents.items()):
             if instance.template == template:
                 sessions.append({
                     "session_id": session_id,
@@ -370,7 +376,7 @@ class SubagentManager:
             按模板名分组的session字典
         """
         grouped = {}
-        for session_id, instance in self._active_subagents.items():
+        for session_id, instance in list(self._active_subagents.items()):
             template = instance.template or "未命名"
             if template not in grouped:
                 grouped[template] = []
@@ -419,23 +425,25 @@ class SubagentManager:
             self._parent_agent = parent_agent
 
         # 优先通过 session_id 查找
-        if session_id and session_id in self._active_subagents:
-            instance = self._active_subagents[session_id]
-            instance.last_used = time.time()
-            logger.info(f"复用子代理: template={instance.template}, session={session_id}")
-            return instance, False
+        async with self._lock:
+            if session_id and session_id in self._active_subagents:
+                instance = self._active_subagents[session_id]
+                instance.last_used = time.time()
+                logger.info(f"复用子代理: template={instance.template}, session={session_id}")
+                return instance, False
 
         # 通过模板名查找
         template_name = template or name
-        if template_name and template_name in self._name_to_session:
-            existing_session = self._name_to_session[template_name]
-            if existing_session in self._active_subagents:
-                instance = self._active_subagents[existing_session]
-                instance.last_used = time.time()
-                logger.info(f"复用子代理: template={template_name}, session={existing_session}")
-                return instance, False
+        async with self._lock:
+            if template_name and template_name in self._name_to_session:
+                existing_session = self._name_to_session[template_name]
+                if existing_session in self._active_subagents:
+                    instance = self._active_subagents[existing_session]
+                    instance.last_used = time.time()
+                    logger.info(f"复用子代理: template={template_name}, session={existing_session}")
+                    return instance, False
 
-        # 创建新的子代理
+        # 创建新的子代理（不持锁，因为初始化耗时）
         template_data = self.templates.get(template_name)
         workspace = template_data["workspace"] if template_data else None
 
@@ -455,7 +463,7 @@ class SubagentManager:
             agent.name = name
             agent.system_prompt = system_prompt
 
-        # 创建实例
+        # 创建实例并注册（持锁）
         new_session_id = session_id or str(uuid.uuid4())[:8]
         instance = SubagentInstance(
             agent=agent,
@@ -463,9 +471,10 @@ class SubagentManager:
             session_id=new_session_id
         )
 
-        self._active_subagents[new_session_id] = instance
-        if template_name:
-            self._name_to_session[template_name] = new_session_id
+        async with self._lock:
+            self._active_subagents[new_session_id] = instance
+            if template_name:
+                self._name_to_session[template_name] = new_session_id
 
         logger.info(f"创建新子代理: template={template_name}, session={new_session_id}")
         return instance, True
@@ -598,21 +607,23 @@ class SubagentManager:
 
     async def cleanup_subagent(self, session_id: str):
         """清理指定的子代理"""
-        if session_id not in self._active_subagents:
-            return
+        instance = None
+        async with self._lock:
+            if session_id not in self._active_subagents:
+                return
+            instance = self._active_subagents.pop(session_id)
 
-        instance = self._active_subagents.pop(session_id)
-
-        # 清理名称映射
-        if instance.template in self._name_to_session and self._name_to_session[instance.template] == session_id:
-            del self._name_to_session[instance.template]
+            # 清理名称映射
+            if instance.template in self._name_to_session and self._name_to_session[instance.template] == session_id:
+                del self._name_to_session[instance.template]
 
         await instance.agent.cleanup()
         logger.info(f"清理子代理: template={instance.template}, session={session_id}")
 
     async def cleanup_all(self):
         """清理所有活跃的子代理"""
-        session_ids = list(self._active_subagents.keys())
+        async with self._lock:
+            session_ids = list(self._active_subagents.keys())
         for session_id in session_ids:
             await self.cleanup_subagent(session_id)
         logger.info(f"已清理所有子代理，共 {len(session_ids)} 个")
@@ -625,6 +636,49 @@ class SubagentManager:
             "active_count": len(self._active_subagents),
             "active_subagents": self.list_active_subagents()
         }
+
+    def start_cleanup_task(self):
+        """启动定期清理任务（清理过期子代理）"""
+        if self._cleanup_task:
+            return
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        logger.info("子代理清理任务已启动")
+
+    def stop_cleanup_task(self):
+        """停止清理任务"""
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            self._cleanup_task = None
+            logger.info("子代理清理任务已停止")
+
+    async def _cleanup_loop(self):
+        """定期清理过期子代理"""
+        while True:
+            try:
+                await asyncio.sleep(self.CLEANUP_INTERVAL)
+            except asyncio.CancelledError:
+                logger.info("子代理清理循环被取消")
+                return
+            try:
+                await self._cleanup_expired()
+            except asyncio.CancelledError:
+                logger.info("子代理清理被取消")
+                return
+            except Exception as e:
+                logger.error(f"子代理清理失败: {e}")
+
+    async def _cleanup_expired(self):
+        """清理过期的子代理"""
+        now = time.time()
+        expired_ids = []
+        async with self._lock:
+            for session_id, instance in self._active_subagents.items():
+                if now - instance.last_used > self.SUBAGENT_TTL:
+                    expired_ids.append(session_id)
+        for session_id in expired_ids:
+            await self.cleanup_subagent(session_id)
+        if expired_ids:
+            logger.info(f"已清理 {len(expired_ids)} 个过期子代理")
 
     def reload_templates(self):
         """重新加载所有子代理模板（热加载新增的模板）"""

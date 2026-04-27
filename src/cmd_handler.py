@@ -39,8 +39,6 @@ class CommandHandler:
             self._show_tools()
         elif cmd_lower == "/skills":
             self._show_skills()
-        elif cmd_lower == "/tasks":
-            self._show_tasks()
         elif cmd_lower == "/cancel":
             self._cancel_task()
         elif cmd_lower == "/subagents":
@@ -59,8 +57,6 @@ class CommandHandler:
             self._clear_cache()
         elif cmd_lower == "/usage":
             self._show_usage()
-        elif cmd_lower == "/tasks":
-            self._show_bg_tasks()
         elif cmd_lower == "/sessions":
             await self._show_sessions()
         elif cmd_lower.startswith("/session "):
@@ -309,6 +305,7 @@ class CommandHandler:
             if len(content) > 100:
                 content = content[:100] + "..."
             table.add_row(str(i), role, content)
+        console.print(table)
 
     def _show_usage(self):
         """显示 LLM 用量统计"""
@@ -345,4 +342,3 @@ class CommandHandler:
                 console.print("[dim]暂无后台任务[/dim]")
         else:
             console.print("[yellow]任务管理器未初始化[/yellow]")
-        console.print(table)

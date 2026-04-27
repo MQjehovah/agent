@@ -350,7 +350,8 @@ class AgentSessionManager:
             return session
 
     async def get_session(self, session_id: str) -> Optional[AgentSession]:
-        session = self.sessions.get(session_id)
+        async with self._lock:
+            session = self.sessions.get(session_id)
         if session:
             session.touch()
         return session
