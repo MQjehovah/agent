@@ -132,7 +132,8 @@ class TeamOrchestrator:
             full_task += "\n\n## 上游产出物（请先阅读）\n" + upstream
 
         full_task += f"\n\n## 你的任务\n根据你的角色职责完成「{stage}」阶段的工作。"
-        full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令，shell 工具不支持密码输入"
+        full_task += "\n\n## 角色技能\n你拥有本角色专属技能，可通过 execute_skill 工具调用。在开始工作前，先调用 execute_skill 加载与本阶段相关的技能指导文档。"
+        full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令"
         if output_file:
             full_task += f"\n将输出写入 `{output_file}`。"
         full_task += f"\n工作目录: {self.project_dir}"

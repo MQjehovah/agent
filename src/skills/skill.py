@@ -152,28 +152,25 @@ class SkillManager:
         return references
 
     def _build_builtin_tools(self):
+        skill_names = self.list_skills()
+        skill_hint = ""
+        if skill_names:
+            skill_hint = f"\n当前可用技能: {', '.join(skill_names)}"
         self._builtin_tool_defs = [{
             "type": "function",
             "function": {
                 "name": "execute_skill",
-                "description": f"""执行指定技能
-
-    参数:
-    - skill_name: 技能名称
-    - user_input: 用户输入
-    
-    返回技能执行结果
-    """,
+                "description": f"激活并使用指定的技能指导完成任务。当你需要执行特定流程（如需求分析、代码审查、安全审计、发布上线等）时，先调用此工具加载对应技能的指导文档，然后按照技能指导执行。{skill_hint}",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "skill_name": {
                             "type": "string",
-                            "description": "技能名称"
+                            "description": f"技能名称: {', '.join(skill_names) if skill_names else '(无可用技能)'}"
                         },
                         "user_input": {
                             "type": "string",
-                            "description": "用户输入"
+                            "description": "用户输入或上下文，用于技能渲染"
                         }
                     },
                     "required": ["skill_name"]
