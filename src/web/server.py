@@ -331,11 +331,32 @@ class WebServer:
         def todo_list():
             if not self.agent or not self.agent.tool_registry:
                 return self._json({"error": "Agent not initialized"}, 503)
+
+            all_todos = []
+
+            # 主 agent todos
             todo_tool = self.agent.tool_registry.get_tool("todowrite")
-            if not todo_tool:
-                return self._json({"todos": []})
-            data = todo_tool.get_todos("all")
-            return self._json({"todos": data, "count": len(data)})
+            if todo_tool:
+                for t in todo_tool.get_todos("all"):
+                    t["agent_id"] = self.agent.name or "main"
+                    all_todos.append(t)
+
+            # 子 agent todos
+            if self.agent.subagent_manager:
+                try:
+                    for inst in list(self.agent.subagent_manager._active_subagents.values()):
+                        sub_agent = inst.agent
+                        if sub_agent and sub_agent.tool_registry:
+                            sub_todo = sub_agent.tool_registry.get_tool("todowrite")
+                            if sub_todo:
+                                agent_name = sub_agent.name or sub_agent.agent_id or inst.template or "sub"
+                                for t in sub_todo.get_todos("all"):
+                                    t["agent_id"] = agent_name
+                                    all_todos.append(t)
+                except Exception as e:
+                    logger.warning(f"[Todos API] 遍历子代理todo失败: {e}")
+
+            return self._json({"todos": all_todos, "count": len(all_todos)})
 
         # Agent Sessions API (in-memory)
         @self._app.route("/api/agent/sessions", methods=["GET"])

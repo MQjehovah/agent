@@ -239,15 +239,30 @@
             const d = await r.json();
             const todos = d.todos || [];
             if (!todos.length) { elTodoList.innerHTML = '<div class="empty-state">No todos</div>'; return; }
-            elTodoList.innerHTML = todos.map(t => {
-                const sc = t.priority === 'high' ? 'var(--accent-red)' : t.priority === 'medium' ? 'var(--accent-orange)' : 'var(--text-muted)';
-                const icon = t.status === 'completed' ? '&#10003;' : t.status === 'in_progress' ? '&#9654;' : t.status === 'cancelled' ? '&#10005;' : '&#9679;';
-                const cls = t.status === 'completed' ? ' todo-done' : t.status === 'cancelled' ? ' todo-cancelled' : '';
-                return '<div class="todo-item' + cls + '">' +
-                    '<span class="todo-dot" style="color:' + sc + '">' + icon + '</span>' +
-                    '<span class="todo-text">' + esc(t.content) + '</span>' +
-                    '</div>';
-            }).join('');
+
+            const grouped = {};
+            todos.forEach(t => {
+                const aid = t.agent_id || 'main';
+                grouped[aid] = grouped[aid] || [];
+                grouped[aid].push(t);
+            });
+
+            let html = '';
+            Object.keys(grouped).forEach(aid => {
+                if (Object.keys(grouped).length > 1) {
+                    html += '<div class="todo-group-label">' + esc(aid) + '</div>';
+                }
+                grouped[aid].forEach(t => {
+                    const sc = t.priority === 'high' ? 'var(--accent-red)' : t.priority === 'medium' ? 'var(--accent-orange)' : 'var(--text-muted)';
+                    const icon = t.status === 'completed' ? '&#10003;' : t.status === 'in_progress' ? '&#9654;' : t.status === 'cancelled' ? '&#10005;' : '&#9679;';
+                    const cls = t.status === 'completed' ? ' todo-done' : t.status === 'cancelled' ? ' todo-cancelled' : '';
+                    html += '<div class="todo-item' + cls + '">' +
+                        '<span class="todo-dot" style="color:' + sc + '">' + icon + '</span>' +
+                        '<span class="todo-text">' + esc(t.content) + '</span>' +
+                        '</div>';
+                });
+            });
+            elTodoList.innerHTML = html;
         } catch {}
     }
 
