@@ -57,6 +57,7 @@
                 <div class="main-toolbar">
                     <div class="main-tabs">
                         <span class="main-tab active" data-tab="chat">Chat</span>
+                        <span class="main-tab" data-tab="sessions">Sessions</span>
                         <span class="main-tab" data-tab="workspace">Workspace</span>
                         <span class="main-tab" data-tab="logs">Logs</span>
                     </div>
@@ -95,6 +96,30 @@
                         <button class="btn-send" id="sendBtn">
                             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
                         </button>
+                    </div>
+                </div>
+
+                <!-- Sessions -->
+                <div class="main-body" id="sessionsBody" style="display:none">
+                    <div class="sessions-layout">
+                        <div class="sessions-sidebar">
+                            <div class="sessions-sidebar-header">
+                                <span>Sessions</span>
+                                <span class="sessions-count" id="sessionsTotalCount">0</span>
+                            </div>
+                            <div class="sessions-session-list" id="sessionsSessionList">
+                                <div class="empty-state">Loading...</div>
+                            </div>
+                        </div>
+                        <div class="sessions-detail">
+                            <div class="sessions-messages" id="sessionsMessages" style="display:none">
+                                <div class="sessions-messages-header" id="sessionMessagesHeader"></div>
+                                <div class="sessions-messages-list" id="sessionMessagesList"></div>
+                            </div>
+                            <div class="sessions-empty" id="sessionsEmpty">
+                                <div class="empty-state">Select a session to view messages</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

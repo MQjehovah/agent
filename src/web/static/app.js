@@ -18,10 +18,18 @@
     // Main
     const elPath = $('#mainPath');
     const wsBody = $('#workspaceBody'), chatBody = $('#chatBody'), logsBody = $('#logsBody');
+    const sessionsBody = $('#sessionsBody');
     const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory'), wsPanel = $('#wsPanel'), wsSubagents = $('#wsSubagents');
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
     const logContent = $('#logContent');
     const elTodoList = $('#todoList');
+    // Sessions
+    const sessionsSessionList = $('#sessionsSessionList');
+    const sessionsMessages = $('#sessionsMessages');
+    const sessionMessagesList = $('#sessionMessagesList');
+    const sessionMessagesHeader = $('#sessionMessagesHeader');
+    const sessionsTotalCount = $('#sessionsTotalCount');
+    const sessionsEmpty = $('#sessionsEmpty');
 
     // ==================== INIT ====================
     document.addEventListener('DOMContentLoaded', () => {
@@ -51,8 +59,10 @@
         document.querySelectorAll('.main-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
         wsBody.style.display = tab === 'workspace' ? 'flex' : 'none';
         chatBody.style.display = tab === 'chat' ? 'flex' : 'none';
+        sessionsBody.style.display = tab === 'sessions' ? 'flex' : 'none';
         logsBody.style.display = tab === 'logs' ? 'flex' : 'none';
         if (tab === 'chat') { chatIn.focus(); chatMsgs.scrollTop = chatMsgs.scrollHeight; }
+        if (tab === 'sessions') { fetchAgentSessions(); }
     }
     // Init: chat is default
     switchTab('chat');
@@ -319,6 +329,136 @@
         }
     }
 
+    // ==================== SESSIONS ====================
+    async function fetchAgentSessions() {
+        try {
+            const r = await fetch(API + '/api/agent/sessions');
+            if (!r.ok) { sessionsSessionList.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
+            const d = await r.json();
+            const sessions = d.sessions || [];
+            sessionsTotalCount.textContent = d.total || 0;
+
+            if (!sessions.length) {
+                sessionsSessionList.innerHTML = '<div class="empty-state">No active sessions</div>';
+                return;
+            }
+
+            const grouped = {};
+            sessions.forEach(s => {
+                const aid = s.agent_id || 'unknown';
+                grouped[aid] = grouped[aid] || [];
+                grouped[aid].push(s);
+            });
+
+            let html = '';
+            Object.keys(grouped).forEach(aid => {
+                html += '<div class="session-group-label">' + esc(aid) + '</div>';
+                grouped[aid].forEach(s => {
+                    const time = s.last_accessed ? new Date(s.last_accessed).toLocaleString() : '-';
+                    html += '<div class="session-item" data-sid="' + esc(s.id) + '">' +
+                        '<div class="session-item-id">' + esc(s.id) + '</div>' +
+                        '<div class="session-item-meta">' +
+                        '<span>' + s.messages + ' msgs</span>' +
+                        '<span>' + esc(time) + '</span>' +
+                        '</div></div>';
+                });
+            });
+
+            sessionsSessionList.innerHTML = html;
+
+            sessionsSessionList.querySelectorAll('.session-item').forEach(el => {
+                el.addEventListener('click', () => loadSessionMessages(el.dataset.sid));
+            });
+        } catch (e) {
+            sessionsSessionList.innerHTML = '<div class="empty-state">Error: ' + esc(e.message) + '</div>';
+        }
+    }
+
+    async function loadSessionMessages(sessionId) {
+        try {
+            const r = await fetch(API + '/api/agent/sessions/' + encodeURIComponent(sessionId) + '/messages');
+            if (!r.ok) { sessionMessagesList.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
+            const d = await r.json();
+            const msgs = d.messages || [];
+
+            sessionsEmpty.style.display = 'none';
+            sessionsMessages.style.display = 'flex';
+
+            sessionMessagesHeader.innerHTML =
+                '<span class="smh-agent">' + esc(d.agent_id || '') + '</span>' +
+                '<span class="smh-id">' + esc(sessionId) + '</span>' +
+                '<span class="smh-count">' + msgs.length + ' messages</span>';
+
+            const agentId = d.agent_id || '';
+
+            sessionMessagesList.innerHTML = msgs.map(m => {
+                const role = m.role || '';
+
+                if (role === 'tool') {
+                    const toolName = m.name || 'tool';
+                    let content = m.content || '';
+                    let subName = '';
+                    let isSubResult = false;
+                    if (toolName === 'subagent') {
+                        try { const j = JSON.parse(content); if (j.result) { content = j.result; isSubResult = true; } if (j.agent_id) subName = j.agent_id; } catch {}
+                    }
+                    const needCollapse = content.length > 500;
+                    const short = needCollapse ? content.substring(0, 500) : content;
+                    const renderHtml = isSubResult ? md(short) : '<pre>' + esc(short) + '</pre>';
+                    const renderFull = isSubResult ? md(content) : '<pre>' + esc(content) + '</pre>';
+                    return '<div class="smsg smsg-tool' + (isSubResult ? ' smsg-subresult' : '') + '">' +
+                        '<div class="smsg-header"><span class="smsg-role">[' + esc(toolName) + ']' + (subName ? ' ' + esc(subName) : '') + '</span></div>' +
+                        '<div class="smsg-tool-content collapsible" data-full="' + esc(renderFull).replace(/"/g, '&quot;') + '">' +
+                        '<div class="collapsed-text">' + renderHtml + '</div>' +
+                        (needCollapse ? '<button class="expand-btn" onclick="var c=this.parentElement;c.querySelector(\'.collapsed-text\').innerHTML=c.dataset.full;this.style.display=\'none\'">Show all (' + content.length + ' chars)</button>' : '') +
+                        '</div></div>';
+                }
+
+                if (role === 'system') {
+                    const content = m.content || '';
+                    const needCollapse = content.length > 300;
+                    const short = needCollapse ? content.substring(0, 300) : content;
+                    const renderShort = md(short);
+                    const renderFull = md(content);
+                    return '<div class="smsg smsg-system">' +
+                        '<div class="smsg-header"><span class="smsg-role">System</span></div>' +
+                        '<div class="smsg-system-content collapsible" data-full="' + esc(renderFull).replace(/"/g, '&quot;') + '">' +
+                        '<div class="collapsed-text">' + renderShort + '</div>' +
+                        (needCollapse ? '<button class="expand-btn" onclick="var c=this.parentElement;c.querySelector(\'.collapsed-text\').innerHTML=c.dataset.full;this.style.display=\'none\'">Show all (' + content.length + ' chars)</button>' : '') +
+                        '</div></div>';
+                }
+
+                const displayName = role === 'user' ? 'User' : (agentId || 'Assistant');
+
+                if (role === 'assistant' && m.tool_calls) {
+                    const calls = m.tool_calls.map(tc => {
+                        const fn = tc.function || {};
+                        const args = fn.arguments || '{}';
+                        const needCollapse = args.length > 200;
+                        const shortArgs = needCollapse ? args.substring(0, 200) : args;
+                        return '<div class="smsg-tool-call"><span class="stc-name">' + esc(fn.name || '?') + '</span>' +
+                            '<pre class="stc-args collapsible" data-full="' + esc(args).replace(/"/g, '&quot;') + '">' + esc(shortArgs) + '</pre>' +
+                            (needCollapse ? '<button class="expand-btn" onclick="this.previousElementSibling.textContent=this.previousElementSibling.dataset.full,this.style.display=\'none\'">Show all</button>' : '') +
+                            '</div>';
+                    }).join('');
+                    return '<div class="smsg smsg-assistant">' +
+                        '<div class="smsg-header"><span class="smsg-role">' + esc(displayName) + '</span></div>' +
+                        (m.content ? '<div class="smsg-content">' + md(m.content) + '</div>' : '') +
+                        '<div class="smsg-tool-calls">' + calls + '</div></div>';
+                }
+
+                const isUser = role === 'user';
+                return '<div class="smsg ' + (isUser ? 'smsg-user' : 'smsg-assistant') + '">' +
+                    '<div class="smsg-header"><span class="smsg-role">' + esc(displayName) + '</span></div>' +
+                    '<div class="smsg-content">' + (isUser ? esc(m.content || '') : md(m.content || '')) + '</div></div>';
+            }).join('');
+
+            sessionMessagesList.scrollTop = 0;
+        } catch (e) {
+            sessionMessagesList.innerHTML = '<div class="empty-state">Error: ' + esc(e.message) + '</div>';
+        }
+    }
+
     // ==================== UTILS ====================
     function esc(s) { const d = document.createElement('div'); d.textContent = s||''; return d.innerHTML; }
     function fmt(ts) { if (!ts) return ''; return new Date(ts).toLocaleTimeString(); }
@@ -352,6 +492,17 @@
         html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
         // Horizontal rule
         html = html.replace(/^---$/gm, '<hr>');
+        // Table
+        html = html.replace(/^(\|.+\|)\n(\|[\s\-:|]+\|)\n((?:\|.+\|\n?)*)/gm, function(_, headerRow, sepRow, bodyRows) {
+            var headers = headerRow.split('|').filter(function(c){return c.trim()!=='';});
+            var hHtml = '<thead><tr>' + headers.map(function(h){return '<th>'+h.trim()+'</th>';}).join('') + '</tr></thead>';
+            var rows = bodyRows.trim().split('\n').filter(function(r){return r.trim();});
+            var bHtml = '<tbody>' + rows.map(function(row){
+                var cells = row.split('|').filter(function(c){return c.trim()!=='';});
+                return '<tr>' + cells.map(function(c){return '<td>'+c.trim()+'</td>';}).join('') + '</tr>';
+            }).join('') + '</tbody>';
+            return '<table>' + hHtml + bHtml + '</table>';
+        });
         // Paragraphs: blank lines
         html = html.replace(/\n\n/g, '</p><p>');
         html = '<p>' + html + '</p>';

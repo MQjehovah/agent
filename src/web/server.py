@@ -337,6 +337,98 @@ class WebServer:
             data = todo_tool.get_todos("all")
             return self._json({"todos": data, "count": len(data)})
 
+        # Agent Sessions API (in-memory)
+        @self._app.route("/api/agent/sessions", methods=["GET"])
+        def agent_sessions_list():
+            if not self.agent or not self.agent.session_manager:
+                return self._json({"error": "Session manager not initialized"}, 503)
+
+            sessions = []
+
+            try:
+                for sid, sess in list(self.agent.session_manager.sessions.items()):
+                    sessions.append({
+                        "id": sid,
+                        "agent_id": self.agent.name or "main",
+                        "messages": len(sess.messages),
+                        "last_accessed": sess.last_accessed.isoformat(),
+                    })
+            except Exception as e:
+                logger.warning(f"[Sessions API] 读取主agent sessions失败: {e}")
+
+            if self.agent.subagent_manager:
+                try:
+                    active = list(self.agent.subagent_manager._active_subagents.values())
+                    logger.info(f"[Sessions API] 活跃子代理数: {len(active)}")
+                    for inst in active:
+                        sub_agent = inst.agent
+                        if not sub_agent or not sub_agent.session_manager:
+                            logger.info(f"[Sessions API] 跳过子代理 template={getattr(inst, 'template', '?')}: agent或session_manager为空")
+                            continue
+                        agent_name = sub_agent.name or sub_agent.agent_id or inst.template or "sub"
+                        try:
+                            sub_sessions = list(sub_agent.session_manager.sessions.items())
+                        except Exception as e:
+                            logger.warning(f"[Sessions API] 读取子代理 {agent_name} sessions失败: {e}")
+                            continue
+                        logger.info(f"[Sessions API] 子代理 {agent_name} 有 {len(sub_sessions)} 个session")
+                        for ssid, sess in sub_sessions:
+                            sessions.append({
+                                "id": ssid,
+                                "agent_id": agent_name,
+                                "messages": len(sess.messages),
+                                "last_accessed": sess.last_accessed.isoformat(),
+                            })
+                except Exception as e:
+                    logger.warning(f"[Sessions API] 遍历子代理失败: {e}")
+
+            logger.info(f"[Sessions API] 返回 total={len(sessions)} 个session")
+            return self._json({"total": len(sessions), "sessions": sessions})
+
+        @self._app.route("/api/agent/sessions/<session_id>/messages", methods=["GET"])
+        def agent_session_messages(session_id):
+            if not self.agent or not self.agent.session_manager:
+                return self._json({"error": "Session manager not initialized"}, 503)
+
+            # 在主 agent 中查找
+            session = self.agent.session_manager.sessions.get(session_id)
+            agent_name = self.agent.name or "main"
+
+            # 在子 agent 中查找
+            if not session and self.agent.subagent_manager:
+                try:
+                    for inst in list(self.agent.subagent_manager._active_subagents.values()):
+                        sub_agent = inst.agent
+                        if sub_agent and sub_agent.session_manager:
+                            sess = sub_agent.session_manager.sessions.get(session_id)
+                            if sess:
+                                session = sess
+                                agent_name = sub_agent.name or sub_agent.agent_id or inst.template or "sub"
+                                break
+                except Exception as e:
+                    logger.warning(f"[Sessions API] 查找子代理session失败: {e}")
+
+            if not session:
+                return self._json({"error": "Session not found"}, 404)
+
+            msgs = []
+            for m in session.messages:
+                if isinstance(m, dict):
+                    msg = {"role": m.get("role", ""), "content": m.get("content") or ""}
+                    if m.get("tool_calls"):
+                        msg["tool_calls"] = m["tool_calls"]
+                    if m.get("tool_call_id"):
+                        msg["tool_call_id"] = m["tool_call_id"]
+                    if m.get("name"):
+                        msg["name"] = m["name"]
+                    msgs.append(msg)
+            return self._json({
+                "session_id": session_id,
+                "agent_id": agent_name,
+                "messages": msgs,
+                "count": len(msgs),
+            })
+
     def _json(self, data: Any, status: int = 200) -> "Response":
         from flask import Response
         return Response(
