@@ -2,7 +2,8 @@ import asyncio
 import json
 import logging
 import os
-import re
+import subprocess
+import concurrent.futures
 from typing import Dict, Any
 
 from . import BuiltinTool
@@ -33,9 +34,11 @@ INTERACTIVE_COMMANDS = {
 }
 
 
-def decode_output(data: bytes) -> str:
+def decode_output(data: bytes | str) -> str:
     if not data:
         return ""
+    if isinstance(data, str):
+        return data
     encodings = ["utf-8", "gbk", "cp936", "latin-1"]
     for encoding in encodings:
         try:
@@ -43,16 +46,6 @@ def decode_output(data: bytes) -> str:
         except UnicodeDecodeError:
             continue
     return data.decode("utf-8", errors="replace")
-
-
-def _close_transport(process: asyncio.subprocess.Process):
-    """显式关闭子进程 pipe，避免 Event loop 关闭后 GC 触发 RuntimeError"""
-    try:
-        for pipe in (process.stdout, process.stderr, process.stdin):
-            if pipe is not None:
-                pipe.close()
-    except Exception:
-        pass
 
 
 class ShellTool(BuiltinTool):
@@ -134,32 +127,31 @@ class ShellTool(BuiltinTool):
         try:
             env = {**os.environ, **extra_env} if extra_env else None
 
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env
-            )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=timeout
+            def _run_sync():
+                return subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    cwd=cwd,
+                    env=env,
+                    timeout=timeout,
                 )
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-                _close_transport(process)
-                logger.warning(f"命令执行超时: {command}")
+
+            loop = asyncio.get_running_loop()
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _run_sync),
+                    timeout=timeout + 5
+                )
+            except (asyncio.TimeoutError, concurrent.futures.TimeoutError, subprocess.TimeoutExpired):
+                logger.warning(f"命令执行超时 ({timeout}s): {command[:100]}")
                 return json.dumps({
                     "success": False,
                     "error": f"命令执行超时（{timeout}秒）"
                 }, ensure_ascii=False)
 
-            stdout_str = decode_output(stdout)
-            stderr_str = decode_output(stderr)
-            _close_transport(process)
+            stdout_str = decode_output(result.stdout)
+            stderr_str = decode_output(result.stderr)
 
             # 按最大输出长度截断
             if len(stdout_str) > max_output:
@@ -167,14 +159,14 @@ class ShellTool(BuiltinTool):
             if len(stderr_str) > min(max_output, 2000):
                 stderr_str = stderr_str[:2000] + f"\n... [错误输出已截断]"
 
-            result = {
-                "success": process.returncode == 0,
-                "return_code": process.returncode,
+            result_json = {
+                "success": result.returncode == 0,
+                "return_code": result.returncode,
                 "stdout": stdout_str,
                 "stderr": stderr_str
             }
 
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps(result_json, ensure_ascii=False)
 
         except Exception as e:
             logger.error(f"命令执行失败: {e}")
