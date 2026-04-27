@@ -166,7 +166,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     workspace = agent.workspace
     db_path = os.path.join(workspace, "autonomous.db")
 
-    event_bus = EventBus()
+    event_bus = EventBus(db_path=db_path)
     goal_manager = GoalManager(db_path)
 
     tool_summary = ""

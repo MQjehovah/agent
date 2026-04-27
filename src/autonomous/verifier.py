@@ -1,9 +1,8 @@
-import json
 import logging
-import re
 from dataclasses import dataclass
 
 from autonomous.goal import Goal, PlanStep
+from autonomous import parse_llm_json
 
 logger = logging.getLogger("agent.autonomous.verifier")
 
@@ -57,11 +56,7 @@ class Verifier:
             return self._fallback_verify(steps)
 
     def _parse_result(self, content: str) -> VerificationResult:
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
-            data = self._extract_json(content)
-
+        data = parse_llm_json(content)
         if data is None:
             logger.warning("无法解析验证结果: %s", content[:200])
             return self._fallback_verify([])
@@ -72,15 +67,6 @@ class Verifier:
             summary=str(data.get("summary", "")),
             feedback=str(data.get("feedback", "")),
         )
-
-    def _extract_json(self, content: str) -> dict | None:
-        match = re.search(r"\{[\s\S]*\}", content)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        return None
 
     def _format_steps(self, steps: list[PlanStep]) -> str:
         lines = []

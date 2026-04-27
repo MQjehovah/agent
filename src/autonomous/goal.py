@@ -90,35 +90,43 @@ class Goal:
 class GoalManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._conn: sqlite3.Connection | None = None
         self._init_db()
 
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        return self._conn
+
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS autonomous_goals (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    description TEXT DEFAULT '',
-                    source TEXT DEFAULT 'user',
-                    status TEXT DEFAULT 'pending',
-                    priority INTEGER DEFAULT 3,
-                    plan_json TEXT,
-                    retry_count INTEGER DEFAULT 0,
-                    max_retries INTEGER DEFAULT 3,
-                    created_at TEXT,
-                    updated_at TEXT,
-                    completed_at TEXT
-                )
-                """
+        conn = self._get_conn()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS autonomous_goals (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                source TEXT DEFAULT 'user',
+                status TEXT DEFAULT 'pending',
+                priority INTEGER DEFAULT 3,
+                plan_json TEXT,
+                retry_count INTEGER DEFAULT 0,
+                max_retries INTEGER DEFAULT 3,
+                created_at TEXT,
+                updated_at TEXT,
+                completed_at TEXT
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_goals_status ON autonomous_goals(status)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_goals_priority ON autonomous_goals(priority DESC)"
-            )
-            conn.commit()
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_goals_status ON autonomous_goals(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_goals_priority ON autonomous_goals(priority DESC)"
+        )
+        conn.commit()
 
     def create_goal(
         self,
@@ -135,49 +143,47 @@ class GoalManager:
         )
         now = datetime.now().isoformat()
         goal.created_at = now
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO autonomous_goals
-                    (id, title, description, source, status, priority,
-                     retry_count, max_retries, created_at, updated_at, completed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    goal.id,
-                    goal.title,
-                    goal.description,
-                    goal.source,
-                    goal.status,
-                    goal.priority,
-                    goal.retry_count,
-                    goal.max_retries,
-                    goal.created_at,
-                    goal.updated_at,
-                    goal.completed_at,
-                ),
-            )
-            conn.commit()
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT INTO autonomous_goals
+                (id, title, description, source, status, priority,
+                 retry_count, max_retries, created_at, updated_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                goal.id,
+                goal.title,
+                goal.description,
+                goal.source,
+                goal.status,
+                goal.priority,
+                goal.retry_count,
+                goal.max_retries,
+                goal.created_at,
+                goal.updated_at,
+                goal.completed_at,
+            ),
+        )
+        conn.commit()
         return goal
 
     def get_goal(self, goal_id: str) -> Goal | None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM autonomous_goals WHERE id = ?", (goal_id,)
-            )
-            row = cursor.fetchone()
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT * FROM autonomous_goals WHERE id = ?", (goal_id,)
+        )
+        row = cursor.fetchone()
         if row is None:
             return None
         return self._row_to_goal(row)
 
     def get_goal_by_index(self, index: int) -> Goal | None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM autonomous_goals ORDER BY created_at ASC"
-            )
-            rows = cursor.fetchall()
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT * FROM autonomous_goals ORDER BY created_at ASC"
+        )
+        rows = cursor.fetchall()
         if index < 1 or index > len(rows):
             return None
         return self._row_to_goal(rows[index - 1])
@@ -185,73 +191,72 @@ class GoalManager:
     def update_status(self, goal_id: str, status: str):
         now = datetime.now().isoformat()
         completed_at = now if status == "completed" else None
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                UPDATE autonomous_goals
-                SET status = ?, updated_at = ?, completed_at = COALESCE(?, completed_at)
-                WHERE id = ?
-                """,
-                (status, now, completed_at, goal_id),
-            )
-            conn.commit()
+        conn = self._get_conn()
+        conn.execute(
+            """
+            UPDATE autonomous_goals
+            SET status = ?, updated_at = ?, completed_at = COALESCE(?, completed_at)
+            WHERE id = ?
+            """,
+            (status, now, completed_at, goal_id),
+        )
+        conn.commit()
 
     def increment_retry(self, goal_id: str) -> int:
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                UPDATE autonomous_goals
-                SET retry_count = retry_count + 1, updated_at = ?
-                WHERE id = ?
-                """,
-                (datetime.now().isoformat(), goal_id),
-            )
-            conn.commit()
-            cursor = conn.execute(
-                "SELECT retry_count FROM autonomous_goals WHERE id = ?",
-                (goal_id,),
-            )
-            row = cursor.fetchone()
+        conn = self._get_conn()
+        conn.execute(
+            """
+            UPDATE autonomous_goals
+            SET retry_count = retry_count + 1, updated_at = ?
+            WHERE id = ?
+            """,
+            (datetime.now().isoformat(), goal_id),
+        )
+        conn.commit()
+        cursor = conn.execute(
+            "SELECT retry_count FROM autonomous_goals WHERE id = ?",
+            (goal_id,),
+        )
+        row = cursor.fetchone()
         return row[0] if row else 0
 
     def save_plan(self, goal_id: str, plan: Plan):
         plan_json = json.dumps(plan.to_dict(), ensure_ascii=False)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                UPDATE autonomous_goals
-                SET plan_json = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (plan_json, datetime.now().isoformat(), goal_id),
-            )
-            conn.commit()
+        conn = self._get_conn()
+        conn.execute(
+            """
+            UPDATE autonomous_goals
+            SET plan_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (plan_json, datetime.now().isoformat(), goal_id),
+        )
+        conn.commit()
 
     def list_goals(
         self, status: str | None = None, limit: int = 100
     ) -> list[Goal]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            if status:
-                cursor = conn.execute(
-                    """
-                    SELECT * FROM autonomous_goals
-                    WHERE status = ?
-                    ORDER BY priority DESC, created_at ASC
-                    LIMIT ?
-                    """,
-                    (status, limit),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT * FROM autonomous_goals
-                    ORDER BY priority DESC, created_at ASC
-                    LIMIT ?
-                    """,
-                    (limit,),
-                )
-            rows = cursor.fetchall()
+        conn = self._get_conn()
+        if status:
+            cursor = conn.execute(
+                """
+                SELECT * FROM autonomous_goals
+                WHERE status = ?
+                ORDER BY priority DESC, created_at ASC
+                LIMIT ?
+                """,
+                (status, limit),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                SELECT * FROM autonomous_goals
+                ORDER BY priority DESC, created_at ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        rows = cursor.fetchall()
         return [self._row_to_goal(r) for r in rows]
 
     def _row_to_goal(self, row: sqlite3.Row) -> Goal:
@@ -273,3 +278,8 @@ class GoalManager:
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
         )
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None

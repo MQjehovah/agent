@@ -4,20 +4,32 @@ import re
 from typing import Any
 
 from autonomous.eventbus import Event, EventBus
+from autonomous import parse_llm_json
 
 logger = logging.getLogger("agent.autonomous.perceiver")
 
 URGENCY_KEYWORDS = ("紧急", "告警", "异常", "故障")
 HIGH_SEVERITY_LEVELS = ("high", "critical", "urgent")
+NON_GOAL_PATTERNS = (
+    r"^(你好|hi|hello|嗨|哈喽|早上好|下午好|晚上好)[!！。.,，]?\s*$",
+    r"^(谢谢|感谢|多谢|thx|thanks|thank you)[!！。.,，]?\s*$",
+    r"^(好的|ok|OK|收到|明白|知道了)[!！。.,，]?\s*$",
+    r"^(在吗|在不|在不在|有人吗)[!！？?。.,，]?\s*$",
+    r"^\+1$",
+    r"^\s*$",
+)
+NON_GOAL_COMPILED = [re.compile(p, re.IGNORECASE) for p in NON_GOAL_PATTERNS]
 
 
-def _strip_json_block(text: str) -> str:
-    """去除 LLM 返回的 markdown 代码块包裹（```json ... ```）"""
-    text = text.strip()
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    return text
+def _is_non_goal_message(text: str) -> bool:
+    """快速判断消息是否为非目标（问候/闲聊），避免不必要的LLM调用"""
+    stripped = text.strip()
+    if len(stripped) <= 2:
+        return True
+    for pat in NON_GOAL_COMPILED:
+        if pat.match(stripped):
+            return True
+    return False
 
 
 class Perceiver:
@@ -66,11 +78,11 @@ class Perceiver:
 
     async def self_discovery_check(self):
         try:
-            memory_manager = getattr(self.agent, "memory_manager", None)
-            if memory_manager is None:
-                logger.debug("无memory_manager，跳过自发现检查")
+            memory = getattr(self.agent, "memory", None)
+            if memory is None:
+                logger.debug("无memory，跳过自发现检查")
                 return
-            memory_content = await memory_manager.load_context() if hasattr(memory_manager, "load_context") else ""
+            memory_content = memory.load_memory("") if hasattr(memory, "load_memory") else ""
             if not memory_content:
                 return
             client = getattr(self.agent, "client", None)
@@ -85,8 +97,8 @@ class Perceiver:
                 stream=False,
             )
             content = response.choices[0].message.content
-            result = json.loads(_strip_json_block(content))
-            if result.get("need_action"):
+            result = parse_llm_json(content)
+            if result and result.get("need_action"):
                 event = Event(
                     type="self_discovery",
                     source="perceiver",
@@ -111,10 +123,12 @@ class Perceiver:
         return None
 
     async def _resolve_goal_from_user_message(self, payload: dict) -> dict | None:
+        text = payload.get("text", "")
+        if _is_non_goal_message(text):
+            return None
         client = getattr(self.agent, "client", None)
         if client is None:
             return None
-        text = payload.get("text", "")
         response = await client.chat(
             [
                 {
@@ -131,11 +145,8 @@ class Perceiver:
             stream=False,
         )
         content = response.choices[0].message.content
-        try:
-            return json.loads(_strip_json_block(content))
-        except json.JSONDecodeError:
-            logger.warning("解析目标判断结果失败: %s", content)
-            return None
+        result = parse_llm_json(content)
+        return result if result else None
 
     def _resolve_goal_from_webhook(self, payload: dict) -> dict | None:
         alert = payload.get("alert", "")

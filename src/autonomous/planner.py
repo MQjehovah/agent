@@ -1,8 +1,7 @@
-import json
 import logging
-import re
 
 from autonomous.goal import Goal, Plan, PlanStep
+from autonomous import parse_llm_json
 
 logger = logging.getLogger("agent.autonomous.planner")
 
@@ -12,8 +11,7 @@ PLAN_PROMPT = """\
 目标：{title}
 描述：{description}
 {context_section}\
-{tools_section}
-\
+{tools_section}\
 请返回JSON格式的步骤列表：
 {{"steps": [{{"task": "步骤描述", "requires_confirmation": false}}, ...]}}
 
@@ -39,8 +37,7 @@ REPLAN_PROMPT = """\
 {failed_section}
 
 反馈：{feedback}
-{tools_section}
-
+{tools_section}\
 请返回JSON格式的步骤列表：
 {{"steps": [{{"task": "步骤描述", "requires_confirmation": false}}, ...]}}
 
@@ -99,11 +96,7 @@ class Planner:
         return self._parse_steps(content)
 
     def _parse_steps(self, content: str) -> list[PlanStep]:
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
-            data = self._extract_json(content)
-
+        data = parse_llm_json(content)
         if data is None:
             logger.warning("无法解析LLM返回的步骤列表: %s", content[:200])
             return []
@@ -119,15 +112,6 @@ class Planner:
             )
             steps.append(step)
         return steps
-
-    def _extract_json(self, content: str) -> dict | None:
-        match = re.search(r"\{[\s\S]*\}", content)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        return None
 
     def _format_steps(self, steps: list) -> str:
         lines = []
