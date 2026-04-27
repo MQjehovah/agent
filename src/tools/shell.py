@@ -19,6 +19,19 @@ DENIED_COMMANDS = [
     "> /dev/sda",
 ]
 
+# 可能在 shell 中要求交互式输入的命令（会永久挂起）
+INTERACTIVE_COMMANDS = {
+    "sudo": "sudo 需要密码交互，请使用 sudo -n (非交互模式) 或避免使用 sudo",
+    "passwd": "passwd 需要交互输入，禁止使用",
+    "ssh ": "ssh 可能要求密码/确认，禁止在 shell 工具中使用",
+    "scp ": "scp 可能要求密码，禁止在 shell 工具中使用",
+    "nano ": "nano 是交互式编辑器，禁止使用",
+    "vim ": "vim 是交互式编辑器，禁止使用",
+    "vi ": "vi 是交互式编辑器，禁止使用",
+    "less ": "less 需要交互操作，请使用 cat 替代",
+    "more ": "more 需要交互操作，请使用 cat 替代",
+}
+
 
 def decode_output(data: bytes) -> str:
     if not data:
@@ -100,6 +113,23 @@ class ShellTool(BuiltinTool):
                     "success": False,
                     "error": f"危险命令被拦截: {denied}"
                 }, ensure_ascii=False)
+
+        # 交互式命令检查（会永久挂起）
+        cmd_lower = command.lower()
+        for keyword, reason in INTERACTIVE_COMMANDS.items():
+            if keyword.lower() in cmd_lower:
+                return json.dumps({
+                    "success": False,
+                    "error": f"交互式命令被拦截: {reason}"
+                }, ensure_ascii=False)
+
+        # 自动给 apt/apt-get 加非交互标志
+        if any(k in command for k in ("apt-get ", "apt ", "aptitude ")):
+            if "DEBIAN_FRONTEND" not in command:
+                command = f"DEBIAN_FRONTEND=noninteractive {command}"
+            if "-y" not in command.split():
+                parts = command.split(" ", 1)
+                command = f"{parts[0]} -y {parts[1]}" if len(parts) > 1 else command
 
         try:
             env = {**os.environ, **extra_env} if extra_env else None
