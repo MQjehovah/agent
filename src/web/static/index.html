@@ -10,162 +10,91 @@
     <div id="app">
         <!-- Header -->
         <header class="header">
-            <div class="header-left">
-                <div class="logo">
-                    <div class="logo-icon">&#9881;</div>
-                    <span class="logo-text">Agent Console</span>
-                </div>
-                <span class="agent-name" id="agentName">Loading...</span>
-            </div>
-            <div class="header-right">
-                <div class="status-dot" id="statusDot"></div>
-                <span class="status-text" id="statusText">connecting</span>
-                <div class="header-stats">
-                    <span class="stat-item" title="Tokens">&#128172; <span id="statCalls">0</span></span>
-                    <span class="stat-item" title="Cost">&#165; <span id="statCost">0</span></span>
-                </div>
-            </div>
+            <span class="agent-name" id="agentName">Agent</span>
+            <span class="status-dot" id="statusDot"></span>
+            <span class="status-text" id="statusText">connecting</span>
+            <span class="header-spacer"></span>
+            <span class="stat-item">&#128172; <span id="statCalls">0</span></span>
+            <span class="stat-item">&#165; <span id="statCost">0</span></span>
+            <span class="stat-item">Model: <span id="infoModel">-</span></span>
+            <span class="stat-item">Tools: <span id="infoTools">0</span></span>
         </header>
 
-        <!-- Main Layout -->
         <main class="main">
-            <!-- Left: Avatar Panel -->
-            <section class="panel panel-avatar">
-                <div class="avatar-container">
-                    <div class="avatar-wrapper">
-                        <div class="avatar-body">
-                            <div class="avatar-head">
-                                <div class="avatar-antenna">
-                                    <div class="antenna-ball"></div>
-                                </div>
-                                <div class="avatar-face">
-                                    <div class="avatar-eyes">
-                                        <div class="eye left-eye">
-                                            <div class="pupil"></div>
-                                        </div>
-                                        <div class="eye right-eye">
-                                            <div class="pupil"></div>
-                                        </div>
-                                    </div>
-                                    <div class="avatar-mouth">
-                                        <div class="mouth-line"></div>
-                                    </div>
-                                    <div class="avatar-cheeks">
-                                        <div class="cheek left-cheek"></div>
-                                        <div class="cheek right-cheek"></div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="avatar-torso">
-                                <div class="chest-light"></div>
-                                <div class="chest-panel">
-                                    <div class="panel-line"></div>
-                                    <div class="panel-line"></div>
-                                    <div class="panel-line"></div>
-                                </div>
-                            </div>
-                            <div class="avatar-arms">
-                                <div class="arm left-arm"></div>
-                                <div class="arm right-arm"></div>
-                            </div>
-                        </div>
-                        <div class="avatar-shadow"></div>
-                        <div class="avatar-platform"></div>
+            <!-- Resizable sidebar -->
+            <aside class="panel-sidebar" id="sidebar">
+                <!-- Avatar -->
+                <div class="avatar-section">
+                    <div class="avatar-ring" id="avatarRing">
+                        <div class="avatar-face-icon">&#129302;</div>
                     </div>
-                    <!-- Floating particles -->
-                    <div class="particles" id="particles"></div>
-                    <!-- Status badge -->
-                    <div class="avatar-status-badge" id="avatarBadge">
-                        <span class="badge-icon" id="badgeIcon">&#9679;</span>
-                        <span class="badge-text" id="badgeText">idle</span>
-                    </div>
+                    <div class="avatar-label" id="avatarLabel">idle</div>
                 </div>
-                <!-- Agent Info Card -->
-                <div class="agent-info">
-                    <div class="info-row">
-                        <span class="info-label">Model</span>
-                        <span class="info-value" id="infoModel">-</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Tools</span>
-                        <span class="info-value" id="infoTools">0</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Tasks</span>
-                        <span class="info-value" id="infoTasks">0</span>
-                    </div>
-                </div>
-            </section>
 
-            <!-- Center: Task Kanban -->
-            <section class="panel panel-kanban">
-                <div class="panel-header">
-                    <h2>Task Board</h2>
-                    <button class="btn-icon" id="refreshTasks" title="Refresh">&#8635;</button>
+                <!-- Info -->
+                <div class="info-section">
+                    <div class="info-row"><span>Tasks</span><span id="infoTasks">0</span></div>
                 </div>
-                <div class="kanban-board" id="kanbanBoard">
-                    <div class="kanban-column" data-status="pending">
-                        <div class="column-header pending-header">
-                            <span class="column-dot pending-dot"></span>
-                            Pending
-                            <span class="column-count" id="countPending">0</span>
-                        </div>
-                        <div class="column-body" id="colPending">
-                            <div class="empty-state">No pending tasks</div>
-                        </div>
-                    </div>
-                    <div class="kanban-column" data-status="running">
-                        <div class="column-header running-header">
-                            <span class="column-dot running-dot"></span>
-                            Running
-                            <span class="column-count" id="countRunning">0</span>
-                        </div>
-                        <div class="column-body" id="colRunning">
-                            <div class="empty-state">No running tasks</div>
-                        </div>
-                    </div>
-                    <div class="kanban-column" data-status="completed">
-                        <div class="column-header completed-header">
-                            <span class="column-dot completed-dot"></span>
-                            Completed
-                            <span class="column-count" id="countCompleted">0</span>
-                        </div>
-                        <div class="column-body" id="colCompleted">
-                            <div class="empty-state">No completed tasks</div>
-                        </div>
-                    </div>
-                    <div class="kanban-column" data-status="failed">
-                        <div class="column-header failed-header">
-                            <span class="column-dot failed-dot"></span>
-                            Failed
-                            <span class="column-count" id="countFailed">0</span>
-                        </div>
-                        <div class="column-body" id="colFailed">
-                            <div class="empty-state">No failed tasks</div>
-                        </div>
-                    </div>
-                </div>
-            </section>
 
-            <!-- Right: Chat Panel -->
-            <section class="panel panel-chat">
-                <div class="panel-header">
-                    <h2>Chat</h2>
-                    <button class="btn-icon" id="clearChat" title="Clear chat">&#10005;</button>
+                <!-- Panel tasks -->
+                <div class="sidebar-label">PANEL TASKS</div>
+                <div class="tasks-list" id="tasksList">
+                    <div class="empty-state">Loading...</div>
                 </div>
-                <div class="chat-messages" id="chatMessages">
-                    <div class="welcome-message">
-                        <div class="welcome-icon">&#129302;</div>
-                        <p>Hello! I'm your AI Agent. How can I help you today?</p>
+            </aside>
+
+            <!-- Resize handle -->
+            <div class="resize-handle" id="resizeHandle"></div>
+
+            <!-- Center: Document / Chat -->
+            <section class="panel-main">
+                <div class="main-toolbar">
+                    <div class="main-tabs">
+                        <span class="main-tab active" data-tab="chat">Chat</span>
+                        <span class="main-tab" data-tab="workspace">Workspace</span>
+                        <span class="main-tab" data-tab="logs">Logs</span>
+                    </div>
+                    <span class="main-path" id="mainPath"></span>
+                </div>
+
+                <!-- Workspace -->
+                <div class="main-body" id="workspaceBody" style="display:none">
+                    <div class="workspace-grid" id="workspaceGrid">
+                        <div class="ws-card">
+                            <div class="ws-card-title">Agent Status</div>
+                            <div class="ws-card-body" id="wsStatus"></div>
+                        </div>
+                        <div class="ws-card">
+                            <div class="ws-card-title">Recent Memory</div>
+                            <div class="ws-card-body" id="wsMemory"></div>
+                        </div>
+                        <div class="ws-card">
+                            <div class="ws-card-title">Panel Tasks</div>
+                            <div class="ws-card-body" id="wsPanel"></div>
+                        </div>
+                        <div class="ws-card">
+                            <div class="ws-card-title">Sub-agents</div>
+                            <div class="ws-card-body" id="wsSubagents"></div>
+                        </div>
                     </div>
                 </div>
-                <div class="chat-input-area">
-                    <textarea id="chatInput" placeholder="Type a message..." rows="1"></textarea>
-                    <button class="btn-send" id="sendBtn" title="Send">
-                        <svg viewBox="0 0 24 24" width="20" height="20">
-                            <path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-                        </svg>
-                    </button>
+
+                <!-- Chat -->
+                <div class="main-body" id="chatBody">
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="welcome-text">Ask the agent...</div>
+                    </div>
+                    <div class="chat-input-area">
+                        <textarea id="chatInput" placeholder="Type a message..." rows="1"></textarea>
+                        <button class="btn-send" id="sendBtn">
+                            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="main-body" id="logsBody" style="display:none">
+                    <pre class="log-content" id="logContent">Loading logs...</pre>
                 </div>
             </section>
         </main>

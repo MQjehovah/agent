@@ -1,318 +1,317 @@
 (function() {
     'use strict';
 
-    const API_BASE = '';
+    const API = '';
     let currentSessionId = null;
     let isStreaming = false;
-    let taskRefreshTimer = null;
+    let activeTab = 'chat';
 
-    // ======================== DOM REFS ========================
-    const $ = (sel) => document.querySelector(sel);
-    const agentNameEl = $('#agentName');
-    const statusDot = $('#statusDot');
-    const statusText = $('#statusText');
-    const statCalls = $('#statCalls');
-    const statCost = $('#statCost');
-    const infoModel = $('#infoModel');
-    const infoTools = $('#infoTools');
-    const infoTasks = $('#infoTasks');
-    const avatarHead = $('.avatar-head');
-    const avatarBadge = $('#avatarBadge');
-    const badgeIcon = $('#badgeIcon');
-    const badgeText = $('#badgeText');
-    const chatMessages = $('#chatMessages');
-    const chatInput = $('#chatInput');
-    const sendBtn = $('#sendBtn');
-    const refreshTasks = $('#refreshTasks');
-    const clearChat = $('#clearChat');
-    const particlesContainer = $('#particles');
+    const $ = s => document.querySelector(s);
 
-    // ======================== INIT ========================
+    // Header
+    const elName = $('#agentName'), elDot = $('#statusDot'), elStatus = $('#statusText');
+    const elCalls = $('#statCalls'), elCost = $('#statCost'), elModel = $('#infoModel'), elTools = $('#infoTools');
+    // Sidebar
+    const elTasks = $('#infoTasks'), elTaskList = $('#tasksList');
+    const elRing = $('#avatarRing'), elLabel = $('#avatarLabel');
+    // Main
+    const elPath = $('#mainPath');
+    const wsBody = $('#workspaceBody'), chatBody = $('#chatBody'), logsBody = $('#logsBody');
+    const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory'), wsPanel = $('#wsPanel'), wsSubagents = $('#wsSubagents');
+    const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
+    const logContent = $('#logContent');
+
+    // ==================== INIT ====================
     document.addEventListener('DOMContentLoaded', () => {
-        initParticles();
-        bindEvents();
-        fetchAgentStatus();
-        fetchTasks();
-        setInterval(fetchAgentStatus, 5000);
-        setInterval(fetchTasks, 3000);
+        bind();
+        fetchAll();
+        setInterval(fetchAll, 4000);
+        initResize();
     });
 
-    function bindEvents() {
-        sendBtn.addEventListener('click', sendMessage);
-        chatInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
+    function bind() {
+        btnSend.addEventListener('click', sendMsg);
+        chatIn.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
         });
-        chatInput.addEventListener('input', autoResize);
-        refreshTasks.addEventListener('click', fetchTasks);
-        clearChat.addEventListener('click', clearChatHistory);
+        chatIn.addEventListener('input', () => {
+            chatIn.style.height = 'auto';
+            chatIn.style.height = Math.min(chatIn.scrollHeight, 100) + 'px';
+        });
+        document.querySelectorAll('.main-tab').forEach(t => {
+            t.addEventListener('click', () => switchTab(t.dataset.tab));
+        });
     }
 
-    function autoResize() {
-        chatInput.style.height = 'auto';
-        chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+    function switchTab(tab) {
+        activeTab = tab;
+        document.querySelectorAll('.main-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+        wsBody.style.display = tab === 'workspace' ? 'flex' : 'none';
+        chatBody.style.display = tab === 'chat' ? 'flex' : 'none';
+        logsBody.style.display = tab === 'logs' ? 'flex' : 'none';
+        if (tab === 'chat') { chatIn.focus(); chatMsgs.scrollTop = chatMsgs.scrollHeight; }
     }
+    // Init: chat is default
+    switchTab('chat');
 
-    // ======================== PARTICLES ========================
-    function initParticles() {
-        for (let i = 0; i < 12; i++) {
-            const p = document.createElement('div');
-            p.className = 'particle';
-            p.style.left = Math.random() * 100 + '%';
-            p.style.top = 50 + Math.random() * 50 + '%';
-            p.style.animationDelay = Math.random() * 3 + 's';
-            p.style.animationDuration = 2 + Math.random() * 2 + 's';
-            particlesContainer.appendChild(p);
-        }
-    }
+    // ==================== RESIZE ====================
+    function initResize() {
+        const sidebar = $('#sidebar');
+        const handle = $('#resizeHandle');
+        let dragging = false, startX, startW;
 
-    // ======================== AVATAR STATE ========================
-    function setAvatarState(state) {
-        avatarHead.className = 'avatar-head ' + state;
-        avatarBadge.className = 'avatar-status-badge badge-' + state;
-        const labels = {
-            idle: ['\u25CF', 'idle'],
-            thinking: ['\u26A1', 'thinking...'],
-            speaking: ['\u25CF', 'speaking'],
-            error: ['\u2716', 'error'],
-        };
-        const [icon, text] = labels[state] || labels.idle;
-        badgeIcon.textContent = icon;
-        badgeText.textContent = text;
-    }
-
-    // ======================== API CALLS ========================
-    async function fetchAgentStatus() {
-        try {
-            const res = await fetch(API_BASE + '/api/agent/status');
-            if (!res.ok) throw new Error('not ok');
-            const data = await res.json();
-
-            agentNameEl.textContent = data.name || 'Agent';
-            statusDot.className = 'status-dot ' + (isStreaming ? 'running' : 'connected');
-            statusText.textContent = data.status || 'ready';
-            infoModel.textContent = data.model || '-';
-            infoTools.textContent = (data.tools || []).length;
-            infoTasks.textContent = Object.values(data.tasks || {}).reduce((a, b) => a + b, 0);
-
-            if (data.usage) {
-                statCalls.textContent = data.usage.total_calls || 0;
-                statCost.textContent = (data.usage.total_cost_cny || '0');
-            }
-
-            if (!isStreaming) {
-                if (data.status === 'running') setAvatarState('thinking');
-                else if (data.status === 'completed') setAvatarState('idle');
-                else setAvatarState('idle');
-            }
-        } catch {
-            statusDot.className = 'status-dot';
-            statusText.textContent = 'disconnected';
-        }
-    }
-
-    async function fetchTasks() {
-        try {
-            const res = await fetch(API_BASE + '/api/tasks');
-            if (!res.ok) return;
-            const data = await res.json();
-            renderKanban(data.tasks || []);
-        } catch {}
-    }
-
-    // ======================== KANBAN ========================
-    function renderKanban(tasks) {
-        const groups = { pending: [], running: [], completed: [], failed: [], cancelled: [] };
-        tasks.forEach(t => {
-            const s = t.status || 'pending';
-            if (groups[s]) groups[s].push(t);
-            else groups.pending.push(t);
+        handle.addEventListener('mousedown', e => {
+            dragging = true;
+            startX = e.clientX;
+            startW = sidebar.offsetWidth;
+            handle.classList.add('active');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
         });
 
-        ['pending', 'running', 'completed', 'failed'].forEach(status => {
-            const col = document.getElementById('col' + status.charAt(0).toUpperCase() + status.slice(1));
-            const countEl = document.getElementById('count' + status.charAt(0).toUpperCase() + status.slice(1));
-            const items = groups[status];
-            countEl.textContent = items.length;
+        document.addEventListener('mousemove', e => {
+            if (!dragging) return;
+            const w = Math.max(200, Math.min(500, startW + e.clientX - startX));
+            sidebar.style.width = w + 'px';
+            sidebar.style.minWidth = w + 'px';
+        });
 
-            if (items.length === 0) {
-                col.innerHTML = '<div class="empty-state">No ' + status + ' tasks</div>';
+        document.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            handle.classList.remove('active');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        });
+    }
+
+    // ==================== AVATAR ====================
+    function setAvatar(s) {
+        elRing.className = 'avatar-ring ' + s;
+        elLabel.textContent = s;
+    }
+
+    // ==================== FETCH ====================
+    async function fetchAll() {
+        await Promise.all([fetchStatus(), fetchPanelTasks()]);
+    }
+
+    async function fetchStatus() {
+        try {
+            const r = await fetch(API + '/api/agent/status');
+            if (!r.ok) throw 0;
+            const d = await r.json();
+            elName.textContent = d.name || 'Agent';
+            elDot.className = 'status-dot ' + (isStreaming ? 'running' : 'connected');
+            elStatus.textContent = isStreaming ? 'processing' : d.status || 'ready';
+            elModel.textContent = d.model || '-';
+            elTools.textContent = (d.tools || []).length;
+            if (d.usage) { elCalls.textContent = d.usage.total_calls||0; elCost.textContent = d.usage.total_cost_cny||'0'; }
+            if (!isStreaming) setAvatar(d.status === 'running' ? 'thinking' : 'idle');
+            wsStatus.innerHTML = 'Name: ' + esc(d.name||'-') +
+                '\nModel: ' + esc(d.model||'-') +
+                '\nStatus: ' + esc(d.status||'-') +
+                '\nTools: ' + esc(String((d.tools||[]).length)) +
+                '\nTasks: ' + esc(JSON.stringify(d.tasks||{}));
+            const subs = d.subagents || [];
+            if (!subs.length) {
+                wsSubagents.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:12px;">No sub-agents</div>';
+            } else {
+                wsSubagents.innerHTML = subs.map(s =>
+                    '<div class="subagent-card">' +
+                    '<div class="subagent-name">&#128187; ' + esc(s.name) + '</div>' +
+                    '<div class="subagent-desc">' + esc((s.description || 'No description').substring(0, 120)) + '</div>' +
+                    '</div>'
+                ).join('');
+            }
+            // Panel stats in workspace
+            if (d.panel) {
+                wsPanel.textContent = wsPanel.textContent ||
+                    'Total: ' + d.panel.total + '  Pending: ' + d.panel.pending +
+                    '  Active: ' + d.panel.active + '  Done: ' + d.panel.completed;
+            }
+        } catch { elDot.className = 'status-dot'; elStatus.textContent = 'disconnected'; }
+    }
+
+    async function fetchPanelTasks() {
+        try {
+            const r = await fetch(API + '/api/panel');
+            if (!r.ok) {
+                elTaskList.innerHTML = '<div class="empty-state">Panel HTTP ' + r.status + '</div>';
+                wsPanel.textContent = 'Panel HTTP ' + r.status;
                 return;
             }
+            const d = await r.json();
+            const tasks = d.tasks || [];
+            const stats = d.stats || {};
 
-            col.innerHTML = items.map(t => renderTaskCard(t)).join('');
+            // Workspace card
+            if (!tasks.length) {
+                wsPanel.textContent = 'Empty (' + stats.total + ' total, ' + stats.pending + ' pending, ' + stats.completed + ' done)';
+            } else {
+                wsPanel.textContent = tasks.map(t =>
+                    '[' + t.status + '] ' + t.title +
+                    (t.interval ? ' (' + fmti(t.interval) + ')' : '') +
+                    ' [' + t.source + ']'
+                ).join('\n');
+            }
+
+            // Sidebar — show all tasks
+            elTasks.textContent = tasks.length;
+            if (!tasks.length) {
+                elTaskList.innerHTML = '<div class="empty-state">Panel empty</div>';
+            } else {
+                elTaskList.innerHTML = tasks.map(t => {
+                    let h = '<div class="task-card ' + (t.status === 'active' ? 'running' : t.status) + '">';
+                    h += '<div class="task-title">' + esc(t.title) + '</div>';
+                    h += '<div class="task-meta">';
+                    h += '<span>' + t.status + '</span>';
+                    h += '<span class="task-source">' + esc(t.source === 'llm' ? 'AI' : t.source === 'user' ? '你' : t.source) + '</span>';
+                    if (t.interval) h += '<span class="task-interval">' + fmti(t.interval) + '</span>';
+                    h += '<span>' + fmt(t.created_at) + '</span>';
+                    h += '</div></div>';
+                    return h;
+                }).join('');
+            }
+        } catch (e) {
+            elTaskList.innerHTML = '<div class="empty-state">Fetch failed: ' + esc(e.message) + '</div>';
+            wsPanel.textContent = 'Fetch failed: ' + e.message;
+        }
+    }
+
+    function renderTasks(tasks) {
+        if (!tasks.length) { elTaskList.innerHTML = '<div class="empty-state">No tasks</div>'; return; }
+        tasks.sort((a,b) => {
+            const o = {running:0, pending:1, completed:2, failed:3};
+            return (o[a.status]||4) - (o[b.status]||4);
         });
-
-        // Bind cancel buttons
-        document.querySelectorAll('.btn-cancel').forEach(btn => {
-            btn.addEventListener('click', () => cancelTask(btn.dataset.id));
-        });
+        elTaskList.innerHTML = tasks.map(t => {
+            let h = '<div class="task-card ' + t.status + '">';
+            h += '<div class="task-title">' + esc(t.title) + '</div>';
+            h += '<div class="task-meta">';
+            h += '<span>' + t.status + '</span>';
+            if (t.source) h += '<span class="task-source">' + esc(t.source) + '</span>';
+            if (t.interval) h += '<span class="task-interval">' + fmti(t.interval) + '</span>';
+            h += '<span>' + esc(t.time) + '</span>';
+            h += '</div></div>';
+            return h;
+        }).join('');
     }
 
-    function renderTaskCard(task) {
-        const time = task.created_at ? new Date(task.created_at).toLocaleTimeString() : '';
-        let html = '<div class="task-card ' + task.status + '">';
-        html += '<div class="task-id">#' + escapeHtml(task.id || '') + '</div>';
-        html += '<div class="task-desc">' + escapeHtml(task.description || '') + '</div>';
-        html += '<div class="task-time">' + escapeHtml(time) + '</div>';
-        if (task.error) {
-            html += '<div class="task-error">' + escapeHtml(task.error) + '</div>';
-        }
-        if (task.status === 'running') {
-            html += '<div class="task-actions"><button class="btn-cancel" data-id="' + escapeHtml(task.id) + '">Cancel</button></div>';
-        }
-        html += '</div>';
-        return html;
+    // ==================== CHAT ====================
+    function addMsg(role, content, streaming) {
+        const w = chatMsgs.querySelector('.welcome-text'); if (w) w.remove();
+        const el = document.createElement('div');
+        el.className = 'msg ' + role;
+        const rendered = role === 'user' ? esc(content) : md(content);
+        el.innerHTML =
+            '<div class="msg-avatar">' + (role === 'user' ? 'U' : 'A') + '</div>' +
+            '<div class="msg-body">' +
+            '<div class="msg-bubble"' + (streaming ? ' id="streamBubble"' : '') + '>' +
+            (streaming ? '<div class="typing-indicator"><span></span><span></span><span></span></div>' : rendered) +
+            '</div><div class="msg-time">' + new Date().toLocaleTimeString() + '</div></div>';
+        chatMsgs.appendChild(el);
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
+        return el.querySelector('.msg-bubble');
     }
 
-    async function cancelTask(taskId) {
-        try {
-            await fetch(API_BASE + '/api/tasks/' + taskId + '/cancel', { method: 'POST' });
-            fetchTasks();
-        } catch {}
+    function streamToken(tok) {
+        const b = document.getElementById('streamBubble'); if (!b) return;
+        const ti = b.querySelector('.typing-indicator'); if (ti) ti.remove();
+        b.textContent = (b.dataset.t||'') + tok; b.dataset.t = b.textContent;
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
     }
 
-    // ======================== CHAT ========================
-    function addChatMessage(role, content, streaming) {
-        const hasWelcome = chatMessages.querySelector('.welcome-message');
-        if (hasWelcome) hasWelcome.remove();
-
-        const msgEl = document.createElement('div');
-        msgEl.className = 'msg ' + role;
-
-        const avatarEl = document.createElement('div');
-        avatarEl.className = 'msg-avatar';
-        avatarEl.textContent = role === 'user' ? 'U' : 'A';
-
-        const contentWrap = document.createElement('div');
-
-        const bubble = document.createElement('div');
-        bubble.className = 'msg-bubble';
-
-        if (streaming) {
-            bubble.id = 'streamBubble';
-            const indicator = document.createElement('div');
-            indicator.className = 'typing-indicator';
-            indicator.innerHTML = '<span></span><span></span><span></span>';
-            bubble.appendChild(indicator);
-        } else {
-            bubble.textContent = content;
-        }
-
-        const timeEl = document.createElement('div');
-        timeEl.className = 'msg-time';
-        timeEl.textContent = new Date().toLocaleTimeString();
-
-        contentWrap.appendChild(bubble);
-        contentWrap.appendChild(timeEl);
-        msgEl.appendChild(avatarEl);
-        msgEl.appendChild(contentWrap);
-        chatMessages.appendChild(msgEl);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-
-        return bubble;
+    function finishStream(text) {
+        const b = document.getElementById('streamBubble'); if (!b) return;
+        b.removeAttribute('id');
+        b.innerHTML = md(text);
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
     }
 
-    function updateStreamBubble(token) {
-        const bubble = document.getElementById('streamBubble');
-        if (!bubble) return;
-        const indicator = bubble.querySelector('.typing-indicator');
-        if (indicator) indicator.remove();
+    async function sendMsg() {
+        const msg = chatIn.value.trim();
+        if (!msg || isStreaming) return;
+        chatIn.value = ''; chatIn.style.height = 'auto';
+        btnSend.disabled = true; isStreaming = true;
+        setAvatar('thinking');
+        elDot.className = 'status-dot running';
 
-        if (!bubble.dataset.text) bubble.dataset.text = '';
-        bubble.dataset.text += token;
-        bubble.textContent = bubble.dataset.text;
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
-
-    function finalizeStreamBubble(fullContent) {
-        const bubble = document.getElementById('streamBubble');
-        if (!bubble) return;
-        bubble.removeAttribute('id');
-        bubble.textContent = fullContent;
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
-
-    async function sendMessage() {
-        const message = chatInput.value.trim();
-        if (!message || isStreaming) return;
-
-        chatInput.value = '';
-        chatInput.style.height = 'auto';
-        sendBtn.disabled = true;
-        isStreaming = true;
-        setAvatarState('thinking');
-        statusDot.className = 'status-dot running';
-
-        if (!currentSessionId) {
-            currentSessionId = 'web_' + Math.random().toString(36).substring(2, 10);
-        }
-
-        addChatMessage('user', message);
-        addChatMessage('assistant', '', true);
+        if (!currentSessionId) currentSessionId = 'web_' + Math.random().toString(36).slice(2,10);
+        addMsg('user', msg);
+        addMsg('assistant', '', true);
 
         try {
-            const res = await fetch(API_BASE + '/api/chat/stream', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message, session_id: currentSessionId }),
+            const r = await fetch(API + '/api/chat/stream', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({message:msg, session_id:currentSessionId}),
             });
-
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
+            const reader = r.body.getReader();
+            const dec = new TextDecoder(); let buf = '';
             while (true) {
-                const { done, value } = await reader.read();
+                const {done, value} = await reader.read();
                 if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
+                buf += dec.decode(value, {stream:true});
+                const lines = buf.split('\n'); buf = lines.pop()||'';
+                for (const l of lines) {
+                    if (!l.startsWith('data: ')) continue;
                     try {
-                        const event = JSON.parse(line.slice(6));
-                        if (event.type === 'token') {
-                            setAvatarState('speaking');
-                            updateStreamBubble(event.content);
-                        } else if (event.type === 'done') {
-                            finalizeStreamBubble(event.content);
-                        } else if (event.type === 'error') {
-                            finalizeStreamBubble('Error: ' + event.content);
-                        }
+                        const ev = JSON.parse(l.slice(6));
+                        if (ev.type === 'token') { setAvatar('speaking'); streamToken(ev.content); }
+                        else if (ev.type === 'done') finishStream(ev.content);
+                        else if (ev.type === 'error') finishStream('Error: ' + ev.content);
                     } catch {}
                 }
             }
         } catch (err) {
-            finalizeStreamBubble('Connection error: ' + err.message);
+            finishStream('Error: ' + err.message);
         } finally {
-            isStreaming = false;
-            sendBtn.disabled = false;
-            setAvatarState('idle');
-            statusDot.className = 'status-dot connected';
-            fetchAgentStatus();
-            fetchTasks();
-            chatInput.focus();
+            isStreaming = false; btnSend.disabled = false;
+            setAvatar('idle');
+            elDot.className = 'status-dot connected'; elStatus.textContent = 'ready';
+            fetchAll(); chatIn.focus();
         }
     }
 
-    function clearChatHistory() {
-        chatMessages.innerHTML =
-            '<div class="welcome-message">' +
-                '<div class="welcome-icon">\uD83E\uDD16</div>' +
-                '<p>Hello! I\'m your AI Agent. How can I help you today?</p>' +
-            '</div>';
-        currentSessionId = null;
-    }
+    // ==================== UTILS ====================
+    function esc(s) { const d = document.createElement('div'); d.textContent = s||''; return d.innerHTML; }
+    function fmt(ts) { if (!ts) return ''; return new Date(ts).toLocaleTimeString(); }
+    function fmti(s) { return s >= 3600 ? (s/3600).toFixed(1)+'h' : s >= 60 ? (s/60).toFixed(0)+'m' : s+'s'; }
 
-    // ======================== UTILS ========================
-    function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+    function md(text) {
+        if (!text) return '';
+        let html = esc(text);
+        // Code blocks first
+        html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
+            return '<pre><code>' + esc(code) + '</code></pre>';
+        });
+        // Inline code
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        // Headers
+        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+        html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+        // Bold / Italic
+        html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+        // Blockquote
+        html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+        // Unordered list
+        html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+        // Ordered list
+        html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+        // Links
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+        // Horizontal rule
+        html = html.replace(/^---$/gm, '<hr>');
+        // Paragraphs: blank lines
+        html = html.replace(/\n\n/g, '</p><p>');
+        html = '<p>' + html + '</p>';
+        // Clean empty paragraphs
+        html = html.replace(/<p>\s*<\/p>/g, '');
+        return html;
     }
 })();

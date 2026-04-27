@@ -96,6 +96,18 @@ class WebServer:
                 if s in status_counts:
                     status_counts[s] += 1
             usage = self.agent.client.usage_tracker.get_summary() if self.agent.client else {}
+
+            subagents = []
+            if self.agent.subagent_manager:
+                for name in self.agent.subagent_manager.list_templates():
+                    tmpl = self.agent.subagent_manager.get_template(name)
+                    desc = (tmpl.get("description", "") or "")[:80] if tmpl else ""
+                    subagents.append({"name": name, "description": desc})
+
+            panel_stats = {}
+            if self.panel:
+                panel_stats = self.panel.get_stats()
+
             return self._json({
                 "name": self.agent.name or "Agent",
                 "description": self.agent.description or "",
@@ -104,6 +116,8 @@ class WebServer:
                 "tasks": status_counts,
                 "usage": usage,
                 "tools": self.agent.tool_registry.list_tools() if self.agent.tool_registry else [],
+                "subagents": subagents,
+                "panel": panel_stats,
             })
 
         @self._app.route("/api/chat", methods=["POST"])
@@ -279,10 +293,14 @@ class WebServer:
         @self._app.route("/api/panel", methods=["GET"])
         def panel_list():
             if not self.panel:
-                return self._json({"error": "Panel not available"}, 503)
-            tasks = self.panel.list_all()
-            stats = self.panel.get_stats()
-            return self._json({"stats": stats, "tasks": [t.to_dict() for t in tasks]})
+                return self._json({"error": "Panel not available", "code": 503}, 503)
+            try:
+                tasks = self.panel.list_all()
+                stats = self.panel.get_stats()
+                return self._json({"stats": stats, "tasks": [t.to_dict() for t in tasks]})
+            except Exception as e:
+                logger.exception("Panel API error")
+                return self._json({"error": str(e), "code": 500}, 500)
 
         @self._app.route("/api/panel", methods=["POST"])
         def panel_add():
