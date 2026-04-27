@@ -158,6 +158,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     from autonomous.executor import Executor
     from autonomous.goal import GoalManager
     from autonomous.loop import AutonomousLoop
+    from autonomous.panel import TaskPanel
     from autonomous.perceiver import Perceiver
     from autonomous.planner import Planner
     from autonomous.reporter import DingTalkReporter, Reporter
@@ -165,9 +166,11 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
 
     workspace = agent.workspace
     db_path = os.path.join(workspace, "autonomous.db")
+    panel_path = os.path.join(workspace, "task_panel.json")
 
     event_bus = EventBus(db_path=db_path)
     goal_manager = GoalManager(db_path)
+    panel = TaskPanel(panel_path)
 
     tool_summary = ""
     if hasattr(agent, "_get_tool_summary"):
@@ -236,6 +239,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
         verifier=verifier,
         reporter=reporter,
         perceiver=perceiver,
+        panel=panel,
         shutdown_event=shutdown_event,
     )
 
@@ -249,8 +253,8 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
         Panel.fit(
             "[bold green]自主模式已启动[/bold green]\n"
             f"目标数据库: {db_path}\n"
-            f"自主巡检间隔: {auto_loop._discovery_interval}s\n"
-            "信号源: 钉钉消息 | Webhook | 定时任务 | 自主巡检\n"
+            f"任务面板: {panel_path} ({panel.get_stats()['total']} 个任务)\n"
+            "信号源: 钉钉消息 | Webhook | 定时任务 | 任务面板\n"
             "等待事件...",
             border_style="green",
         )

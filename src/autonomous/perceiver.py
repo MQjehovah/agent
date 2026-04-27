@@ -20,9 +20,34 @@ NON_GOAL_PATTERNS = (
 )
 NON_GOAL_COMPILED = [re.compile(p, re.IGNORECASE) for p in NON_GOAL_PATTERNS]
 
+GENERATE_PROMPT = """你是任务规划器。阅读以下 Agent 的角色描述和可用工具，生成该 Agent 日常应该主动做的任务清单。
+
+要求：
+- 只生成该 Agent 当前能执行的任务，基于角色描述和可用工具
+- 不要虚构不存在的系统、API、数据库或工具
+- 任务要具体可执行，不是抽象口号
+- 优先日常巡检类、检查类任务（因为这些容易遗漏）
+- 每个任务写清楚：查什么、用什么查、发现问题后做什么
+
+角色描述：
+{role}
+
+可用工具：
+{tools}
+
+可委派的子代理：
+{subagents}
+
+返回 JSON 数组（只返回 JSON，不要其他内容）：
+[{{"title": "任务名", "description": "具体怎么做", "priority": 1-3, "interval": 秒数或null}}]
+interval 建议：
+- 系统巡检类: 600-1800（10-30分钟）
+- 检查待办类: 1800-3600（30-60分钟）
+- 学习总结类: 3600-86400（1-24小时）
+- 一次性任务: null"""
+
 
 def _is_non_goal_message(text: str) -> bool:
-    """快速判断消息是否为非目标（问候/闲聊），避免不必要的LLM调用"""
     stripped = text.strip()
     if len(stripped) <= 2:
         return True
@@ -50,21 +75,18 @@ class Perceiver:
             priority=priority,
         )
         await self.event_bus.publish(event)
-        logger.info("钉钉消息事件已发布: sender=%s, priority=%d", msg.get("sender_nick"), priority)
 
     async def handle_webhook(self, data: dict):
         severity = data.get("severity", "").lower()
         has_alert = "alert" in data
         priority = 1 if (has_alert or severity in HIGH_SEVERITY_LEVELS) else 3
-        source = data.get("source", "webhook")
         event = Event(
             type="webhook",
-            source=source,
+            source=data.get("source", "webhook"),
             payload=dict(data),
             priority=priority,
         )
         await self.event_bus.publish(event)
-        logger.info("Webhook事件已发布: source=%s, priority=%d", source, priority)
 
     async def handle_schedule(self, schedule: dict):
         event = Event(
@@ -74,44 +96,6 @@ class Perceiver:
             priority=3,
         )
         await self.event_bus.publish(event)
-        logger.info("调度事件已发布: name=%s", schedule.get("name"))
-
-    async def self_discovery_check(self):
-        try:
-            memory = getattr(self.agent, "memory", None)
-            if memory is None:
-                logger.debug("无memory，跳过自发现检查")
-                return
-            memory_content = memory.load_memory("") if hasattr(memory, "load_memory") else ""
-            if not memory_content:
-                return
-            client = getattr(self.agent, "client", None)
-            if client is None:
-                return
-            response = await client.chat(
-                [
-                    {"role": "system", "content": '你是运维助手。分析以下记忆内容，判断是否需要主动执行某项任务。如果需要，返回JSON: {"need_action": true, "title": "...", "description": "..."}。如果不需要，返回 {"need_action": false}'},
-                    {"role": "user", "content": memory_content[:4000]},
-                ],
-                tools=[],
-                stream=False,
-            )
-            content = response.choices[0].message.content
-            result = parse_llm_json(content)
-            if result and result.get("need_action"):
-                event = Event(
-                    type="self_discovery",
-                    source="perceiver",
-                    payload={
-                        "title": result["title"],
-                        "description": result.get("description", ""),
-                    },
-                    priority=2,
-                )
-                await self.event_bus.publish(event)
-                logger.info("自发现事件已发布: title=%s", result["title"])
-        except Exception:
-            logger.exception("自发现检查失败")
 
     async def resolve_goal_from_event(self, type: str, payload: dict) -> dict | None:
         if type == "user_message":
@@ -157,9 +141,54 @@ class Perceiver:
         }
 
     def _resolve_goal_from_schedule(self, payload: dict) -> dict | None:
-        task = payload.get("task", payload.get("name", ""))
         return {
             "is_goal": True,
             "title": payload.get("name", "定时任务"),
-            "description": task,
+            "description": payload.get("task", payload.get("name", "")),
         }
+
+    # ================================================================
+    #  任务面板生成（启动时调用一次）
+    # ================================================================
+
+    @staticmethod
+    async def generate_panel_tasks(agent, tool_summary: str, subagent_summary: str, panel) -> int:
+        """根据 Agent 角色描述 + 可用工具 + 子代理列表，生成日常任务"""
+        client = getattr(agent, "client", None)
+        system_prompt = getattr(agent, "system_prompt_raw", "") or getattr(agent, "system_prompt", "")
+        if not client or not system_prompt:
+            return 0
+
+        prompt = GENERATE_PROMPT.format(
+            role=system_prompt[:6000],
+            tools=tool_summary or "未指定（使用 shell 工具执行命令）",
+            subagents=subagent_summary or "无",
+        )
+
+        response = await client.chat(
+            [{"role": "user", "content": prompt}],
+            tools=[],
+            stream=False,
+        )
+        content = response.choices[0].message.content
+        tasks_data = parse_llm_json(content)
+
+        if not isinstance(tasks_data, list):
+            logger.warning("生成面板任务格式错误: %s", content[:200])
+            return 0
+
+        count = 0
+        for item in tasks_data:
+            if not isinstance(item, dict) or "title" not in item:
+                continue
+            panel.add_task(
+                title=item["title"],
+                description=item.get("description", ""),
+                priority=item.get("priority", 3),
+                interval=item.get("interval"),
+                source="llm",
+            )
+            count += 1
+
+        logger.info("[%s] LLM 生成 %d 个日常任务", getattr(agent, "name", "?"), count)
+        return count

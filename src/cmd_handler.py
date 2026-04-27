@@ -15,11 +15,12 @@ logger = logging.getLogger("agent.cmd")
 class CommandHandler:
     """命令处理器 - 处理所有以 / 开头的交互命令"""
 
-    def __init__(self, agent, session_id: str, on_exit: Callable[[], None] = None):
+    def __init__(self, agent, session_id: str, on_exit: Callable[[], None] = None, panel=None):
         self.agent = agent
         self.session_id = session_id
         self._current_task_id = None
         self._on_exit = on_exit
+        self._panel = panel
 
     def set_current_task_id(self, task_id: Optional[int]):
         self._current_task_id = task_id
@@ -57,6 +58,14 @@ class CommandHandler:
             self._clear_cache()
         elif cmd_lower == "/usage":
             self._show_usage()
+        elif cmd_lower == "/panel":
+            self._show_panel()
+        elif cmd_lower.startswith("/panel add "):
+            self._add_panel_task(cmd.strip()[11:].strip())
+        elif cmd_lower.startswith("/panel rm "):
+            self._rm_panel_task(cmd.strip()[10:].strip())
+        elif cmd_lower == "/panel clear":
+            self._clear_panel()
         elif cmd_lower == "/sessions":
             await self._show_sessions()
         elif cmd_lower.startswith("/session "):
@@ -95,6 +104,10 @@ class CommandHandler:
             ("/cache clear", "清空缓存"),
             ("/usage", "查看 LLM 用量统计"),
             ("/tasks", "查看后台任务列表"),
+            ("/panel add <任务>", "添加面板任务"),
+            ("/panel rm <id>", "删除面板任务"),
+            ("/panel clear", "清空面板"),
+            ("/quit", "退出程序"),
             ("/quit", "退出程序"),
         ]
         for cmd, desc in commands:
@@ -226,6 +239,69 @@ class CommandHandler:
         else:
             console.print(f"[red]无效的日志级别: {level}[/red]")
             console.print(f"[yellow]有效值: {', '.join(valid_levels)}[/yellow]")
+
+    # ================================================================
+    #  任务面板
+    # ================================================================
+
+    def _show_panel(self):
+        if self._panel is None:
+            console.print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            return
+        tasks = self._panel.list_all()
+        if not tasks:
+            console.print(Panel.fit(
+                "[dim]任务面板为空[/dim]\n"
+                "使用 [cyan]/panel add <任务>[/cyan] 添加\n"
+                "LLM 会根据角色自动生成初始任务",
+                border_style="dim", box=box.ROUNDED
+            ))
+            return
+        stats = self._panel.get_stats()
+        table = Table(
+            title=f"任务面板 ({stats['total']}个 | {stats['pending']}pending {stats['active']}active {stats['completed']}done)",
+            show_header=True, header_style="bold cyan", box=box.ROUNDED
+        )
+        table.add_column("ID", style="dim", width=12)
+        table.add_column("状态", style="cyan", width=8)
+        table.add_column("P", style="yellow", width=3)
+        table.add_column("源", style="magenta", width=4)
+        table.add_column("间隔", style="green", width=8)
+        table.add_column("标题", style="white")
+        for t in tasks:
+            sc = {"pending": "yellow", "active": "cyan", "completed": "green"}.get(t.status, "dim")
+            itv = f"{t.interval}s" if t.interval else "一次"
+            src = {"user": "U", "llm": "AI", "event": "E"}.get(t.source, t.source)
+            table.add_row(t.id, f"[{sc}]{t.status}[/{sc}]", str(t.priority), src, itv, t.title)
+        console.print(table)
+        console.print("[dim]/panel add <任务> | /panel rm <id> | /panel clear[/dim]")
+
+    def _add_panel_task(self, text: str):
+        if self._panel is None:
+            console.print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            return
+        if not text:
+            console.print("[red]用法: /panel add <任务标题>[/red]")
+            return
+        task = self._panel.add_task(title=text, source="user")
+        console.print(f"[green]已添加: [{task.id}] {text}[/green]")
+
+    def _rm_panel_task(self, task_id: str):
+        if self._panel is None:
+            console.print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            return
+        if self._panel.remove_task(task_id):
+            console.print(f"[green]已删除: {task_id}[/green]")
+        else:
+            console.print(f"[red]未找到: {task_id}[/red]")
+
+    def _clear_panel(self):
+        if self._panel is None:
+            console.print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            return
+        for t in list(self._panel.list_all()):
+            self._panel.remove_task(t.id)
+        console.print("[green]面板已清空[/green]")
 
     def _show_cache(self):
         """显示缓存统计"""
