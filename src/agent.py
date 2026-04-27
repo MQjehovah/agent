@@ -413,8 +413,8 @@ class Agent:
         try:
             from memory.relevance import _keyword_search, _search_shared_knowledge
             keyword_results = _keyword_search(task, self.memory, max_results=5)
-            shared_results = _search_shared_knowledge(task, self.memory, max_results=2)
-            keyword_results.extend(r for r in shared_results if r not in keyword_results)
+            # shared_results = _search_shared_knowledge(task, self.memory, max_results=2)
+            # keyword_results.extend(r for r in shared_results if r not in keyword_results)
 
             if keyword_results:
                 return "以下是与当前任务相关的记忆:\n" + "\n\n".join(keyword_results)

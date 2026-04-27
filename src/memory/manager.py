@@ -258,13 +258,13 @@ class MemoryManager:
         if long_term:
             parts.append(f"【长期记忆】\n{long_term}")
 
-        daily = self._load_recent_daily(days=3)
-        if daily:
-            parts.append(f"【近期记忆】\n{daily}")
+        # daily = self._load_recent_daily(days=3)
+        # if daily:
+        #     parts.append(f"【近期记忆】\n{daily}")
 
-        shared = self.load_shared_knowledge()
-        if shared:
-            parts.append(f"【共享知识】\n{shared}")
+        # shared = self.load_shared_knowledge()
+        # if shared:
+        #     parts.append(f"【共享知识】\n{shared}")
 
         if parts:
             return "\n\n".join(parts)
