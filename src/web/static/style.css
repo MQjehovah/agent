@@ -589,3 +589,25 @@ body {
     margin-right: 3px;
 }
 @keyframes toolSpin { to { transform: rotate(360deg); } }
+
+/* ============= SUBAGENT INTERNAL TOOL EVENTS ============= */
+.subagent-tool-inline {
+    border-left-color: var(--accent-blue);
+    margin-left: 12px;
+    opacity: 0.85;
+}
+.subagent-tool-inline.tool-inline-done {
+    opacity: 0.5;
+    border-left-color: var(--accent-green);
+}
+.tool-agent-tag {
+    display: inline-block;
+    background: var(--accent-purple);
+    color: #fff;
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-right: 4px;
+    vertical-align: middle;
+    font-weight: 600;
+}

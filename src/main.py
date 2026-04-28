@@ -49,6 +49,30 @@ class AlignedRichHandler(RichHandler):
         finally:
             record.name = original_name
 
+    def handleError(self, record: logging.LogRecord) -> None:
+        # Silently swallow BlockingIOError from Rich console
+        # (WSL/terminal buffer full — no need to spam stderr)
+        import traceback
+        try:
+            # Check if it's a BlockingIOError before printing anything
+            etype, evalue, _ = sys.exc_info()
+            if etype is not None and issubclass(etype, (BlockingIOError, OSError)):
+                return
+        except Exception:
+            pass
+        # For other errors, fall back to plain stderr
+        try:
+            msg = self.format(record) + "\n"
+            try:
+                etype, evalue, etb = sys.exc_info()
+                tb = traceback.format_exception(etype, evalue, etb)
+                msg += "".join(tb)
+            except Exception:
+                pass
+            os.write(2, msg.encode(sys.stderr.encoding or "utf-8", errors="replace"))
+        except Exception:
+            pass
+
 
 logging.basicConfig(
     level=logging.INFO,

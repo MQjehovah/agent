@@ -25,3 +25,7 @@ logs/
 .venv
 
 projects/
+
+build/
+install/
+log/

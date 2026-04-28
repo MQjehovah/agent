@@ -173,6 +173,11 @@ class WebServer:
 
                     agent_ref.on_token = on_token
                     agent_ref.on_tool_event = on_tool_event
+
+                    # 传播回调到子代理管理器（使子代理的工具调用和流式输出可见）
+                    if agent_ref.subagent_manager:
+                        agent_ref.subagent_manager.set_event_callbacks(on_tool_event, on_token)
+
                     try:
                         result = await agent_ref.run(message, session_id=session_id)
                         resp_text = result.result if result and hasattr(result, 'result') else ""

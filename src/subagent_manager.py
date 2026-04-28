@@ -3,10 +3,11 @@
 
 支持子代理持久化，保持上下文连续性
 """
+import asyncio
+import contextlib
 import logging
 import os
 import time
-import asyncio
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -48,6 +49,9 @@ class SubagentManager:
         self._parent_agent = None
         self._lock = asyncio.Lock()
         self._cleanup_task = None
+        # Parent event callbacks for UI streaming
+        self._parent_on_tool_event = None
+        self._parent_on_token = None
         self._load_all()
 
     def _load_all(self):
@@ -86,6 +90,45 @@ class SubagentManager:
                     logger.debug(f"加载子代理模板: {name}")
             else:
                 logger.warning(f"Subagent missing {prompt_file}")
+
+    def set_event_callbacks(self, on_tool_event, on_token):
+        """设置父代理的事件回调，供子代理转发事件到 Web UI"""
+        self._parent_on_tool_event = on_tool_event
+        self._parent_on_token = on_token
+
+    def _build_callback_prefix(self, agent_name, agent_type):
+        """构建回调包装函数，在事件数据中追加子代理身份信息"""
+        parent_tool_event = self._parent_on_tool_event
+        parent_token = self._parent_on_token
+
+        async def wrapped_tool_event(event_type, data):
+            if not parent_tool_event:
+                return
+            if event_type in ("tool_start", "tool_result"):
+                enriched_type = "subagent_tool_" + event_type.split("_")[1]
+            else:
+                enriched_type = event_type
+            enriched_data = {"agent_name": agent_name, "agent_type": agent_type, **(data or {})}
+            with contextlib.suppress(Exception):
+                await parent_tool_event(enriched_type, enriched_data)
+
+        async def wrapped_token(token):
+            if parent_token:
+                with contextlib.suppress(Exception):
+                    await parent_token(token)
+
+        return wrapped_tool_event, wrapped_token
+
+    def _inject_agent_callbacks(self, agent, template_name, agent_type):
+        """为子代理实例注入包装后的事件回调"""
+        if not self._parent_on_tool_event and not self._parent_on_token:
+            return
+        wrapped_tool_event, wrapped_token = self._build_callback_prefix(
+            agent_name=template_name or agent.name or "unknown",
+            agent_type=agent_type
+        )
+        agent.on_tool_event = wrapped_tool_event
+        agent.on_token = wrapped_token
 
     def _load_team(self, dir_name: str, agent_dir: str, team_file: str, agents_dir: str):
         """加载团队配置和成员模板"""
@@ -248,6 +291,8 @@ class SubagentManager:
             agent.plugin_manager = (parent_agent or self._parent_agent).plugin_manager
 
         await agent.initialize()
+        # 注入事件回调（用于 Web UI 展示团队工具调用和流式输出）
+        self._inject_agent_callbacks(agent, template_name=f"{team_name}/{member_name}", agent_type="team")
         return agent
 
     async def run_team_agent(
@@ -430,6 +475,7 @@ class SubagentManager:
                 instance = self._active_subagents[session_id]
                 instance.last_used = time.time()
                 logger.info(f"复用子代理: template={instance.template}, session={session_id}")
+                self._inject_agent_callbacks(instance.agent, template_name=instance.template, agent_type="subagent")
                 return instance, False
 
         # 通过模板名查找
@@ -441,6 +487,7 @@ class SubagentManager:
                     instance = self._active_subagents[existing_session]
                     instance.last_used = time.time()
                     logger.info(f"复用子代理: template={template_name}, session={existing_session}")
+                    self._inject_agent_callbacks(instance.agent, template_name=template_name, agent_type="subagent")
                     return instance, False
 
         # 创建新的子代理（不持锁，因为初始化耗时）
@@ -462,6 +509,9 @@ class SubagentManager:
         if not template_data:
             agent.name = name
             agent.system_prompt = system_prompt
+
+        # 注入事件回调（用于 Web UI 展示工具调用和流式输出）
+        self._inject_agent_callbacks(agent, template_name=template_name, agent_type="subagent")
 
         # 创建实例并注册（持锁）
         new_session_id = session_id or str(uuid.uuid4())[:8]

@@ -363,6 +363,27 @@
             }
             chatMsgs.scrollTop = chatMsgs.scrollHeight;
             return;
+        } else if (type === 'subagent_tool_start') {
+            el.className = 'tool-inline-event subagent-tool-inline tool-inline-running';
+            var agentLabel = data.agent_name ? '<span class="tool-agent-tag">' + esc(data.agent_name) + '</span>' : '';
+            el.innerHTML =
+                agentLabel + '&#35843;&#29992;&#24037;&#20855;: <strong>' + esc(data.name) + '</strong>' +
+                '<pre class="tool-inline-args">' + esc(JSON.stringify(data.args || {}, null, 2).substring(0, 200)) + '</pre>';
+        } else if (type === 'subagent_tool_result') {
+            var toolKey = (data.agent_name || '') + '/' + (data.name || '');
+            var running = b.querySelector('.subagent-tool-inline.tool-inline-running[data-tool-name="' + CSS.escape(data.name || '') + '"]');
+            if (running) {
+                var s = running.querySelector('.tool-spinner');
+                if (s) s.outerHTML = '&#10003;';
+                running.className = 'tool-inline-event subagent-tool-inline tool-inline-done';
+                var summary = (data.result || '').substring(0, 150);
+                var summaryEl = document.createElement('span');
+                summaryEl.className = 'tool-inline-summary';
+                summaryEl.textContent = summary;
+                running.appendChild(summaryEl);
+            }
+            chatMsgs.scrollTop = chatMsgs.scrollHeight;
+            return;
         } else {
             return;
         }
@@ -414,7 +435,8 @@
                         else if (ev.type === 'done') finishStream(ev.content);
                         else if (ev.type === 'error') finishStream('Error: ' + ev.content);
                         else if (ev.type === 'tool_start' || ev.type === 'tool_result' ||
-                                 ev.type === 'subagent_start' || ev.type === 'subagent_result') {
+                                 ev.type === 'subagent_start' || ev.type === 'subagent_result' ||
+                                 ev.type === 'subagent_tool_start' || ev.type === 'subagent_tool_result') {
                             addToolEvent(ev.type, ev.data || {});
                         }
                     } catch {}
