@@ -173,13 +173,18 @@ class WebServer:
 
                 async def run_agent():
                     original_on_token = agent_ref.on_token
+                    original_on_tool_event = agent_ref.on_tool_event
                     full_response = []
 
                     async def on_token(token):
                         full_response.append(token)
                         token_queue.put(("token", token))
 
+                    async def on_tool_event(event_type, data):
+                        token_queue.put(("tool_event", {"event_type": event_type, "data": data}))
+
                     agent_ref.on_token = on_token
+                    agent_ref.on_tool_event = on_tool_event
                     try:
                         result = await agent_ref.run(message, session_id=session_id)
                         resp_text = result.result if result and hasattr(result, 'result') else ""
@@ -190,6 +195,7 @@ class WebServer:
                         token_queue.put(("error", str(e)))
                     finally:
                         agent_ref.on_token = original_on_token
+                        agent_ref.on_tool_event = original_on_tool_event
                         chat_session.is_streaming = False
 
                 future = asyncio.run_coroutine_threadsafe(run_agent(), loop_ref)
@@ -200,6 +206,8 @@ class WebServer:
                             event_type, content = token_queue.get(timeout=1.0)
                             if event_type == "token":
                                 yield f"data: {json.dumps({'type': 'token', 'content': content}, ensure_ascii=False)}\n\n"
+                            elif event_type == "tool_event":
+                                yield f"data: {json.dumps({'type': content['event_type'], 'data': content['data']}, ensure_ascii=False)}\n\n"
                             elif event_type == "done":
                                 chat_session.messages.append({
                                     "role": "assistant", "content": content,
@@ -333,15 +341,17 @@ class WebServer:
                 return self._json({"error": "Agent not initialized"}, 503)
 
             all_todos = []
+            seen_ids = set()
 
-            # 主 agent todos
             todo_tool = self.agent.tool_registry.get_tool("todowrite")
             if todo_tool:
                 for t in todo_tool.get_todos("all"):
                     t["agent_id"] = self.agent.name or "main"
-                    all_todos.append(t)
+                    tid = t.get("id")
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        all_todos.append(t)
 
-            # 子 agent todos
             if self.agent.subagent_manager:
                 try:
                     for inst in list(self.agent.subagent_manager._active_subagents.values()):
@@ -352,7 +362,10 @@ class WebServer:
                                 agent_name = sub_agent.name or sub_agent.agent_id or inst.template or "sub"
                                 for t in sub_todo.get_todos("all"):
                                     t["agent_id"] = agent_name
-                                    all_todos.append(t)
+                                    tid = t.get("id")
+                                    if tid and tid not in seen_ids:
+                                        seen_ids.add(tid)
+                                        all_todos.append(t)
                 except Exception as e:
                     logger.warning(f"[Todos API] 遍历子代理todo失败: {e}")
 

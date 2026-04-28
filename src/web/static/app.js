@@ -21,6 +21,7 @@
     const sessionsBody = $('#sessionsBody');
     const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory'), wsPanel = $('#wsPanel'), wsSubagents = $('#wsSubagents');
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
+    const btnNewChat = $('#newChatBtn');
     const logContent = $('#logContent');
     const elTodoList = $('#todoList');
     // Sessions
@@ -42,6 +43,7 @@
 
     function bind() {
         btnSend.addEventListener('click', sendMsg);
+        btnNewChat.addEventListener('click', newChat);
         chatIn.addEventListener('keydown', e => {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
         });
@@ -293,8 +295,79 @@
     function finishStream(text) {
         const b = document.getElementById('streamBubble'); if (!b) return;
         b.removeAttribute('id');
+        var toolEvents = b.querySelectorAll('.tool-inline-event');
+        for (var i = 0; i < toolEvents.length; i++) toolEvents[i].remove();
         b.innerHTML = md(text);
         chatMsgs.scrollTop = chatMsgs.scrollHeight;
+    }
+
+    function addToolEvent(type, data) {
+        var b = document.getElementById('streamBubble');
+        if (!b) return;
+        var ti = b.querySelector('.typing-indicator');
+        if (ti) ti.remove();
+        var el = document.createElement('div');
+        el.className = 'tool-inline-event';
+        el.setAttribute('data-tool-name', data.name || '');
+
+        if (type === 'tool_start') {
+            var argsStr = JSON.stringify(data.args || {}, null, 2);
+            var argsShort = argsStr.length > 200 ? argsStr.substring(0, 200) + '...' : argsStr;
+            el.className = 'tool-inline-event tool-inline-running';
+            el.innerHTML =
+                '<span class="tool-spinner"></span> &#35843;&#29992;&#24037;&#20855;: <strong>' + esc(data.name) + '</strong>' +
+                '<pre class="tool-inline-args">' + esc(argsShort) + '</pre>';
+        } else if (type === 'tool_result') {
+            var running = b.querySelector('.tool-inline-running[data-tool-name="' + CSS.escape(data.name || '') + '"]');
+            if (running) {
+                running.querySelector('.tool-spinner').outerHTML = '&#10003;';
+                running.className = 'tool-inline-event tool-inline-done';
+                var summary = (data.result || '').substring(0, 150);
+                var summaryEl = document.createElement('span');
+                summaryEl.className = 'tool-inline-summary';
+                summaryEl.textContent = summary;
+                running.appendChild(summaryEl);
+            }
+            chatMsgs.scrollTop = chatMsgs.scrollHeight;
+            return;
+        } else if (type === 'subagent_start') {
+            el.className = 'tool-inline-event subagent-inline tool-inline-running';
+            el.innerHTML =
+                '<span class="tool-spinner subagent-spinner"></span> &#129302; &#23376;&#20195;&#29702;: <strong>' + esc(data.name) + '</strong> &#27491;&#22312;&#25191;&#34892;...' +
+                '<div class="tool-inline-task">' + esc(data.task || '') + '</div>';
+        } else if (type === 'subagent_result') {
+            var isError = !!data.error;
+            var running = b.querySelector('.subagent-inline.tool-inline-running[data-tool-name="' + CSS.escape(data.name || '') + '"]');
+            if (running) {
+                running.querySelector('.tool-spinner').outerHTML = isError ? '&#10007;' : '&#10003;';
+                running.className = 'tool-inline-event subagent-inline subagent-inline-' + (isError ? 'error' : 'done');
+                var label = running.querySelector('.tool-inline-task');
+                if (label && data.result) {
+                    var r = document.createElement('div');
+                    r.className = 'tool-inline-subresult';
+                    r.innerHTML = md(data.result);
+                    running.replaceChild(r, label);
+                } else if (label && data.error) {
+                    label.textContent = data.error;
+                    label.className = 'tool-inline-args';
+                }
+            }
+            chatMsgs.scrollTop = chatMsgs.scrollHeight;
+            return;
+        } else {
+            return;
+        }
+
+        b.appendChild(el);
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
+    }
+
+    function newChat() {
+        if (isStreaming) return;
+        currentSessionId = null;
+        sessionStorage.removeItem('agent_session_id');
+        chatMsgs.innerHTML = '<div class="welcome-text">Ask the agent...</div>';
+        chatIn.focus();
     }
 
     async function sendMsg() {
@@ -331,6 +404,10 @@
                         if (ev.type === 'token') { setAvatar('speaking'); streamToken(ev.content); }
                         else if (ev.type === 'done') finishStream(ev.content);
                         else if (ev.type === 'error') finishStream('Error: ' + ev.content);
+                        else if (ev.type === 'tool_start' || ev.type === 'tool_result' ||
+                                 ev.type === 'subagent_start' || ev.type === 'subagent_result') {
+                            addToolEvent(ev.type, ev.data || {});
+                        }
                     } catch {}
                 }
             }

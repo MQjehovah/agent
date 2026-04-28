@@ -97,6 +97,9 @@ class Agent:
         # 流式输出回调
         self.on_token = None
 
+        # 工具调用事件回调 (用于 UI 展示工具调用过程)
+        self.on_tool_event = None
+
         self._env_context_cache: str = ""
         self._env_context_time: float = 0.0
 
@@ -775,6 +778,12 @@ class Agent:
 
         logger.info(f"[工具调用] {name} | 输入: {args_preview}")
 
+        if self.on_tool_event:
+            try:
+                await self.on_tool_event("tool_start", {"name": name, "args": args})
+            except Exception:
+                pass
+
         try:
             result = await self._execute_tool(name, args)
 
@@ -794,6 +803,12 @@ class Agent:
             if len(result_preview) > 500:
                 result_preview = result_preview[:500] + "..."
             logger.info(f"[工具返回] {name} | 输出: {result_preview}")
+
+            if self.on_tool_event:
+                try:
+                    await self.on_tool_event("tool_result", {"name": name, "result": result_preview})
+                except Exception:
+                    pass
 
             # 全局工具输出截断保护
             if len(result) > MAX_TOOL_OUTPUT_CHARS:
@@ -971,6 +986,14 @@ class Agent:
         if not task:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
 
+        agent_name = args.get("name", "") or args.get("template", "")
+
+        if self.on_tool_event:
+            try:
+                await self.on_tool_event("subagent_start", {"name": agent_name, "task": task})
+            except Exception:
+                pass
+
         try:
             result = await self.subagent_manager.run_subagent(
                 task=task,
@@ -986,9 +1009,28 @@ class Agent:
             )
         except Exception as e:
             logger.error(f"Subagent execution error: {e}")
+            if self.on_tool_event:
+                try:
+                    await self.on_tool_event("subagent_result", {"name": agent_name, "error": str(e)})
+                except Exception:
+                    pass
             return json.dumps({"success": False, "error": f"子代理执行错误: {e}"}, ensure_ascii=False)
 
         stats = self.subagent_manager.get_stats()
+
+        result_preview = result.result or ""
+        if len(result_preview) > 500:
+            result_preview = result_preview[:500] + "..."
+
+        if self.on_tool_event:
+            try:
+                await self.on_tool_event("subagent_result", {
+                    "name": agent_name,
+                    "status": result.status,
+                    "result": result_preview
+                })
+            except Exception:
+                pass
 
         return json.dumps({
             "success": result.status == "completed",
