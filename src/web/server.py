@@ -381,11 +381,9 @@ class WebServer:
             if self.agent.subagent_manager:
                 try:
                     active = list(self.agent.subagent_manager._active_subagents.values())
-                    logger.info(f"[Sessions API] 活跃子代理数: {len(active)}")
                     for inst in active:
                         sub_agent = inst.agent
                         if not sub_agent or not sub_agent.session_manager:
-                            logger.info(f"[Sessions API] 跳过子代理 template={getattr(inst, 'template', '?')}: agent或session_manager为空")
                             continue
                         agent_name = sub_agent.name or sub_agent.agent_id or inst.template or "sub"
                         try:
@@ -393,7 +391,6 @@ class WebServer:
                         except Exception as e:
                             logger.warning(f"[Sessions API] 读取子代理 {agent_name} sessions失败: {e}")
                             continue
-                        logger.info(f"[Sessions API] 子代理 {agent_name} 有 {len(sub_sessions)} 个session")
                         for ssid, sess in sub_sessions:
                             sessions.append({
                                 "id": ssid,
@@ -404,7 +401,6 @@ class WebServer:
                 except Exception as e:
                     logger.warning(f"[Sessions API] 遍历子代理失败: {e}")
 
-            logger.info(f"[Sessions API] 返回 total={len(sessions)} 个session")
             return self._json({"total": len(sessions), "sessions": sessions})
 
         @self._app.route("/api/agent/sessions/<session_id>/messages", methods=["GET"])

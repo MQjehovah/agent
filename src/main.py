@@ -58,6 +58,9 @@ logging.basicConfig(
                                  show_time=True, show_path=False)]
 )
 
+# 抑制 MCP SDK 内部日志噪音
+logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logger = logging.getLogger("agent.main")
