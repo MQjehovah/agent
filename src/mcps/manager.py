@@ -104,16 +104,16 @@ class MCPServerConnection:
     async def _safe_exit_stack_cleanup(self):
         """安全清理 ExitStack"""
         if self._exit_stack:
+            stack = self._exit_stack
+            self._exit_stack = None
+            self.session = None
+            self._connected = False
             try:
-                await self._exit_stack.__aexit__(None, None, None)
+                await asyncio.shield(stack.__aexit__(None, None, None))
             except (RuntimeError, asyncio.CancelledError):
                 pass
             except Exception as e:
                 logger.debug(f"MCP [{self.name}] ExitStack 清理时出错: {e}")
-            finally:
-                self._exit_stack = None
-                self.session = None
-                self._connected = False
 
     async def reconnect(self) -> bool:
         """重连MCP服务器"""
@@ -201,6 +201,7 @@ class MCPManager:
         self._tool_to_server: Dict[str, str] = {}
         self._config_data: List[Dict[str, Any]] = []
         self._health_check_task: Optional[asyncio.Task] = None
+        self._closing = False
 
     def load_config(self) -> List[Dict[str, Any]]:
         """加载MCP配置文件"""
@@ -254,6 +255,7 @@ class MCPManager:
 
     async def close(self):
         """关闭所有MCP连接"""
+        self._closing = True
         if self._health_check_task:
             self._health_check_task.cancel()
             self._health_check_task = None
@@ -293,7 +295,11 @@ class MCPManager:
 
     async def _check_all_servers(self):
         """检查所有服务器健康状态"""
+        if self._closing:
+            return
         for name, server in list(self.servers.items()):
+            if self._closing:
+                return
             if not await server.health_check():
                 logger.warning(f"MCP [{name}] 健康检查失败，尝试重连")
                 if not await server.reconnect():

@@ -325,6 +325,8 @@ async def cleanup(plugin_manager, scheduler, agent):
     # 关闭事件循环前执行一次 GC，让 subprocess transport 在循环还活着时被回收
     import gc
     gc.collect()
+    # 等待 async generator finalizer 完成（stdio_client 等）
+    await asyncio.sleep(0.5)
 
 
 async def main():

@@ -1,7 +1,7 @@
 [
     {
         "name": "default",
-        "enabled": false,
+        "enabled": true,
         "command": "python",
         "args": [
             "mcp_server/src/default.py"
