@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import uuid
 import logging
@@ -44,6 +45,11 @@ class WebServer:
         logger.info("WebServer asyncio event loop started")
 
     def _run_event_loop(self):
+        if sys.platform == "win32":
+            try:
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            except Exception:
+                pass
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self._loop_ready.set()
