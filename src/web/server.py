@@ -328,12 +328,15 @@ class WebServer:
             if not self.agent or not self.agent.tool_registry:
                 return self._json({"error": "Agent not initialized"}, 503)
 
+            status = request.args.get("status", "active")
             all_todos = []
             seen_ids = set()
 
             todo_tool = self.agent.tool_registry.get_tool("todowrite")
             if todo_tool:
                 for t in todo_tool.get_todos("all"):
+                    if status == "active" and t.get("status") in ("completed", "cancelled"):
+                        continue
                     t["agent_id"] = self.agent.name or "main"
                     tid = t.get("id")
                     if tid and tid not in seen_ids:
@@ -349,6 +352,8 @@ class WebServer:
                             if sub_todo:
                                 agent_name = sub_agent.name or sub_agent.agent_id or inst.template or "sub"
                                 for t in sub_todo.get_todos("all"):
+                                    if status == "active" and t.get("status") in ("completed", "cancelled"):
+                                        continue
                                     t["agent_id"] = agent_name
                                     tid = t.get("id")
                                     if tid and tid not in seen_ids:

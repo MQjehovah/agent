@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import asyncio
+import subprocess
 from typing import Optional, List, Dict, Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -63,7 +64,9 @@ class MCPServerConnection:
 
             try:
                 stdio_transport = await asyncio.wait_for(
-                    self._exit_stack.enter_async_context(stdio_client(server_params)),
+                    self._exit_stack.enter_async_context(
+                        stdio_client(server_params, errlog=subprocess.DEVNULL),
+                    ),
                     timeout=timeout
                 )
             except (asyncio.TimeoutError, asyncio.CancelledError) as e:

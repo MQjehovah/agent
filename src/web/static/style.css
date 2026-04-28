@@ -316,6 +316,14 @@ body {
 .todo-dot { font-size: 10px; line-height: 1.4; flex-shrink: 0; }
 .todo-text { color: var(--text-secondary); line-height: 1.4; }
 .todo-done .todo-text { text-decoration: line-through; opacity: 0.5; }
+.todo-status {
+    margin-left: auto;
+    font-size: 9px;
+    flex-shrink: 0;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--bg-hover);
+}
 .todo-cancelled .todo-text { text-decoration: line-through; opacity: 0.4; }
 .todo-group-label {
     padding: 4px 6px 1px; font-size: 9px; font-weight: 700;

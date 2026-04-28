@@ -236,11 +236,11 @@
     }
     async function fetchTodos() {
         try {
-            const r = await fetch(API + '/api/todos');
+            const r = await fetch(API + '/api/todos?status=active');
             if (!r.ok) return;
             const d = await r.json();
             const todos = d.todos || [];
-            if (!todos.length) { elTodoList.innerHTML = '<div class="empty-state">No todos</div>'; return; }
+            if (!todos.length) { elTodoList.innerHTML = '<div class="empty-state">No active todos</div>'; return; }
 
             const grouped = {};
             todos.forEach(t => {
@@ -252,15 +252,24 @@
             let html = '';
             Object.keys(grouped).forEach(aid => {
                 if (Object.keys(grouped).length > 1) {
-                    html += '<div class="todo-group-label">' + esc(aid) + '</div>';
+                    const active = grouped[aid].filter(t => t.status !== 'completed' && t.status !== 'cancelled').length;
+                    html += '<div class="todo-group-label">' + esc(aid) + ' (' + active + ')</div>';
                 }
                 grouped[aid].forEach(t => {
-                    const sc = t.priority === 'high' ? 'var(--accent-red)' : t.priority === 'medium' ? 'var(--accent-orange)' : 'var(--text-muted)';
-                    const icon = t.status === 'completed' ? '&#10003;' : t.status === 'in_progress' ? '&#9654;' : t.status === 'cancelled' ? '&#10005;' : '&#9679;';
-                    const cls = t.status === 'completed' ? ' todo-done' : t.status === 'cancelled' ? ' todo-cancelled' : '';
+                    const st = t.status || 'pending';
+                    const isDone = st === 'completed' || st === 'cancelled';
+                    const stLabels = {
+                        pending: { icon: '&#9679;', label: '待处理', color: 'var(--accent-orange)' },
+                        in_progress: { icon: '&#9654;', label: '进行中', color: 'var(--accent-blue)' },
+                        completed: { icon: '&#10003;', label: '已完成', color: 'var(--accent-green)' },
+                        cancelled: { icon: '&#10005;', label: '已取消', color: 'var(--text-muted)' },
+                    };
+                    const si = stLabels[st] || stLabels.pending;
+                    const cls = isDone ? ' todo-done' : '';
                     html += '<div class="todo-item' + cls + '">' +
-                        '<span class="todo-dot" style="color:' + sc + '">' + icon + '</span>' +
+                        '<span class="todo-dot" style="color:' + si.color + '">' + si.icon + '</span>' +
                         '<span class="todo-text">' + esc(t.content) + '</span>' +
+                        '<span class="todo-status" style="color:' + si.color + '">' + si.label + '</span>' +
                         '</div>';
                 });
             });
