@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import uuid
 import logging
@@ -25,35 +24,16 @@ class ChatSession:
 
 
 class WebServer:
-    def __init__(self, host: str = "0.0.0.0", port: int = 8080):
+    def __init__(self, host: str = "0.0.0.0", port: int = 8080, loop: asyncio.AbstractEventLoop = None):
         self.host = host
         self.port = port
         self.agent = None
         self.panel = None
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
-        self._loop_thread: Optional[threading.Thread] = None
-        self._loop_ready = threading.Event()
+        self.loop: Optional[asyncio.AbstractEventLoop] = loop
         self._app = None
         self._thread: Optional[threading.Thread] = None
         self._sessions: Dict[str, ChatSession] = {}
         self._session_lock = threading.Lock()
-
-    def start_event_loop(self):
-        self._loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
-        self._loop_thread.start()
-        self._loop_ready.wait(timeout=10)
-        logger.info("WebServer asyncio event loop started")
-
-    def _run_event_loop(self):
-        if sys.platform == "win32":
-            try:
-                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-            except Exception:
-                pass
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        self._loop_ready.set()
-        self.loop.run_forever()
 
     def set_agent(self, agent):
         self.agent = agent
@@ -62,13 +42,15 @@ class WebServer:
         self.panel = panel
 
     def start(self):
+        if not self.loop:
+            logger.error("WebServer requires an event loop")
+            return
         try:
             from flask import Flask, request, Response, send_from_directory
         except ImportError:
             logger.error("flask is required. Install: pip install flask")
             return
 
-        self.start_event_loop()
         logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
         self._app = Flask(__name__, static_folder=None)
@@ -481,8 +463,4 @@ class WebServer:
         self._app.run(host=host, port=port, threaded=True, use_reloader=False)
 
     def stop(self):
-        if self.loop and self.loop.is_running():
-            self.loop.call_soon_threadsafe(self.loop.stop)
-        if self._loop_thread and self._loop_thread.is_alive():
-            self._loop_thread.join(timeout=5)
         logger.info("WebServer stopped")

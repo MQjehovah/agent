@@ -55,7 +55,6 @@ class MCPServerConnection:
         )
 
         try:
-            logger.info(f"MCP [{self.name}] 正在连接...")
             self._exit_stack = AsyncExitStack()
             await asyncio.wait_for(
                 self._exit_stack.__aenter__(),
@@ -63,26 +62,21 @@ class MCPServerConnection:
             )
 
             try:
-                logger.debug(f"MCP [{self.name}] 启动子进程...")
                 stdio_transport = await asyncio.wait_for(
                     self._exit_stack.enter_async_context(stdio_client(server_params)),
                     timeout=timeout
                 )
-                logger.debug(f"MCP [{self.name}] 子进程已启动")
             except (asyncio.TimeoutError, asyncio.CancelledError) as e:
                 logger.error(f"✗ MCP [{self.name}] 连接超时或被取消: {e}")
                 await self._safe_exit_stack_cleanup()
                 return False
 
-            logger.debug(f"MCP [{self.name}] 初始化会话...")
             self.session = await self._exit_stack.enter_async_context(
                 ClientSession(stdio_transport[0], stdio_transport[1])
             )
-            await asyncio.wait_for(self.session.initialize(), timeout=timeout)
-            logger.debug(f"MCP [{self.name}] 会话已初始化")
+            await self.session.initialize()
 
-            logger.debug(f"MCP [{self.name}] 获取工具列表...")
-            mcp_tools = await asyncio.wait_for(self.session.list_tools(), timeout=timeout)
+            mcp_tools = await self.session.list_tools()
             self.tool_defs = []
             for t in mcp_tools.tools:
                 self.tool_defs.append({
@@ -111,18 +105,16 @@ class MCPServerConnection:
     async def _safe_exit_stack_cleanup(self):
         """安全清理 ExitStack"""
         if self._exit_stack:
-            stack = self._exit_stack
-            self._exit_stack = None
-            self.session = None
-            self._connected = False
             try:
-                await asyncio.wait_for(stack.__aexit__(None, None, None), timeout=10)
-            except asyncio.TimeoutError:
-                logger.debug(f"MCP [{self.name}] ExitStack 清理超时")
+                await self._exit_stack.__aexit__(None, None, None)
             except (RuntimeError, asyncio.CancelledError):
                 pass
             except Exception as e:
                 logger.debug(f"MCP [{self.name}] ExitStack 清理时出错: {e}")
+            finally:
+                self._exit_stack = None
+                self.session = None
+                self._connected = False
 
     async def reconnect(self) -> bool:
         """重连MCP服务器"""
@@ -177,12 +169,10 @@ class MCPServerConnection:
             return "MCP未连接"
 
         try:
-            import time as _time
-            t0 = _time.monotonic()
-            logger.info(f"MCP [{self.name}] 调用工具: {name}")
-            result = await asyncio.wait_for(self.session.call_tool(name, args), timeout=60)
-            elapsed = _time.monotonic() - t0
-            logger.info(f"MCP [{self.name}] 工具返回: {name}, 耗时: {elapsed:.2f}s")
+            result = await asyncio.wait_for(
+                self.session.call_tool(name, args),
+                timeout=60
+            )
             if hasattr(result, 'content') and result.content:
                 parts = []
                 for item in result.content:
@@ -192,10 +182,10 @@ class MCPServerConnection:
                     elif isinstance(item, str):
                         parts.append(item)
                 return "\n".join(parts)
-            return "执行成功（无返回内容）"
+            return "执行成功"
         except asyncio.TimeoutError:
-            logger.warning(f"MCP [{self.name}] 调用超时(60s): {name}")
-            return f"执行失败: 工具调用超时"
+            logger.error(f"MCP [{self.name}] 工具调用超时: {name}")
+            return "执行失败: 工具调用超时"
         except Exception as e:
             logger.error(f"MCP [{self.name}] 工具调用失败: {name}, {type(e).__name__}: {e}")
             if isinstance(e, (ConnectionError, OSError, BrokenPipeError)):

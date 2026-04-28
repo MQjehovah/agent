@@ -419,7 +419,7 @@ async def main():
 
         if start_web:
             from web import WebServer
-            web_server = WebServer(port=args.web_port)
+            web_server = WebServer(port=args.web_port, loop=asyncio.get_running_loop())
             web_server.set_agent(agent)
             web_server.set_panel(panel)
             web_server.start()
