@@ -1,20 +1,23 @@
-import logging
 import asyncio
+import contextlib
+import json
+import logging
+import os
 import platform
 import re
 import subprocess
-from typing import Optional, Dict, Any, List, TYPE_CHECKING, cast, Sequence
-from dataclasses import dataclass, field
 from collections import OrderedDict
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
-import os
-import json
+from typing import TYPE_CHECKING, Any, cast
+
 from openai.types.chat import ChatCompletionMessageParam
 
-from utils.frontmatter import extract_frontmatter
-from subagent_manager import SubagentManager
-from prompt import PromptBuilder
 from learning import Learner
+from prompt import PromptBuilder
+from subagent_manager import SubagentManager
+from utils.frontmatter import extract_frontmatter
 
 if TYPE_CHECKING:
     from plugins import PluginManager
@@ -53,7 +56,7 @@ class Agent:
         self.max_iterations = 100
 
         # Prompt 分层拼装器
-        self._prompt_builder: Optional[PromptBuilder] = None
+        self._prompt_builder: PromptBuilder | None = None
 
         # 压缩后状态恢复：最近读取的文件
         self._recent_files: OrderedDict[str, str] = OrderedDict()
@@ -65,13 +68,13 @@ class Agent:
         self.subagent_manager = None
         self.session_manager = None
         self.storage = None
-        self.plugin_manager: Optional["PluginManager"] = None
+        self.plugin_manager: PluginManager | None = None
         self.memory = None
-        self.learner: Optional[Learner] = None
+        self.learner: Learner | None = None
         self._background_tasks: set = set()
 
         self.status = "pending"
-        self.result: Optional[str] = None
+        self.result: str | None = None
 
         # 权限系统
         from permissions import PermissionChecker, PermissionConfig, PermissionMode
@@ -139,7 +142,7 @@ class Agent:
             self.agent_id = self.name = ""
             return
 
-        with open(prompt_file, "r", encoding="utf-8") as f:
+        with open(prompt_file, encoding="utf-8") as f:
             content = f.read()
 
         frontmatter, body = extract_frontmatter(content)
@@ -165,15 +168,13 @@ class Agent:
         return re.sub(r'\$\{([^}]+)\}', _replace, text)
 
     def _init_tools(self):
-        from tools import ToolRegistry
-        from tools import TodoTool, FileTool, SubagentTool, MemoryTool, ShellTool
-        from tools.grep import GrepTool
-        from tools.glob import GlobTool
-        from tools.edit import EditTool
+        from tools import FileTool, MemoryTool, ShellTool, SubagentTool, TodoTool, ToolRegistry
         from tools.code_preview import CodePreviewTool
-        from tools.web import WebSearchTool, WebFetchTool
-        from tools.task import TaskCreateTool, TaskListTool, TaskGetTool, TaskCancelTool
-        from tools.ask_user import AskUserTool
+        from tools.edit import EditTool
+        from tools.glob import GlobTool
+        from tools.grep import GrepTool
+        from tools.task import TaskCancelTool, TaskCreateTool, TaskGetTool, TaskListTool
+        from tools.web import WebFetchTool, WebSearchTool
 
         self.tool_registry = ToolRegistry()
 
@@ -220,7 +221,7 @@ class Agent:
 
         if os.path.exists(mcp_file):
             try:
-                with open(mcp_file, "r", encoding="utf-8") as f:
+                with open(mcp_file, encoding="utf-8") as f:
                     self.mcp_configs = json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load mcp_servers.json: {e}")
@@ -326,7 +327,7 @@ class Agent:
                 )
 
                 # 记忆上下文（按任务相关性筛选）
-        
+
         # 记忆系统
         if self.memory:
             memory_context = self._load_memory_context_sync(task)
@@ -416,7 +417,7 @@ class Agent:
             return self.memory.load_memory("")
 
         try:
-            from memory.relevance import _keyword_search, _search_shared_knowledge
+            from memory.relevance import _keyword_search
             keyword_results = _keyword_search(task, self.memory, max_results=5)
             # shared_results = _search_shared_knowledge(task, self.memory, max_results=2)
             # keyword_results.extend(r for r in shared_results if r not in keyword_results)
@@ -490,7 +491,7 @@ class Agent:
         return "\n".join(parts)
 
     @property
-    def tool_defs(self) -> List[Dict[str, Any]]:
+    def tool_defs(self) -> list[dict[str, Any]]:
         tools = []
 
         if self.tool_registry:
@@ -546,7 +547,7 @@ class Agent:
                         messages = self.storage.get_messages(session_id)
                         if messages:
                             session.messages = cast(
-                                List[ChatCompletionMessageParam], messages)
+                                list[ChatCompletionMessageParam], messages)
                             logger.info(
                                 f"Agent [{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
                     session.add_message("user", task)
@@ -607,6 +608,12 @@ class Agent:
                         f"{usage_summary['total_prompt_tokens']:,}+{usage_summary['total_completion_tokens']:,}tok "
                         f"¥{usage_summary['total_cost_cny']}"
                     )
+                    # 第2轮起通知 UI 新起一个气泡（第1轮已在 sendMsg 中创建）
+                    if i > 0 and self.on_tool_event:
+                        with contextlib.suppress(Exception):
+                            await self.on_tool_event("round_start", {
+                                "iteration": i + 1,
+                            })
                     think_messages = session.messages
                     if self._retry_context:
                         think_messages = list(session.messages)
@@ -734,7 +741,7 @@ class Agent:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, item in enumerate(results):
                 if isinstance(item, asyncio.CancelledError):
-                    logger.warning(f"工具执行被取消")
+                    logger.warning("工具执行被取消")
                     session.add_message("tool", "工具执行被取消", name=tool_calls[i].get("function", {}).get("name", ""))
                 elif isinstance(item, Exception):
                     logger.error(f"工具执行异常: {item}")
@@ -751,7 +758,7 @@ class Agent:
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
 
-    async def _execute_tool_safe(self, name: str, args: Dict) -> str:
+    async def _execute_tool_safe(self, name: str, args: dict) -> str:
         """带权限检查、钩子和错误恢复的工具执行"""
         # 权限检查
         perm_result = self.permission.check(name, args)
@@ -845,7 +852,7 @@ class Agent:
         except Exception as e:
             logger.warning(f"[自学习] 任务反思失败: {e}", exc_info=True)
 
-    async def _think(self, messages: Sequence[ChatCompletionMessageParam]) -> Dict[str, Any]:
+    async def _think(self, messages: Sequence[ChatCompletionMessageParam]) -> dict[str, Any]:
         try:
             # 流式模式
             if self.on_token:
@@ -952,7 +959,7 @@ class Agent:
             }
         }
 
-    async def _execute_tool(self, name: str, args: Dict) -> str:
+    async def _execute_tool(self, name: str, args: dict) -> str:
         try:
             if name == "subagent" and self.subagent_manager:
                 return await self._execute_subagent(args)
@@ -981,7 +988,7 @@ class Agent:
         except Exception as e:
             return f"工具执行错误: {e}"
 
-    async def _execute_subagent(self, args: Dict) -> str:
+    async def _execute_subagent(self, args: dict) -> str:
         task = args.get("task")
         if not task:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)

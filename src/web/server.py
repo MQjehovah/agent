@@ -334,7 +334,8 @@ class WebServer:
                 return self._json({"error": "Agent not initialized"}, 503)
 
             status = request.args.get("status", "active")
-            all_todos = []
+            main_todos = []
+            sub_todos = []
             seen_ids = set()
 
             todo_tool = self.agent.tool_registry.get_tool("todowrite")
@@ -346,7 +347,7 @@ class WebServer:
                     tid = t.get("id")
                     if tid and tid not in seen_ids:
                         seen_ids.add(tid)
-                        all_todos.append(t)
+                        main_todos.append(t)
 
             if self.agent.subagent_manager:
                 try:
@@ -363,10 +364,12 @@ class WebServer:
                                     tid = t.get("id")
                                     if tid and tid not in seen_ids:
                                         seen_ids.add(tid)
-                                        all_todos.append(t)
+                                        sub_todos.append(t)
                 except Exception as e:
                     logger.warning(f"[Todos API] 遍历子代理todo失败: {e}")
 
+            # 子代理 todo 排在前面
+            all_todos = sub_todos + main_todos
             return self._json({"todos": all_todos, "count": len(all_todos)})
 
         # Agent Sessions API (in-memory)

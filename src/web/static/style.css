@@ -332,6 +332,11 @@ body {
     margin-top: 4px;
 }
 .todo-group-label:first-child { margin-top: 0; }
+.todo-group-subagent {
+    color: var(--accent-purple);
+    border-left: 2px solid var(--accent-purple);
+    padding-left: 8px;
+}
 
 /* ============= SESSIONS ============= */
 .sessions-layout {
@@ -610,4 +615,54 @@ body {
     margin-right: 4px;
     vertical-align: middle;
     font-weight: 600;
+}
+
+/* ============= SUBAGENT MESSAGE BUBBLE ============= */
+.subagent-msg {
+    display: flex;
+    gap: 10px;
+    margin: 12px 0;
+    align-items: flex-start;
+}
+.subagent-msg .subagent-avatar {
+    background: var(--accent-purple);
+    color: #fff;
+    font-size: 11px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-weight: 700;
+}
+.subagent-msg .msg-sender {
+    font-size: 11px;
+    color: var(--accent-purple);
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.subagent-msg .msg-bubble {
+    background: rgba(139, 92, 246, 0.06);
+    border: 1px solid rgba(139, 92, 246, 0.15);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text-primary);
+    line-height: 1.6;
+    max-width: 85%;
+    font-size: 13px;
+}
+.subagent-msg .msg-bubble p { margin: 4px 0; }
+.subagent-msg .msg-bubble pre {
+    background: var(--bg-code);
+    padding: 6px 8px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 12px;
+}
+.subagent-msg .msg-time {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 2px;
 }

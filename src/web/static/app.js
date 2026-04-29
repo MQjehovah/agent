@@ -250,10 +250,17 @@
             });
 
             let html = '';
-            Object.keys(grouped).forEach(aid => {
+            var sortedKeys = Object.keys(grouped).sort(function(a, b) {
+                if (a === 'main') return 1;
+                if (b === 'main') return -1;
+                return 0;
+            });
+            sortedKeys.forEach(function(aid) {
+                var isSubagent = aid !== 'main';
                 if (Object.keys(grouped).length > 1) {
                     const active = grouped[aid].filter(t => t.status !== 'completed' && t.status !== 'cancelled').length;
-                    html += '<div class="todo-group-label">' + esc(aid) + ' (' + active + ')</div>';
+                    var groupCls = isSubagent ? 'todo-group-label todo-group-subagent' : 'todo-group-label';
+                    html += '<div class="' + groupCls + '">' + esc(aid) + ' (' + active + ')</div>';
                 }
                 grouped[aid].forEach(t => {
                     const st = t.status || 'pending';
@@ -297,7 +304,8 @@
     function streamToken(tok) {
         const b = document.getElementById('streamBubble'); if (!b) return;
         const ti = b.querySelector('.typing-indicator'); if (ti) ti.remove();
-        b.textContent = (b.dataset.t||'') + tok; b.dataset.t = b.textContent;
+        b.dataset.t = (b.dataset.t||'') + tok;
+        b.innerHTML = md(b.dataset.t);
         chatMsgs.scrollTop = chatMsgs.scrollHeight;
     }
 
@@ -306,11 +314,145 @@
         b.removeAttribute('id');
         var toolEvents = b.querySelectorAll('.tool-inline-event');
         for (var i = 0; i < toolEvents.length; i++) toolEvents[i].remove();
-        b.innerHTML = md(text);
+        var finalText = (text || '').trim();
+        if (finalText) {
+            b.innerHTML = md(finalText);
+        } else {
+            var msgEl = b.closest('.msg');
+            if (msgEl) msgEl.remove();
+        }
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
+    }
+
+    function startNewMainRound() {
+        var b = document.getElementById('streamBubble');
+        if (b) {
+            var text = (b.dataset.t || '').trim();
+            b.removeAttribute('id');
+            var toolEvents = b.querySelectorAll('.tool-inline-event');
+            for (var i = 0; i < toolEvents.length; i++) toolEvents[i].remove();
+            if (text) {
+                b.innerHTML = md(text);
+            } else {
+                var msgEl = b.closest('.msg');
+                if (msgEl) msgEl.remove();
+            }
+        }
+        addMsg('assistant', '', true);
+    }
+
+    // ---- Subagent streaming bubble management ----
+    var _subagentBubbles = {}; // agent_name -> {bubble, accumulated}
+
+    function _createSubagentBubble(agentName) {
+        var w = chatMsgs.querySelector('.welcome-text'); if (w) w.remove();
+        var el = document.createElement('div');
+        el.className = 'msg subagent-msg';
+        var avatarLetter = agentName ? agentName.charAt(0) : 'S';
+        el.innerHTML =
+            '<div class="msg-avatar subagent-avatar">' + esc(avatarLetter) + '</div>' +
+            '<div class="msg-body">' +
+            '<div class="msg-sender">' + esc(agentName) + '</div>' +
+            '<div class="msg-bubble">' +
+            '<div class="typing-indicator"><span></span><span></span><span></span></div>' +
+            '</div><div class="msg-time">' + new Date().toLocaleTimeString() + '</div></div>';
+        chatMsgs.appendChild(el);
+        var bubble = el.querySelector('.msg-bubble');
+        _subagentBubbles[agentName] = { bubble: bubble, accumulated: '' };
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
+        return bubble;
+    }
+
+    function getOrCreateSubagentBubble(agentName, agentType) {
+        if (_subagentBubbles[agentName]) return _subagentBubbles[agentName].bubble;
+        return _createSubagentBubble(agentName);
+    }
+
+    function startNewSubagentRound(agentName) {
+        // Finalize existing bubble if any, then create a fresh one
+        if (_subagentBubbles[agentName]) {
+            finalizeSubagentBubble(agentName, null);
+        }
+        _createSubagentBubble(agentName);
+    }
+
+    function streamSubagentToken(agentName, tok) {
+        var info = _subagentBubbles[agentName];
+        if (!info) return;
+        var b = info.bubble;
+        var ti = b.querySelector('.typing-indicator'); if (ti) ti.remove();
+        info.accumulated += tok;
+        b.innerHTML = md(info.accumulated);
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
+    }
+
+    function finalizeSubagentBubble(agentName, content) {
+        var info = _subagentBubbles[agentName];
+        if (!info) return;
+        var b = info.bubble;
+        b.removeAttribute('id');
+        var toolEvents = b.querySelectorAll('.tool-inline-event');
+        for (var i = 0; i < toolEvents.length; i++) toolEvents[i].remove();
+        var text = content || info.accumulated || '';
+        if (text) {
+            b.innerHTML = md(text);
+        } else {
+            var msgEl = b.closest('.msg');
+            if (msgEl) msgEl.remove();
+        }
+        delete _subagentBubbles[agentName];
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
+    }
+
+    function addSubagentToolEvent(type, data) {
+        var agentName = data.agent_name || '';
+        var bubble = _subagentBubbles[agentName];
+        if (!bubble) {
+            bubble = getOrCreateSubagentBubble(agentName, data.agent_type || 'subagent');
+        }
+        bubble = _subagentBubbles[agentName] ? _subagentBubbles[agentName].bubble : bubble;
+        if (!bubble) return;
+        var ti = bubble.querySelector('.typing-indicator'); if (ti) ti.remove();
+        var el = document.createElement('div');
+        el.className = 'tool-inline-event subagent-tool-inline';
+        el.setAttribute('data-tool-name', data.name || '');
+
+        if (type === 'subagent_tool_start') {
+            el.className = 'tool-inline-event subagent-tool-inline tool-inline-running';
+            el.innerHTML =
+                '<span class="tool-spinner"></span> &#35843;&#29992;&#24037;&#20855;: <strong>' + esc(data.name) + '</strong>' +
+                '<pre class="tool-inline-args">' + esc(JSON.stringify(data.args || {}, null, 2).substring(0, 200)) + '</pre>';
+            // todowrite tool changes — refresh todos immediately
+            if (data.name === 'todowrite') fetchTodos();
+        } else if (type === 'subagent_tool_result') {
+            var running = bubble.querySelector('.subagent-tool-inline.tool-inline-running[data-tool-name="' + CSS.escape(data.name || '') + '"]');
+            if (running) {
+                var s = running.querySelector('.tool-spinner');
+                if (s) s.outerHTML = '&#10003;';
+                running.className = 'tool-inline-event subagent-tool-inline tool-inline-done';
+                var summary = (data.result || '').substring(0, 150);
+                var summaryEl = document.createElement('span');
+                summaryEl.className = 'tool-inline-summary';
+                summaryEl.textContent = summary;
+                running.appendChild(summaryEl);
+            }
+            chatMsgs.scrollTop = chatMsgs.scrollHeight;
+            return;
+        } else {
+            return;
+        }
+
+        bubble.appendChild(el);
         chatMsgs.scrollTop = chatMsgs.scrollHeight;
     }
 
     function addToolEvent(type, data) {
+        // Subagent internal tool events go into subagent bubble
+        if (type === 'subagent_tool_start' || type === 'subagent_tool_result') {
+            addSubagentToolEvent(type, data);
+            return;
+        }
+
         var b = document.getElementById('streamBubble');
         if (!b) return;
         var ti = b.querySelector('.typing-indicator');
@@ -326,6 +468,7 @@
             el.innerHTML =
                 '<span class="tool-spinner"></span> &#35843;&#29992;&#24037;&#20855;: <strong>' + esc(data.name) + '</strong>' +
                 '<pre class="tool-inline-args">' + esc(argsShort) + '</pre>';
+            if (data.name === 'todowrite') fetchTodos();
         } else if (type === 'tool_result') {
             var running = b.querySelector('.tool-inline-running[data-tool-name="' + CSS.escape(data.name || '') + '"]');
             if (running) {
@@ -361,26 +504,10 @@
                     label.className = 'tool-inline-args';
                 }
             }
-            chatMsgs.scrollTop = chatMsgs.scrollHeight;
-            return;
-        } else if (type === 'subagent_tool_start') {
-            el.className = 'tool-inline-event subagent-tool-inline tool-inline-running';
-            var agentLabel = data.agent_name ? '<span class="tool-agent-tag">' + esc(data.agent_name) + '</span>' : '';
-            el.innerHTML =
-                agentLabel + '&#35843;&#29992;&#24037;&#20855;: <strong>' + esc(data.name) + '</strong>' +
-                '<pre class="tool-inline-args">' + esc(JSON.stringify(data.args || {}, null, 2).substring(0, 200)) + '</pre>';
-        } else if (type === 'subagent_tool_result') {
-            var toolKey = (data.agent_name || '') + '/' + (data.name || '');
-            var running = b.querySelector('.subagent-tool-inline.tool-inline-running[data-tool-name="' + CSS.escape(data.name || '') + '"]');
-            if (running) {
-                var s = running.querySelector('.tool-spinner');
-                if (s) s.outerHTML = '&#10003;';
-                running.className = 'tool-inline-event subagent-tool-inline tool-inline-done';
-                var summary = (data.result || '').substring(0, 150);
-                var summaryEl = document.createElement('span');
-                summaryEl.className = 'tool-inline-summary';
-                summaryEl.textContent = summary;
-                running.appendChild(summaryEl);
+            // Finalize the subagent's own streaming bubble
+            var agentName = data.name || '';
+            if (_subagentBubbles[agentName]) {
+                finalizeSubagentBubble(agentName, data.result || '');
             }
             chatMsgs.scrollTop = chatMsgs.scrollHeight;
             return;
@@ -395,6 +522,7 @@
     function newChat() {
         if (isStreaming) return;
         currentSessionId = null;
+        _subagentBubbles = {};
         sessionStorage.removeItem('agent_session_id');
         chatMsgs.innerHTML = '<div class="welcome-text">Ask the agent...</div>';
         chatIn.focus();
@@ -434,6 +562,17 @@
                         if (ev.type === 'token') { setAvatar('speaking'); streamToken(ev.content); }
                         else if (ev.type === 'done') finishStream(ev.content);
                         else if (ev.type === 'error') finishStream('Error: ' + ev.content);
+                        else if (ev.type === 'round_start') { startNewMainRound(); }
+                        else if (ev.type === 'subagent_round_start') {
+                            var sd = ev.data || {};
+                            startNewSubagentRound(sd.agent_name || '');
+                        }
+                        else if (ev.type === 'subagent_token') {
+                            setAvatar('speaking');
+                            var sd = ev.data || {};
+                            getOrCreateSubagentBubble(sd.agent_name || '', sd.agent_type || 'subagent');
+                            streamSubagentToken(sd.agent_name || '', sd.content || '');
+                        }
                         else if (ev.type === 'tool_start' || ev.type === 'tool_result' ||
                                  ev.type === 'subagent_start' || ev.type === 'subagent_result' ||
                                  ev.type === 'subagent_tool_start' || ev.type === 'subagent_tool_result') {
@@ -445,6 +584,10 @@
         } catch (err) {
             finishStream('Error: ' + err.message);
         } finally {
+            // Clean up any unfinished subagent bubbles
+            for (var an in _subagentBubbles) {
+                finalizeSubagentBubble(an, _subagentBubbles[an].accumulated || '');
+            }
             isStreaming = false; btnSend.disabled = false;
             setAvatar('idle');
             elDot.className = 'status-dot connected'; elStatus.textContent = 'ready';

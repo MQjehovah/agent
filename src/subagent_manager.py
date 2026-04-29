@@ -99,13 +99,16 @@ class SubagentManager:
     def _build_callback_prefix(self, agent_name, agent_type):
         """构建回调包装函数，在事件数据中追加子代理身份信息"""
         parent_tool_event = self._parent_on_tool_event
-        parent_token = self._parent_on_token
+        # round tracking: detect new LLM thinking rounds for separate bubbles
+        state = {"in_round": False, "had_tools": False}
 
         async def wrapped_tool_event(event_type, data):
             if not parent_tool_event:
                 return
             if event_type in ("tool_start", "tool_result"):
                 enriched_type = "subagent_tool_" + event_type.split("_")[1]
+                if event_type == "tool_result":
+                    state["had_tools"] = True
             else:
                 enriched_type = event_type
             enriched_data = {"agent_name": agent_name, "agent_type": agent_type, **(data or {})}
@@ -113,9 +116,23 @@ class SubagentManager:
                 await parent_tool_event(enriched_type, enriched_data)
 
         async def wrapped_token(token):
-            if parent_token:
+            if not parent_tool_event:
+                return
+            # If we had tools since last round, start a new bubble
+            if state["had_tools"] or not state["in_round"]:
+                state["had_tools"] = False
+                state["in_round"] = True
                 with contextlib.suppress(Exception):
-                    await parent_token(token)
+                    await parent_tool_event("subagent_round_start", {
+                        "agent_name": agent_name,
+                        "agent_type": agent_type,
+                    })
+            with contextlib.suppress(Exception):
+                await parent_tool_event("subagent_token", {
+                    "agent_name": agent_name,
+                    "agent_type": agent_type,
+                    "content": token,
+                })
 
         return wrapped_tool_event, wrapped_token
 
