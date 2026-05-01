@@ -189,6 +189,8 @@ class WebServer:
                     finally:
                         agent_ref.on_token = original_on_token
                         agent_ref.on_tool_event = original_on_tool_event
+                        if agent_ref.subagent_manager:
+                            agent_ref.subagent_manager.set_event_callbacks(None, None)
                         chat_session.is_streaming = False
 
                 future = asyncio.run_coroutine_threadsafe(run_agent(), loop_ref)

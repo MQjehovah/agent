@@ -29,7 +29,7 @@ class Storage:
 
     def __init__(self, workspace: str, pool_size: int = 5):
         self.workspace = workspace
-        self.db_path = Path(workspace) / "data.db"
+        self.db_path = self._resolve_db_path(workspace)
         self.pool_size = pool_size
         self._connection_pool: List[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
@@ -40,11 +40,33 @@ class Storage:
         self._init_pool()
         self._start_write_thread()
 
+    @staticmethod
+    def _resolve_db_path(workspace: str) -> Path:
+        """选择合适的数据库路径：优先 workspace 本地，WSL 跨分区时回退到 /tmp"""
+        db_path = Path(workspace) / "data.db"
+        try:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS _probe (id INTEGER)")
+                conn.execute("DROP TABLE IF EXISTS _probe")
+                conn.commit()
+            return db_path
+        except sqlite3.OperationalError:
+            pass
+        # WSL /mnt 路径不可用，回退到 /tmp
+        fallback = Path("/tmp/agent_storage") / Path(workspace).name / "data.db"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        logger.warning(f"SQLite 在 {db_path} 不可用，回退到 {fallback}")
+        return fallback
+
     def _init_db(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                pass
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

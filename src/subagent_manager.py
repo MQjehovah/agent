@@ -95,6 +95,11 @@ class SubagentManager:
         """设置父代理的事件回调，供子代理转发事件到 Web UI"""
         self._parent_on_tool_event = on_tool_event
         self._parent_on_token = on_token
+        # 清除时，同时清除所有活跃子代理的回调
+        if not on_tool_event and not on_token:
+            for instance in self._active_subagents.values():
+                instance.agent.on_tool_event = None
+                instance.agent.on_token = None
 
     def _build_callback_prefix(self, agent_name, agent_type):
         """构建回调包装函数，在事件数据中追加子代理身份信息"""

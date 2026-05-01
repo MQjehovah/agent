@@ -27,7 +27,8 @@ class TeamContext:
 
     def set_blackboard(self, key: str, value: str):
         self.blackboard[key] = value
-        logger.info(f"团队黑板更新: {key} = {value}")
+        preview = (value[:120] + "...") if len(value) > 120 else value
+        logger.info(f"团队黑板更新: {key} = {preview}")
 
     def get_blackboard(self) -> str:
         if not self.blackboard:
