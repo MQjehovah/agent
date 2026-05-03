@@ -2,8 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import re
-import uuid
 from typing import Any
 
 from team.context import TeamContext
@@ -42,15 +40,15 @@ class TeamOrchestrator:
         self.pipeline_mode = pipeline_mode
         self.context: TeamContext | None = None
         self.dag: ExecutionDAG | None = None
-        self.project_dir: str = ""
+        self.workspace: str = ""
         self.artifacts: dict[str, str] = {}
         self.pipeline_stages: list[dict] = []
         self._completed_stages: set[str] = set()
 
     async def run(self, task: str) -> str:
         self.context = TeamContext(self.team_name, task)
-        self._setup_project_dir(task)
-        self.context.set_blackboard("项目路径", self.project_dir)
+        self._resolve_workspace()
+        self.context.set_blackboard("工作目录", self.workspace)
         self.context.set_blackboard("团队名称", self.team_name)
 
         # 动态构建流水线
@@ -162,7 +160,7 @@ class TeamOrchestrator:
 
         # 记录产出物路径（不读内容）
         if output_file:
-            artifact_path = os.path.join(self.project_dir, output_file)
+            artifact_path = os.path.join(self.workspace, output_file)
             self.artifacts[node.id] = artifact_path
             self.context.set_blackboard(f"{node.id}_output", artifact_path)
 
@@ -292,7 +290,7 @@ class TeamOrchestrator:
         full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令"
         if output_file:
             full_task += f"\n将输出写入 `{output_file}`。"
-        full_task += f"\n工作目录: {self.project_dir}"
+        full_task += f"\n工作目录: {self.workspace}"
 
         try:
             result = await self.subagent_manager.run_team_agent(
@@ -315,28 +313,13 @@ class TeamOrchestrator:
                 return s
         return None
 
-    def _setup_project_dir(self, task: str):
-        path = self._extract_project_path(task)
-        if path:
-            self.project_dir = path
-        else:
-            workspace = self.config.get("workspace", "")
-            projects_dir = os.path.join(workspace, "projects")
-            os.makedirs(projects_dir, exist_ok=True)
-            self.project_dir = os.path.join(projects_dir, uuid.uuid4().hex[:8])
-        os.makedirs(self.project_dir, exist_ok=True)
-        logger.info(f"项目路径: {self.project_dir}")
-
-    def _extract_project_path(self, task: str) -> str:
-        patterns = [
-            r'在\s*[`"]?([^`"\s]+)[`"]?\s*项目中',
-            r'项目[路径目录][:：]\s*[`"]?([^`"\s]+)[`"]?',
-        ]
-        for p in patterns:
-            m = re.search(p, task)
-            if m:
-                return m.group(1) if m.lastindex else m.group(0)
-        return ""
+    def _resolve_workspace(self):
+        workspace = self.config.get("workspace", "")
+        if not workspace:
+            workspace = os.getcwd()
+        self.workspace = workspace
+        os.makedirs(self.workspace, exist_ok=True)
+        logger.info(f"工作目录: {self.workspace}")
 
     @staticmethod
     def _read_file_head(path: str, max_chars: int) -> str:
@@ -424,7 +407,7 @@ class TeamOrchestrator:
         parts = [
             f"# 团队执行报告: {self.team_name}",
             f"## 原始任务\n{self.context.original_task}",
-            f"## 项目目录\n{self.project_dir}",
+            f"## 工作目录\n{self.workspace}",
             f"## 耗时\n{mins}分{secs}秒",
             f"## 流水线模式\n{self.pipeline_mode}",
             "## 执行阶段",
@@ -433,11 +416,12 @@ class TeamOrchestrator:
 
         if self.context.feedback_loop.iteration > 0:
             parts.append("## 开发↔测试循环")
-            parts.append(self.context.feedback_loop.to_context_string())
+            parts.append(self.feedback_loop.to_context_string())
 
-        parts.append(f"\n## 产出物\n{self.project_dir}/")
-        if os.path.exists(self.project_dir):
-            for f in os.listdir(self.project_dir):
-                parts.append(f"  - {f}")
+        parts.append(f"\n## 产出物\n{self.workspace}/")
+        if os.path.exists(self.workspace):
+            for f in os.listdir(self.workspace):
+                if os.path.isfile(os.path.join(self.workspace, f)):
+                    parts.append(f"  - {f}")
 
         return "\n\n".join(parts)
