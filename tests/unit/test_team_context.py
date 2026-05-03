@@ -13,8 +13,12 @@ def test_add_and_get_results():
 
     member_b_context = ctx.get_context_for_member("成员B")
     assert "做一件事" in member_b_context
-    assert "结果1" in member_b_context
-    assert "结果2" in member_b_context
+    # 新设计：产出物通过路径索引传递，不再内联塞入上游结果
+    assert "n1" not in member_b_context
+    assert "n2" not in member_b_context
+
+    # 但可以通过 get_member_results 获取
+    assert ctx.get_member_results("成员B") == ["结果2"]
 
 
 def test_messages_routing():

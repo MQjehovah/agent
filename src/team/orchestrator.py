@@ -160,15 +160,11 @@ class TeamOrchestrator:
             self.context.set_blackboard(f"{node.id}_error", result)
             return False, False
 
-        # 自动传递产出物
+        # 记录产出物路径（不读内容）
         if output_file:
             artifact_path = os.path.join(self.project_dir, output_file)
             self.artifacts[node.id] = artifact_path
             self.context.set_blackboard(f"{node.id}_output", artifact_path)
-            self.context.set_blackboard(
-                f"{node.id}_result",
-                self._read_file_head(artifact_path, 3000),
-            )
 
         # Leader 审核（关键阶段）
         if node.id in ("requirements", "architecture"):
@@ -228,11 +224,12 @@ class TeamOrchestrator:
             f"反馈循环: 测试失败 → 回退到 {feedback_target}"
             f" (第{loop.iteration}/{max_loops}轮)")
 
-        # 收集失败详情
+        # 收集失败详情（精简）
         failure_details = ""
         for r in loop.test_results:
             if not r.get("passed"):
-                failure_details += f"\n- {r['name']}: {r.get('details', '')[:300]}"
+                details = r.get("details", "")[:300]
+                failure_details += f"\n- {r['name']}: {details}"
 
         # 向开发工程师发送修复任务
         target_config = self._get_stage_config(feedback_target)
@@ -288,12 +285,8 @@ class TeamOrchestrator:
             return None
 
         stage_context = self.context.get_context_for_member(role)
-        upstream = self._get_upstream_artifacts(role)
 
         full_task = stage_context
-        if upstream:
-            full_task += "\n\n## 上游产出物（请先阅读）\n" + upstream
-
         full_task += f"\n\n## 你的任务\n根据你的角色职责完成「{stage}」阶段的工作。"
         full_task += "\n\n## 角色技能\n你拥有本角色专属技能，可通过 execute_skill 工具调用。"
         full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令"
@@ -344,19 +337,6 @@ class TeamOrchestrator:
             if m:
                 return m.group(1) if m.lastindex else m.group(0)
         return ""
-
-    def _get_upstream_artifacts(self, role: str) -> str:
-        parts = []
-        for s in self.pipeline_stages:
-            if s["role"] == role:
-                break
-            if s["stage"] in self.artifacts:
-                path = self.artifacts[s["stage"]]
-                if os.path.exists(path):
-                    content = self._read_file_head(path, 5000)
-                    if content:
-                        parts.append(f"### {s['stage']} 产出 ({s['output']})\n{content}")
-        return "\n\n".join(parts) if parts else ""
 
     @staticmethod
     def _read_file_head(path: str, max_chars: int) -> str:

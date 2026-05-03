@@ -91,17 +91,15 @@ class TeamContext:
     def get_context_for_member(self, member_name: str) -> str:
         parts = []
 
-        blackboard_info = self.get_blackboard()
+        blackboard_info = self._get_blackboard_compact()
         if blackboard_info:
             parts.append(blackboard_info)
 
         parts.append(f"## 团队任务\n{self.original_task}")
 
-        upstream = self._get_relevant_results(member_name)
-        if upstream:
-            parts.append("## 上游产出")
-            for node_id, result in upstream.items():
-                parts.append(f"### {node_id}\n{result[:3000]}")
+        artifact_index = self._get_artifact_index()
+        if artifact_index:
+            parts.append(artifact_index)
 
         msgs = [m for m in self.messages if m.to_member == member_name]
         if msgs:
@@ -121,13 +119,47 @@ class TeamContext:
     def _get_relevant_results(self, member_name: str) -> dict[str, str]:
         return dict(self.node_results)
 
+    def _get_blackboard_compact(self) -> str:
+        """精简版黑板：只输出索引信息，不输出大段内容"""
+        if not self.blackboard:
+            return ""
+        skip_keys = {k for k in self.blackboard if k.endswith("_result")}
+        lines = ["## 团队共享信息"]
+        for key, value in self.blackboard.items():
+            if key in skip_keys:
+                continue
+            if len(value) > 200:
+                lines.append(f"- **{key}**: {value[:200]}...")
+            else:
+                lines.append(f"- **{key}**: {value}")
+        return "\n".join(lines)
+
+    def _get_artifact_index(self) -> str:
+        """生成产出物索引：只列出路径和摘要，不塞入内容"""
+        artifact_keys = [k for k in self.blackboard if k.endswith("_output")]
+        if not artifact_keys:
+            return ""
+
+        lines = ["## 上游产出物索引", "请使用 file_operation 工具按需读取以下文件：", ""]
+        for key in artifact_keys:
+            path = self.blackboard[key]
+            stage_name = key.replace("_output", "")
+            error_key = f"{stage_name}_error"
+            status = "失败" if error_key in self.blackboard else "完成"
+            lines.append(f"- **{stage_name}** ({status}): `{path}`")
+
+        return "\n".join(lines)
+
     def set_leader_feedback(self, feedback: str):
         self._leader_feedback = feedback
 
     def get_summary(self) -> str:
         lines = [f"# 团队执行摘要 (第 {self.iteration} 轮)\n"]
         for node_id, result in self.node_results.items():
-            lines.append(f"## {node_id}\n{result[:500]}\n")
+            lines.append(f"## {node_id}\n{result[:200]}...\n")
+        artifact_lines = [f"- {k}: {v}" for k, v in self.blackboard.items() if k.endswith("_output")]
+        if artifact_lines:
+            lines.append("## 产出物\n" + "\n".join(artifact_lines))
         return "\n".join(lines)
 
     def get_member_results(self, member_name: str) -> list[str]:

@@ -2,6 +2,7 @@
 name: AI开发团队
 description: 多角色协作的 AI 软件开发团队，覆盖需求→设计→编码→测试→安全→部署→文档全流程
 leader: 软件架构师
+pipeline_mode: feedback
 members:
   - name: 产品经理
     role: 需求分析与范围定义

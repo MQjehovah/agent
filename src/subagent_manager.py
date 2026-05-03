@@ -184,6 +184,7 @@ class SubagentManager:
             "name": name,
             "description": frontmatter.get("description", ""),
             "leader": frontmatter.get("leader", ""),
+            "pipeline_mode": frontmatter.get("pipeline_mode", "feedback"),
             "workspace": agent_dir,
             "team_body": body,
             "team_roles": team_roles,
@@ -660,6 +661,7 @@ class SubagentManager:
             subagent_manager=self,
             llm_client=self._client,
             memory_manager=getattr(self._parent_agent, "memory", None) if self._parent_agent else None,
+            pipeline_mode=config.get("pipeline_mode", "feedback"),
         )
         try:
             result = await orchestrator.run(task)
