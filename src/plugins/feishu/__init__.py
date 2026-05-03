@@ -1,7 +1,4 @@
 import asyncio
-import base64
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -16,31 +13,18 @@ from plugins.base import BasePlugin
 logger = logging.getLogger("plugin.feishu")
 
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
-
-
-@dataclass
-class FeishuEventConfig:
-    app_id: str = ""
-    app_secret: str = ""
-    verification_token: str = ""
-    encrypt_key: str = ""
-    enabled: bool = True
+ENDPOINT_URL = "https://open.feishu.cn/callback/ws/endpoint"
 
 
 @dataclass
 class FeishuConfig:
-    event: FeishuEventConfig = field(default_factory=FeishuEventConfig)
+    app_id: str = ""
+    app_secret: str = ""
     enabled: bool = True
 
     def load_from_dict(self, data: dict):
-        event_data = data.get("event", {})
-        self.event = FeishuEventConfig(
-            app_id=event_data.get("app_id", ""),
-            app_secret=event_data.get("app_secret", ""),
-            verification_token=event_data.get("verification_token", ""),
-            encrypt_key=event_data.get("encrypt_key", ""),
-            enabled=event_data.get("enabled", True),
-        )
+        self.app_id = data.get("app_id", "")
+        self.app_secret = data.get("app_secret", "")
         if "enabled" in data:
             self.enabled = data["enabled"]
 
@@ -82,10 +66,7 @@ class FeishuClient:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
                 f"{FEISHU_BASE}/auth/v3/tenant_access_token/internal",
-                json={
-                    "app_id": self.app_id,
-                    "app_secret": self.app_secret,
-                },
+                json={"app_id": self.app_id, "app_secret": self.app_secret},
             )
             data = resp.json()
             if data.get("code") != 0:
@@ -94,9 +75,7 @@ class FeishuClient:
             self._token_expires = time.time() + data.get("expire", 7200)
             logger.debug("飞书 tenant_access_token 已刷新")
 
-    async def _api(
-        self, method: str, path: str, body: dict | None = None
-    ) -> dict:
+    async def _api(self, method: str, path: str, body: dict | None = None) -> dict:
         await self._ensure_token()
         headers = {
             "Authorization": f"Bearer {self._tenant_token}",
@@ -129,25 +108,31 @@ class FeishuClient:
                 {
                     "config": {"wide_screen_mode": True},
                     "header": {
-                        "title": {"tag": "plain_text", "content": title or content[:40]}
+                        "title": {
+                            "tag": "plain_text",
+                            "content": title or content[:40],
+                        }
                     },
-                    "elements": [
-                        {"tag": "markdown", "content": content}
-                    ],
+                    "elements": [{"tag": "markdown", "content": content}],
                 }
             ),
         }
         return await self._api("post", "/im/v1/messages", body)
 
     async def reply_message(
-        self, message_id: str, text: str, msg_type: str = "text"
+        self, message_id: str, text: str, msg_type: str = "interactive"
     ) -> dict:
         content: dict[str, Any]
-        if msg_type == "markdown":
+        if msg_type == "interactive":
+            title = text.split("\n")[0].lstrip("# ").strip()[:50] or "回复"
             content = {
                 "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"tag": "plain_text", "content": title}
+                },
                 "elements": [{"tag": "markdown", "content": text}],
             }
+            msg_type = "interactive"
         else:
             content = {"text": text}
         return await self._api(
@@ -173,9 +158,7 @@ class FeishuClient:
                 return None
             return data.get("data", {}).get("image_key")
 
-    async def send_image_message(
-        self, chat_id: str, image_key: str
-    ) -> dict:
+    async def send_image_message(self, chat_id: str, image_key: str) -> dict:
         return await self._api(
             "post",
             "/im/v1/messages",
@@ -190,43 +173,52 @@ class FeishuClient:
         return await self._api("get", f"/contact/v3/users/{user_id}")
 
 
-def _verify_event_signature(
-    body: bytes, signature: str, timestamp: str, verify_key: str
-) -> bool:
-    """验证飞书事件回调签名 (v2)"""
-    if not verify_key:
-        return True
-    token = verify_key
-    str_to_sign = f"{timestamp}{token}{body.decode('utf-8')}"
-    sig = hmac.new(
-        token.encode("utf-8"),
-        str_to_sign.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return sig == signature
+async def _get_ws_endpoint(app_id: str, app_secret: str) -> str:
+    """调用飞书 endpoint API 获取 WebSocket 长连接地址"""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            ENDPOINT_URL,
+            headers={"locale": "zh"},
+            json={"AppID": app_id, "AppSecret": app_secret},
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            raise RuntimeError(
+                f"获取飞书 WS endpoint 失败: {data.get('msg', data)}"
+            )
+        url = data.get("data", {}).get("URL", "")
+        if not url:
+            raise RuntimeError("飞书 WS endpoint 返回空 URL")
+        return url
 
 
-def _decrypt_event(encrypt_key: str, cipher: str) -> str:
-    """解飞书事件加密体"""
-    key = hashlib.sha256(encrypt_key.encode()).digest()
-    from cryptography.hazmat.primitives import padding as sym_padding
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+def _split_markdown(text: str, max_len: int = 3800) -> list[str]:
+    """将 markdown 文本按段落边界分段，避免截断代码块"""
+    if len(text) <= max_len:
+        return [text]
 
-    raw = base64.b64decode(cipher)
-    iv = raw[:16]
-    ct = raw[16:]
-    cipher_obj = Cipher(algorithms.AES(key), modes.CBC(iv))
-    dec = cipher_obj.decryptor()
-    padded = dec.update(ct) + dec.finalize()
-    unpadder = sym_padding.PKCS7(128).unpadder()
-    plaintext = unpadder.update(padded) + unpadder.finalize()
-    return plaintext.decode("utf-8")
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_len:
+            chunks.append(remaining)
+            break
+
+        cut = remaining.rfind("\n\n", 0, max_len)
+        if cut < max_len // 2:
+            cut = remaining.rfind("\n", 0, max_len)
+        if cut < max_len // 2:
+            cut = max_len
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+
+    return chunks
 
 
 class FeishuPlugin(BasePlugin):
     name = "feishu"
-    description = "飞书机器人插件，通过HTTP回调接收事件，调用飞书API回复消息"
-    version = "1.0.0"
+    description = "飞书机器人插件，通过WebSocket长连接接收事件，无需公网地址"
+    version = "2.0.0"
 
     def _load_config(self):
         config_file = self.config_path
@@ -253,149 +245,134 @@ class FeishuPlugin(BasePlugin):
         self.sessions: dict[str, FeishuSession] = {}
         self._client: FeishuClient | None = None
         self._running = False
-        self._flask_app = None
-        self._thread = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task | None = None
+        self._seen_messages: set[str] = set()
 
     def start(self):
-        if not self.config.event.enabled:
+        if not self.config.enabled:
             logger.info("飞书插件已禁用")
             return
-        if not self.config.event.app_id or not self.config.event.app_secret:
+        if not self.config.app_id or not self.config.app_secret:
             logger.warning("飞书 app_id 或 app_secret 未配置")
             return
 
-        self._client = FeishuClient(
-            self.config.event.app_id, self.config.event.app_secret
-        )
+        self._client = FeishuClient(self.config.app_id, self.config.app_secret)
         self._running = True
 
         try:
-            from flask import Flask
-        except ImportError:
-            logger.error("flask is required. Install: pip install flask")
-            return
-
-        logging.getLogger("werkzeug").setLevel(logging.WARNING)
-
-        self._flask_app = Flask(__name__)
-        self._flask_app.debug = False
-        self._setup_routes()
-
-        try:
             loop = asyncio.get_running_loop()
+            self._task = loop.create_task(self._run_ws_client())
         except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            self._loop = loop
-            self._thread = __import__("threading").Thread(
-                target=self._run_server, daemon=True
-            )
-            self._thread.start()
-        else:
             import threading
 
             self._thread = threading.Thread(
-                target=self._run_server_with_loop, daemon=True
+                target=self._run_in_thread, daemon=True
             )
             self._thread.start()
 
-        logger.info("飞书插件已启动")
+        logger.info("飞书插件已启动（WebSocket长连接模式）")
 
-    def _run_server_with_loop(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._run_server()
+    def _run_in_thread(self):
+        asyncio.run(self._run_ws_client())
 
-    def _run_server(self):
-        self._flask_app.run(
-            host="0.0.0.0",
-            port=self._get_port(),
-            threaded=True,
-            use_reloader=False,
-        )
-
-    def _get_port(self) -> int:
-        return getattr(self.config, "port", 8082)
-
-    def _setup_routes(self):
-        from flask import Response, request
-
-        @self._flask_app.route("/feishu/event", methods=["POST"])
-        def feishu_event():
-            return self._handle_event(request)
-
-        @self._flask_app.route("/feishu/health", methods=["GET"])
-        def health():
-            return Response(
-                json.dumps({"status": "ok", "service": "feishu"}),
-                mimetype="application/json",
+    async def _run_ws_client(self):
+        """WebSocket 长连接主循环：获取 endpoint → 连接 → 收事件 → ACK → 断线重连"""
+        try:
+            import websockets
+        except ImportError:
+            logger.error(
+                "websockets is required. Install: pip install websockets"
             )
-
-    def _handle_event(self, request):
-        from flask import Response
-
-        body = request.get_data()
-        timestamp = request.headers.get("X-Lark-Signature-Timestamp", "")
-        signature = request.headers.get("X-Lark-Signature", "")
-
-        if not _verify_event_signature(
-            body,
-            signature,
-            timestamp,
-            self.config.event.verification_token,
-        ):
-            logger.warning("飞书事件签名验证失败")
-            return Response(
-                json.dumps({"error": "invalid signature"}),
-                status=403,
-                mimetype="application/json",
-            )
+            return
 
         try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            return Response(
-                json.dumps({"error": "invalid json"}),
-                status=400,
-                mimetype="application/json",
-            )
+            from lark_oapi.ws.pb.pbbp2_pb2 import Frame  # noqa: F401
+        except ImportError:
+            logger.error("lark-oapi is required. Install: pip install lark-oapi")
+            return
 
-        # URL验证 (首次配置回调地址)
-        if data.get("type") == "url_verification":
-            challenge = data.get("challenge", "")
-            logger.info("飞书 URL 验证请求")
-            return Response(
-                json.dumps({"challenge": challenge}),
-                mimetype="application/json",
-            )
+        while self._running:
+            ws_url = ""
+            try:
+                ws_url = await _get_ws_endpoint(
+                    self.config.app_id, self.config.app_secret
+                )
+                logger.info(f"飞书 WS endpoint: {ws_url[:60]}...")
 
-        # 事件回调
-        event = data.get("event", data.get("header", {}))
-        if not event:
-            return Response(
-                json.dumps({"status": "ignored"}),
-                mimetype="application/json",
-            )
+                async with websockets.connect(ws_url) as ws:
+                    logger.info("飞书 WebSocket 已连接")
+                    async for raw in ws:
+                        if not self._running:
+                            break
+                        try:
+                            await self._on_ws_frame(ws, raw)
+                        except Exception as e:
+                            logger.error(f"处理 WebSocket 帧异常: {e!r}")
 
-        # 飞书v2回调格式: header.event_type + event
-        header = data.get("header", {})
+            except asyncio.CancelledError:
+                logger.info("飞书 WebSocket 连接被取消")
+                raise
+            except Exception as e:
+                logger.error(
+                    f"飞书 WebSocket 连接异常: {type(e).__name__}: {e}"
+                )
+                if self._running:
+                    logger.info("飞书 WebSocket 5秒后重连...")
+                    await asyncio.sleep(5)
+                else:
+                    break
+
+        logger.info("飞书 WebSocket 客户端已停止")
+
+    async def _on_ws_frame(self, ws, raw: bytes):
+        """解析 protobuf 帧，处理事件，发送 ACK"""
+        from lark_oapi.ws.pb.pbbp2_pb2 import Frame
+
+        frame = Frame()
+        frame.ParseFromString(raw)
+
+        headers = {_h.key: _h.value for _h in frame.headers}
+        msg_type = headers.get("type", "")
+
+        if msg_type == "ping":
+            return
+
+        payload = frame.payload
+        if not payload:
+            # 空 payload 也要 ACK
+            frame.payload = json.dumps({"code": 200}).encode("utf-8")
+            await ws.send(frame.SerializeToString())
+            return
+
+        try:
+            event_data = json.loads(payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.warning(f"飞书帧 payload 非 JSON: {payload[:200]}")
+            frame.payload = json.dumps({"code": 200}).encode("utf-8")
+            await ws.send(frame.SerializeToString())
+            return
+
+        header = event_data.get("header", {})
         event_type = header.get("event_type", "")
-        event_data = data.get("event", {})
+        event_id = header.get("event_id", "")
+
+        # 按 event_id 去重
+        if event_id and event_id in self._seen_messages:
+            logger.debug(f"飞书重复事件，跳过: {event_id}")
+            frame.payload = json.dumps({"code": 200}).encode("utf-8")
+            await ws.send(frame.SerializeToString())
+            return
+        if event_id:
+            self._seen_messages.add(event_id)
+            if len(self._seen_messages) > 5000:
+                self._seen_messages = set(list(self._seen_messages)[-2500:])
 
         if event_type == "im.message.receive_v1":
-            if self._loop and self._loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self._process_message(event_data), self._loop
-                )
-            else:
-                logger.warning("事件循环未就绪，无法处理飞书消息")
+            asyncio.create_task(self._process_message(event_data.get("event", {})))
 
-        return Response(
-            json.dumps({"code": 0}),
-            mimetype="application/json",
-        )
+        # ACK：payload 替换为 Response(code=200)，原帧发回
+        frame.payload = json.dumps({"code": 200}).encode("utf-8")
+        await ws.send(frame.SerializeToString())
 
     async def _process_message(self, event_data: dict):
         sender = event_data.get("sender", {})
@@ -449,9 +426,10 @@ class FeishuPlugin(BasePlugin):
         if self._client and message_id:
             try:
                 if len(response) > 4000:
-                    await self._client.send_markdown_message(
-                        chat_id, response[:4000] + "\n\n...(内容过长已截断)"
-                    )
+                    chunks = _split_markdown(response, 3800)
+                    for i, chunk in enumerate(chunks):
+                        suffix = f"\n\n({i + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+                        await self._client.reply_message(message_id, chunk + suffix)
                 else:
                     await self._client.reply_message(message_id, response)
             except Exception as e:
@@ -471,7 +449,7 @@ class FeishuPlugin(BasePlugin):
                 chat_id=chat_id,
                 user_id=user_id,
                 user_name=user_name,
-                app_id=self.config.event.app_id,
+                app_id=self.config.app_id,
             )
             session._plugin = self
             self.sessions[session_id] = session
@@ -481,6 +459,8 @@ class FeishuPlugin(BasePlugin):
     def stop(self):
         logger.info("停止飞书插件...")
         self._running = False
+        if self._task and not self._task.done():
+            self._task.cancel()
         logger.info("飞书插件已停止")
 
     def get_tool_defs(self) -> list[dict[str, Any]]:

@@ -1,10 +1,5 @@
 {
-    "enabled": false,
-    "event": {
-        "app_id": "",
-        "app_secret": "",
-        "verification_token": "",
-        "encrypt_key": "",
-        "enabled": true
-    }
+    "enabled": true,
+    "app_id": "cli_a919efdaaaf89ced",
+    "app_secret": "ZLV4exslOu19wdV2UJyEWfowQ0ZxnKYA"
 }
