@@ -37,8 +37,9 @@ class SubagentManager:
     CLEANUP_INTERVAL = 300  # 清理间隔: 5分钟
     SUBAGENT_TTL = 3600  # 子代理存活时间: 1小时
 
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, parent_workspace: str = ""):
         self.base_dir = base_dir
+        self.parent_workspace = parent_workspace or base_dir
         self.templates: dict[str, dict[str, Any]] = {}
         self._active_subagents: dict[str, SubagentInstance] = {}  # session_id -> SubagentInstance
         self._name_to_session: dict[str, str] = {}  # template/name -> session_id
@@ -84,7 +85,8 @@ class SubagentManager:
                     template = {
                         "name": name,
                         "description": description,
-                        "workspace": agent_dir
+                        "workspace": self.parent_workspace,
+                        "prompt_dir": agent_dir,
                     }
                     self.templates[name] = template
                     logger.debug(f"加载子代理模板: {name}")
@@ -185,7 +187,7 @@ class SubagentManager:
             "description": frontmatter.get("description", ""),
             "leader": frontmatter.get("leader", ""),
             "pipeline_mode": frontmatter.get("pipeline_mode", "feedback"),
-            "workspace": agent_dir,
+            "workspace": self.parent_workspace,
             "team_body": body,
             "team_roles": team_roles,
             "leader_prompt": prompt_body,
@@ -206,7 +208,7 @@ class SubagentManager:
         self.templates[name] = {
             "name": name,
             "description": config["description"],
-            "workspace": agent_dir,
+            "workspace": self.parent_workspace,
             "is_team": True,
         }
         logger.info(f"加载团队: {name}, 成员: {list(members.keys())}")
@@ -272,7 +274,8 @@ class SubagentManager:
         return {
             "name": frontmatter.get("name", member_name),
             "description": frontmatter.get("description", ""),
-            "workspace": member_dir
+            "workspace": self.parent_workspace,
+            "prompt_dir": member_dir,
         }
 
     async def _create_team_subagent(
@@ -304,11 +307,13 @@ class SubagentManager:
             self._team_member_cache[cache_key] = template_data
 
         workspace = self._team_member_cache[cache_key]["workspace"]
+        prompt_dir = self._team_member_cache[cache_key].get("prompt_dir", "")
 
         agent = Agent(
             workspace=workspace,
             client=client or self._client,
             parent_agent=parent_agent or self._parent_agent,
+            prompt_dir=prompt_dir,
         )
         if parent_agent or self._parent_agent:
             agent.plugin_manager = (parent_agent or self._parent_agent).plugin_manager
@@ -516,11 +521,13 @@ class SubagentManager:
         # 创建新的子代理（不持锁，因为初始化耗时）
         template_data = self.templates.get(template_name)
         workspace = template_data["workspace"] if template_data else None
+        prompt_dir = template_data.get("prompt_dir", "") if template_data else ""
 
         agent = Agent(
             workspace=workspace,
             client=self._client or client,
-            parent_agent=self._parent_agent or parent_agent
+            parent_agent=self._parent_agent or parent_agent,
+            prompt_dir=prompt_dir,
         )
 
         if self._parent_agent or parent_agent:

@@ -20,16 +20,31 @@ class FileTool(BuiltinTool):
     @property
     def description(self) -> str:
         return (
-            "文件操作工具。支持读取、写入、追加、删除文件内容，以及检查文件是否存在、列出目录内容。\n"
-            "使用规则：\n"
-            "- 默认读取 200 行，可通过 offset 和 limit 分段读取大文件\n"
+            "文件操作工具。**每次调用必须指定 operation 参数**，可选值: read, write, append, delete, exists, list。\n"
+            "\n"
+            "【必填参数】operation 和 path 是必填的，每次调用都必须提供，不可省略。\n"
+            "\n"
+            "【操作说明】\n"
+            "- operation=read: 读取文件，默认200行，可搭配 offset(起始行号) 和 limit(行数) 分段读取\n"
+            "- operation=write: 覆盖写入文件，需提供 content 参数\n"
+            "- operation=append: 追加内容到文件末尾，需提供 content 参数\n"
+            "- operation=delete: 删除文件或目录\n"
+            "- operation=exists: 检查文件/目录是否存在\n"
+            "- operation=list: 列出目录下的文件和子目录\n"
+            "\n"
+            "【使用建议】\n"
             "- 大文件先用 grep 找到目标行号，再用 offset+limit 精确读取\n"
             "- 修改文件前先 read 确认内容\n"
-            "- 写文件会覆盖原内容，追加用 append\n"
-            "示例：\n"
-            "file_operation(read, path='/src/main.py') — 读取前 200 行\n"
-            "file_operation(read, path='/src/main.py', offset=100, limit=50) — 读取第 101-150 行\n"
-            "file_operation(write, path='/tmp/out.txt', content='hello') — 写入文件"
+            "- 写文件会覆盖原内容，如需保留原内容请用 append\n"
+            "\n"
+            "【调用示例（JSON格式）】\n"
+            '{"operation": "read", "path": "/src/main.py"}\n'
+            '{"operation": "read", "path": "/src/main.py", "offset": 100, "limit": 50}\n'
+            '{"operation": "write", "path": "/tmp/out.txt", "content": "hello world"}\n'
+            '{"operation": "append", "path": "/tmp/log.txt", "content": "new line\\n"}\n'
+            '{"operation": "list", "path": "/src"}\n'
+            '{"operation": "exists", "path": "/src/main.py"}\n'
+            '{"operation": "delete", "path": "/tmp/old.txt"}'
         )
 
     @property

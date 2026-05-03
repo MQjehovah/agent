@@ -98,7 +98,7 @@ class TestTeamSubagent:
         assert tmpl is not None
         assert tmpl["name"] == "前端开发"
         assert tmpl["description"] == "前端开发工程师"
-        assert tmpl["workspace"].endswith(os.path.join("AI开发团队", "members", "前端开发"))
+        assert tmpl["prompt_dir"].endswith(os.path.join("AI开发团队", "members", "前端开发"))
 
     def test_get_team_member_template_nonexistent(self, tmp_path):
         """Verify get_team_member_template returns None for missing member"""

@@ -43,10 +43,12 @@ class Agent:
         client,
         parent_agent: "Agent" = None,
         permission_mode: str = "auto",
+        prompt_dir: str = "",
     ):
         self.workspace = workspace
         self.client = client
         self.parent_agent = parent_agent
+        self.prompt_dir = prompt_dir or workspace
 
         self.agent_id = ""
         self.name = ""
@@ -140,10 +142,10 @@ class Agent:
         self._build_prompt()
 
     def _load_system_prompt(self):
-        prompt_file = os.path.join(self.workspace, "PROMPT.md")
+        prompt_file = os.path.join(self.prompt_dir, "PROMPT.md")
 
         if not os.path.exists(prompt_file):
-            logger.warning(f"No PROMPT.md found in {self.workspace}")
+            logger.warning(f"No PROMPT.md found in {self.prompt_dir}")
             self.agent_id = self.name = ""
             return
 
@@ -163,7 +165,7 @@ class Agent:
 
     def _init_sandbox(self):
         """加载并初始化沙箱中间层"""
-        sandbox_config_path = os.path.join(self.workspace, "sandbox.json")
+        sandbox_config_path = os.path.join(self.prompt_dir, "sandbox.json")
         try:
             from sandbox import create_sandbox, load_sandbox_config
             config = load_sandbox_config(sandbox_config_path)
@@ -278,7 +280,7 @@ class Agent:
     def _init_subagents(self):
         agents_dir = os.path.join(self.workspace, "agents")
         if os.path.exists(agents_dir):
-            self.subagent_manager = SubagentManager(agents_dir)
+            self.subagent_manager = SubagentManager(agents_dir, parent_workspace=self.workspace)
             self.subagent_manager.start_cleanup_task()
             logger.info(
                 f"Agent [{self.name}] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {self.subagent_manager.list_templates()}")
