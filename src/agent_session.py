@@ -199,7 +199,31 @@ class AgentSessionManager:
         logger.info(f"上下文估计 {token_count} tokens，接近上限 {max_tokens}，启动 LLM 压缩...")
 
         system_msgs = [m for m in messages if m.get("role") == "system"]
-        recent_msgs = messages[-8:]  # 保留最近 4 轮（user+assistant+tool 可能占多条）
+        recent_msgs = messages[-8:]
+
+        # 确保 recent_msgs 中 assistant(tool_calls) 后面有对应的 tool response
+        tc_ids_in_recent = set()
+        for m in recent_msgs:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    tc_id = tc.get("id", "")
+                    if tc_id:
+                        tc_ids_in_recent.add(tc_id)
+        responded_ids = set()
+        for m in recent_msgs:
+            if m.get("role") == "tool" and m.get("tool_call_id"):
+                responded_ids.add(m["tool_call_id"])
+        missing_ids = tc_ids_in_recent - responded_ids
+        if missing_ids:
+            # 向前扩展 recent_msgs 直到包含所有 tool response
+            for i in range(len(messages) - 9, -1, -1):
+                m = messages[i]
+                recent_msgs.insert(0, m)
+                if m.get("role") == "tool" and m.get("tool_call_id") in missing_ids:
+                    missing_ids.discard(m["tool_call_id"])
+                if not missing_ids:
+                    break
+
         history_msgs = [
             m for m in messages
             if m not in system_msgs and m not in recent_msgs

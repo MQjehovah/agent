@@ -773,17 +773,21 @@ class Agent:
         try:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, item in enumerate(results):
+                tc = tool_calls[i]
+                func_name = tc.get("function", {}).get("name", "")
+                tc_id = tc.get("id", "")
                 if isinstance(item, asyncio.CancelledError):
                     logger.warning("工具执行被取消")
-                    session.add_message("tool", "工具执行被取消", name=tool_calls[i].get("function", {}).get("name", ""))
+                    session.add_message("tool", "工具执行被取消", name=func_name,
+                                        tool_call_id=tc_id)
                 elif isinstance(item, Exception):
                     logger.error(f"工具执行异常: {item}")
-                    session.add_message("tool", f"工具执行异常: {item}")
+                    session.add_message("tool", f"工具执行异常: {item}", name=func_name,
+                                        tool_call_id=tc_id)
                 else:
-                    tc, result = item
-                    func_name = tc.get("function", {}).get("name", "")
+                    _, result = item
                     session.add_message("tool", str(result), name=func_name,
-                                        tool_call_id=tc.get("id", ""))
+                                        tool_call_id=tc_id)
         except asyncio.CancelledError:
             for t in tasks:
                 if not t.done():
