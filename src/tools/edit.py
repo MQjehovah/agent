@@ -1,8 +1,8 @@
-import os
 import json
 import logging
+import os
 from difflib import SequenceMatcher
-from typing import Dict, Any
+from typing import Any
 
 from . import BuiltinTool
 
@@ -10,7 +10,6 @@ logger = logging.getLogger("agent.tools")
 
 
 def _normalize_for_match(text: str) -> str:
-    """标准化文本用于匹配：去掉每行尾部空白，统一换行符为 \\n"""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     return "\n".join(line.rstrip() for line in lines)
 
@@ -37,7 +36,7 @@ class EditTool(BuiltinTool):
 工具会自动处理尾部空白和换行符差异，你只需提供文件中出现的实际代码内容即可。"""
 
     @property
-    def parameters(self) -> Dict[str, Any]:
+    def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -81,7 +80,7 @@ class EditTool(BuiltinTool):
             return json.dumps({"success": False, "error": f"路径是目录: {path}"}, ensure_ascii=False)
 
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except Exception as e:
             return json.dumps({"success": False, "error": f"读取文件失败: {e}"}, ensure_ascii=False)
@@ -124,7 +123,6 @@ class EditTool(BuiltinTool):
 
     @staticmethod
     def _build_mismatch_hint(content: str, old_text: str) -> str:
-        """当匹配失败时，找到最相似的位置作为提示"""
         if not old_text.strip():
             return ""
         first_line = old_text.strip().split("\n")[0].strip()

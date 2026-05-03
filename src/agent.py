@@ -76,11 +76,15 @@ class Agent:
         self.status = "pending"
         self.result: str | None = None
 
+        # 沙箱系统
+        self.sandbox = None
+
         # 权限系统
         from permissions import PermissionChecker, PermissionConfig, PermissionMode
-        self.permission = PermissionChecker(PermissionConfig(
+        self._permission_config = PermissionConfig(
             mode=PermissionMode(permission_mode)
-        ))
+        )
+        self.permission = PermissionChecker(self._permission_config)
 
         # 钩子系统
         from hooks import HookManager
@@ -114,6 +118,7 @@ class Agent:
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
+        self._init_sandbox()
         self._init_tools()
         self._init_skills()
         await self._load_mcp_servers()
@@ -155,6 +160,33 @@ class Agent:
 
         self.system_prompt = self._expand_env_vars(body.strip()) if body else ""
         self.system_prompt_raw = self.system_prompt
+
+    def _init_sandbox(self):
+        """加载并初始化沙箱中间层"""
+        sandbox_config_path = os.path.join(self.workspace, "sandbox.json")
+        try:
+            from sandbox import create_sandbox, load_sandbox_config
+            config = load_sandbox_config(sandbox_config_path)
+            if config:
+                self.sandbox = create_sandbox(config, self.workspace)
+                if self.sandbox:
+                    self._permission_config.sandbox_enabled = True
+                    pv = self.sandbox.path_validator
+                    self._permission_config.blocked_paths = [
+                        str(p) for p in pv.blocked_paths
+                    ]
+                    self._permission_config.allowed_paths = [
+                        str(p) for p in pv.allowed_paths
+                    ]
+                    self._permission_config.workspace_root = self.workspace
+                    self.permission = type(self.permission)(self._permission_config)
+                    logger.info(
+                        f"Agent [{self.name}] 沙箱已启用: {type(self.sandbox).__name__}")
+                else:
+                    logger.debug(f"Agent [{self.name}] 沙箱未启用 (config.enabled=false)")
+        except Exception as e:
+            logger.warning(f"Agent [{self.name}] 沙箱初始化失败: {e}")
+            self.sandbox = None
 
     @staticmethod
     def _expand_env_vars(text: str) -> str:
@@ -205,7 +237,8 @@ class Agent:
         # self.tool_registry.register_tool(AskUserTool())
 
         logger.info(
-            f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}")
+            f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}"
+            + (f" [沙箱: {type(self.sandbox).__name__}]" if self.sandbox else " [沙箱: 未启用]"))
 
     def _init_skills(self):
         skills_dir = os.path.join(self.workspace, "skills")
@@ -759,7 +792,7 @@ class Agent:
             raise
 
     async def _execute_tool_safe(self, name: str, args: dict) -> str:
-        """带权限检查、钩子和错误恢复的工具执行"""
+        """带权限检查、沙箱拦截、钩子和错误恢复的工具执行"""
         # 权限检查
         perm_result = self.permission.check(name, args)
         if not perm_result:
@@ -771,6 +804,11 @@ class Agent:
             confirmed = await self.on_confirm(name, args)
             if not confirmed:
                 return json.dumps({"success": False, "error": "用户拒绝执行此操作"}, ensure_ascii=False)
+
+        # 沙箱中间层拦截
+        sandbox_result = await self._sandbox_intercept(name, args)
+        if sandbox_result is not None:
+            return sandbox_result
 
         # PreToolUse 钩子
         await self.hooks.fire("pre_tool_use", tool_name=name, arguments=args)
@@ -839,6 +877,32 @@ class Agent:
                 "success": False,
                 "error": f"工具执行失败: {type(e).__name__}: {e}"
             }, ensure_ascii=False)
+
+    async def _sandbox_intercept(self, name: str, args: dict) -> str | None:
+        """沙箱中间层：拦截需要沙箱化的工具调用
+
+        返回 None 表示放行（由工具自行执行）。
+        返回 str 表示沙箱已处理，直接返回结果。
+        """
+        if not self.sandbox or not self.sandbox.should_intercept(name, args):
+            return None
+
+        # shell 命令 → 完全由沙箱执行
+        if name == "shell":
+            result = await self.sandbox.execute_shell(args)
+            if result is not None:
+                logger.info(f"[沙箱拦截] shell → {result.get('sandbox', '?')}")
+                return json.dumps(result, ensure_ascii=False)
+
+        # file/edit 工具 → 仅路径验证，放行由工具自行执行
+        if name in ("file_operation", "edit"):
+            path = args.get("path", "")
+            if path:
+                valid, reason = self.sandbox.validate_path(path)
+                if not valid:
+                    return json.dumps({"success": False, "error": reason}, ensure_ascii=False)
+
+        return None
 
     async def _run_reflection(self, learner, task: str, messages: list):
         """后台执行任务反思，不阻塞主流程"""

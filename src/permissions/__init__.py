@@ -1,6 +1,6 @@
 from .checker import PermissionChecker, PermissionCheckResult
 from .modes import PermissionMode
-from .rules import PermissionConfig, PathRule
+from .rules import PathRule, PermissionConfig
 
 __all__ = [
     "PermissionChecker",

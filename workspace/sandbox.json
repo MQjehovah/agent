@@ -1,0 +1,54 @@
+{
+  "enabled": false,
+  "mode": "process",
+  "docker": {
+    "image": "sandbox-runner:latest",
+    "memory_limit": "512m",
+    "cpu_period": 100000,
+    "cpu_quota": 60000,
+    "pids_limit": 50,
+    "network_mode": "none",
+    "read_only_root": true
+  },
+  "images": [
+    {
+      "name": "python",
+      "image": "sandbox-python:latest",
+      "memory_limit": "1g"
+    },
+    {
+      "name": "node",
+      "image": "sandbox-node:latest",
+      "memory_limit": "512m"
+    }
+  ],
+  "tool_overrides": {
+    "shell": {
+      "image": "python"
+    }
+  },
+  "path_rules": {
+    "allowed_paths": [],
+    "blocked_paths": [
+      "/etc/shadow",
+      "/etc/passwd",
+      "/etc/ssh",
+      "/root/.ssh",
+      "/boot",
+      "/proc",
+      "/sys",
+      "/dev",
+      "C:\\Windows\\System32",
+      "C:\\Windows\\SysWOW64"
+    ]
+  },
+  "command_rules": {
+    "max_timeout": 300,
+    "blocked_patterns": []
+  },
+  "resource_limits": {
+    "max_cpu_time": 60,
+    "max_memory_mb": 512,
+    "max_processes": 10
+  }
+}

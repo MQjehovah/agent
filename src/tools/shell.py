@@ -1,16 +1,14 @@
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
 import subprocess
-import concurrent.futures
-from typing import Dict, Any
 
 from . import BuiltinTool
 
 logger = logging.getLogger("agent.tools")
 
-# 危险命令黑名单
 DENIED_COMMANDS = [
     "rm -rf /",
     "rm -rf /*",
@@ -20,7 +18,6 @@ DENIED_COMMANDS = [
     "> /dev/sda",
 ]
 
-# 可能在 shell 中要求交互式输入的命令（会永久挂起）
 INTERACTIVE_COMMANDS = {
     "sudo": "sudo 需要密码交互，请使用 sudo -n (非交互模式) 或避免使用 sudo",
     "passwd": "passwd 需要交互输入，禁止使用",
@@ -58,7 +55,7 @@ class ShellTool(BuiltinTool):
         return "在终端执行shell命令，返回命令输出结果。支持设置超时、工作目录和环境变量。"
 
     @property
-    def parameters(self) -> Dict[str, Any]:
+    def parameters(self) -> dict:
         return {
             "type": "object",
             "properties": {
@@ -156,11 +153,10 @@ class ShellTool(BuiltinTool):
             stdout_str = decode_output(result.stdout)
             stderr_str = decode_output(result.stderr)
 
-            # 按最大输出长度截断
             if len(stdout_str) > max_output:
                 stdout_str = stdout_str[:max_output] + f"\n... [输出已截断，共 {len(stdout_str)} 字符]"
             if len(stderr_str) > min(max_output, 2000):
-                stderr_str = stderr_str[:2000] + f"\n... [错误输出已截断]"
+                stderr_str = stderr_str[:2000] + "\n... [错误输出已截断]"
 
             result_json = {
                 "success": result.returncode == 0,

@@ -48,3 +48,10 @@ class PermissionConfig:
         "file_operation": "path",
         "edit": "path",
     })
+    blocked_paths: list = field(default_factory=lambda: [
+        "/etc/shadow", "/etc/passwd", "/etc/ssh", "/root/.ssh",
+        "/boot", "/proc", "/sys", "/dev",
+    ])
+    allowed_paths: list = field(default_factory=list)
+    workspace_root: str = ""
+    sandbox_enabled: bool = False

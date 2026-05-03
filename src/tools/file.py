@@ -1,16 +1,15 @@
-import os
 import json
 import logging
-from typing import Dict, Any
+import os
 
 from . import BuiltinTool
 
 logger = logging.getLogger("agent.tools")
 
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB 安全限制
-DEFAULT_READ_LIMIT = 200         # 默认读取行数
-MAX_READ_LIMIT = 2000            # 单次最大读取行数
-MAX_OUTPUT_CHARS = 50000         # 单次输出最大字符数
+MAX_FILE_SIZE = 10 * 1024 * 1024
+DEFAULT_READ_LIMIT = 200
+MAX_READ_LIMIT = 2000
+MAX_OUTPUT_CHARS = 50000
 
 
 class FileTool(BuiltinTool):
@@ -34,7 +33,7 @@ class FileTool(BuiltinTool):
         )
 
     @property
-    def parameters(self) -> Dict[str, Any]:
+    def parameters(self) -> dict:
         return {
             "type": "object",
             "properties": {
@@ -104,12 +103,11 @@ class FileTool(BuiltinTool):
                 "error": f"文件过大 ({file_size // 1024 // 1024}MB)，请使用 offset/limit 分段读取"
             }, ensure_ascii=False)
 
-        with open(path, "r", encoding=encoding, errors="replace") as f:
+        with open(path, encoding=encoding, errors="replace") as f:
             lines = f.readlines()
 
         total_lines = len(lines)
 
-        # 强制 clamp limit
         if limit is None or limit <= 0:
             limit = DEFAULT_READ_LIMIT
         limit = min(limit, MAX_READ_LIMIT)
@@ -117,13 +115,11 @@ class FileTool(BuiltinTool):
         end = min(offset + limit, total_lines)
         selected_lines = lines[offset:end]
 
-        # 带行号输出
         numbered = "\n".join(
             f"{offset + i + 1:6d}\t{line.rstrip()}"
             for i, line in enumerate(selected_lines)
         )
 
-        # 输出截断保护
         truncated = False
         if len(numbered) > MAX_OUTPUT_CHARS:
             numbered = numbered[:MAX_OUTPUT_CHARS] + "\n... [输出已截断]"
@@ -157,13 +153,12 @@ class FileTool(BuiltinTool):
         with open(path, "w", encoding=encoding) as f:
             f.write(content)
 
-        result = {
+        return json.dumps({
             "success": True,
             "path": path,
             "message": f"文件已成功写入: {path}",
             "size": len(content)
-        }
-        return json.dumps(result, ensure_ascii=False)
+        }, ensure_ascii=False)
 
     def _append_file(self, path: str, content: str, encoding: str) -> str:
         if content is None:
@@ -176,13 +171,12 @@ class FileTool(BuiltinTool):
         with open(path, "a", encoding=encoding) as f:
             f.write(content)
 
-        result = {
+        return json.dumps({
             "success": True,
             "path": path,
             "message": f"内容已成功追加到: {path}",
             "appended_size": len(content)
-        }
-        return json.dumps(result, ensure_ascii=False)
+        }, ensure_ascii=False)
 
     def _delete_file(self, path: str) -> str:
         if not os.path.exists(path):
@@ -191,33 +185,23 @@ class FileTool(BuiltinTool):
         if os.path.isdir(path):
             import shutil
             shutil.rmtree(path)
-            result = {
-                "success": True,
-                "path": path,
-                "message": f"目录已删除: {path}"
-            }
+            return json.dumps({"success": True, "path": path, "message": f"目录已删除: {path}"}, ensure_ascii=False)
         else:
             os.remove(path)
-            result = {
-                "success": True,
-                "path": path,
-                "message": f"文件已删除: {path}"
-            }
-        return json.dumps(result, ensure_ascii=False)
+            return json.dumps({"success": True, "path": path, "message": f"文件已删除: {path}"}, ensure_ascii=False)
 
     def _file_exists(self, path: str) -> str:
         exists = os.path.exists(path)
         is_dir = os.path.isdir(path) if exists else False
         size = os.path.getsize(path) if exists and not is_dir else None
-        result = {
+        return json.dumps({
             "success": True,
             "path": path,
             "exists": exists,
             "is_directory": is_dir,
             "is_file": exists and not is_dir,
             "size": size
-        }
-        return json.dumps(result, ensure_ascii=False)
+        }, ensure_ascii=False)
 
     def _list_directory(self, path: str) -> str:
         if not os.path.exists(path):
@@ -240,10 +224,9 @@ class FileTool(BuiltinTool):
             except (OSError, PermissionError):
                 items.append({"name": item, "is_directory": False, "is_file": False, "size": None})
 
-        result = {
+        return json.dumps({
             "success": True,
             "path": path,
             "count": len(items),
             "items": items
-        }
-        return json.dumps(result, ensure_ascii=False)
+        }, ensure_ascii=False)
