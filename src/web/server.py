@@ -158,26 +158,56 @@ class WebServer:
                 token_queue = chat_session.token_queue
                 agent_ref = self.agent
                 loop_ref = self.loop
+                from hooks import HookEvent
+
+                full_response = []
+
+                def _make_handler(put_type):
+                    async def handler(ctx):
+                        if put_type == "chat":
+                            full_response.append(ctx.token)
+                            token_queue.put(("token", ctx.token))
+                        elif put_type == "tool_event":
+                            event_name = ctx.event.value
+                            data = {}
+                            if ctx.token:
+                                data["content"] = ctx.token
+                            if ctx.tool_name:
+                                data["name"] = ctx.tool_name
+                            if ctx.result:
+                                data["result"] = ctx.result
+                            if ctx.agent_name:
+                                data["agent_name"] = ctx.agent_name
+                            if ctx.agent_type:
+                                data["agent_type"] = ctx.agent_type
+                            if ctx.metadata:
+                                data.update(ctx.metadata)
+                            token_queue.put(("tool_event", {"event_type": event_name, "data": data}))
+                    return handler
+
+                chat_handler = _make_handler("chat")
+                event_handler = _make_handler("tool_event")
+
+                hook_events = [
+                    HookEvent.CHAT_EVENT,
+                    HookEvent.TOOL_START,
+                    HookEvent.TOOL_RESULT,
+                    HookEvent.ROUND_START,
+                    HookEvent.SUBAGENT_START,
+                    HookEvent.SUBAGENT_RESULT,
+                    HookEvent.SUBAGENT_CHAT_EVENT,
+                    HookEvent.SUBAGENT_TOOL_START,
+                    HookEvent.SUBAGENT_TOOL_RESULT,
+                    HookEvent.SUBAGENT_ROUND_START,
+                ]
+
+                for evt in hook_events:
+                    if evt == HookEvent.CHAT_EVENT:
+                        agent_ref.hooks.register(evt, chat_handler)
+                    else:
+                        agent_ref.hooks.register(evt, event_handler)
 
                 async def run_agent():
-                    original_on_token = agent_ref.on_token
-                    original_on_tool_event = agent_ref.on_tool_event
-                    full_response = []
-
-                    async def on_token(token):
-                        full_response.append(token)
-                        token_queue.put(("token", token))
-
-                    async def on_tool_event(event_type, data):
-                        token_queue.put(("tool_event", {"event_type": event_type, "data": data}))
-
-                    agent_ref.on_token = on_token
-                    agent_ref.on_tool_event = on_tool_event
-
-                    # 传播回调到子代理管理器（使子代理的工具调用和流式输出可见）
-                    if agent_ref.subagent_manager:
-                        agent_ref.subagent_manager.set_event_callbacks(on_tool_event, on_token)
-
                     try:
                         result = await agent_ref.run(message, session_id=session_id)
                         resp_text = result.result if result and hasattr(result, 'result') else ""
@@ -187,10 +217,11 @@ class WebServer:
                     except Exception as e:
                         token_queue.put(("error", str(e)))
                     finally:
-                        agent_ref.on_token = original_on_token
-                        agent_ref.on_tool_event = original_on_tool_event
-                        if agent_ref.subagent_manager:
-                            agent_ref.subagent_manager.set_event_callbacks(None, None)
+                        for evt in hook_events:
+                            if evt == HookEvent.CHAT_EVENT:
+                                agent_ref.hooks.unregister(evt, chat_handler)
+                            else:
+                                agent_ref.hooks.unregister(evt, event_handler)
                         chat_session.is_streaming = False
 
                 future = asyncio.run_coroutine_threadsafe(run_agent(), loop_ref)

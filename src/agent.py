@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import json
 import logging
 import os
@@ -89,8 +88,9 @@ class Agent:
         self.permission = PermissionChecker(self._permission_config)
 
         # 钩子系统
-        from hooks import HookManager
+        from hooks import HookEvent, HookManager
         self.hooks = HookManager()
+        self._hook_event = HookEvent
 
         # 调用链路追踪
         from tracing import Tracer
@@ -102,12 +102,6 @@ class Agent:
 
         # 用户确认回调（外部注入，如交互模式中的 input()）
         self.on_confirm = None
-
-        # 流式输出回调
-        self.on_token = None
-
-        # 工具调用事件回调 (用于 UI 展示工具调用过程)
-        self.on_tool_event = None
 
         self._env_context_cache: str = ""
         self._env_context_time: float = 0.0
@@ -644,11 +638,11 @@ class Agent:
                         f"¥{usage_summary['total_cost_cny']}"
                     )
                     # 第2轮起通知 UI 新起一个气泡（第1轮已在 sendMsg 中创建）
-                    if i > 0 and self.on_tool_event:
-                        with contextlib.suppress(Exception):
-                            await self.on_tool_event("round_start", {
-                                "iteration": i + 1,
-                            })
+                    if i > 0:
+                        await self.hooks.fire(
+                            self._hook_event.ROUND_START,
+                            metadata={"iteration": i + 1},
+                        )
                     think_messages = session.messages
                     if self._retry_context:
                         think_messages = list(session.messages)
@@ -829,11 +823,10 @@ class Agent:
 
         logger.info(f"[工具调用] {name} | 输入: {args_preview}")
 
-        if self.on_tool_event:
-            try:
-                await self.on_tool_event("tool_start", {"name": name, "args": args})
-            except Exception:
-                pass
+        await self.hooks.fire(
+            self._hook_event.TOOL_START,
+            tool_name=name, arguments=args,
+        )
 
         try:
             result = await self._execute_tool(name, args)
@@ -855,11 +848,10 @@ class Agent:
                 result_preview = result_preview[:500] + "..."
             logger.info(f"[工具返回] {name} | 输出: {result_preview}")
 
-            if self.on_tool_event:
-                try:
-                    await self.on_tool_event("tool_result", {"name": name, "result": result_preview})
-                except Exception:
-                    pass
+            await self.hooks.fire(
+                self._hook_event.TOOL_RESULT,
+                tool_name=name, result=result_preview,
+            )
 
             # 全局工具输出截断保护
             if len(result) > MAX_TOOL_OUTPUT_CHARS:
@@ -922,10 +914,12 @@ class Agent:
         except Exception as e:
             logger.warning(f"[自学习] 任务反思失败: {e}", exc_info=True)
 
+    def _has_token_subscribers(self) -> bool:
+        return bool(self.hooks._hooks.get(self._hook_event.CHAT_EVENT))
+
     async def _think(self, messages: Sequence[ChatCompletionMessageParam]) -> dict[str, Any]:
         try:
-            # 流式模式
-            if self.on_token:
+            if self._has_token_subscribers():
                 return await self._think_stream(messages)
 
             # 非流式模式
@@ -1002,8 +996,7 @@ class Agent:
 
             if delta and delta.content:
                 content += delta.content
-                if self.on_token:
-                    await self.on_token(delta.content)
+                await self.hooks.fire(self._hook_event.CHAT_EVENT, token=delta.content)
 
             if delta and delta.tool_calls:
                 for tc in delta.tool_calls:
@@ -1065,11 +1058,10 @@ class Agent:
 
         agent_name = args.get("name", "") or args.get("template", "")
 
-        if self.on_tool_event:
-            try:
-                await self.on_tool_event("subagent_start", {"name": agent_name, "task": task})
-            except Exception:
-                pass
+        await self.hooks.fire(
+            self._hook_event.SUBAGENT_START,
+            metadata={"name": agent_name, "task": task},
+        )
 
         try:
             result = await self.subagent_manager.run_subagent(
@@ -1086,11 +1078,10 @@ class Agent:
             )
         except Exception as e:
             logger.error(f"Subagent execution error: {e}")
-            if self.on_tool_event:
-                try:
-                    await self.on_tool_event("subagent_result", {"name": agent_name, "error": str(e)})
-                except Exception:
-                    pass
+            await self.hooks.fire(
+                self._hook_event.SUBAGENT_RESULT,
+                metadata={"name": agent_name, "error": str(e)},
+            )
             return json.dumps({"success": False, "error": f"子代理执行错误: {e}"}, ensure_ascii=False)
 
         stats = self.subagent_manager.get_stats()
@@ -1099,15 +1090,10 @@ class Agent:
         if len(result_preview) > 500:
             result_preview = result_preview[:500] + "..."
 
-        if self.on_tool_event:
-            try:
-                await self.on_tool_event("subagent_result", {
-                    "name": agent_name,
-                    "status": result.status,
-                    "result": result_preview
-                })
-            except Exception:
-                pass
+        await self.hooks.fire(
+            self._hook_event.SUBAGENT_RESULT,
+            metadata={"name": agent_name, "status": result.status, "result": result_preview},
+        )
 
         return json.dumps({
             "success": result.status == "completed",
