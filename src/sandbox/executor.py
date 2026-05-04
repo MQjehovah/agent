@@ -1,11 +1,29 @@
 import asyncio
 import concurrent.futures
+import contextlib
 import logging
 import os
 import shlex
 import subprocess
+import threading
 
 logger = logging.getLogger("agent.sandbox")
+
+
+def _decode_output(data: bytes | str) -> str:
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    if len(data) >= 2 and data[0:2] in (b'\xff\xfe', b'\xfe\xff'):
+        return data.decode("utf-16")
+    encodings = ["utf-8", "gbk", "cp936", "latin-1"]
+    for encoding in encodings:
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 class ProcessSandbox:
@@ -49,23 +67,43 @@ class ProcessSandbox:
 
         try:
             def _run_sync():
-                return subprocess.run(
+                proc = subprocess.Popen(
                     sandboxed_cmd,
                     shell=True,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     cwd=cwd,
                     env=sandbox_env,
-                    timeout=effective_timeout,
+                )
+
+                stdout_result = [b""]
+                stderr_result = [b""]
+
+                def _read_pipe(fh, out):
+                    raw = getattr(fh, "buffer", fh)
+                    out[0] = raw.read()
+                    fh.close()
+
+                t_out = threading.Thread(target=_read_pipe, args=(proc.stdout, stdout_result))
+                t_err = threading.Thread(target=_read_pipe, args=(proc.stderr, stderr_result))
+                t_out.start()
+                t_err.start()
+                proc.wait(timeout=effective_timeout)
+                t_out.join(timeout=5)
+                t_err.join(timeout=5)
+
+                return subprocess.CompletedProcess(
+                    args=sandboxed_cmd,
+                    returncode=proc.returncode,
+                    stdout=stdout_result[0],
+                    stderr=stderr_result[0],
                 )
 
             loop = asyncio.get_running_loop()
             try:
                 result = await asyncio.wait_for(
                     loop.run_in_executor(None, _run_sync),
-                    timeout=effective_timeout + 5,
+                    timeout=effective_timeout + 10,
                 )
             except (asyncio.TimeoutError, concurrent.futures.TimeoutError, subprocess.TimeoutExpired):
                 logger.warning(f"沙箱命令执行超时 ({effective_timeout}s): {command[:100]}")
@@ -75,8 +113,16 @@ class ProcessSandbox:
                     "sandbox": "process",
                 }
 
-            stdout = result.stdout or ""
-            stderr = result.stderr or ""
+            stdout_bytes = result.stdout or b""
+            stderr_bytes = result.stderr or b""
+            stdout = _decode_output(stdout_bytes)
+            stderr = _decode_output(stderr_bytes)
+            if stdout and stdout.count("\x00") > len(stdout) * 0.3:
+                with contextlib.suppress(Exception):
+                    stdout = stdout_bytes.decode("utf-16-le").rstrip("\x00").rstrip()
+            if stderr and stderr.count("\x00") > len(stderr) * 0.3:
+                with contextlib.suppress(Exception):
+                    stderr = stderr_bytes.decode("utf-16-le").rstrip("\x00").rstrip()
 
             output_limit = max_output or self.max_output_bytes
             if len(stdout) > output_limit:

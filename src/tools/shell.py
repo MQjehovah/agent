@@ -1,9 +1,11 @@
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import logging
 import os
 import subprocess
+import threading
 
 from . import BuiltinTool
 
@@ -36,6 +38,8 @@ def decode_output(data: bytes | str) -> str:
         return ""
     if isinstance(data, str):
         return data
+    if len(data) >= 2 and data[0:2] in (b'\xff\xfe', b'\xfe\xff'):
+        return data.decode("utf-16")
     encodings = ["utf-8", "gbk", "cp936", "latin-1"]
     for encoding in encodings:
         try:
@@ -125,23 +129,43 @@ class ShellTool(BuiltinTool):
             env = {**os.environ, **extra_env} if extra_env else None
 
             def _run_sync():
-                return subprocess.run(
+                proc = subprocess.Popen(
                     command,
                     shell=True,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     cwd=cwd,
                     env=env,
-                    timeout=timeout,
+                )
+
+                stdout_result = [b""]
+                stderr_result = [b""]
+
+                def _read_pipe(fh, out):
+                    raw = getattr(fh, "buffer", fh)
+                    out[0] = raw.read()
+                    fh.close()
+
+                t_out = threading.Thread(target=_read_pipe, args=(proc.stdout, stdout_result))
+                t_err = threading.Thread(target=_read_pipe, args=(proc.stderr, stderr_result))
+                t_out.start()
+                t_err.start()
+                proc.wait(timeout=timeout)
+                t_out.join(timeout=5)
+                t_err.join(timeout=5)
+
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=proc.returncode,
+                    stdout=stdout_result[0],
+                    stderr=stderr_result[0],
                 )
 
             loop = asyncio.get_running_loop()
             try:
                 result = await asyncio.wait_for(
                     loop.run_in_executor(None, _run_sync),
-                    timeout=timeout + 5
+                    timeout=timeout + 10
                 )
             except (asyncio.TimeoutError, concurrent.futures.TimeoutError, subprocess.TimeoutExpired):
                 logger.warning(f"命令执行超时 ({timeout}s): {command[:100]}")
@@ -150,8 +174,16 @@ class ShellTool(BuiltinTool):
                     "error": f"命令执行超时（{timeout}秒）"
                 }, ensure_ascii=False)
 
-            stdout_str = decode_output(result.stdout)
-            stderr_str = decode_output(result.stderr)
+            stdout_bytes = result.stdout or b""
+            stderr_bytes = result.stderr or b""
+            stdout_str = decode_output(stdout_bytes)
+            stderr_str = decode_output(stderr_bytes)
+            if stdout_str and stdout_str.count("\x00") > len(stdout_str) * 0.3:
+                with contextlib.suppress(Exception):
+                    stdout_str = stdout_bytes.decode("utf-16-le").rstrip("\x00").rstrip()
+            if stderr_str and stderr_str.count("\x00") > len(stderr_str) * 0.3:
+                with contextlib.suppress(Exception):
+                    stderr_str = stderr_bytes.decode("utf-16-le").rstrip("\x00").rstrip()
 
             if len(stdout_str) > max_output:
                 stdout_str = stdout_str[:max_output] + f"\n... [输出已截断，共 {len(stdout_str)} 字符]"
