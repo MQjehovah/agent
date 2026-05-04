@@ -242,6 +242,8 @@ class FeishuPlugin(BasePlugin):
         else:
             logger.warning(f"飞书配置文件不存在: {config_file}")
 
+        self.enabled = self.config.enabled
+
         self.sessions: dict[str, FeishuSession] = {}
         self._client: FeishuClient | None = None
         self._running = False

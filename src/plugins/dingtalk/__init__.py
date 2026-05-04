@@ -99,6 +99,7 @@ class DingTalkPlugin(BasePlugin):
         self._client = None
         self._running = False
         self._task: asyncio.Task | None = None
+        self.enabled = self.config.enabled
 
     def start(self):
         if not self.config.enabled:
