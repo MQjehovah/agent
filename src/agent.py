@@ -54,7 +54,7 @@ class Agent:
         self.description = ""
         self.system_prompt = ""
         self.system_prompt_raw = ""  # PROMPT.md 原始内容（不含技能/子代理追加）
-        self.max_iterations = 100
+        self.max_iterations = 200
 
         # Prompt 分层拼装器
         self._prompt_builder: PromptBuilder | None = None
