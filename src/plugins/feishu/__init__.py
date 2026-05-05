@@ -224,10 +224,10 @@ class FeishuPlugin(BasePlugin):
         config_file = self.config_path
         if not config_file:
             config_file = os.path.join(
-                os.path.dirname(
+                self.config_dir or os.path.dirname(
                     os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
                 ),
-                "workspace",
+                "plugins",
                 "feishu.json",
             )
         self.config = FeishuConfig()

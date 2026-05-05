@@ -11,8 +11,9 @@ logger = logging.getLogger("agent.plugins")
 class PluginManager:
     PLUGIN_ENTRY = "plugin"
     
-    def __init__(self, plugins_dir: Optional[str] = None):
+    def __init__(self, plugins_dir: Optional[str] = None, config_dir: Optional[str] = None):
         self.plugins_dir = plugins_dir
+        self.config_dir = config_dir
         self.plugins: Dict[str, BasePlugin] = {}
         self._plugin_classes: Dict[str, Type[BasePlugin]] = {}
         self._executor: Optional[Callable] = None
@@ -47,7 +48,7 @@ class PluginManager:
                 logger.error(f"Plugin class not found in: {name}")
                 return None
             
-            plugin = plugin_class(config_path=config_path)
+            plugin = plugin_class(config_path=config_path, config_dir=self.config_dir)
             self.plugins[name] = plugin
             logger.debug(f"加载插件: {name}")
             return plugin

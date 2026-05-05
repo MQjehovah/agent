@@ -79,8 +79,8 @@ class DingTalkPlugin(BasePlugin):
         config_file = self.config_path
         if not config_file:
             config_file = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-                "workspace", "dingtalk.json"
+                self.config_dir or os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+                "plugins", "dingtalk.json"
             )
 
         self.config = DingTalkConfig()

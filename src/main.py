@@ -30,7 +30,6 @@ from cmd_handler import CommandHandler
 from config import Config, validate_config
 from llm import LLMClient
 from plugins import PluginManager
-from scheduler import SchedulerManager
 
 console = Console()
 
@@ -254,8 +253,9 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
     )
 
     dingtalk_plugin = None
+    scheduler_plugin = None
     if not args.no_plugins:
-        plugin_manager = PluginManager(os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"))
+        plugin_manager = PluginManager(os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"), config_dir=config_dir)
         plugin_manager.load_all()
         agent.plugin_manager = plugin_manager
 
@@ -271,6 +271,13 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
         plugin_manager.start_all()
 
         dingtalk_plugin = plugin_manager.get_plugin("dingtalk")
+
+        scheduler_plugin = plugin_manager.get_plugin("scheduler")
+        if scheduler_plugin:
+            async def _schedule_to_perceiver(schedule_task: str):
+                await perceiver.handle_schedule({"name": "定时任务", "task": schedule_task})
+            scheduler_plugin._agent_executor = _schedule_to_perceiver
+            scheduler_plugin.start()
     else:
         plugin_manager = None
 
@@ -282,16 +289,6 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
         reporter = DingTalkReporter(dingtalk_plugin=dingtalk_plugin)
     else:
         reporter = Reporter()
-
-    scheduler = None
-    if not args.no_scheduler:
-        scheduler = SchedulerManager(os.path.join(config_dir, "schedules.json"))
-
-        async def _schedule_to_perceiver(schedule_task: str):
-            await perceiver.handle_schedule({"name": "定时任务", "task": schedule_task})
-
-        scheduler.set_executor(_schedule_to_perceiver)
-        scheduler.start()
 
     executor = Executor(agent=agent, reporter=reporter)
     verifier = Verifier(client=agent.client)
@@ -327,16 +324,14 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
     )
 
     await auto_loop.run()
-    return scheduler, plugin_manager
+    return plugin_manager
 
 
-async def cleanup(plugin_manager, scheduler, agent):
+async def cleanup(plugin_manager, agent):
     """统一清理资源"""
     try:
         if plugin_manager:
             plugin_manager.stop_all()
-        if scheduler:
-            scheduler.stop()
         await agent.cleanup()
     except asyncio.CancelledError:
         logger.warning("清理过程被取消")
@@ -365,7 +360,6 @@ async def main():
                         help="配置目录，包含PROMPT.md、agents/、skills/等 (默认: ./config)")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--no-plugins", action="store_true")
-    parser.add_argument("--no-scheduler", action="store_true")
     parser.add_argument("--skip-config-check", action="store_true")
     parser.add_argument(
         "--mode",
@@ -439,7 +433,6 @@ async def main():
         return
 
     web_server = None
-    scheduler = None
     plugin_manager = None
 
     try:
@@ -455,19 +448,19 @@ async def main():
             console.print(f"[bold green]Web UI:[/bold green] http://localhost:{args.web_port}")
 
         if args.mode == "autonomous":
-            scheduler, plugin_manager = await autonomous_mode(agent, shutdown_event, args, panel=panel)
+            plugin_manager = await autonomous_mode(agent, shutdown_event, args, panel=panel)
         else:
-            if not args.no_scheduler:
-                scheduler = SchedulerManager(os.path.join(config_dir, "schedules.json"))
-                scheduler.set_executor(lambda t: agent.run(t))
-                scheduler.start()
-
             if not args.no_plugins:
-                plugin_manager = PluginManager(os.path.join(src_dir, "plugins"))
+                plugin_manager = PluginManager(os.path.join(src_dir, "plugins"), config_dir=config_dir)
                 plugin_manager.load_all()
                 plugin_manager.register_executor(lambda sid, c: agent.run(c, session_id=sid))
                 plugin_manager.start_all()
                 agent.plugin_manager = plugin_manager
+
+                scheduler_plugin = plugin_manager.get_plugin("scheduler")
+                if scheduler_plugin:
+                    scheduler_plugin._agent_executor = agent.run
+                    scheduler_plugin.start()
 
             await interactive_mode(agent, shutdown_event)
     except asyncio.CancelledError:
@@ -478,7 +471,7 @@ async def main():
         logger.info("清理资源...")
         if web_server:
             web_server.stop()
-        await cleanup(plugin_manager, scheduler, agent)
+        await cleanup(plugin_manager, agent)
         logger.info("清理完成")
 
 

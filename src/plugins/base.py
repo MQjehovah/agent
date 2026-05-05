@@ -13,8 +13,9 @@ class BasePlugin(ABC):
     description: str = ""
     version: str = "1.0.0"
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, config_dir: Optional[str] = None):
         self.config_path = config_path
+        self.config_dir = config_dir
         self.enabled = True
         self.plugin_manager: Optional["PluginManager"] = None
         self._load_config()
