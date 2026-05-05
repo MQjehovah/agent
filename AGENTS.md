@@ -17,7 +17,8 @@ python src/main.py
 python src/main.py --debug              # Enable DEBUG logging
 python src/main.py --no-plugins          # Skip plugin loading
 python src/main.py --no-scheduler       # Skip scheduled tasks
-python src/main.py --workspace ./ws     # Custom workspace path
+python src/main.py --workspace ./ws     # Agent working directory (default: ./workspace)
+python src/main.py --config ./cfg       # Config directory (default: ./config)
 ```
 
 ## Lint & Test
@@ -45,20 +46,22 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **LLM client**: `src/llm.py` — `LLMClient` wrapping `AsyncOpenAI`, handles retry/streaming/usage tracking
 - **Prompt builder**: `src/prompt.py` — `PromptBuilder` assembles system prompt in static + dynamic sections (static section is cacheable)
 - **Session management**: `src/agent_session.py` — `AgentSession` dataclass, message history with TTL-based expiry
-- **Sub-agents**: `src/subagent_manager.py` — loads sub-agent templates from `workspace/agents/*/PROMPT.md`, reuses sessions by name
+- **Sub-agents**: `src/subagent_manager.py` — loads sub-agent templates from `config/agents/*/PROMPT.md`, reuses sessions by name
 - **Memory**: `src/memory/manager.py` — daily memory files + long-term `memory.md` + `shared_knowledge.md`
 - **Learning**: `src/learning/learner.py` — self-learning module that triggers pattern extraction and skill creation
-- **Storage**: `src/storage.py` — SQLite with connection pool, singleton `Storage` initialized via `init_storage(workspace)`
+- **Storage**: `src/storage.py` — SQLite with connection pool, singleton `Storage` initialized via `init_storage(config_dir)`
 - **Plugins**: `src/plugins/` — `BasePlugin` ABC; plugins loaded from `src/plugins/` dir, provide extra tools to agents
-- **MCP servers**: `src/mcps/manager.py` — launches external MCP tool servers defined in `workspace/mcp_servers.json`
+- **MCP servers**: `src/mcps/manager.py` — launches external MCP tool servers defined in `config/mcp_servers.json`
 - **Commands**: `src/cmd_handler.py` — `/` commands in interactive mode (e.g. `/help`, `/agents`)
 
-## Workspace Layout
+## Directory Layout
 
-`workspace/` is the runtime data directory (mounted in Docker, gitignored for memory/sessions):
+### Config directory (`--config`, default: `config/`)
+
+Contains all configuration and runtime state (mounted in Docker):
 
 ```
-workspace/
+config/
 ├── PROMPT.md              # Root agent system prompt (frontmatter: name, description)
 ├── agents/                # Sub-agent definitions (each dir has PROMPT.md)
 │   ├── 设备运维/
@@ -69,10 +72,21 @@ workspace/
 ├── skills/                # Skill definitions (each has SKILL.md)
 │   └── report-writer/
 ├── memory/                # Auto-managed (gitignored)
+├── data.db                # SQLite storage (gitignored)
+├── autonomous.db          # Autonomous mode storage (gitignored)
+├── task_panel.json        # Task panel state (gitignored)
 ├── mcp_servers.json       # MCP server configs
 ├── schedules.json         # Cron-based scheduled tasks
 ├── dingtalk.json           # DingTalk plugin config
 └── webhook.json            # Webhook plugin config
+```
+
+### Agent workspace (`--workspace`, default: `workspace/`)
+
+Agent working directory where file operations, shell commands, and artifacts are created:
+
+```
+workspace/                # Auto-created, gitignored
 ```
 
 ## Key Conventions
@@ -84,7 +98,7 @@ workspace/
 - **Workspace PROMPT.md** uses frontmatter (`---\nname: ...\ndescription: ...\n---`) parsed by `utils/frontmatter.py`
 - **Permission modes**: `default` (confirm writes), `auto` (allow all, for containers), `plan` (read-only) — set in `Agent.__init__`
 - **Logging**: Uses `rich.logging.RichHandler` with aligned logger names; API calls logged to `logs/api_YYYYMMDD.log`
-- **Sandbox**: Optional sandbox via `workspace/sandbox.json` (process or Docker mode). Intercepted at `Agent._sandbox_intercept()` — tools remain unaware of sandboxing
+- **Sandbox**: Optional sandbox via `config/sandbox.json` (process or Docker mode). Intercepted at `Agent._sandbox_intercept()` — tools remain unaware of sandboxing
 - **Team pipeline**: `TeamOrchestrator` supports `default`/`feedback`/`auto` modes. `feedback` mode enables dev↔test feedback loops with automatic retry. `auto` mode uses LLM to dynamically generate pipeline stages
 
 ## Docker
@@ -99,7 +113,7 @@ Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py
 ## Pitfalls
 
 - **`.env` is gitignored** — never commit API keys. Use `.env.example` as template.
-- **`workspace/memory/` and `workspace/sessions/` are gitignored** — they contain runtime state
+- **`config/memory/` and `config/sessions/` are gitignored** — they contain runtime state
 - **`docs/plans/` is gitignored** — design docs live there but are not tracked
 - **Sub-agent names are Chinese** (e.g. `设备运维`) — this is intentional, not a mistake
 - **`OPENAI_BASE_URL` defaults to Alibaba DashScope**, not `api.openai.com` — change in `.env` if using a different provider

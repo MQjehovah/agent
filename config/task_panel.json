@@ -1,0 +1,15 @@
+{
+  "tasks": [
+    {
+      "id": "8ff598f9c346",
+      "title": "内网系统定期维护",
+      "description": "定期巡检并维护内网gitlab、gerrit、jenkins、jira系统，确保服务正常运行。",
+      "priority": 2,
+      "status": "completed",
+      "source": "llm",
+      "interval": null,
+      "last_run": 1777358802.5258021,
+      "created_at": "2026-04-28T13:54:34.245303"
+    }
+  ]
+}

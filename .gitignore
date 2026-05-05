@@ -26,9 +26,7 @@ logs/
 
 .venv
 
-projects/
-
-run/
+workspace/
 
 build/
 install/

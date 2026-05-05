@@ -1,0 +1,8 @@
+{
+    "host": "0.0.0.0",
+    "port": 8081,
+    "path": "/webhook/execute",
+    "tokens": [],
+    "callback_timeout": 30,
+    "max_content_length": 10000
+}
