@@ -125,9 +125,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         if sys.platform == "win32":
             import msvcrt
 
-        async def _readline():
-            nonlocal _stdin_transport
-            if sys.platform == "win32":
+            async def _readline():
                 line = []
                 while not shutdown_event.is_set():
                     ch = await loop.run_in_executor(None, msvcrt.getwch)
@@ -137,7 +135,6 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                     elif ch in ("\x08", "\x7f"):  # backspace
                         if line:
                             removed = line.pop()
-                            # CJK 字符占 2 列宽度，退格需要额外清理
                             if '\u1100' <= removed <= '\u9fff' or '\uac00' <= removed <= '\ud7af' or '\uf900' <= removed <= '\uffff' or ord(removed) > 0x20000:
                                 sys.stdout.write("\b\b  \b\b")
                             else:
@@ -151,16 +148,14 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                         sys.stdout.write(ch)
                     sys.stdout.flush()
                 return "".join(line)
-            else:
-                reader = asyncio.StreamReader()
-                protocol = asyncio.StreamReaderProtocol(reader)
-                transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-                _stdin_transport = transport
-                question = await reader.readline()
-                if _stdin_transport is not None:
-                    _stdin_transport.close()
-                    _stdin_transport = None
-                return question.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
+        else:
+            _stdin_reader = asyncio.StreamReader()
+            _stdin_protocol = asyncio.StreamReaderProtocol(_stdin_reader)
+            _stdin_transport, _ = await loop.connect_read_pipe(lambda: _stdin_protocol, sys.stdin)
+
+            async def _readline():
+                line = await _stdin_reader.readline()
+                return line.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
 
         while not shutdown_event.is_set():
             try:
