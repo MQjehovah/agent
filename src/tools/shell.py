@@ -21,10 +21,7 @@ DENIED_COMMANDS = [
 ]
 
 INTERACTIVE_COMMANDS = {
-    "sudo": "sudo 需要密码交互，请使用 sudo -n (非交互模式) 或避免使用 sudo",
     "passwd": "passwd 需要交互输入，禁止使用",
-    "ssh ": "ssh 可能要求密码/确认，禁止在 shell 工具中使用",
-    "scp ": "scp 可能要求密码，禁止在 shell 工具中使用",
     "nano ": "nano 是交互式编辑器，禁止使用",
     "vim ": "vim 是交互式编辑器，禁止使用",
     "vi ": "vi 是交互式编辑器，禁止使用",
