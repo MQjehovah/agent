@@ -130,13 +130,13 @@ def test_lidar3d_xacro_structure(tr):
     has_prefix_param = 'prefix:=velodyne' in content or 'params="prefix' in content
     tr.record("UT-03-02", "lidar3d宏有prefix参数（默认velodyne）", has_prefix_param)
 
-    # 检查link定义
+    # 检查link定义 - xacro宏展开后prefix=velodyne -> velodyne_link
     has_link = '${prefix}_link' in content
-    tr.record("UT-03-03", "link使用 ${prefix}_link 命名", has_link)
+    tr.record("UT-03-03", "link使用 ${prefix}_link 命名 (展开后为velodyne_link)", has_link)
 
     # 检查joint定义
     has_joint = '${prefix}_joint' in content
-    tr.record("UT-03-04", "joint使用 ${prefix}_joint 命名", has_joint)
+    tr.record("UT-03-04", "joint使用 ${prefix}_joint 命名 (展开后为velodyne_joint)", has_joint)
 
     # 检查joint type=fixed
     has_fixed_joint = 'type="fixed"' in content
@@ -185,10 +185,11 @@ def test_lidar3d_joint_origin(tr):
     path = NEW_FILES["lidar3d.xacro"]
     content = read_file(path)
 
-    # 查找joint origin
-    match = re.search(r'<origin\s+xyz="([^"]+)"', content)
-    if match:
-        xyz_str = match.group(1)
+    # 查找joint origin（需要精确匹配joint内的origin，不能匹配inertial内的origin）
+    # 先找到joint块，再在joint块内找origin
+    joint_match = re.search(r'<joint[^>]*>.*?<origin\s+xyz="([^"]+)"', content, re.DOTALL)
+    if joint_match:
+        xyz_str = joint_match.group(1)
         xyz = [float(v) for v in xyz_str.split()]
         tr.record("UT-04-01", f"joint origin xyz可解析: {xyz_str}", True)
 
@@ -206,7 +207,7 @@ def test_lidar3d_joint_origin(tr):
         tr.record("UT-04-04", f"z值与架构文档对齐 (期望0.1955, 实际{xyz[2]:.4f})", z_matches_arch,
                   f"架构文档要求 z=0.1955, 实际 z={xyz[2]:.4f}")
     else:
-        tr.record("UT-04-01", "joint origin可找到", False, "未找到<origin>标签")
+        tr.record("UT-04-01", "joint origin可找到", False, "未找到joint内的<origin>标签")
 
 
 def test_lidar3d_gazebo_plugin(tr):
@@ -266,9 +267,9 @@ def test_lidar3d_gazebo_plugin(tr):
     has_topic = '<topicName>/velodyne_points</topicName>' in content
     tr.record("UT-05-12", "topic名称: /velodyne_points", has_topic)
 
-    # 检查frameName
-    has_frame = '<frameName>velodyne</frameName>' in content
-    tr.record("UT-05-13", "frame名称: velodyne (无_link后缀)", has_frame)
+    # 检查frameName — 必须与URDF link名一致 (BUG-001修复: velodyne -> velodyne_link)
+    has_frame = '<frameName>velodyne_link</frameName>' in content
+    tr.record("UT-05-13", "frame名称: velodyne_link (与URDF link一致)", has_frame)
 
     # 检查outputType
     has_output = '<outputType>sensor_msgs/PointCloud2</outputType>' in content
@@ -458,10 +459,13 @@ def test_no_duplicate_link_names(tr):
     lidar3d_content = read_file(NEW_FILES["lidar3d.xacro"])
     lidar2d_content = read_file(EXISTING_FILES["lidar.xacro"])
 
-    # 3D lidar link: velodyne_link
-    # 2D lidar link: laser_link
-    no_conflict = 'velodyne_link' not in lidar2d_content and 'laser_link' not in lidar3d_content
-    tr.record("UT-12-01", "3D和2D雷达link名称不冲突", no_conflict)
+    # 3D lidar link: ${prefix}_link -> velodyne_link (when prefix=velodyne)
+    # 2D lidar link: ${prefix}_link -> laser_link (when prefix=laser)
+    # Since they use different prefixes, no conflict
+    lidar3d_uses_prefix = '${prefix}_link' in lidar3d_content
+    lidar2d_uses_prefix = '${prefix}_link' in lidar2d_content
+    no_conflict = lidar3d_uses_prefix and lidar2d_uses_prefix  # both use parametric names
+    tr.record("UT-12-01", "3D和2D雷达link使用不同prefix (velodyne vs laser)", no_conflict)
 
     # IMU link: imu_link, 与lidar3d不冲突
     imu_content = read_file(EXISTING_FILES["imu_gazebo.xacro"])

@@ -67,14 +67,15 @@ def test_ac1_3d_lidar_model_added(tr):
 
     if lidar3d_path.exists():
         content = read_file(lidar3d_path)
-        has_link = 'velodyne_link' in content
-        has_joint = 'velodyne_joint' in content
+        # xacro uses ${prefix}_link which resolves to velodyne_link when prefix=velodyne
+        has_link = '${prefix}_link' in content
+        has_joint = '${prefix}_joint' in content
         has_visual = '<visual>' in content
         has_collision = '<collision>' in content
         has_inertial = '<inertial>' in content
 
-        tr.record("AC1-02", "定义velodyne_link", has_link)
-        tr.record("AC1-03", "定义velodyne_joint (fixed)", has_joint and 'type="fixed"' in content)
+        tr.record("AC1-02", "定义${prefix}_link (展开后velodyne_link)", has_link)
+        tr.record("AC1-03", "定义${prefix}_joint (展开后velodyne_joint, fixed)", has_joint and 'type="fixed"' in content)
         tr.record("AC1-04", "包含visual定义", has_visual)
         tr.record("AC1-05", "包含collision定义", has_collision)
         tr.record("AC1-06", "包含inertial定义", has_inertial)
