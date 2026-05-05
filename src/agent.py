@@ -43,11 +43,13 @@ class Agent:
         parent_agent: "Agent" = None,
         permission_mode: str = "auto",
         prompt_dir: str = "",
+        config_dir: str = "",
     ):
         self.workspace = workspace
         self.client = client
         self.parent_agent = parent_agent
         self.prompt_dir = prompt_dir or workspace
+        self.config_dir = config_dir or (parent_agent.config_dir if parent_agent else workspace)
 
         self.agent_id = ""
         self.name = ""
@@ -127,7 +129,7 @@ class Agent:
         if self.parent_agent and self.parent_agent.storage:
             self.storage = self.parent_agent.storage
         else:
-            self.storage = init_storage(self.workspace)
+            self.storage = init_storage(self.config_dir)
 
         self._init_subagents()
         self._init_memory()
@@ -159,7 +161,7 @@ class Agent:
 
     def _init_sandbox(self):
         """加载并初始化沙箱中间层"""
-        sandbox_config_path = os.path.join(self.prompt_dir, "sandbox.json")
+        sandbox_config_path = os.path.join(self.config_dir, "sandbox.json")
         try:
             from sandbox import create_sandbox, load_sandbox_config
             config = load_sandbox_config(sandbox_config_path)
@@ -237,7 +239,7 @@ class Agent:
             + (f" [沙箱: {type(self.sandbox).__name__}]" if self.sandbox else " [沙箱: 未启用]"))
 
     def _init_skills(self):
-        skills_dir = os.path.join(self.workspace, "skills")
+        skills_dir = os.path.join(self.config_dir, "skills")
         if os.path.exists(skills_dir):
             from skills import SkillManager
             self.skill_manager = SkillManager(skills_dir)
@@ -245,7 +247,7 @@ class Agent:
                 f"Agent [{self.name}] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
     async def _load_mcp_servers(self):
-        mcp_file = os.path.join(self.workspace, "mcp_servers.json")
+        mcp_file = os.path.join(self.config_dir, "mcp_servers.json")
         self.mcp_configs = []
 
         if os.path.exists(mcp_file):
@@ -272,7 +274,7 @@ class Agent:
                 f"Agent [{self.name}] 已连接 {len(connected)} MCP servers: {connected}")
 
     def _init_subagents(self):
-        agents_dir = os.path.join(self.workspace, "agents")
+        agents_dir = os.path.join(self.config_dir, "agents")
         if os.path.exists(agents_dir):
             self.subagent_manager = SubagentManager(agents_dir, parent_workspace=self.workspace)
             self.subagent_manager.start_cleanup_task()
@@ -281,7 +283,7 @@ class Agent:
 
     def _init_memory(self):
         from memory import MemoryManager
-        self.memory = MemoryManager(self.workspace, agent_id=self.agent_id)
+        self.memory = MemoryManager(self.config_dir, agent_id=self.agent_id)
         self.memory.set_llm_client(self.client)
 
         if self.parent_agent and self.parent_agent.memory:
@@ -297,7 +299,7 @@ class Agent:
         # 初始化自动创建模块（仅主代理）
         if not self.parent_agent:
             self.learner.init_auto_creation(
-                workspace=self.workspace,
+                workspace=self.config_dir,
                 skill_manager=self.skill_manager,
                 subagent_manager=self.subagent_manager,
             )

@@ -28,8 +28,12 @@ logs/
 
 projects/
 
+run/
+
 build/
 install/
 log/
 
 *.bak
+
+.vscode/

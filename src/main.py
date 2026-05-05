@@ -230,7 +230,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
     from autonomous.reporter import DingTalkReporter, Reporter
     from autonomous.verifier import Verifier
 
-    workspace = agent.workspace
+    workspace = agent.config_dir
     db_path = os.path.join(workspace, "autonomous.db")
     panel_path = os.path.join(workspace, "task_panel.json")
 
@@ -360,6 +360,8 @@ async def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", "-w", default="workspace")
+    parser.add_argument("--run-dir", "-r", default="",
+                        help="agent工作目录，存放agent产生的文件 (默认: ./run)")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--no-plugins", action="store_true")
     parser.add_argument("--no-scheduler", action="store_true")
@@ -410,15 +412,16 @@ async def main():
         logging.getLogger("agent").setLevel(logging.DEBUG)
 
     workspace = os.path.abspath(args.workspace)
+    run_dir = os.path.abspath(args.run_dir) if args.run_dir else os.path.join(os.path.dirname(workspace), "run")
+    os.makedirs(run_dir, exist_ok=True)
     src_dir = os.path.dirname(os.path.abspath(__file__))
 
-    agent = Agent(workspace=workspace, client=LLMClient())
+    agent = Agent(workspace=run_dir, config_dir=workspace, client=LLMClient())
     await agent.initialize()
 
     # 任务面板（Web UI 和自主模式共用）
     from autonomous.panel import TaskPanel
     panel = TaskPanel(os.path.join(workspace, "task_panel.json"))
-
     if args.agent:
         agent_name = args.agent
         task = " ".join(args.task) if args.task else ""
