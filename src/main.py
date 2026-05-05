@@ -115,14 +115,18 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         cmd_handler.set_current_task_id(None)
         current_task = None
 
+    _stdin_transport = None
+
     async def input_reader():
         """后台读取用户输入 — Windows 使用 msvcrt 字符级读取，Unix 用 StreamReader"""
+        nonlocal _stdin_transport
         loop = asyncio.get_event_loop()
 
         if sys.platform == "win32":
             import msvcrt
 
         async def _readline():
+            nonlocal _stdin_transport
             if sys.platform == "win32":
                 line = []
                 while not shutdown_event.is_set():
@@ -150,8 +154,12 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
             else:
                 reader = asyncio.StreamReader()
                 protocol = asyncio.StreamReaderProtocol(reader)
-                await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+                transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+                _stdin_transport = transport
                 question = await reader.readline()
+                if _stdin_transport is not None:
+                    _stdin_transport.close()
+                    _stdin_transport = None
                 return question.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
 
         while not shutdown_event.is_set():
@@ -203,6 +211,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
             console.print(f"[dim]任务 #{task_counter} 已提交[/dim]")
 
     finally:
+        if _stdin_transport is not None:
+            _stdin_transport.close()
         if input_task and not input_task.done():
             input_task.cancel()
             try:
