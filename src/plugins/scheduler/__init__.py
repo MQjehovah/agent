@@ -33,7 +33,11 @@ class SchedulerPlugin(BasePlugin):
         if os.path.exists(config_file):
             try:
                 with open(config_file, encoding="utf-8") as f:
-                    all_schedules = json.load(f)
+                    data = json.load(f)
+                if not data.get("enabled", True):
+                    self.enabled = False
+                    return
+                all_schedules = data.get("schedules", data) if isinstance(data, dict) else data
                 self.schedules = [s for s in all_schedules if s.get("enabled", True)]
                 logger.info(f"已加载 {len(self.schedules)} 个定时任务")
             except Exception as e:
