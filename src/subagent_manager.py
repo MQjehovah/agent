@@ -82,7 +82,7 @@ class SubagentManager:
                         "name": name,
                         "description": description,
                         "workspace": self.parent_workspace,
-                        "prompt_dir": agent_dir,
+                        "config_dir": agent_dir,
                     }
                     self.templates[name] = template
                     logger.debug(f"加载子代理模板: {name}")
@@ -259,7 +259,7 @@ class SubagentManager:
             "name": frontmatter.get("name", member_name),
             "description": frontmatter.get("description", ""),
             "workspace": self.parent_workspace,
-            "prompt_dir": member_dir,
+            "config_dir": member_dir,
         }
 
     async def _create_team_subagent(
@@ -291,13 +291,13 @@ class SubagentManager:
             self._team_member_cache[cache_key] = template_data
 
         workspace = self._team_member_cache[cache_key]["workspace"]
-        prompt_dir = self._team_member_cache[cache_key].get("prompt_dir", "")
+        config_dir = self._team_member_cache[cache_key].get("config_dir", "")
 
         agent = Agent(
             workspace=workspace,
             client=client or self._client,
             parent_agent=parent_agent or self._parent_agent,
-            prompt_dir=prompt_dir,
+            config_dir=config_dir,
         )
         if parent_agent or self._parent_agent:
             agent.plugin_manager = (parent_agent or self._parent_agent).plugin_manager
@@ -503,13 +503,13 @@ class SubagentManager:
         # 创建新的子代理（不持锁，因为初始化耗时）
         template_data = self.templates.get(template_name)
         workspace = template_data["workspace"] if template_data else None
-        prompt_dir = template_data.get("prompt_dir", "") if template_data else ""
+        config_dir = template_data.get("config_dir", "") if template_data else ""
 
         agent = Agent(
             workspace=workspace,
             client=self._client or client,
             parent_agent=self._parent_agent or parent_agent,
-            prompt_dir=prompt_dir,
+            config_dir=config_dir,
         )
 
         if self._parent_agent or parent_agent:

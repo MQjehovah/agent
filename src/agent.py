@@ -42,14 +42,12 @@ class Agent:
         client,
         parent_agent: "Agent" = None,
         permission_mode: str = "auto",
-        prompt_dir: str = "",
         config_dir: str = "",
     ):
         self.workspace = workspace
         self.client = client
         self.parent_agent = parent_agent
-        self.prompt_dir = prompt_dir or workspace
-        self.config_dir = config_dir or (parent_agent.config_dir if parent_agent else workspace)
+        self.config_dir = config_dir or workspace
 
         self.agent_id = ""
         self.name = ""
@@ -138,10 +136,10 @@ class Agent:
         self._build_prompt()
 
     def _load_system_prompt(self):
-        prompt_file = os.path.join(self.prompt_dir, "PROMPT.md")
+        prompt_file = os.path.join(self.config_dir, "PROMPT.md")
 
         if not os.path.exists(prompt_file):
-            logger.warning(f"No PROMPT.md found in {self.prompt_dir}")
+            logger.warning(f"No PROMPT.md found in {self.config_dir}")
             self.agent_id = self.name = ""
             return
 
