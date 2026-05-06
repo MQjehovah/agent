@@ -385,20 +385,74 @@ class CommandHandler:
 
     def _show_usage(self):
         """显示 LLM 用量统计"""
-        if hasattr(self.agent, 'client') and hasattr(self.agent.client, 'usage_tracker'):
-            summary = self.agent.client.usage_tracker.get_summary()
-            table = Table(title="LLM 用量统计", show_header=True,
-                          header_style="bold magenta", box=box.ROUNDED)
-            table.add_column("指标", style="cyan")
-            table.add_column("值", style="green")
-            table.add_row("调用次数", str(summary["total_calls"]))
-            table.add_row("输入 Token", f"{summary['total_prompt_tokens']:,}")
-            table.add_row("输出 Token", f"{summary['total_completion_tokens']:,}")
-            table.add_row("总 Token", f"{summary['total_tokens']:,}")
-            table.add_row("总费用", f"¥{summary['total_cost_cny']}")
-            console.print(table)
-        else:
+        if not (hasattr(self.agent, 'client') and hasattr(self.agent.client, 'usage_tracker')):
             console.print("[yellow]用量追踪未启用[/yellow]")
+            return
+
+        tracker = self.agent.client.usage_tracker
+        summary = tracker.get_summary()
+
+        # ── 总览 ──
+        overview = Table(title="LLM 用量统计", show_header=True,
+                         header_style="bold magenta", box=box.ROUNDED)
+        overview.add_column("指标", style="cyan")
+        overview.add_column("值", style="green")
+        overview.add_row("调用次数", str(summary["total_calls"]))
+        overview.add_row("输入 Token", f"{summary['total_prompt_tokens']:,}")
+        overview.add_row("输出 Token", f"{summary['total_completion_tokens']:,}")
+        overview.add_row("总 Token", f"{summary['total_tokens']:,}")
+        overview.add_row("总费用", f"¥{summary['total_cost_cny']}")
+
+        avg_ms = summary["avg_duration_ms"]
+        if avg_ms > 0:
+            overview.add_row("平均耗时", f"{avg_ms:,.0f} ms")
+            overview.add_row("最长耗时", f"{summary['max_duration_ms']:,.0f} ms")
+            overview.add_row("最短耗时", f"{summary['min_duration_ms']:,.0f} ms")
+            total_sec = summary["total_duration_ms"] / 1000
+            overview.add_row("总耗时", f"{total_sec:,.1f} s")
+            if summary["total_completion_tokens"] > 0 and total_sec > 0:
+                speed = summary["total_completion_tokens"] / total_sec
+                overview.add_row("输出速度", f"{speed:,.1f} tokens/s")
+        console.print(overview)
+
+        # ── 按模型分布 ──
+        per_model = tracker.get_per_model_summary()
+        if len(per_model) > 1:
+            model_table = Table(title="按模型分布", show_header=True,
+                                header_style="bold magenta", box=box.ROUNDED)
+            model_table.add_column("模型", style="cyan")
+            model_table.add_column("调用", style="green", justify="right")
+            model_table.add_column("输入", style="green", justify="right")
+            model_table.add_column("输出", style="green", justify="right")
+            model_table.add_column("总计", style="green", justify="right")
+            model_table.add_column("费用", style="yellow", justify="right")
+            model_table.add_column("耗时", style="dim", justify="right")
+            for model_name, ms in per_model.items():
+                dur_sec = ms["duration_ms"] / 1000
+                model_table.add_row(
+                    model_name,
+                    str(ms["calls"]),
+                    f"{ms['prompt_tokens']:,}",
+                    f"{ms['completion_tokens']:,}",
+                    f"{ms['prompt_tokens'] + ms['completion_tokens']:,}",
+                    f"¥{ms['cost']:.4f}",
+                    f"{dur_sec:.1f}s",
+                )
+            console.print(model_table)
+
+        # ── 上下文统计 ──
+        if hasattr(self.agent, 'tracer'):
+            ctx_stats = self.agent.tracer.get_context_stats()
+            if ctx_stats["samples"] > 0:
+                ctx_table = Table(title="上下文 Token 统计", show_header=True,
+                                  header_style="bold magenta", box=box.ROUNDED)
+                ctx_table.add_column("指标", style="cyan")
+                ctx_table.add_column("值", style="green")
+                ctx_table.add_row("采样次数", str(ctx_stats["samples"]))
+                ctx_table.add_row("峰值", f"{ctx_stats['peak']:,}")
+                ctx_table.add_row("最终值", f"{ctx_stats['final']:,}")
+                ctx_table.add_row("平均值", f"{ctx_stats['avg']:,}")
+                console.print(ctx_table)
 
     def _show_bg_tasks(self):
         """显示后台任务列表"""

@@ -632,9 +632,9 @@ class Agent:
                     logger.info(
                         f"[{self.name}] [{session.session_id}] 开始思考 | "
                         f"轮次 {i + 1}/{self.max_iterations} | "
-                        f"上下文 {ctx_tokens:,}tok | "
+                        f"上下文 {ctx_tokens:,}token | "
                         f"累计 {usage_summary['total_calls']}次 "
-                        f"{usage_summary['total_prompt_tokens']:,}+{usage_summary['total_completion_tokens']:,}tok "
+                        f"{usage_summary['total_prompt_tokens']:,}+{usage_summary['total_completion_tokens']:,}token "
                         f"¥{usage_summary['total_cost_cny']}"
                     )
                     # 第2轮起通知 UI 新起一个气泡（第1轮已在 sendMsg 中创建）
@@ -722,9 +722,9 @@ class Agent:
         if ctx_stats["samples"] > 0:
             logger.info(
                 f"[{session.session_id if session else ''}] 上下文统计: "
-                f"峰值={ctx_stats['peak']:,}tok, "
-                f"最终={ctx_stats['final']:,}tok, "
-                f"均值={ctx_stats['avg']:,}tok, "
+                f"峰值={ctx_stats['peak']:,}token, "
+                f"最终={ctx_stats['final']:,}token, "
+                f"均值={ctx_stats['avg']:,}token, "
                 f"采样数={ctx_stats['samples']}"
             )
 

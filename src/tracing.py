@@ -68,7 +68,7 @@ class Tracer:
         logger.debug(
             f"[{span.trace_id}] 结束 {span.operation} "
             f"({span.duration_ms:.0f}ms, {status}"
-            + (f", ctx={span.context_tokens}tok" if span.context_tokens else "")
+            + (f", ctx={span.context_tokens}token" if span.context_tokens else "")
             + ")"
         )
 

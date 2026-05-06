@@ -167,6 +167,7 @@ class LLMClient:
             params["extra_body"] = {"thinking": {"type": "enabled"}}
 
         self._log_request(params)
+        self.usage_tracker.start_timer()
 
         last_exception = None
         for attempt in range(MAX_RETRIES):
@@ -252,16 +253,20 @@ class LLMClient:
         params = {
             "model": self.model,
             "messages": messages,
-            "stream": True
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             params["tools"] = tools
 
         self._log_request(params)
+        self.usage_tracker.start_timer()
 
         stream, first_chunk = await self._create_stream(params)
 
         total_tokens = 0
+        prompt_tokens = 0
+        completion_tokens = 0
         chunks = 0
 
         # 先 yield 第一个 chunk（_create_stream 中已预取）
@@ -269,12 +274,22 @@ class LLMClient:
             chunks += 1
             if first_chunk.usage:
                 total_tokens = first_chunk.usage.total_tokens
+                prompt_tokens = getattr(first_chunk.usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(first_chunk.usage, "completion_tokens", 0) or 0
             yield first_chunk
 
         async for chunk in stream:
             chunks += 1
             if chunk.usage:
                 total_tokens = chunk.usage.total_tokens
+                prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
             yield chunk
+
+        if prompt_tokens > 0 or completion_tokens > 0:
+            self.usage_tracker.track(self.model, {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            }, is_stream=True)
 
         self._log_stream_response(total_tokens, chunks)
