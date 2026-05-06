@@ -19,6 +19,7 @@
     const elPath = $('#mainPath');
     const wsBody = $('#workspaceBody'), chatBody = $('#chatBody'), logsBody = $('#logsBody');
     const sessionsBody = $('#sessionsBody');
+    const kanbanBody = $('#kanbanBody');
     const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory'), wsPanel = $('#wsPanel'), wsSubagents = $('#wsSubagents');
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
     const btnNewChat = $('#newChatBtn');
@@ -54,6 +55,7 @@
         document.querySelectorAll('.main-tab').forEach(t => {
             t.addEventListener('click', () => switchTab(t.dataset.tab));
         });
+        bindKanban();
     }
 
     function switchTab(tab) {
@@ -61,9 +63,11 @@
         document.querySelectorAll('.main-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
         wsBody.style.display = tab === 'workspace' ? 'flex' : 'none';
         chatBody.style.display = tab === 'chat' ? 'flex' : 'none';
+        kanbanBody.style.display = tab === 'kanban' ? 'flex' : 'none';
         sessionsBody.style.display = tab === 'sessions' ? 'flex' : 'none';
         logsBody.style.display = tab === 'logs' ? 'flex' : 'none';
         if (tab === 'chat') { chatIn.focus(); chatMsgs.scrollTop = chatMsgs.scrollHeight; }
+        if (tab === 'kanban') { fetchKanban(); }
         if (tab === 'sessions') { fetchAgentSessions(); }
     }
     // Init: chat is default
@@ -109,7 +113,7 @@
 
     // ==================== FETCH ====================
     async function fetchAll() {
-        await Promise.all([fetchStatus(), fetchPanelTasks(), fetchTodos()]);
+        await Promise.all([fetchStatus(), fetchKanbanSidebar(), fetchTodos()]);
     }
 
     async function fetchStatus() {
@@ -141,48 +145,46 @@
                 ).join('');
             }
             // Panel stats in workspace
-            if (d.panel) {
-                wsPanel.textContent = wsPanel.textContent ||
-                    'Total: ' + d.panel.total + '  Pending: ' + d.panel.pending +
-                    '  Active: ' + d.panel.active + '  Done: ' + d.panel.completed;
+            if (d.panel && d.panel.by_column) {
+                const bc = d.panel.by_column;
+                wsPanel.textContent = 'Backlog: ' + (bc.backlog||0) +
+                    '  Todo: ' + (bc.todo||0) +
+                    '  In Progress: ' + (bc.in_progress||0) +
+                    '  Done: ' + (bc.done||0);
             }
         } catch { elDot.className = 'status-dot'; elStatus.textContent = 'disconnected'; }
     }
 
-    async function fetchPanelTasks() {
+    async function fetchKanbanSidebar() {
         try {
-            const r = await fetch(API + '/api/panel');
+            const r = await fetch(API + '/api/kanban');
             if (!r.ok) {
-                elTaskList.innerHTML = '<div class="empty-state">Panel HTTP ' + r.status + '</div>';
-                wsPanel.textContent = 'Panel HTTP ' + r.status;
+                elTaskList.innerHTML = '<div class="empty-state">Kanban HTTP ' + r.status + '</div>';
+                wsPanel.textContent = 'Kanban HTTP ' + r.status;
                 return;
             }
             const d = await r.json();
             const tasks = d.tasks || [];
             const stats = d.stats || {};
+            const byCol = stats.by_column || {};
 
-            // Workspace card
-            if (!tasks.length) {
-                wsPanel.textContent = 'Empty (' + stats.total + ' total, ' + stats.pending + ' pending, ' + stats.completed + ' done)';
-            } else {
-                wsPanel.textContent = tasks.map(t =>
-                    '[' + t.status + '] ' + t.title +
-                    (t.interval ? ' (' + fmti(t.interval) + ')' : '') +
-                    ' [' + t.source + ']'
-                ).join('\n');
-            }
+            wsPanel.textContent = 'Backlog: ' + (byCol.backlog||0) +
+                '  Todo: ' + (byCol.todo||0) +
+                '  In Progress: ' + (byCol.in_progress||0) +
+                '  Done: ' + (byCol.done||0);
 
-            // Sidebar — show all tasks
-            elTasks.textContent = tasks.length;
+            elTasks.textContent = stats.total || 0;
             if (!tasks.length) {
-                elTaskList.innerHTML = '<div class="empty-state">Panel empty</div>';
+                elTaskList.innerHTML = '<div class="empty-state">Kanban empty</div>';
             } else {
                 elTaskList.innerHTML = tasks.map(t => {
-                    let h = '<div class="task-card ' + (t.status === 'active' ? 'running' : t.status) + '">';
+                    const colColors = {backlog:'var(--text-muted)',todo:'var(--accent-orange)',in_progress:'var(--accent-blue)',done:'var(--accent-green)'};
+                    let h = '<div class="task-card ' + t.column + '">';
                     h += '<div class="task-title">' + esc(t.title) + '</div>';
                     h += '<div class="task-meta">';
-                    h += '<span>' + t.status + '</span>';
-                    h += '<span class="task-source">' + esc(t.source === 'llm' ? 'AI' : t.source === 'user' ? '你' : t.source) + '</span>';
+                    h += '<span style="color:' + (colColors[t.column]||'') + '">' + t.column.replace('_',' ') + '</span>';
+                    if (t.assignee) h += '<span class="task-source">' + esc(t.assignee) + '</span>';
+                    h += '<span class="task-source">' + esc(t.source === 'llm' ? 'AI' : t.source) + '</span>';
                     if (t.interval) h += '<span class="task-interval">' + fmti(t.interval) + '</span>';
                     h += '<span>' + fmt(t.created_at) + '</span>';
                     h += '</div></div>';
@@ -191,8 +193,152 @@
             }
         } catch (e) {
             elTaskList.innerHTML = '<div class="empty-state">Fetch failed: ' + esc(e.message) + '</div>';
-            wsPanel.textContent = 'Fetch failed: ' + e.message;
         }
+    }
+
+    // ==================== KANBAN BOARD ====================
+    let kanbanTasks = [];
+    let kanbanDragId = null;
+
+    function bindKanban() {
+        $('#kanbanRefreshBtn').addEventListener('click', fetchKanban);
+        $('#kanbanNewBtn').addEventListener('click', () => showKanbanModal());
+        $('#kanbanAddBtn').addEventListener('click', () => showKanbanModal());
+        $('#kanbanModalCancel').addEventListener('click', hideKanbanModal);
+        $('#kanbanModalSubmit').addEventListener('click', submitKanbanTask);
+
+        document.querySelectorAll('.kanban-col-body').forEach(col => {
+            col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('drag-over'); });
+            col.addEventListener('dragleave', () => col.classList.remove('drag-over'));
+            col.addEventListener('drop', e => {
+                e.preventDefault();
+                col.classList.remove('drag-over');
+                const id = e.dataTransfer.getData('text/plain');
+                const column = col.parentElement.dataset.column;
+                if (id && column) moveKanbanTask(id, column);
+            });
+        });
+    }
+
+    async function fetchKanban() {
+        try {
+            const r = await fetch(API + '/api/kanban');
+            if (!r.ok) return;
+            const d = await r.json();
+            kanbanTasks = d.tasks || [];
+            renderKanbanBoard();
+        } catch {}
+    }
+
+    function renderKanbanBoard() {
+        const cols = { backlog: [], todo: [], in_progress: [], done: [] };
+        kanbanTasks.forEach(t => {
+            if (cols[t.column]) cols[t.column].push(t);
+        });
+
+        const colBodies = {
+            backlog: $('#kanbanColBacklog'),
+            todo: $('#kanbanColTodo'),
+            in_progress: $('#kanbanColInProgress'),
+            done: $('#kanbanColDone'),
+        };
+        const colCounts = {
+            backlog: $('#kanbanCountBacklog'),
+            todo: $('#kanbanCountTodo'),
+            in_progress: $('#kanbanCountInProgress'),
+            done: $('#kanbanCountDone'),
+        };
+
+        Object.keys(cols).forEach(col => {
+            colCounts[col].textContent = cols[col].length;
+            colBodies[col].innerHTML = cols[col].length ? cols[col].map(t => {
+                const pCls = 'p' + t.priority;
+                const pLabels = {1:'High',2:'Med',3:'Low'};
+                let h = '<div class="kanban-card" draggable="true" data-id="' + esc(t.id) + '">';
+                h += '<button class="kanban-card-del" data-id="' + esc(t.id) + '" title="Delete">&times;</button>';
+                h += '<div class="kanban-card-title">' + esc(t.title) + '</div>';
+                if (t.description) h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;line-height:1.4">' + esc(t.description.substring(0, 100)) + '</div>';
+                h += '<div class="kanban-card-meta">';
+                h += '<span class="kanban-card-priority ' + pCls + '">' + (pLabels[t.priority]||'Low') + '</span>';
+                if (t.assignee) h += '<span class="kanban-card-assignee">' + esc(t.assignee) + '</span>';
+                h += '<span class="kanban-card-source">' + esc(t.source) + '</span>';
+                h += '<span>' + fmt(t.created_at) + '</span>';
+                h += '</div></div>';
+                return h;
+            }).join('') : '<div class="empty-state">Empty</div>';
+
+            colBodies[col].querySelectorAll('.kanban-card[draggable]').forEach(card => {
+                card.addEventListener('dragstart', e => {
+                    kanbanDragId = card.dataset.id;
+                    e.dataTransfer.setData('text/plain', card.dataset.id);
+                    card.classList.add('dragging');
+                });
+                card.addEventListener('dragend', () => card.classList.remove('dragging'));
+            });
+
+            colBodies[col].querySelectorAll('.kanban-card-del').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    deleteKanbanTask(btn.dataset.id);
+                });
+            });
+        });
+    }
+
+    async function moveKanbanTask(id, column) {
+        try {
+            await fetch(API + '/api/kanban/' + id + '/move', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({column: column}),
+            });
+            await fetchKanban();
+            await fetchKanbanSidebar();
+        } catch {}
+    }
+
+    async function deleteKanbanTask(id) {
+        try {
+            await fetch(API + '/api/kanban/' + id, {method: 'DELETE'});
+            await fetchKanban();
+            await fetchKanbanSidebar();
+        } catch {}
+    }
+
+    function showKanbanModal() {
+        $('#kanbanModal').style.display = 'flex';
+        $('#kanbanInputTitle').value = '';
+        $('#kanbanInputDesc').value = '';
+        $('#kanbanInputPriority').value = '3';
+        $('#kanbanInputColumn').value = 'backlog';
+        $('#kanbanInputTitle').focus();
+    }
+
+    function hideKanbanModal() {
+        $('#kanbanModal').style.display = 'none';
+    }
+
+    async function submitKanbanTask() {
+        const title = $('#kanbanInputTitle').value.trim();
+        if (!title) { $('#kanbanInputTitle').focus(); return; }
+        const body = {
+            title: title,
+            description: $('#kanbanInputDesc').value.trim(),
+            priority: parseInt($('#kanbanInputPriority').value) || 3,
+            column: $('#kanbanInputColumn').value,
+        };
+        try {
+            const r = await fetch(API + '/api/kanban', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            if (r.ok) {
+                hideKanbanModal();
+                await fetchKanban();
+                await fetchKanbanSidebar();
+            }
+        } catch {}
     }
 
     function renderTasks(tasks) {

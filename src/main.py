@@ -412,6 +412,7 @@ async def main():
 
     agent = Agent(workspace=workspace, config_dir=config_dir, client=LLMClient())
     await agent.initialize()
+
     if args.agent:
         agent_name = args.agent
         task = " ".join(args.task) if args.task else ""

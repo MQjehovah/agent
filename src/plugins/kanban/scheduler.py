@@ -131,11 +131,16 @@ class KanbanScheduler:
             f"{task.title}\n{task.description}" if task.description else task.title
         )
         try:
+            agent_failed = False
             if assignee == "self":
                 result = await self.agent.run(task_desc)
                 result_text = (
                     result.result if hasattr(result, "result") else str(result)
                 )
+                if hasattr(result, "status") and result.status != "completed":
+                    agent_failed = True
+                if result_text and result_text.startswith("思考出错"):
+                    agent_failed = True
             elif self.agent.subagent_manager:
                 result = await self.agent.subagent_manager.run_subagent(
                     task=task_desc,
@@ -144,14 +149,20 @@ class KanbanScheduler:
                 result_text = (
                     result.result if hasattr(result, "result") else str(result)
                 )
+                if hasattr(result, "status") and result.status != "completed":
+                    agent_failed = True
             else:
                 result_text = f"子代理 {assignee} 不可用"
                 self.board.mark_failed(task.id, result_text)
                 return
 
-            preview = result_text[:500] if result_text else "（无输出）"
-            self.board.mark_completed(task.id, preview)
-            logger.info("看板任务完成: '%s' by %s", task.title, assignee)
+            if agent_failed:
+                self.board.mark_failed(task.id, result_text[:500])
+                logger.error("看板任务失败: '%s' by %s", task.title, assignee)
+            else:
+                preview = result_text[:500] if result_text else "（无输出）"
+                self.board.mark_completed(task.id, preview)
+                logger.info("看板任务完成: '%s' by %s", task.title, assignee)
         except asyncio.CancelledError:
             self.board.mark_failed(task.id, "任务被取消")
         except Exception as e:

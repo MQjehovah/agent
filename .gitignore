@@ -18,6 +18,8 @@ logs/
 
 .claude/
 
+.github/
+
 .worktrees/
 
 .pytest_cache/
