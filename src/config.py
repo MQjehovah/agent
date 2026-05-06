@@ -168,6 +168,10 @@ class Config:
     # 自主模式配置
     AUTONOMOUS_DISCOVERY_INTERVAL: int = 1800
 
+    # 上下文滑动窗口配置
+    SLIDING_WINDOW_SIZE: int = 40
+    SLIDING_WINDOW_SUMMARY_MAX: int = 6000
+
     # SearXNG 搜索配置
     SEARXNG_URL: str = ""
     SEARXNG_ENGINES: str = "google,bing,duckduckgo"
@@ -192,6 +196,8 @@ class Config:
         cls.AUTONOMOUS_DISCOVERY_INTERVAL = get_config_value(
             "AUTONOMOUS_DISCOVERY_INTERVAL", 1800, int
         )
+        cls.SLIDING_WINDOW_SIZE = get_config_value("SLIDING_WINDOW_SIZE", 40, int)
+        cls.SLIDING_WINDOW_SUMMARY_MAX = get_config_value("SLIDING_WINDOW_SUMMARY_MAX", 6000, int)
         cls.SEARXNG_URL = get_config_value("SEARXNG_URL", "", str)
         cls.SEARXNG_ENGINES = get_config_value("SEARXNG_ENGINES", "google,bing,duckduckgo", str)
         cls.SEARXNG_TIMEOUT = get_config_value("SEARXNG_TIMEOUT", 10, int)

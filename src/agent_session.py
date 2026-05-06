@@ -73,6 +73,14 @@ class AgentSessionManager:
     TEXT_BLOCK_COLLAPSE_THRESHOLD = 3000  # 超过此长度的文本块被折叠
     TEXT_BLOCK_COLLAPSE_HEAD = 500        # 折叠后保留头部字符数
     TEXT_BLOCK_COLLAPSE_TAIL = 300        # 折叠后保留尾部字符数
+    # sliding window 参数（从 Config 加载，启动时覆盖）
+    SLIDING_WINDOW_SIZE = 40
+    SLIDING_WINDOW_SUMMARY_MAX = 6000
+
+    @classmethod
+    def load_config(cls):
+        cls.SLIDING_WINDOW_SIZE = Config.SLIDING_WINDOW_SIZE
+        cls.SLIDING_WINDOW_SUMMARY_MAX = Config.SLIDING_WINDOW_SUMMARY_MAX
 
     @staticmethod
     def estimate_tokens(messages: list, tool_defs: list = None) -> int:
@@ -131,6 +139,86 @@ class AgentSessionManager:
         return result
 
     @staticmethod
+    def sliding_window(messages: list, window_size: int = None) -> list:
+        """滑动窗口：始终只保留最近 N 条非系统消息，确保 tool_call / tool_response 完整配对。
+
+        滑落的消息被序列化为摘要文本，作为一条 user 消息保留在最前面，
+        让模型仍可参考早期对话要点，但不再占据完整上下文空间。
+        """
+        window_size = window_size or AgentSessionManager.SLIDING_WINDOW_SIZE
+
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        non_system = [m for m in messages if m.get("role") != "system"]
+
+        if len(non_system) <= window_size:
+            return messages
+
+        # 从末尾取 window_size 条，向前扩展直到 tool_call 响应对完整
+        kept = list(non_system[-window_size:])
+
+        # 收集 kept 中 assistant tool_calls 的 id 集合
+        required_tc_ids = set()
+        for m in kept:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    tc_id = tc.get("id", "")
+                    if tc_id:
+                        required_tc_ids.add(tc_id)
+
+        # 检查 kept 中是否已有对应 tool response
+        responded_ids = set()
+        for m in kept:
+            if m.get("role") == "tool" and m.get("tool_call_id"):
+                responded_ids.add(m["tool_call_id"])
+
+        # 向前扩展以补齐缺失的 tool response
+        start_idx = len(non_system) - window_size - 1
+        missing = required_tc_ids - responded_ids
+        while missing and start_idx >= 0:
+            m = non_system[start_idx]
+            kept.insert(0, m)
+            if m.get("role") == "tool" and m.get("tool_call_id") in missing:
+                missing.discard(m["tool_call_id"])
+            start_idx -= 1
+
+        # 滑落的消息 -> 摘要
+        kept_set = set(id(m) for m in kept)
+        evicted = [m for m in non_system if id(m) not in kept_set]
+
+        if not evicted:
+            return messages
+
+        summary_parts = []
+        max_chars = AgentSessionManager.SLIDING_WINDOW_SUMMARY_MAX
+        char_count = 0
+        for m in evicted:
+            role = m.get("role", "unknown")
+            content = m.get("content", "")
+            name = m.get("name", "")
+            prefix = f"[{role}{'/' + name if name else ''}]"
+            if content:
+                snippet = content[:200] + ("..." if len(content) > 200 else "")
+                line = f"{prefix} {snippet}"
+                if char_count + len(line) > max_chars:
+                    break
+                summary_parts.append(line)
+                char_count += len(line)
+
+        summary_text = "\n".join(summary_parts)
+        summary_msg = {
+            "role": "user",
+            "content": f"[早期对话摘要 — {len(evicted)} 条消息已压缩]\n{summary_text}",
+        }
+        ack_msg = {"role": "assistant", "content": "已了解早期上下文，继续对话。"}
+
+        result = [*system_msgs, summary_msg, ack_msg, *kept]
+        logger.info(
+            f"sliding_window: {len(non_system)} → {len(result)} 条消息 "
+            f"(滑落 {len(evicted)} 条 → 摘要)"
+        )
+        return result
+
+    @staticmethod
     def context_collapse(messages: list) -> list:
         """中等压缩：折叠超长文本块（不调用 LLM）。
 
@@ -169,14 +257,23 @@ class AgentSessionManager:
         max_tokens: int = None,
         tool_defs: list = None
     ) -> list:
-        """三层渐进式上下文压缩。
+        """四层渐进式上下文压缩。
 
+        Layer 0: sliding_window — 滑动窗口，始终裁剪到最近 N 条，零成本
         Layer 1 (50%): microcompact — 截断旧工具结果，零成本
         Layer 2 (65%): context_collapse — 折叠超长文本块，零成本
         Layer 3 (80%): LLM 压缩 — 调用模型生成摘要，有成本
         """
         max_tokens = max_tokens or AgentSessionManager.MAX_CONTEXT_TOKENS
         token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
+
+        # Layer 0: sliding_window — 始终裁剪到窗口大小
+        non_system = [m for m in messages if m.get("role") != "system"]
+        if len(non_system) > AgentSessionManager.SLIDING_WINDOW_SIZE:
+            messages = AgentSessionManager.sliding_window(messages)
+            token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
+            if token_count < max_tokens * 0.5:
+                return messages
 
         if token_count < max_tokens * 0.5:
             return messages

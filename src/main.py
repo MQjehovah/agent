@@ -26,6 +26,7 @@ else:
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 from agent import Agent
+from agent_session import AgentSessionManager
 from cmd_handler import CommandHandler
 from config import Config, validate_config
 from llm import LLMClient
@@ -403,6 +404,7 @@ async def main():
     args = parser.parse_args()
 
     Config.load_from_env()
+    AgentSessionManager.load_config()
 
     if not args.skip_config_check and not validate_config():
         console.print("[red]配置验证失败[/red]")
