@@ -4,7 +4,6 @@ import logging
 
 from autonomous.eventbus import EventBus
 from autonomous.goal import Goal, GoalManager, PlanStep
-from autonomous.panel import TaskPanel
 
 logger = logging.getLogger("agent.autonomous.loop")
 
@@ -22,7 +21,7 @@ class AutonomousLoop:
         verifier,
         reporter,
         perceiver,
-        panel: TaskPanel,
+        board=None,
         shutdown_event: asyncio.Event | None = None,
     ):
         self.event_bus = event_bus
@@ -33,13 +32,13 @@ class AutonomousLoop:
         self.verifier = verifier
         self.reporter = reporter
         self.perceiver = perceiver
-        self.panel = panel
+        self.board = board
         self.shutdown_event = shutdown_event or asyncio.Event()
         self._active_tasks: list[asyncio.Task] = []
 
     async def run(self):
-        # 启动时从 prompt 提取一次性任务（极其保守，只生成明确写明的）
-        await self._generate_panel_once()
+        if self.board and self.board.is_empty():
+            await self._generate_panel_once()
 
         self._active_tasks = [
             asyncio.create_task(self._panel_loop()),
@@ -59,15 +58,13 @@ class AutonomousLoop:
 
     async def _generate_panel_once(self):
         """启动时从 agent prompt 提取主动任务，只生成一次"""
-        if not self.panel.is_empty():
-            return
         tool_summary = getattr(self.agent, "_get_tool_summary", lambda: "")()
         subagent_summary = ""
         if self.agent.subagent_manager:
             subagent_summary = self.agent.subagent_manager.get_subagent_prompt()
         logger.info("为 agent [%s] 提取 prompt 中的主动任务...", getattr(self.agent, "name", "?"))
         await self.perceiver.generate_panel_tasks(
-            self.agent, tool_summary, subagent_summary, self.panel
+            self.agent, tool_summary, subagent_summary, self.board
         )
 
     # ================================================================
@@ -160,7 +157,7 @@ class AutonomousLoop:
         return ""
 
     # ================================================================
-    #  面板执行循环（轮询所有 agent 的面板）
+    #  看板执行循环
     # ================================================================
 
     async def _panel_loop(self):
@@ -178,32 +175,33 @@ class AutonomousLoop:
                 logger.exception("面板循环异常")
 
     async def _poll_and_execute(self):
+        if not self.board:
+            return
         if self.event_bus.size() > 0:
             return
 
-        all_pending = list(self.panel.get_pending())
-        all_pending.sort(key=lambda t: (t.priority, t.created_at))
-        if all_pending:
-            logger.info("面板中有 %d 个任务待执行", len(all_pending))
+        due_tasks = self.board.get_due_tasks()
+        if not due_tasks:
+            return
 
-        for task in all_pending:
+        logger.info("看板中有 %d 个任务待执行", len(due_tasks))
+
+        for task in due_tasks:
             if self.shutdown_event.is_set() or self.event_bus.size() > 0:
                 break
-            panel = self.panel
-            logger.info("执行面板任务: [%s] %s", task.source, task.title)
-            panel.mark_active(task.id)
+            logger.info("执行看板任务: [%s] %s", task.source, task.title)
             try:
                 goal = self.goal_manager.create_goal(
                     title=task.title,
                     description=task.description,
-                    source=f"panel:{task.source}",
+                    source=f"kanban:{task.source}",
                     priority=task.priority,
                 )
                 await self._execute_goal_loop(goal)
-            except Exception:
-                logger.exception("面板任务执行异常: %s", task.title)
-            finally:
                 if task.interval is not None:
-                    panel.mark_pending(task.id)
+                    self.board.mark_completed(task.id)
                 else:
-                    panel.mark_completed(task.id)
+                    self.board.mark_completed(task.id)
+            except Exception:
+                logger.exception("看板任务执行异常: %s", task.title)
+                self.board.mark_failed(task.id, "执行异常")

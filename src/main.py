@@ -223,13 +223,12 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                 pass
 
 
-async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, panel=None):
+async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     """自主模式 - 感知-规划-执行-校验循环"""
     from autonomous.eventbus import EventBus
     from autonomous.executor import Executor
     from autonomous.goal import GoalManager
     from autonomous.loop import AutonomousLoop
-    from autonomous.panel import TaskPanel
     from autonomous.perceiver import Perceiver
     from autonomous.planner import Planner
     from autonomous.reporter import DingTalkReporter, Reporter
@@ -237,11 +236,15 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
 
     config_dir = agent.config_dir
     db_path = os.path.join(config_dir, "autonomous.db")
-    panel_path = os.path.join(config_dir, "task_panel.json")
 
     event_bus = EventBus(db_path=db_path)
     goal_manager = GoalManager(db_path)
-    panel = TaskPanel(panel_path) if panel is None else panel
+
+    kanban_board = None
+    if agent.plugin_manager:
+        kp = agent.plugin_manager.get_plugin("kanban")
+        if kp:
+            kanban_board = kp.get_board()
 
     tool_summary = ""
     if hasattr(agent, "_get_tool_summary"):
@@ -259,23 +262,9 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
     )
 
     dingtalk_plugin = None
-    scheduler_plugin = None
-    if not args.no_plugins:
-        plugin_manager = PluginManager(os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"), config_dir=config_dir)
-        plugin_manager.load_all()
-        agent.plugin_manager = plugin_manager
+    plugin_manager = agent.plugin_manager
 
-        async def _plugin_to_perceiver(session_id: str, content: str):
-            await perceiver.handle_dingtalk_message({
-                "text": content,
-                "session_id": session_id,
-                "sender_nick": "用户",
-            })
-            return "已收到，正在处理中..."
-
-        plugin_manager.register_executor(_plugin_to_perceiver)
-        plugin_manager.start_all()
-
+    if plugin_manager:
         dingtalk_plugin = plugin_manager.get_plugin("dingtalk")
 
         scheduler_plugin = plugin_manager.get_plugin("scheduler")
@@ -284,8 +273,6 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
                 await perceiver.handle_schedule({"name": "定时任务", "task": schedule_task})
             scheduler_plugin._agent_executor = _schedule_to_perceiver
             scheduler_plugin.start()
-    else:
-        plugin_manager = None
 
     if (
         dingtalk_plugin
@@ -308,7 +295,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
         verifier=verifier,
         reporter=reporter,
         perceiver=perceiver,
-        panel=panel,
+        board=kanban_board,
         shutdown_event=shutdown_event,
     )
 
@@ -318,12 +305,17 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args, pan
         except NotImplementedError:
             pass
 
+    board_info = ""
+    if kanban_board:
+        stats = kanban_board.get_stats()
+        board_info = f"看板: {stats['total']} 个任务 ({stats['by_column']})"
+
     console.print(
         Panel.fit(
             "[bold green]自主模式已启动[/bold green]\n"
             f"目标数据库: {db_path}\n"
-            f"任务面板: {panel_path} ({panel.get_stats()['total']} 个任务)\n"
-            "信号源: 钉钉消息 | Webhook | 定时任务 | 任务面板\n"
+            f"{board_info}\n"
+            "信号源: 钉钉消息 | Webhook | 定时任务 | 看板\n"
             "等待事件...",
             border_style="green",
         )
@@ -420,10 +412,6 @@ async def main():
 
     agent = Agent(workspace=workspace, config_dir=config_dir, client=LLMClient())
     await agent.initialize()
-
-    # 任务面板（Web UI 和自主模式共用）
-    from autonomous.panel import TaskPanel
-    panel = TaskPanel(os.path.join(config_dir, "task_panel.json"))
     if args.agent:
         agent_name = args.agent
         task = " ".join(args.task) if args.task else ""
@@ -443,32 +431,44 @@ async def main():
     plugin_manager = None
 
     try:
-        # 启动 Web UI（默认在 autonomous 模式或指定 --web 时启动）
         start_web = args.web or (args.mode == "autonomous" and not args.no_web)
+
+        if not args.no_plugins:
+            plugin_manager = PluginManager(os.path.join(src_dir, "plugins"), config_dir=config_dir)
+            plugin_manager.load_all()
+            plugin_manager.register_executor(lambda sid, c: agent.run(c, session_id=sid))
+            agent.plugin_manager = plugin_manager
+
+            kanban_plugin = plugin_manager.get_plugin("kanban")
+            if kanban_plugin:
+                kanban_plugin.set_agent(agent)
+
+            plugin_manager.start_all()
+
+            scheduler_plugin = plugin_manager.get_plugin("scheduler")
+            if scheduler_plugin:
+                scheduler_plugin._agent_executor = agent.run
+                if not scheduler_plugin._started:
+                    scheduler_plugin.start()
+
+        kanban_board = None
+        if agent.plugin_manager:
+            kp = agent.plugin_manager.get_plugin("kanban")
+            if kp:
+                kanban_board = kp.get_board()
 
         if start_web:
             from web import WebServer
             web_server = WebServer(port=args.web_port, loop=asyncio.get_running_loop())
             web_server.set_agent(agent)
-            web_server.set_panel(panel)
+            if kanban_board:
+                web_server.set_kanban(kanban_board)
             web_server.start()
             console.print(f"[bold green]Web UI:[/bold green] http://localhost:{args.web_port}")
 
         if args.mode == "autonomous":
-            plugin_manager = await autonomous_mode(agent, shutdown_event, args, panel=panel)
+            await autonomous_mode(agent, shutdown_event, args)
         else:
-            if not args.no_plugins:
-                plugin_manager = PluginManager(os.path.join(src_dir, "plugins"), config_dir=config_dir)
-                plugin_manager.load_all()
-                plugin_manager.register_executor(lambda sid, c: agent.run(c, session_id=sid))
-                plugin_manager.start_all()
-                agent.plugin_manager = plugin_manager
-
-                scheduler_plugin = plugin_manager.get_plugin("scheduler")
-                if scheduler_plugin:
-                    scheduler_plugin._agent_executor = agent.run
-                    scheduler_plugin.start()
-
             await interactive_mode(agent, shutdown_event)
     except asyncio.CancelledError:
         logger.info("任务取消")

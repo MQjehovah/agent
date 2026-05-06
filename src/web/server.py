@@ -28,7 +28,7 @@ class WebServer:
         self.host = host
         self.port = port
         self.agent = None
-        self.panel = None
+        self._kanban = None
         self.loop: Optional[asyncio.AbstractEventLoop] = loop
         self._app = None
         self._thread: Optional[threading.Thread] = None
@@ -39,7 +39,10 @@ class WebServer:
         self.agent = agent
 
     def set_panel(self, panel):
-        self.panel = panel
+        self._kanban = panel
+
+    def set_kanban(self, kanban_board):
+        self._kanban = kanban_board
 
     def start(self):
         if not self.loop:
@@ -93,8 +96,8 @@ class WebServer:
                     subagents.append({"name": name, "description": desc})
 
             panel_stats = {}
-            if self.panel:
-                panel_stats = self.panel.get_stats()
+            if self._kanban:
+                panel_stats = self._kanban.get_stats()
 
             return self._json({
                 "name": self.agent.name or "Agent",
@@ -323,42 +326,90 @@ class WebServer:
                 self._sessions.pop(session_id, None)
             return self._json({"success": True})
 
-        # 任务面板 API
-        @self._app.route("/api/panel", methods=["GET"])
-        def panel_list():
-            if not self.panel:
-                return self._json({"error": "Panel not available", "code": 503}, 503)
+        # 看板 API
+        @self._app.route("/api/kanban", methods=["GET"])
+        def kanban_list():
+            if not self._kanban:
+                return self._json({"error": "Kanban not available", "code": 503}, 503)
             try:
-                tasks = self.panel.list_all()
-                stats = self.panel.get_stats()
+                stats = self._kanban.get_stats()
+                tasks = self._kanban.list_tasks()
                 return self._json({"stats": stats, "tasks": [t.to_dict() for t in tasks]})
             except Exception as e:
-                logger.exception("Panel API error")
+                logger.exception("Kanban API error")
                 return self._json({"error": str(e), "code": 500}, 500)
 
-        @self._app.route("/api/panel", methods=["POST"])
-        def panel_add():
-            if not self.panel:
-                return self._json({"error": "Panel not available"}, 503)
+        @self._app.route("/api/kanban", methods=["POST"])
+        def kanban_add():
+            if not self._kanban:
+                return self._json({"error": "Kanban not available"}, 503)
             data = request.get_json()
             if not data or "title" not in data:
                 return self._json({"error": "Missing title"}, 400)
-            task = self.panel.add_task(
+            task = self._kanban.add_task(
                 title=data["title"],
                 description=data.get("description", ""),
                 priority=data.get("priority", 3),
-                interval=data.get("interval"),
+                column=data.get("column", "backlog"),
                 source="user",
+                tags=data.get("tags"),
+                interval=data.get("interval"),
             )
             return self._json({"task": task.to_dict()})
 
-        @self._app.route("/api/panel/<task_id>", methods=["DELETE"])
-        def panel_remove(task_id):
-            if not self.panel:
-                return self._json({"error": "Panel not available"}, 503)
-            if self.panel.remove_task(task_id):
+        @self._app.route("/api/kanban/<task_id>", methods=["PATCH"])
+        def kanban_update(task_id):
+            if not self._kanban:
+                return self._json({"error": "Kanban not available"}, 503)
+            data = request.get_json()
+            if not data:
+                return self._json({"error": "Missing body"}, 400)
+            if "column" in data:
+                self._kanban.move_task(task_id, data["column"], data.get("assignee"))
+            if "assignee" in data and "column" not in data:
+                task = self._kanban.get_task(task_id)
+                if task:
+                    self._kanban.move_task(task_id, task.column, assignee=data["assignee"])
+            return self._json({"success": True})
+
+        @self._app.route("/api/kanban/<task_id>", methods=["DELETE"])
+        def kanban_remove(task_id):
+            if not self._kanban:
+                return self._json({"error": "Kanban not available"}, 503)
+            if self._kanban.remove_task(task_id):
                 return self._json({"success": True})
             return self._json({"error": "Task not found"}, 404)
+
+        @self._app.route("/api/kanban/<task_id>/move", methods=["POST"])
+        def kanban_move(task_id):
+            if not self._kanban:
+                return self._json({"error": "Kanban not available"}, 503)
+            data = request.get_json()
+            if not data or "column" not in data:
+                return self._json({"error": "Missing column"}, 400)
+            ok = self._kanban.move_task(task_id, data["column"])
+            return self._json({"success": ok})
+
+        # 兼容旧 API
+        @self._app.route("/api/panel", methods=["GET"])
+        def panel_list_compat():
+            if not self._kanban:
+                return self._json({"error": "Panel not available", "code": 503}, 503)
+            try:
+                stats = self._kanban.get_stats()
+                tasks = self._kanban.list_tasks()
+                compat_tasks = []
+                status_map = {
+                    "backlog": "pending", "todo": "pending",
+                    "in_progress": "active", "done": "completed",
+                }
+                for t in tasks:
+                    d = t.to_dict()
+                    d["status"] = status_map.get(d["column"], "pending")
+                    compat_tasks.append(d)
+                return self._json({"stats": stats, "tasks": compat_tasks})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
 
         # Todo API
         @self._app.route("/api/todos", methods=["GET"])
