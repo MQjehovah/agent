@@ -38,13 +38,13 @@ class FileTool(BuiltinTool):
             "- 写文件会覆盖原内容，如需保留原内容请用 append\n"
             "\n"
             "【调用示例（JSON格式）】\n"
-            '{"operation": "read", "path": "/src/main.py"}\n'
-            '{"operation": "read", "path": "/src/main.py", "offset": 100, "limit": 50}\n'
-            '{"operation": "write", "path": "/tmp/out.txt", "content": "hello world"}\n'
-            '{"operation": "append", "path": "/tmp/log.txt", "content": "new line\\n"}\n'
-            '{"operation": "list", "path": "/src"}\n'
-            '{"operation": "exists", "path": "/src/main.py"}\n'
-            '{"operation": "delete", "path": "/tmp/old.txt"}'
+            '{"operation": "read", "path": "src/main.py"}\n'
+            '{"operation": "read", "path": "src/main.py", "offset": 100, "limit": 50}\n'
+            '{"operation": "write", "path": "output/result.txt", "content": "hello world"}\n'
+            '{"operation": "append", "path": "output/log.txt", "content": "new line\\n"}\n'
+            '{"operation": "list", "path": "src"}\n'
+            '{"operation": "exists", "path": "src/main.py"}\n'
+            '{"operation": "delete", "path": "output/old.txt"}'
         )
 
     @property
@@ -59,7 +59,7 @@ class FileTool(BuiltinTool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "文件或目录的绝对路径"
+                    "description": "文件或目录路径，支持相对路径（基于工作目录）或绝对路径"
                 },
                 "content": {
                     "type": "string",
@@ -87,6 +87,14 @@ class FileTool(BuiltinTool):
     async def execute(self, operation: str, path: str, content: str = None,
                       encoding: str = "utf-8", offset: int = 0, limit: int = DEFAULT_READ_LIMIT) -> str:
         try:
+            path = self.resolve_path(path)
+
+            if operation in ("write", "append", "delete") and not self.is_path_allowed(path):
+                return json.dumps({
+                    "success": False,
+                    "error": f"路径超出工作目录范围: {path}，工作目录: {self.workspace}"
+                }, ensure_ascii=False)
+
             if operation == "read":
                 return self._read_file(path, encoding, offset, limit)
             elif operation == "write":

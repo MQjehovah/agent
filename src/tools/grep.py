@@ -81,7 +81,7 @@ class GrepTool(BuiltinTool):
 
     async def execute(self, **kwargs) -> str:
         pattern = kwargs.get("pattern", "")
-        search_path = kwargs.get("path", os.getcwd())
+        search_path = kwargs.get("path", self.workspace or os.getcwd())
         file_pattern = kwargs.get("file_pattern", "*")
         case_insensitive = kwargs.get("case_insensitive", False)
         max_results = kwargs.get("max_results", 50)

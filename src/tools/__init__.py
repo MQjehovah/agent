@@ -1,4 +1,5 @@
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
@@ -29,6 +30,8 @@ class ToolDefinition:
 
 
 class BuiltinTool(ABC):
+    workspace: str = ""
+
     @property
     @abstractmethod
     def name(self) -> str:
@@ -48,6 +51,22 @@ class BuiltinTool(ABC):
     async def execute(self, **kwargs) -> str:
         pass
 
+    def resolve_path(self, path: str) -> str:
+        """将路径解析为绝对路径。相对路径基于 workspace 解析。"""
+        if not path:
+            return self.workspace or os.getcwd()
+        if os.path.isabs(path):
+            return os.path.normpath(path)
+        return os.path.normpath(os.path.join(self.workspace or os.getcwd(), path))
+
+    def is_path_allowed(self, path: str) -> bool:
+        """写操作路径边界检查。workspace 为空时允许所有路径。"""
+        if not self.workspace:
+            return True
+        resolved = os.path.normpath(os.path.abspath(path))
+        ws = os.path.normpath(os.path.abspath(self.workspace))
+        return resolved == ws or resolved.startswith(ws + os.sep)
+
     def get_definition(self) -> Dict[str, Any]:
         return {
             "type": "function",
@@ -62,10 +81,22 @@ class BuiltinTool(ABC):
 class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, BuiltinTool] = {}
+        self._workspace: str = ""
+
+    @property
+    def workspace(self) -> str:
+        return self._workspace
+
+    @workspace.setter
+    def workspace(self, value: str):
+        self._workspace = value
+        for tool in self._tools.values():
+            tool.workspace = value
 
     def register_tool(self, tool: BuiltinTool) -> bool:
         if tool.name in self._tools:
             logger.warning(f"工具 '{tool.name}' 已存在，将被覆盖")
+        tool.workspace = self._workspace
         self._tools[tool.name] = tool
         logger.debug(f"注册内置工具: {tool.name}")
         return True

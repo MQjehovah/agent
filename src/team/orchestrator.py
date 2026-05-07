@@ -320,7 +320,6 @@ class TeamOrchestrator:
         if not workspace:
             workspace = os.getcwd()
         self.workspace = workspace
-        os.makedirs(self.workspace, exist_ok=True)
         logger.info(f"工作目录: {self.workspace}")
 
     @staticmethod

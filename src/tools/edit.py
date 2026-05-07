@@ -74,6 +74,14 @@ class EditTool(BuiltinTool):
         if old_text == new_text:
             return json.dumps({"success": False, "error": "原文本和新文本相同"}, ensure_ascii=False)
 
+        path = self.resolve_path(path)
+
+        if not self.is_path_allowed(path):
+            return json.dumps({
+                "success": False,
+                "error": f"路径超出工作目录范围: {path}，工作目录: {self.workspace}"
+            }, ensure_ascii=False)
+
         if not os.path.exists(path):
             return json.dumps({"success": False, "error": f"文件不存在: {path}"}, ensure_ascii=False)
         if os.path.isdir(path):

@@ -50,7 +50,7 @@ class GlobTool(BuiltinTool):
 
     async def execute(self, **kwargs) -> str:
         pattern = kwargs.get("pattern", "")
-        search_path = kwargs.get("path", os.getcwd())
+        search_path = kwargs.get("path", self.workspace or os.getcwd())
         max_results = kwargs.get("max_results", 100)
 
         if not pattern:

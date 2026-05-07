@@ -205,6 +205,7 @@ class Agent:
         from tools.web import WebFetchTool, WebSearchTool
 
         self.tool_registry = ToolRegistry()
+        self.tool_registry.workspace = self.workspace
 
         # 核心工具
         self.tool_registry.register_tool(TodoTool())
