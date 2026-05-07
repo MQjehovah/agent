@@ -92,7 +92,7 @@ class ShellTool(BuiltinTool):
     async def execute(self, **kwargs) -> str:
         command = kwargs.get("command", "")
         timeout = kwargs.get("timeout", 30)
-        cwd = kwargs.get("cwd")
+        cwd = kwargs.get("cwd") or self.workspace or None
         extra_env = kwargs.get("env", {})
         max_output = kwargs.get("max_output", 10000)
 

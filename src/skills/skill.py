@@ -83,10 +83,23 @@ class Skill:
             scripts = [f for f in sorted(os.listdir(scripts_dir))
                        if f.endswith((".py", ".sh", ".js", ".ts"))]
             if scripts:
-                lines = ["## 可用脚本\n"]
+                lines = [
+                    "## 可用脚本\n",
+                    "注意：不要 cd 到脚本目录，直接用下面的命令执行即可。"
+                    "脚本的产出文件会自动写入当前工作目录（workspace）。\n",
+                ]
                 for s in scripts:
-                    script_path = os.path.join(scripts_dir, s)
-                    lines.append(f"- `{s}` ({os.path.getsize(script_path)} bytes)")
+                    script_path = os.path.abspath(os.path.join(scripts_dir, s))
+                    ext = os.path.splitext(s)[1]
+                    if ext == ".py":
+                        hint = f"python \"{script_path}\""
+                    elif ext == ".sh":
+                        hint = f"bash \"{script_path}\""
+                    elif ext in (".js", ".ts"):
+                        hint = f"node \"{script_path}\""
+                    else:
+                        hint = f"\"{script_path}\""
+                    lines.append(f"- `{s}` → `{hint}`")
                 sections.append("\n".join(lines))
 
         assets_dir = os.path.join(self.skill_dir, "assets")
@@ -95,11 +108,11 @@ class Skill:
             if assets:
                 lines = ["## 可用资源\n"]
                 for a in assets:
-                    asset_path = os.path.join(assets_dir, a)
+                    asset_path = os.path.abspath(os.path.join(assets_dir, a))
                     if os.path.isfile(asset_path):
-                        lines.append(f"- `{a}` ({os.path.getsize(asset_path)} bytes)")
+                        lines.append(f"- `{asset_path}`")
                     else:
-                        lines.append(f"- `{a}/`")
+                        lines.append(f"- `{asset_path}/`")
                 sections.append("\n".join(lines))
 
         return "\n\n".join(sections)
