@@ -315,6 +315,8 @@ class TeamOrchestrator:
 
     def _resolve_workspace(self):
         workspace = self.config.get("workspace", "")
+        if not workspace and hasattr(self.subagent_manager, "parent_workspace"):
+            workspace = self.subagent_manager.parent_workspace
         if not workspace:
             workspace = os.getcwd()
         self.workspace = workspace
