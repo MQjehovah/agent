@@ -77,6 +77,7 @@ class SkillManager:
         self.skills_dir = skills_dir
         self.skills: Dict[str, Skill] = {}
         self.tools: List[Dict[str, Any]] = []
+        self._active_skills: Dict[str, str] = {}
         self._load_all()
         self._build_builtin_tools()
 
@@ -203,6 +204,8 @@ class SkillManager:
         if not prompt:
             return json.dumps({"error": f"技能 {skill_name} 没有可用的提示词模板"}, ensure_ascii=False)
 
+        self._active_skills[skill_name] = prompt
+
         result = (
             f"已激活技能: {skill_name}\n\n"
             f"请按照以下指导处理用户的请求:\n\n"
@@ -217,6 +220,17 @@ class SkillManager:
 
     def get_skill(self, name: str) -> Optional[Skill]:
         return self.skills.get(name)
+
+    def clear_active_skills(self):
+        self._active_skills.clear()
+
+    def get_active_skills_prompt(self) -> str:
+        if not self._active_skills:
+            return ""
+        lines = []
+        for name, prompt in self._active_skills.items():
+            lines.append(f"### 技能: {name}\n\n{prompt}")
+        return "\n\n".join(lines)
 
     def get_skills_prompt(self) -> str:
         if not self.skills:

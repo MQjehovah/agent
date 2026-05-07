@@ -388,6 +388,17 @@ class Agent:
         #         is_static=False, priority=100
         #     )
 
+        # 激活技能上下文
+        if self.skill_manager:
+            active_prompt = self.skill_manager.get_active_skills_prompt()
+            if active_prompt:
+                self._prompt_builder.add(
+                    "激活技能", active_prompt,
+                    is_static=False, priority=45
+                )
+            else:
+                self._prompt_builder.remove("激活技能")
+
         self.system_prompt = self._prompt_builder.build_full()
 
     def _get_env_context(self) -> str:
@@ -549,6 +560,10 @@ class Agent:
 
         # 根据当前任务重新拼装 prompt
         self._build_prompt(task)
+
+        # 新任务开始，清空上一轮激活的技能
+        if self.skill_manager:
+            self.skill_manager.clear_active_skills()
 
         # 开始追踪
         self.tracer.start_trace(f"agent.run: {task[:50]}")
