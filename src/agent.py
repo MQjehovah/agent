@@ -323,14 +323,11 @@ class Agent:
             "角色定义", self.system_prompt_raw,
             is_static=True, priority=0
         )
-        self._prompt_builder.add(
-            "工具列表", self._get_tool_summary(),
-            is_static=True, priority=10
-        )
-        self._prompt_builder.add(
-            "工具使用指南", self._get_tool_guidelines(),
-            is_static=True, priority=20
-        )
+
+        # self._prompt_builder.add(
+        #     "工具列表", self._get_tool_summary(),
+        #     is_static=True, priority=10
+        # )
 
         # === 动态区 (每轮可能变化) ===
         self._prompt_builder.add(
@@ -469,35 +466,6 @@ class Agent:
             pass
 
         return self.memory.load_memory(task)
-
-    def _get_tool_guidelines(self) -> str:
-        return """### 工具使用规则
-
-1. **优先使用专用工具而非 shell 命令：**
-   - 读文件 → file_operation(read) 而非 cat/head/tail
-   - 编辑文件 → edit 而非 sed/awk
-   - 写文件 → file_operation(write) 而非 echo/heredoc
-   - 搜索文件名 → glob 而非 find/ls
-   - 搜索内容 → grep 而非 grep/rg 命令
-   - shell 仅用于没有专用工具的系统命令
-
-2. **代码分析遵循 "先搜后读" 策略：**
-   - 第一步：glob 找文件列表 → grep 搜索关键函数/类
-   - 第二步：file_operation(read, offset=行号, limit=50) 精确读取
-   - 禁止一次性读取整个项目
-
-3. **file_operation(read) 使用规则：**
-   - 默认只读 200 行，可通过 offset 和 limit 分段读取大文件
-   - 大文件先用 grep 找行号，再用 offset+limit 精确读取
-   - 多个文件并行读取时，每个 limit 控制在 50-100 行
-
-4. **edit 使用规则：**
-   - old_text 必须精确匹配，提供足够上下文使其唯一
-   - 修改前先 file_operation(read) 确认内容
-
-5. **多工具调用：**
-   - 独立的操作可以并行调用
-   - 有依赖关系的操作必须顺序执行"""
 
     def _get_tool_summary(self) -> str:
         """生成工具描述汇总"""

@@ -34,6 +34,7 @@ class FileTool(BuiltinTool):
             "\n"
             "【使用建议】\n"
             "- 大文件先用 grep 找到目标行号，再用 offset+limit 精确读取\n"
+            "- 多个文件并行读取时，每个 limit 控制在 50-100 行\n"
             "- 修改文件前先 read 确认内容\n"
             "- 写文件会覆盖原内容，如需保留原内容请用 append\n"
             "\n"

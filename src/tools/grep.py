@@ -40,7 +40,9 @@ class GrepTool(BuiltinTool):
 - 在代码库中查找特定函数、类、变量的定义或引用
 - 搜索配置文件中的特定设置
 - 查找包含特定关键词的所有文件
-- 按文件类型（如 .py, .json, .yaml）搜索"""
+- 按文件类型（如 .py, .json, .yaml）搜索
+
+代码分析时先用 grep 搜到目标行号，再用 file_operation(read, offset=行号) 精确读取，避免读取整个大文件。"""
 
     @property
     def parameters(self) -> Dict[str, Any]:

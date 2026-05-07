@@ -53,7 +53,9 @@ class ShellTool(BuiltinTool):
 
     @property
     def description(self) -> str:
-        return "在终端执行shell命令，返回命令输出结果。支持设置超时、工作目录和环境变量。"
+        return ("在终端执行shell命令，返回命令输出结果。支持设置超时、工作目录和环境变量。\n"
+                "仅用于没有专用工具的场景（如安装依赖、运行测试、系统命令等）。"
+                "读文件用 file_operation，编辑用 edit，搜索用 grep/glob，不要用 shell 替代。")
 
     @property
     def parameters(self) -> dict:

@@ -24,7 +24,9 @@ class GlobTool(BuiltinTool):
 - 查找项目中所有 Python 文件：'**/*.py'
 - 查找特定名称的配置文件：'**/config*.json'
 - 查找测试文件：'**/test_*.py'
-- 查找某个目录下的所有文件：'src/**/*'"""
+- 查找某个目录下的所有文件：'src/**/*'
+
+代码分析时先用 glob 定位文件列表，再用 grep 搜索关键内容，最后用 file_operation 精确读取。"""
 
     @property
     def parameters(self) -> Dict[str, Any]:
