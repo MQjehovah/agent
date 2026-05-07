@@ -212,7 +212,7 @@ class AgentSessionManager:
         ack_msg = {"role": "assistant", "content": "已了解早期上下文，继续对话。"}
 
         result = [*system_msgs, summary_msg, ack_msg, *kept]
-        logger.info(
+        logger.debug(
             f"sliding_window: {len(non_system)} → {len(result)} 条消息 "
             f"(滑落 {len(evicted)} 条 → 摘要)"
         )
