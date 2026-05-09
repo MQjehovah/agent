@@ -128,9 +128,28 @@ class WebhookPlugin(BasePlugin):
         )
         self._thread.start()
 
+    def _cors_headers(self) -> dict:
+        return {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Webhook-Token",
+            "Access-Control-Max-Age": "86400",
+        }
+
     def _setup_routes(self):
         from flask import request, Response
         webhook_path = self.config.path
+
+        @self._app.before_request
+        def handle_options():
+            if request.method == "OPTIONS":
+                return self._json_response({})
+
+        @self._app.after_request
+        def add_cors_headers(response):
+            for k, v in self._cors_headers().items():
+                response.headers[k] = v
+            return response
 
         @self._app.route(webhook_path, methods=["POST"])
         def execute():
