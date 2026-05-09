@@ -446,6 +446,14 @@ async def main():
 
             plugin_manager.start_all()
 
+            webhook_plugin = plugin_manager.get_plugin("webhook")
+            if webhook_plugin:
+                async def _webhook_exec(sid, c):
+                    r = await agent.run(c, session_id=sid)
+                    return r.result if hasattr(r, 'result') else str(r)
+
+                webhook_plugin.agent_executor = _webhook_exec
+
             scheduler_plugin = plugin_manager.get_plugin("scheduler")
             if scheduler_plugin:
                 scheduler_plugin._agent_executor = agent.run
