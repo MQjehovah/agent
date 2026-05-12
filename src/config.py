@@ -83,18 +83,18 @@ def validate_config() -> bool:
         if not searxng_url.startswith(("http://", "https://")):
             validator.errors.append(f"SEARXNG_URL 不是有效的 URL: {searxng_url}")
         else:
-            logger.info(f"SearXNG 搜索已启用: {searxng_url}")
+            logger.debug(f"SearXNG 搜索已启用: {searxng_url}")
 
     if os.getenv("TAVILY_API_KEY"):
-        logger.info("Tavily 搜索已启用")
+        logger.debug("Tavily 搜索已启用")
     if os.getenv("SERPER_API_KEY"):
-        logger.info("Serper 搜索已启用")
+        logger.debug("Serper 搜索已启用")
     if os.getenv("BING_SEARCH_API_KEY"):
-        logger.info("Bing Search API 已启用")
+        logger.debug("Bing Search API 已启用")
 
     if not any([searxng_url, os.getenv("TAVILY_API_KEY"),
                 os.getenv("SERPER_API_KEY"), os.getenv("BING_SEARCH_API_KEY")]):
-        logger.info("所有搜索 API 均未配置，搜索将使用 DuckDuckGo（稳定性较低）")
+        logger.debug("所有搜索 API 均未配置，搜索将使用 DuckDuckGo（稳定性较低）")
 
     validator.validate_optional("SEARCH_BACKENDS", "", "搜索后端优先级")
     validator.validate_optional("TAVILY_API_KEY", "", "Tavily API 密钥")

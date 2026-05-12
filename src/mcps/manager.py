@@ -93,7 +93,6 @@ class MCPServerConnection:
 
             self._connected = True
             self._reconnect_attempts = 0
-            logger.info(f"✓ MCP [{self.name}] 已连接，加载 {len(self.tool_defs)} 个工具")
             return True
 
         except asyncio.TimeoutError:
@@ -273,14 +272,14 @@ class MCPManager:
         if self._health_check_task:
             return
         self._health_check_task = asyncio.create_task(self._health_check_loop())
-        logger.info("MCP 健康检查任务已启动")
+        logger.debug("MCP 健康检查任务已启动")
 
     def stop_health_check(self):
         """停止健康检查任务"""
         if self._health_check_task:
             self._health_check_task.cancel()
             self._health_check_task = None
-            logger.info("MCP 健康检查任务已停止")
+            logger.debug("MCP 健康检查任务已停止")
 
     async def _health_check_loop(self):
         """定期健康检查"""
@@ -364,7 +363,7 @@ class MCPManager:
         if success:
             self.servers[name] = server
             self._refresh_tool_defs()
-            logger.info(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
+            logger.debug(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
             return True
         else:
             logger.warning(f"✗ MCP服务 [{name}] 动态连接失败")

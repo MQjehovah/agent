@@ -236,7 +236,7 @@ class FeishuPlugin(BasePlugin):
                 with open(config_file, encoding="utf-8") as f:
                     data = json.load(f)
                 self.config.load_from_dict(data)
-                logger.info(f"飞书配置已加载: {config_file}")
+                logger.debug(f"飞书配置已加载: {config_file}")
             except Exception as e:
                 logger.error(f"加载飞书配置失败: {e!r}")
         else:

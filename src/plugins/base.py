@@ -33,7 +33,7 @@ class BasePlugin(ABC):
     def stop(self):
         pass
 
-    def set_plugin_manager(self, plugin_manager: PluginManager):
+    def set_plugin_manager(self, plugin_manager: "PluginManager"):
         self.plugin_manager = plugin_manager
         logger.debug(f"注册插件：{self.name}")
 

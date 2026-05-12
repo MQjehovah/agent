@@ -391,14 +391,14 @@ class AgentSessionManager:
         if self._cleanup_task:
             return
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-        logger.info("会话清理任务已启动")
+        logger.debug("会话清理任务已启动")
 
     def stop_cleanup_task(self):
         """停止清理任务"""
         if self._cleanup_task:
             self._cleanup_task.cancel()
             self._cleanup_task = None
-            logger.info("会话清理任务已停止")
+            logger.debug("会话清理任务已停止")
 
     async def _cleanup_loop(self):
         """定期清理过期会话"""

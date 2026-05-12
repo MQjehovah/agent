@@ -194,7 +194,7 @@ class ToolRegistry:
                 registered_names[instance.name] = cls_name
 
         if registered_names:
-            logger.info(f"自动发现并注册 {len(registered_names)} 个工具: {list(registered_names.keys())}")
+            logger.debug(f"自动发现并注册 {len(registered_names)} 个工具: {list(registered_names.keys())}")
 
 
 def _find_tool_classes(source: str) -> list[str]:

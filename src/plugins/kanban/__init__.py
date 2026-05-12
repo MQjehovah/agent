@@ -41,7 +41,7 @@ class KanbanPlugin(BasePlugin):
                 self._config.update(
                     {k: v for k, v in data.items() if k != "enabled"}
                 )
-                logger.info("看板配置已加载: %s", config_file)
+                logger.debug("看板配置已加载: %s", config_file)
             except Exception as e:
                 logger.error("加载看板配置失败: %s", e)
 
