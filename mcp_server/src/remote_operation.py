@@ -37,17 +37,6 @@ class APIConfig:
 
 api_config = APIConfig()
 
-
-def _validate_config():
-    """验证配置是否完整"""
-    if not api_config.base_url:
-        logger.warning("DEVICE_API_BASE_URL 未配置，使用默认值")
-    return True
-
-
-_validate_config()
-
-
 def _get_headers() -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if api_config.token:
@@ -74,30 +63,6 @@ def _post(endpoint: str, data: Dict = None) -> Dict[str, Any]:
 
 
 # ==================== 认证相关 ====================
-
-@mcp.tool()
-def set_api_base_url(base_url: str):
-    """设置API基础URL
-    
-    参数:
-    - base_url: API服务器地址，如 https://bms-cn.rosiwit.com
-    """
-    api_config.base_url = base_url.rstrip("/")
-    logger.info(f"API基础URL已设置: {api_config.base_url}")
-    return {"success": True, "base_url": api_config.base_url}
-
-
-@mcp.tool()
-def set_token(token: str):
-    """设置认证Token
-    
-    参数:
-    - token: 认证令牌
-    """
-    api_config.token = token
-    logger.info("Token已设置")
-    return {"success": True}
-
 
 @mcp.tool()
 def get_token(username: str, password: str, login_url: str = None):
@@ -131,6 +96,17 @@ def get_token(username: str, password: str, login_url: str = None):
         logger.error(f"获取Token失败: {e}")
         return {"success": False, "error": str(e)}
 
+
+@mcp.tool()
+def set_token(token: str):
+    """设置认证Token
+    
+    参数:
+    - token: 认证令牌
+    """
+    api_config.token = token
+    logger.info("Token已设置")
+    return {"success": True}
 
 # ==================== 设备信息查询 ====================
 
@@ -214,53 +190,53 @@ def get_chassis_info(sn: str):
 
 # ==================== 故障诊断与恢复 ====================
 
-@mcp.tool()
-def fault_diagnose(sn: str):
-    """故障诊断
+# @mcp.tool()
+# def fault_diagnose(sn: str):
+#     """故障诊断
     
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"故障诊断: {sn}")
-    return _post("/fault_diagnose", {"sn": sn})
+#     参数:
+#     - sn: 设备编码
+#     """
+#     logger.info(f"故障诊断: {sn}")
+#     return _post("/fault_diagnose", {"sn": sn})
 
 
-@mcp.tool()
-def soft_restart(sn: str):
-    """软重启设备
+# @mcp.tool()
+# def soft_restart(sn: str):
+#     """软重启设备
     
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"软重启设备: {sn}")
-    result = _post("/soft_restart", {"sn": sn})
-    logger.info(f"软重启指令已发送: {sn}")
-    return result
+#     参数:
+#     - sn: 设备编码
+#     """
+#     logger.info(f"软重启设备: {sn}")
+#     result = _post("/soft_restart", {"sn": sn})
+#     logger.info(f"软重启指令已发送: {sn}")
+#     return result
 
 
-@mcp.tool()
-def relocate(sn: str, position: List[float]):
-    """设备重定位
+# @mcp.tool()
+# def relocate(sn: str, position: List[float]):
+#     """设备重定位
     
-    参数:
-    - sn: 设备编码
-    - position: 位姿信息 [x, y, theta]
-    """
-    logger.info(f"重定位设备: {sn}, position={position}")
-    result = _post("/relocate", {"sn": sn, "position": position})
-    logger.info(f"重定位指令已发送: {sn}")
-    return result
+#     参数:
+#     - sn: 设备编码
+#     - position: 位姿信息 [x, y, theta]
+#     """
+#     logger.info(f"重定位设备: {sn}, position={position}")
+#     result = _post("/relocate", {"sn": sn, "position": position})
+#     logger.info(f"重定位指令已发送: {sn}")
+#     return result
 
 
-@mcp.tool()
-def factory_reset(sn: str):
-    """重置设备高级工程模式参数
+# @mcp.tool()
+# def factory_reset(sn: str):
+#     """重置设备高级工程模式参数
     
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"重置设备参数: {sn}")
-    return _post("/factory_reset", {"sn": sn})
+#     参数:
+#     - sn: 设备编码
+#     """
+#     logger.info(f"重置设备参数: {sn}")
+#     return _post("/factory_reset", {"sn": sn})
 
 
 # ==================== 设备控制 ====================
@@ -538,90 +514,6 @@ def delete_timer_task():
     """删除定时任务"""
     logger.info("删除定时任务")
     return _post("/timer_task/delete")
-
-
-# ==================== 综合运维工具 ====================
-
-@mcp.tool()
-def diagnose_and_recover(sn: str, position: List[float] = None):
-    """综合故障诊断与恢复
-    
-    自动检测设备状态并执行恢复操作：
-    1. 定位丢失 -> 重定位
-    2. 设备无响应 -> 软重启
-    3. 故障状态 -> 故障诊断
-    
-    参数:
-    - sn: 设备编码
-    - position: 重定位位置（可选，定位丢失时使用）
-    """
-    logger.info(f"综合诊断与恢复: {sn}")
-    
-    detail = get_device_detail(sn)
-    if not detail.get("sn"):
-        return {"success": False, "error": "无法获取设备信息"}
-    
-    results = []
-    
-    if not detail.get("connect"):
-        logger.info("设备离线，尝试软重启")
-        result = soft_restart(sn)
-        results.append({"action": "soft_restart", "result": result})
-    
-    if not detail.get("locate") and position:
-        logger.info("定位丢失，尝试重定位")
-        result = relocate(sn, position)
-        results.append({"action": "relocate", "result": result})
-    
-    if detail.get("hasFault"):
-        logger.info("存在故障，执行诊断")
-        result = fault_diagnose(sn)
-        results.append({"action": "fault_diagnose", "result": result})
-        
-        fault_list = detail.get("faultDTOList", [])
-        if fault_list:
-            results.append({"faults": fault_list})
-    
-    if not results:
-        results.append({"action": "none", "message": "设备状态正常，无需恢复"})
-    
-    return {"success": True, "sn": sn, "actions": results}
-
-
-@mcp.tool()
-def handle_collision(sn: str):
-    """处理设备碰撞故障
-    
-    执行碰撞恢复流程: 停止 -> 后退 -> 再次停止
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"处理碰撞: {sn}")
-    
-    results = []
-    
-    result1 = stop_robot(sn)
-    results.append({"step": "stop", "result": result1})
-    
-    result2 = backward(sn)
-    results.append({"step": "backward", "result": result2})
-    
-    result3 = stop_robot(sn)
-    results.append({"step": "stop", "result": result3})
-    
-    detail = get_device_detail(sn)
-    
-    return {
-        "success": True,
-        "sn": sn,
-        "actions": results,
-        "current_state": {
-            "connect": detail.get("connect"),
-            "locate": detail.get("locate"),
-            "hasFault": detail.get("hasFault")
-        }
-    }
 
 
 if __name__ == "__main__":

@@ -3,6 +3,6 @@
     "port": 8081,
     "path": "/webhook/execute",
     "tokens": [],
-    "callback_timeout": 30,
+    "callback_timeout": 300,
     "max_content_length": 10000
 }
