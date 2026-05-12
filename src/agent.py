@@ -196,42 +196,19 @@ class Agent:
         return re.sub(r'\$\{([^}]+)\}', _replace, text)
 
     def _init_tools(self):
-        from tools import FileTool, MemoryTool, ShellTool, SubagentTool, TodoTool, ToolRegistry
-        from tools.code_preview import CodePreviewTool
-        from tools.edit import EditTool
-        from tools.glob import GlobTool
-        from tools.grep import GrepTool
+        from tools import ToolRegistry
         from tools.task import TaskCancelTool, TaskCreateTool, TaskGetTool, TaskListTool
-        from tools.web import WebFetchTool, WebSearchTool
 
         self.tool_registry = ToolRegistry()
         self.tool_registry.workspace = self.workspace
 
-        # 核心工具
-        self.tool_registry.register_tool(TodoTool())
-        self.tool_registry.register_tool(FileTool())
-        self.tool_registry.register_tool(SubagentTool())
-        self.tool_registry.register_tool(MemoryTool())
-        self.tool_registry.register_tool(ShellTool())
-
-        # 新增：搜索与编辑工具
-        self.tool_registry.register_tool(GrepTool())
-        self.tool_registry.register_tool(GlobTool())
-        self.tool_registry.register_tool(EditTool())
-        self.tool_registry.register_tool(CodePreviewTool())
-
-        # 新增：Web 工具
-        self.tool_registry.register_tool(WebSearchTool())
-        self.tool_registry.register_tool(WebFetchTool())
-
-        # 新增：后台任务工具
-        self.tool_registry.register_tool(TaskCreateTool(self.task_manager))
-        self.tool_registry.register_tool(TaskListTool(self.task_manager))
-        self.tool_registry.register_tool(TaskGetTool(self.task_manager))
-        self.tool_registry.register_tool(TaskCancelTool(self.task_manager))
-
-        # 用户交互工具暂不注册（当前流程不支持交互式确认）
-        # self.tool_registry.register_tool(AskUserTool())
+        task_manager = self.task_manager
+        self.tool_registry.auto_discover(
+            TaskCreateTool=TaskCreateTool(task_manager),
+            TaskListTool=TaskListTool(task_manager),
+            TaskGetTool=TaskGetTool(task_manager),
+            TaskCancelTool=TaskCancelTool(task_manager),
+        )
 
         logger.info(
             f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}"
@@ -371,31 +348,10 @@ class Agent:
         if not self._prompt_builder:
             return
 
-        # 更新环境上下文
         self._prompt_builder.add(
             "环境上下文", self._get_env_context(),
             is_static=False, priority=40
         )
-
-        # 记忆上下文仅在首轮构建，迭代中不再重复搜索
-        # 注入最近文件恢复上下文
-        # recent_context = self._get_recent_files_context()
-        # if recent_context:
-        #     self._prompt_builder.add(
-        #         "最近读取文件", recent_context,
-        #         is_static=False, priority=100
-        #     )
-
-        # 激活技能上下文
-        if self.skill_manager:
-            active_prompt = self.skill_manager.get_active_skills_prompt()
-            if active_prompt:
-                self._prompt_builder.add(
-                    "激活技能", active_prompt,
-                    is_static=False, priority=45
-                )
-            else:
-                self._prompt_builder.remove("激活技能")
 
         self.system_prompt = self._prompt_builder.build_full()
 
@@ -797,6 +753,15 @@ class Agent:
         # PreToolUse 钩子
         await self.hooks.fire("pre_tool_use", tool_name=name, arguments=args)
 
+        # 插件 on_pre_tool_call 拦截
+        if self.plugin_manager:
+            for plugin in self.plugin_manager.plugins.values():
+                if plugin.enabled:
+                    intercepted = await plugin.on_pre_tool_call(name, args)
+                    if intercepted is not None:
+                        logger.info(f"[插件拦截] {plugin.name} 拦截了工具调用: {name}")
+                        return json.dumps(intercepted, ensure_ascii=False)
+
         # 追踪
         self.tracer.start_span(f"tool.{name}")
 
@@ -845,6 +810,12 @@ class Agent:
             # PostToolUse 钩子
             await self.hooks.fire("post_tool_use", tool_name=name,
                                   arguments=args, result=result)
+
+            # 插件 on_transform_tool_result
+            if self.plugin_manager:
+                for plugin in self.plugin_manager.plugins.values():
+                    if plugin.enabled:
+                        result = await plugin.on_transform_tool_result(name, result)
 
             return result
         except Exception as e:

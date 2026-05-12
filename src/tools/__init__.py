@@ -137,6 +137,88 @@ class ToolRegistry:
     def get_tool(self, name: str) -> Optional[BuiltinTool]:
         return self._tools.get(name)
 
+    def auto_discover(self, tools_dir: str = None, **extra_instances):
+        """自动扫描 tools 目录，实例化所有 BuiltinTool 子类并注册。
+
+        extra_instances: 部分工具需要外部依赖（如 TaskCreateTool 需要 TaskManager），
+                         通过关键字参数传入已实例化的工具对象。
+        """
+        import importlib
+        from pathlib import Path
+
+        if tools_dir is None:
+            tools_dir = os.path.dirname(os.path.abspath(__file__))
+
+        tools_path = Path(tools_dir)
+        skip = {"__init__.py", "__pycache__"}
+        registered_names: dict[str, str] = {}
+
+        for py_file in sorted(tools_path.glob("*.py")):
+            if py_file.name in skip:
+                continue
+
+            module_name = py_file.stem
+
+            try:
+                source = py_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            tool_classes = _find_tool_classes(source)
+            if not tool_classes:
+                continue
+
+            try:
+                mod = importlib.import_module(f".{module_name}", package="tools")
+            except Exception as e:
+                logger.warning(f"跳过工具模块 {module_name}: {e}")
+                continue
+
+            for cls_name in tool_classes:
+                cls = getattr(mod, cls_name, None)
+                if cls is None:
+                    continue
+                if not (isinstance(cls, type) and issubclass(cls, BuiltinTool) and cls is not BuiltinTool):
+                    continue
+
+                if cls_name in extra_instances:
+                    instance = extra_instances[cls_name]
+                else:
+                    try:
+                        instance = cls()
+                    except TypeError:
+                        logger.debug(f"跳过需要构造参数的工具: {cls_name}")
+                        continue
+
+                self.register_tool(instance)
+                registered_names[instance.name] = cls_name
+
+        if registered_names:
+            logger.info(f"自动发现并注册 {len(registered_names)} 个工具: {list(registered_names.keys())}")
+
+
+def _find_tool_classes(source: str) -> list[str]:
+    """AST 扫描源码，找到所有继承 BuiltinTool 的类名"""
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    result = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for base in node.bases:
+            if isinstance(base, ast.Name) and base.id == "BuiltinTool":
+                result.append(node.name)
+                break
+            if isinstance(base, ast.Attribute) and base.attr == "BuiltinTool":
+                result.append(node.name)
+                break
+    return result
+
 
 # 核心工具
 from .todo import TodoTool
@@ -162,14 +244,9 @@ from .ask_user import AskUserTool
 
 __all__ = [
     'ToolRegistry', 'BuiltinTool', 'ToolDefinition',
-    # 核心
     'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
-    # 搜索与编辑
     'GrepTool', 'GlobTool', 'EditTool', 'CodePreviewTool',
-    # Web
     'WebSearchTool', 'WebFetchTool',
-    # 后台任务
     'TaskCreateTool', 'TaskListTool', 'TaskGetTool', 'TaskCancelTool',
-    # 用户交互
     'AskUserTool',
 ]
