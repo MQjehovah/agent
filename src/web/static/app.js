@@ -134,15 +134,6 @@
                 '\nStatus: ' + esc(d.status||'-') +
                 '\nTools: ' + esc(String((d.tools||[]).length)) +
                 '\nTasks: ' + esc(JSON.stringify(d.tasks||{}));
-            const subs = d.subagents || [];
-            // Panel stats in workspace
-            if (d.panel && d.panel.by_column) {
-                const bc = d.panel.by_column;
-                wsPanel.textContent = 'Backlog: ' + (bc.backlog||0) +
-                    '  Todo: ' + (bc.todo||0) +
-                    '  In Progress: ' + (bc.in_progress||0) +
-                    '  Done: ' + (bc.done||0);
-            }
         } catch { elDot.className = 'status-dot'; elStatus.textContent = 'disconnected'; }
     }
 
@@ -151,18 +142,12 @@
             const r = await fetch(API + '/api/kanban');
             if (!r.ok) {
                 elTaskList.innerHTML = '<div class="empty-state">Kanban HTTP ' + r.status + '</div>';
-                wsPanel.textContent = 'Kanban HTTP ' + r.status;
                 return;
             }
             const d = await r.json();
             const tasks = d.tasks || [];
             const stats = d.stats || {};
             const byCol = stats.by_column || {};
-
-            wsPanel.textContent = 'Backlog: ' + (byCol.backlog||0) +
-                '  Todo: ' + (byCol.todo||0) +
-                '  In Progress: ' + (byCol.in_progress||0) +
-                '  Done: ' + (byCol.done||0);
 
             elTasks.textContent = stats.total || 0;
             if (!tasks.length) {
@@ -940,6 +925,37 @@
         }
     }
 
+    var _mdModes = {};
+
+    function updateMdPreview(textareaId, previewId) {
+        var el = $('#' + textareaId);
+        var pv = $('#' + previewId);
+        if (!el || !pv) return;
+        try { pv.innerHTML = marked.parse(el.value || ''); } catch { pv.textContent = el.value || ''; }
+    }
+
+    function setMdMode(textareaId, mode) {
+        _mdModes[textareaId] = mode;
+        var el = $('#' + textareaId);
+        var wrap = el ? el.closest('.md-editor-wrap') : null;
+        if (!wrap) return;
+        wrap.className = 'md-editor-wrap mode-' + mode;
+        var pvId = textareaId.replace('Text', 'Preview');
+        if (mode !== 'edit') updateMdPreview(textareaId, pvId);
+    }
+
+    function initMdEditor(textareaId) {
+        _mdModes[textareaId] = 'edit';
+        var ta = $('#' + textareaId);
+        if (!ta) return;
+        var wrap = ta.closest('.md-editor-wrap');
+        if (wrap) wrap.className = 'md-editor-wrap mode-edit';
+        var pvId = textareaId.replace('Text', 'Preview');
+        ta.addEventListener('input', function() {
+            if (_mdModes[textareaId] !== 'edit') updateMdPreview(textareaId, pvId);
+        });
+    }
+
     function openAgentEditor(name) {
         _currentAgent = name;
         _currentSkill = null;
@@ -966,6 +982,7 @@
             var d = await r.json();
             $('#agentPromptText').value = d.content || '';
             $('#agentPromptStatus').textContent = '';
+            updateMdPreview('agentPromptText', 'agentPromptPreview');
         } catch {}
     }
 
@@ -974,7 +991,7 @@
             var r = await fetch(API + '/api/agents/' + encodeURIComponent(name) + '/skills');
             if (!r.ok) return;
             var d = await r.json();
-            var skills = d.skills || [];
+            var skills = Array.isArray(d) ? d : (d.skills || []);
             var list = $('#agentSkillsList');
             if (!skills.length) {
                 list.innerHTML = '<div class="empty-state" style="width:100%">No skills</div>';
@@ -1004,10 +1021,21 @@
             $('#agentSkillText').value = d.content || '';
             $('#agentSkillEditor').style.display = '';
             $('#agentSkillStatus').textContent = '';
+            updateMdPreview('agentSkillText', 'agentSkillPreview');
         } catch {}
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        initMdEditor('agentPromptText');
+        initMdEditor('agentSkillText');
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('md-mode-btn') && e.target.dataset.target) {
+                var target = e.target.dataset.target;
+                e.target.parentElement.querySelectorAll('.md-mode-btn').forEach(function(b) { b.classList.remove('active'); });
+                e.target.classList.add('active');
+                setMdMode(target, e.target.dataset.mode);
+            }
+        });
         $('#agentEditorClose').addEventListener('click', function() {
             $('#agentEditorModal').style.display = 'none';
         });

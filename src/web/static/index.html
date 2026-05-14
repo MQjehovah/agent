@@ -170,7 +170,15 @@
                         <span class="agent-tab" data-agent-tab="skills">Skills</span>
                     </div>
                     <div id="agentPromptPanel">
-                        <textarea class="agent-editor-textarea" id="agentPromptText"></textarea>
+                        <div class="md-editor-toolbar">
+                            <span class="md-mode-btn active" data-mode="edit" data-target="agentPromptText">Edit</span>
+                            <span class="md-mode-btn" data-mode="split" data-target="agentPromptText">Split</span>
+                            <span class="md-mode-btn" data-mode="preview" data-target="agentPromptText">Preview</span>
+                        </div>
+                        <div class="md-editor-wrap" id="agentPromptEditorWrap">
+                            <textarea class="agent-editor-textarea" id="agentPromptText"></textarea>
+                            <div class="md-preview" id="agentPromptPreview"></div>
+                        </div>
                         <div class="agent-editor-actions">
                             <button class="modal-btn modal-btn-primary" id="agentPromptSave">Save</button>
                             <span class="agent-save-status" id="agentPromptStatus"></span>
@@ -187,7 +195,15 @@
                                 <span id="agentSkillEditorName" style="font-weight:700;color:var(--accent-cyan)"></span>
                                 <button class="agent-skill-del-btn" id="agentSkillDelBtn">Delete</button>
                             </div>
-                            <textarea class="agent-editor-textarea" id="agentSkillText" style="height:40vh"></textarea>
+                            <div class="md-editor-toolbar">
+                                <span class="md-mode-btn active" data-mode="edit" data-target="agentSkillText">Edit</span>
+                                <span class="md-mode-btn" data-mode="split" data-target="agentSkillText">Split</span>
+                                <span class="md-mode-btn" data-mode="preview" data-target="agentSkillText">Preview</span>
+                            </div>
+                            <div class="md-editor-wrap" id="agentSkillEditorWrap">
+                                <textarea class="agent-editor-textarea" id="agentSkillText"></textarea>
+                                <div class="md-preview" id="agentSkillPreview"></div>
+                            </div>
                             <div class="agent-editor-actions">
                                 <button class="modal-btn modal-btn-primary" id="agentSkillSave">Save</button>
                                 <span class="agent-save-status" id="agentSkillStatus"></span>
@@ -245,6 +261,7 @@
             </div>
         </div>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>
