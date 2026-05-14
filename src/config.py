@@ -104,6 +104,10 @@ def validate_config() -> bool:
     validator.validate_optional("SEARXNG_ENGINES", "google,bing,duckduckgo", "SearXNG 搜索引擎")
     validator.validate_optional("SEARXNG_TIMEOUT", "10", "SearXNG 搜索超时（秒）")
 
+    rag_url = os.getenv("RAG_BASE_URL", "")
+    if rag_url:
+        logger.info(f"RAG 知识库已配置: {rag_url}")
+
     report = validator.get_report()
 
     # 输出警告

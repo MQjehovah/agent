@@ -210,9 +210,27 @@ class Agent:
             TaskCancelTool=TaskCancelTool(task_manager),
         )
 
+        self._init_retrieval()
+
         logger.info(
             f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}"
             + (f" [沙箱: {type(self.sandbox).__name__}]" if self.sandbox else " [沙箱: 未启用]"))
+
+    def _init_retrieval(self):
+        rag_url = os.environ.get("RAG_BASE_URL", "")
+        if not rag_url:
+            return
+
+        from retrieval import RetrievalTool
+        tool = RetrievalTool()
+        tool.configure(
+            base_url=rag_url,
+            username=os.environ.get("RAG_USERNAME", ""),
+            password=os.environ.get("RAG_PASSWORD", ""),
+            token=os.environ.get("RAG_TOKEN", ""),
+        )
+        self.tool_registry.register_tool(tool)
+        logger.info(f"Agent [{self.name}] RAG 知识库已接入: {rag_url}")
 
     def _init_skills(self):
         skills_dir = os.path.join(self.config_dir, "skills")
