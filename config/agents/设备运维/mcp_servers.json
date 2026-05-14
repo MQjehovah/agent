@@ -9,7 +9,7 @@
         "env": {
             "DEVICE_API_BASE_URL": "https://bms-cn.xzrobot.com",
             "DEVICE_API_USERNAME": "jimingqing@xzrobot.com",
-            "DEVICE_API_PASSWORD": "Jmq88326"
+            "DEVICE_API_PASSWORD": "202202100024"
         },
         "description": "设备远程运维服务"
     },
