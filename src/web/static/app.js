@@ -927,11 +927,37 @@
 
     var _mdModes = {};
 
+    function renderMd(text) {
+        var body = text || '';
+        var fmHtml = '';
+        var fmMatch = body.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (fmMatch) {
+            body = body.slice(fmMatch[0].length);
+            var props = [];
+            fmMatch[1].split('\n').forEach(function(line) {
+                var m = line.match(/^(\w+):\s*(.*)/);
+                if (m) {
+                    var val = m[2].trim();
+                    if (val === '|') return;
+                    props.push({k: m[1], v: val});
+                }
+            });
+            if (props.length) {
+                fmHtml = '<table class="fm-table"><tbody>' +
+                    props.map(function(p) {
+                        return '<tr><th>' + esc(p.k) + '</th><td>' + esc(p.v) + '</td></tr>';
+                    }).join('') +
+                    '</tbody></table>';
+            }
+        }
+        try { return fmHtml + marked.parse(body); } catch { return fmHtml + esc(body); }
+    }
+
     function updateMdPreview(textareaId, previewId) {
         var el = $('#' + textareaId);
         var pv = $('#' + previewId);
         if (!el || !pv) return;
-        try { pv.innerHTML = marked.parse(el.value || ''); } catch { pv.textContent = el.value || ''; }
+        pv.innerHTML = renderMd(el.value || '');
     }
 
     function setMdMode(textareaId, mode) {

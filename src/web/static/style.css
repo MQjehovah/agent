@@ -907,3 +907,12 @@ body {
 .md-preview a:hover { text-decoration: underline; }
 .md-preview hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
 .md-preview img { max-width: 100%; border-radius: 4px; }
+.md-preview .fm-table {
+    margin-bottom: 1em; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg-tertiary); overflow: hidden;
+}
+.md-preview .fm-table th {
+    width: 100px; text-align: right; padding: 4px 10px;
+    font-size: 0.85em; white-space: nowrap;
+}
+.md-preview .fm-table td { padding: 4px 10px; }

@@ -27,7 +27,7 @@ class TodoTool(BuiltinTool):
 
     @property
     def description(self) -> str:
-        return "任务追踪工具。用于管理待办事项列表，支持添加、更新状态、设置优先级、按状态过滤等操作。"
+        return "任务追踪工具。每次调用传入当前所有待办事项的完整列表，会替换整个列表。用于展示当前任务进度。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -36,7 +36,7 @@ class TodoTool(BuiltinTool):
             "properties": {
                 "todos": {
                     "type": "array",
-                    "description": "待办事项列表",
+                    "description": "待办事项完整列表（每次传入当前所有任务，会替换整个列表）",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -99,44 +99,26 @@ class TodoTool(BuiltinTool):
                 logger.warning(f"保存 todo 数据失败: {e}")
 
     async def execute(self, todos: List[Dict], filter_status: str = "all") -> str:
-        updated_count = 0
-        added_count = 0
-
+        new_todos = {}
         for todo_data in todos:
-            todo_id = todo_data.get("id")
             content = todo_data.get("content")
-
-            if todo_id and todo_id in self._todos:
-                # 更新已有任务
-                todo = self._todos[todo_id]
-                if content:
-                    todo.content = content
-                if "status" in todo_data:
-                    todo.status = todo_data["status"]
-                if "priority" in todo_data:
-                    todo.priority = todo_data["priority"]
-                updated_count += 1
-            else:
-                # 新增任务
-                if not content:
-                    continue
-                new_id = str(uuid.uuid4())[:8]
-                self._todos[new_id] = TodoItem(
-                    id=new_id,
-                    content=content,
-                    status=todo_data.get("status", "pending"),
-                    priority=todo_data.get("priority", "medium"),
-                )
-                added_count += 1
-
+            if not content:
+                continue
+            todo_id = todo_data.get("id") or str(uuid.uuid4())[:8]
+            new_todos[todo_id] = TodoItem(
+                id=todo_id,
+                content=content,
+                status=todo_data.get("status", "pending"),
+                priority=todo_data.get("priority", "medium"),
+            )
+        self._todos = new_todos
         self._save()
 
-        # 过滤
         result_todos = self._get_filtered_todos(filter_status)
 
         result = {
             "success": True,
-            "message": f"添加 {added_count} 个，更新 {updated_count} 个待办事项",
+            "message": f"已更新待办列表，共 {len(self._todos)} 项",
             "total_count": len(self._todos),
             "filtered_count": len(result_todos),
             "todos": [asdict(todo) for todo in result_todos]
