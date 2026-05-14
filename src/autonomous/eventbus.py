@@ -73,11 +73,14 @@ class Event:
 
 
 class EventBus:
-    def __init__(self, db_path: str = ""):
+    def __init__(self, storage=None, db_path: str = ""):
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._subscribers: list[Callable[[Event], Any]] = []
+        self._storage = storage
         self._db_path = db_path
-        if db_path:
+        if storage:
+            self._replay_pending()
+        elif db_path:
             self._init_db()
             self._replay_pending()
 
@@ -104,11 +107,16 @@ class EventBus:
             conn.commit()
 
     def _replay_pending(self):
-        if not self._db_path:
+        if not self._storage and not self._db_path:
             return
         try:
-            with sqlite3.connect(self._db_path) as conn:
+            if self._storage:
+                ctx = self._storage.get_connection()
+            else:
+                conn = sqlite3.connect(self._db_path)
                 conn.row_factory = sqlite3.Row
+                ctx = conn
+            with ctx as conn:
                 rows = conn.execute(
                     "SELECT * FROM eventbus_events WHERE consumed = 0 ORDER BY priority ASC, created_at ASC"
                 ).fetchall()
@@ -121,10 +129,11 @@ class EventBus:
             logger.exception("恢复持久化事件失败")
 
     def _persist_event(self, event: Event):
-        if not self._db_path:
+        if not self._storage and not self._db_path:
             return
         try:
-            with sqlite3.connect(self._db_path) as conn:
+            ctx = self._storage.get_connection() if self._storage else sqlite3.connect(self._db_path)
+            with ctx as conn:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO eventbus_events
@@ -145,10 +154,11 @@ class EventBus:
             logger.exception("持久化事件失败")
 
     def _mark_consumed(self, event: Event):
-        if not self._db_path:
+        if not self._storage and not self._db_path:
             return
         try:
-            with sqlite3.connect(self._db_path) as conn:
+            ctx = self._storage.get_connection() if self._storage else sqlite3.connect(self._db_path)
+            with ctx as conn:
                 conn.execute(
                     "UPDATE eventbus_events SET consumed = 1 WHERE id = ?",
                     (event.id,),

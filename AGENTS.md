@@ -49,7 +49,7 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **Sub-agents**: `src/subagent_manager.py` — loads sub-agent templates from `config/agents/*/PROMPT.md`, reuses sessions by name
 - **Memory**: `src/memory/manager.py` — daily memory files + long-term `memory.md` + `shared_knowledge.md`
 - **Learning**: `src/learning/learner.py` — self-learning module that triggers pattern extraction and skill creation
-- **Storage**: `src/storage.py` — SQLite with connection pool, singleton `Storage` initialized via `init_storage(config_dir)`
+- **Storage**: `src/storage.py` — unified SQLite with connection pool; `Storage` manages all tables (messages, eventbus_events, autonomous_goals, kanban_tasks) in a single `data.db`; singleton initialized via `init_storage(workspace, config_dir)`
 - **Plugins**: `src/plugins/` — `BasePlugin` ABC; plugins loaded from `src/plugins/` dir, provide extra tools to agents
 - **MCP servers**: `src/mcps/manager.py` — launches external MCP tool servers defined in `config/mcp_servers.json`
 - **Commands**: `src/cmd_handler.py` — `/` commands in interactive mode (e.g. `/help`, `/agents`)
@@ -72,9 +72,7 @@ config/
 ├── skills/                # Skill definitions (each has SKILL.md)
 │   └── report-writer/
 ├── memory/                # Auto-managed (gitignored)
-├── data.db                # SQLite storage (gitignored)
-├── autonomous.db          # Autonomous mode storage (gitignored)
-├── task_panel.json        # Task panel state (gitignored)
+├── data.db                # Unified SQLite storage (gitignored) — messages, events, goals, kanban
 ├── mcp_servers.json       # MCP server configs
 ├── schedules.json         # Cron-based scheduled tasks
 ├── dingtalk.json           # DingTalk plugin config

@@ -127,7 +127,7 @@ class Agent:
         if self.parent_agent and self.parent_agent.storage:
             self.storage = self.parent_agent.storage
         else:
-            self.storage = init_storage(self.config_dir)
+            self.storage = init_storage(self.workspace, config_dir=self.config_dir)
 
         self._init_subagents()
         self._init_memory()

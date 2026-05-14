@@ -4,6 +4,7 @@ import os
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -90,15 +91,25 @@ class KanbanTask:
 
 
 class KanbanBoard:
-    def __init__(self, db_path: str):
+    def __init__(self, storage=None, db_path: str = ""):
+        self._storage = storage
         self.db_path = db_path
-        self._init_db()
+        if not storage:
+            self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+    @contextmanager
+    def _get_conn(self):
+        if self._storage:
+            with self._storage.get_connection() as conn:
+                yield conn
+        else:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                yield conn
+            finally:
+                conn.close()
 
     def _init_db(self):
         os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)

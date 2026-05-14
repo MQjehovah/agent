@@ -23,7 +23,7 @@ from autonomous.verifier import Verifier
 async def test_e2e_user_message_to_completed_goal(tmp_path):
     bus = EventBus()
     db_path = str(tmp_path / "test_auto.db")
-    goal_mgr = GoalManager(db_path)
+    goal_mgr = GoalManager(db_path=db_path)
 
     perceiver_response = MagicMock(
         choices=[

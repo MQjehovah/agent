@@ -19,12 +19,11 @@ class KanbanPlugin(BasePlugin):
         config_file = self.config_path
         if not config_file:
             config_file = os.path.join(
-                self.config_dir or ".", "kanban.json"
+                self.config_dir or ".", "plugins", "kanban.json"
             )
 
         self._config = {
             "enabled": True,
-            "db_path": "kanban.db",
             "poll_interval": 30,
             "max_concurrent": 3,
             "auto_assign": True,
@@ -52,10 +51,10 @@ class KanbanPlugin(BasePlugin):
 
     def start(self):
         config_dir = self.config_dir or "."
-        db_path = os.path.join(config_dir, self._config["db_path"])
         panel_path = os.path.join(config_dir, "task_panel.json")
 
-        self.board = KanbanBoard(db_path)
+        from storage import get_storage
+        self.board = KanbanBoard(storage=get_storage())
         self.board.migrate_from_panel(panel_path)
 
         if self._agent and self.board:

@@ -1,6 +1,5 @@
 {
   "enabled": true,
-  "db_path": "kanban.db",
   "poll_interval": 30,
   "max_concurrent": 3,
   "auto_assign": true,

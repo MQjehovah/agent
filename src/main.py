@@ -234,11 +234,11 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     from autonomous.reporter import DingTalkReporter, Reporter
     from autonomous.verifier import Verifier
 
-    config_dir = agent.config_dir
-    db_path = os.path.join(config_dir, "autonomous.db")
+    from storage import get_storage
+    storage = get_storage()
 
-    event_bus = EventBus(db_path=db_path)
-    goal_manager = GoalManager(db_path)
+    event_bus = EventBus(storage=storage)
+    goal_manager = GoalManager(storage=storage)
 
     kanban_board = None
     if agent.plugin_manager:
@@ -313,7 +313,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     console.print(
         Panel.fit(
             "[bold green]自主模式已启动[/bold green]\n"
-            f"目标数据库: {db_path}\n"
+            f"目标数据库: {storage.db_path}\n"
             f"{board_info}\n"
             "信号源: 钉钉消息 | Webhook | 定时任务 | 看板\n"
             "等待事件...",

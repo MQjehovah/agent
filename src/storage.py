@@ -18,18 +18,19 @@ def get_storage() -> Optional["Storage"]:
     return _storage_instance
 
 
-def init_storage(workspace: str) -> "Storage":
+def init_storage(workspace: str, config_dir: str = "") -> "Storage":
     global _storage_instance
-    _storage_instance = Storage(workspace)
+    _storage_instance = Storage(workspace, config_dir=config_dir)
     return _storage_instance
 
 
 class Storage:
     """SQLite 存储管理器，使用连接池和批量写入"""
 
-    def __init__(self, workspace: str, pool_size: int = 5):
+    def __init__(self, workspace: str, pool_size: int = 5, config_dir: str = ""):
         self.workspace = workspace
-        self.db_path = self._resolve_db_path(workspace)
+        self.config_dir = config_dir
+        self.db_path = self._resolve_db_path(workspace, config_dir)
         self.pool_size = pool_size
         self._connection_pool: List[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
@@ -39,9 +40,27 @@ class Storage:
         self._init_db()
         self._init_pool()
         self._start_write_thread()
+        if config_dir:
+            self._migrate_legacy_dbs(config_dir)
 
     @staticmethod
-    def _resolve_db_path(workspace: str) -> Path:
+    def _resolve_db_path(workspace: str, config_dir: str = "") -> Path:
+        if config_dir:
+            db_path = Path(config_dir) / "data.db"
+            try:
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                with sqlite3.connect(str(db_path)) as conn:
+                    conn.execute("CREATE TABLE IF NOT EXISTS _probe (id INTEGER)")
+                    conn.execute("DROP TABLE IF EXISTS _probe")
+                    conn.commit()
+                return db_path
+            except sqlite3.OperationalError:
+                pass
+            fallback = Path("/tmp/agent_storage") / Path(config_dir).name / "data.db"
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            logger.warning(f"SQLite 在 {db_path} 不可用，回退到 {fallback}")
+            return fallback
+
         """选择合适的数据库路径：优先 workspace 本地，WSL 跨分区时回退到 /tmp"""
         db_path = Path(workspace) / "data.db"
         try:
@@ -84,6 +103,58 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+
+                CREATE TABLE IF NOT EXISTS eventbus_events (
+                    id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    source TEXT DEFAULT '',
+                    payload TEXT DEFAULT '{}',
+                    priority INTEGER DEFAULT 3,
+                    created_at REAL,
+                    consumed INTEGER DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_eventbus_consumed ON eventbus_events(consumed, priority);
+
+                CREATE TABLE IF NOT EXISTS autonomous_goals (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    source TEXT DEFAULT 'user',
+                    status TEXT DEFAULT 'pending',
+                    priority INTEGER DEFAULT 3,
+                    plan_json TEXT,
+                    retry_count INTEGER DEFAULT 0,
+                    max_retries INTEGER DEFAULT 3,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    completed_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_goals_status ON autonomous_goals(status);
+                CREATE INDEX IF NOT EXISTS idx_goals_priority ON autonomous_goals(priority DESC);
+
+                CREATE TABLE IF NOT EXISTS kanban_tasks (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    priority INTEGER DEFAULT 3,
+                    column TEXT DEFAULT 'backlog',
+                    assignee TEXT,
+                    source TEXT DEFAULT 'user',
+                    tags TEXT DEFAULT '[]',
+                    parent_id TEXT,
+                    interval INTEGER,
+                    last_run REAL,
+                    result TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_kanban_column ON kanban_tasks(column, priority, created_at);
             """)
             # migration: add reasoning_content column if missing
             try:
@@ -120,6 +191,41 @@ class Storage:
                 else:
                     # 连接池已满，关闭临时连接
                     conn.close()
+
+    @contextmanager
+    def get_connection(self):
+        yield from self._get_connection()
+
+    def _migrate_legacy_dbs(self, config_dir: str):
+        config_path = Path(config_dir)
+        migrations = [
+            ("autonomous.db", ["eventbus_events", "autonomous_goals"]),
+            ("kanban.db", ["kanban_tasks"]),
+        ]
+        for db_name, tables in migrations:
+            legacy_path = config_path / db_name
+            if not legacy_path.exists():
+                continue
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("ATTACH DATABASE ? AS legacy_db", (str(legacy_path),))
+                    for table in tables:
+                        try:
+                            count = conn.execute(
+                                f"SELECT count(*) FROM legacy_db.{table}"
+                            ).fetchone()[0]
+                            conn.execute(
+                                f"INSERT OR IGNORE INTO {table} SELECT * FROM legacy_db.{table}"
+                            )
+                            logger.info(f"迁移 {db_name}.{table}: {count} 条记录")
+                        except sqlite3.OperationalError as e:
+                            logger.warning(f"迁移 {db_name}.{table} 跳过: {e}")
+                    conn.execute("DETACH DATABASE legacy_db")
+                    conn.commit()
+                bak_path = legacy_path.rename(legacy_path.with_suffix(".db.bak"))
+                logger.info(f"已将 {legacy_path} 重命名为 {bak_path}")
+            except Exception as e:
+                logger.error(f"迁移 {db_name} 失败: {e}")
 
     def _start_write_thread(self):
         """启动批量写入线程"""

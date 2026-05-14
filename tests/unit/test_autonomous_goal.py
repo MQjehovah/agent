@@ -43,7 +43,7 @@ def test_goal_state_transitions():
 
 def test_goal_manager_create_and_get(tmp_path):
     db_path = str(tmp_path / "test.db")
-    manager = GoalManager(db_path)
+    manager = GoalManager(db_path=db_path)
 
     goal = manager.create_goal(
         title="测试目标",
@@ -62,7 +62,7 @@ def test_goal_manager_create_and_get(tmp_path):
 
 def test_goal_manager_update_status(tmp_path):
     db_path = str(tmp_path / "test.db")
-    manager = GoalManager(db_path)
+    manager = GoalManager(db_path=db_path)
 
     goal = manager.create_goal(title="test", description="d", source="user")
     manager.update_status(goal.id, "planning")
@@ -73,7 +73,7 @@ def test_goal_manager_update_status(tmp_path):
 
 def test_goal_manager_list_pending(tmp_path):
     db_path = str(tmp_path / "test.db")
-    manager = GoalManager(db_path)
+    manager = GoalManager(db_path=db_path)
 
     manager.create_goal(title="g1", description="d", source="user")
     manager.create_goal(title="g2", description="d", source="user")
@@ -86,7 +86,7 @@ def test_goal_manager_list_pending(tmp_path):
 
 def test_goal_manager_save_and_load_plan(tmp_path):
     db_path = str(tmp_path / "test.db")
-    manager = GoalManager(db_path)
+    manager = GoalManager(db_path=db_path)
 
     goal = manager.create_goal(title="test", description="d", source="user")
     plan = Plan(
