@@ -1,5 +1,5 @@
 {
-  "enabled": false,
+  "enabled": true,
   "schedules": [
     {
       "name": "每周产品报表",
