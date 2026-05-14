@@ -24,12 +24,14 @@
         "enabled": false,
         "command": "python",
         "args": [
-            "mcp_server/src/device_ops.py"
+            "mcp_server/src/remote_operation.py"
         ],
         "env": {
-            "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
+            "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com",
+            "DEVICE_API_USERNAME": "your-username",
+            "DEVICE_API_PASSWORD": "your-password"
         },
-        "description": "remote_operation"
+        "description": "设备远程运维服务 - 设备查询、控制、OTA升级等"
     },
     {
         "name": "remote_terminal",

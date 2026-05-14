@@ -31,18 +31,49 @@ class APIConfig:
     base_url: str = os.getenv("DEVICE_API_BASE_URL", "https://bms-cn.rosiwit.com")
     username: Optional[str] = os.getenv("DEVICE_API_USERNAME","")
     password: Optional[str] = os.getenv("DEVICE_API_PASSWORD","")
-    token: Optional[str] = None  # 不硬编码 Token，通过登录获取或手动设置
+    token: Optional[str] = None
     timeout: int = 30
 
 
 api_config = APIConfig()
 
+
+def _auto_login():
+    if not api_config.username or not api_config.password:
+        logger.warning("DEVICE_API_USERNAME 或 DEVICE_API_PASSWORD 未配置，自动登录跳过")
+        return
+    if api_config.token:
+        return
+    url = f"{api_config.base_url}/xz_robot_common/user/login"
+    try:
+        resp = requests.post(
+            url,
+            json={"username": api_config.username, "password": api_config.password, "clientType": "WEB"},
+            headers={"Content-Type": "application/json"},
+            timeout=api_config.timeout,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("success") or result.get("returnCode") == 200:
+            data = result.get("data", {})
+            token = data.get("token") if isinstance(data, dict) else None
+        else:
+            token = None
+        if token:
+            api_config.token = token
+            logger.info(f"自动登录成功 (user={api_config.username})")
+        else:
+            logger.warning(f"自动登录失败: {result.get('returnMsg', '未知错误')}")
+    except Exception as e:
+        logger.warning(f"自动登录异常: {e}")
+
+
+_auto_login()
+
 def _get_headers() -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if api_config.token:
         headers["token"] = api_config.token
-    else:
-        logger.warning("Token 未设置，请先调用 set_token 或 get_token 进行认证")
     return headers
 
 
@@ -55,58 +86,22 @@ def _post(endpoint: str, data: Dict = None) -> Dict[str, Any]:
             headers=_get_headers(),
             timeout=api_config.timeout
         )
+        if response.status_code == 403 and api_config.username:
+            api_config.token = None
+            _auto_login()
+            if api_config.token:
+                response = requests.post(
+                    url,
+                    json=data or {},
+                    headers=_get_headers(),
+                    timeout=api_config.timeout
+                )
         response.raise_for_status()
         return response.json() if response.text else {"success": True}
     except requests.exceptions.RequestException as e:
         logger.error(f"API请求失败: {endpoint}, 错误: {e}")
         return {"success": False, "error": str(e)}
 
-
-# ==================== 认证相关 ====================
-
-@mcp.tool()
-def get_token(username: str, password: str, login_url: str = None):
-    """通过登录接口获取Token
-    
-    参数:
-    - username: 用户名
-    - password: 密码
-    - login_url: 登录接口路径（可选，默认为 /xz_robot_common/user/login）
-    """
-    url = f"{api_config.base_url}{login_url or '/xz_robot_common/user/login'}"
-    try:
-        response = requests.post(
-            url,
-            json={"username": username, "password": password,"clientType": "WEB"},
-            headers={"Content-Type": "application/json"},
-            timeout=api_config.timeout
-        )
-        response.raise_for_status()
-        result = response.json()
-        
-        if result.get("success") or result.get("returnCode") == 0:
-            token = result.get("data") or result.get("token")
-            if token:
-                api_config.token = token
-                logger.info("Token获取成功")
-                return {"success": True, "token": token}
-        
-        return {"success": False, "error": result.get("returnMsg", "登录失败")}
-    except Exception as e:
-        logger.error(f"获取Token失败: {e}")
-        return {"success": False, "error": str(e)}
-
-
-@mcp.tool()
-def set_token(token: str):
-    """设置认证Token
-    
-    参数:
-    - token: 认证令牌
-    """
-    api_config.token = token
-    logger.info("Token已设置")
-    return {"success": True}
 
 # ==================== 设备信息查询 ====================
 

@@ -7,7 +7,9 @@
             "mcp_server/src/remote_operation.py"
         ],
         "env": {
-            "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
+            "DEVICE_API_BASE_URL": "https://bms-cn.xzrobot.com",
+            "DEVICE_API_USERNAME": "jimingqing@xzrobot.com",
+            "DEVICE_API_PASSWORD": "Jmq88326"
         },
         "description": "设备远程运维服务"
     },
