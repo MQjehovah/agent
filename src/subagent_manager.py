@@ -375,6 +375,43 @@ class SubagentManager:
         """获取指定子代理模板"""
         return self.templates.get(name)
 
+    def reload_template(self, name: str) -> bool:
+        if not self.base_dir or not os.path.exists(self.base_dir):
+            return False
+
+        for dir_name in os.listdir(self.base_dir):
+            agent_dir = os.path.join(self.base_dir, dir_name)
+            if not os.path.isdir(agent_dir):
+                continue
+
+            prompt_file = os.path.join(agent_dir, "PROMPT.md")
+            if not os.path.exists(prompt_file):
+                continue
+
+            try:
+                with open(prompt_file, encoding="utf-8") as f:
+                    content = f.read()
+
+                frontmatter, body = extract_frontmatter(content)
+                if not frontmatter:
+                    continue
+
+                tmpl_name = frontmatter.get("name", dir_name)
+                if tmpl_name == name or dir_name == name:
+                    self.templates[tmpl_name] = {
+                        "name": tmpl_name,
+                        "description": frontmatter.get("description", ""),
+                        "workspace": self.parent_workspace,
+                        "config_dir": agent_dir,
+                    }
+                    logger.info(f"重新加载子代理模板: {tmpl_name}")
+                    return True
+            except Exception as e:
+                logger.error(f"重新加载子代理模板失败 {dir_name}: {e}")
+                continue
+
+        return False
+
     def is_team(self, name: str) -> bool:
         """判断指定名称是否为团队"""
         return name in self._team_configs

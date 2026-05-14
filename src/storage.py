@@ -194,7 +194,8 @@ class Storage:
 
     @contextmanager
     def get_connection(self):
-        yield from self._get_connection()
+        with self._get_connection() as conn:
+            yield conn
 
     def _migrate_legacy_dbs(self, config_dir: str):
         config_path = Path(config_dir)

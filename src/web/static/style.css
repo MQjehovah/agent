@@ -789,3 +789,64 @@ body {
 .modal-btn:hover { border-color: var(--accent-blue); }
 .modal-btn-primary { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }
 .modal-btn-primary:hover { opacity: 0.9; }
+
+/* ============= AGENT EDITOR ============= */
+.modal-box-lg { max-width: 900px; width: 900px; }
+.modal-close {
+    background: none; border: none; color: var(--text-muted);
+    font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1;
+}
+.modal-close:hover { color: var(--text-primary); }
+.agent-editor-tabs {
+    display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 12px;
+}
+.agent-tab {
+    padding: 8px 20px; font-size: 12px; font-weight: 600;
+    color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+}
+.agent-tab:hover { color: var(--text-secondary); }
+.agent-tab.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
+.agent-editor-textarea {
+    width: 100%; min-height: 55vh; background: var(--bg-tertiary);
+    border: 1px solid var(--border); border-radius: 6px; padding: 12px;
+    color: var(--text-primary); font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+    font-size: 13px; line-height: 1.6; resize: vertical; outline: none;
+}
+.agent-editor-textarea:focus { border-color: var(--accent-blue); }
+.agent-editor-actions {
+    display: flex; align-items: center; gap: 12px; margin-top: 10px;
+}
+.agent-save-status { font-size: 11px; color: var(--accent-green); }
+.agent-skills-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 10px;
+}
+.agent-skills-list {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;
+}
+.agent-skill-chip {
+    padding: 4px 12px; border-radius: 4px; font-size: 12px;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    color: var(--text-secondary); cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+}
+.agent-skill-chip:hover { border-color: var(--accent-blue); color: var(--text-primary); }
+.agent-skill-chip.active { border-color: var(--accent-blue); color: var(--accent-blue); background: rgba(108,184,255,0.08); }
+.agent-skill-editor-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+}
+.agent-skill-del-btn {
+    padding: 4px 12px; border: 1px solid var(--accent-red); border-radius: 4px;
+    background: transparent; color: var(--accent-red); font-size: 11px; cursor: pointer;
+}
+.agent-skill-del-btn:hover { background: rgba(248,112,96,0.1); }
+.ws-agent-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px;
+    cursor: pointer; margin-bottom: 4px; transition: border-color 0.15s, background 0.15s;
+}
+.ws-agent-item:hover { border-color: var(--accent-blue); background: var(--bg-hover); }
+.ws-agent-name { font-weight: 700; font-size: 12px; }
+.ws-agent-skills-count { font-size: 11px; color: var(--text-muted); }

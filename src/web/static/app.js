@@ -20,7 +20,7 @@
     const wsBody = $('#workspaceBody'), chatBody = $('#chatBody'), logsBody = $('#logsBody');
     const sessionsBody = $('#sessionsBody');
     const kanbanBody = $('#kanbanBody');
-    const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory'), wsPanel = $('#wsPanel'), wsSubagents = $('#wsSubagents');
+    const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory');
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
     const btnNewChat = $('#newChatBtn');
     const logContent = $('#logContent');
@@ -38,6 +38,7 @@
         bind();
         fetchAll();
         loadChatHistory();
+        loadAgents();
         setInterval(fetchAll, 4000);
         initResize();
     });
@@ -134,16 +135,6 @@
                 '\nTools: ' + esc(String((d.tools||[]).length)) +
                 '\nTasks: ' + esc(JSON.stringify(d.tasks||{}));
             const subs = d.subagents || [];
-            if (!subs.length) {
-                wsSubagents.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:12px;">No sub-agents</div>';
-            } else {
-                wsSubagents.innerHTML = subs.map(s =>
-                    '<div class="subagent-card">' +
-                    '<div class="subagent-name">&#128187; ' + esc(s.name) + '</div>' +
-                    '<div class="subagent-desc">' + esc((s.description || 'No description').substring(0, 120)) + '</div>' +
-                    '</div>'
-                ).join('');
-            }
             // Panel stats in workspace
             if (d.panel && d.panel.by_column) {
                 const bc = d.panel.by_column;
@@ -922,4 +913,178 @@
         html = html.replace(/<p>\s*<\/p>/g, '');
         return html;
     }
+
+    // ==================== AGENT EDITOR ====================
+    var _currentAgent = null;
+    var _currentSkill = null;
+    var wsAgents = $('#wsAgents');
+
+    async function loadAgents() {
+        try {
+            var r = await fetch(API + '/api/agents');
+            if (!r.ok) { wsAgents.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
+            var d = await r.json();
+            var agents = Array.isArray(d) ? d : (d.agents || []);
+            if (!agents.length) { wsAgents.innerHTML = '<div class="empty-state">No agents</div>'; return; }
+            wsAgents.innerHTML = agents.map(function(a) {
+                return '<div class="ws-agent-item" data-agent="' + esc(a.name) + '">' +
+                    '<span class="ws-agent-name">' + esc(a.name) + '</span>' +
+                    '<span class="ws-agent-skills-count">' + (a.skills ? a.skills.length : 0) + ' skills</span>' +
+                    '</div>';
+            }).join('');
+            wsAgents.querySelectorAll('.ws-agent-item').forEach(function(el) {
+                el.addEventListener('click', function() { openAgentEditor(el.dataset.agent); });
+            });
+        } catch (e) {
+            wsAgents.innerHTML = '<div class="empty-state">Error: ' + esc(e.message) + '</div>';
+        }
+    }
+
+    function openAgentEditor(name) {
+        _currentAgent = name;
+        _currentSkill = null;
+        $('#agentEditorTitle').textContent = name;
+        $('#agentEditorModal').style.display = 'flex';
+        $('#agentSkillEditor').style.display = 'none';
+        switchAgentTab('prompt');
+        loadAgentPrompt(name);
+    }
+
+    function switchAgentTab(tab) {
+        document.querySelectorAll('.agent-tab').forEach(function(t) {
+            t.classList.toggle('active', t.dataset.agentTab === tab);
+        });
+        $('#agentPromptPanel').style.display = tab === 'prompt' ? '' : 'none';
+        $('#agentSkillsPanel').style.display = tab === 'skills' ? '' : 'none';
+        if (tab === 'skills' && _currentAgent) loadAgentSkills(_currentAgent);
+    }
+
+    async function loadAgentPrompt(name) {
+        try {
+            var r = await fetch(API + '/api/agents/' + encodeURIComponent(name) + '/prompt');
+            if (!r.ok) return;
+            var d = await r.json();
+            $('#agentPromptText').value = d.content || '';
+            $('#agentPromptStatus').textContent = '';
+        } catch {}
+    }
+
+    async function loadAgentSkills(name) {
+        try {
+            var r = await fetch(API + '/api/agents/' + encodeURIComponent(name) + '/skills');
+            if (!r.ok) return;
+            var d = await r.json();
+            var skills = d.skills || [];
+            var list = $('#agentSkillsList');
+            if (!skills.length) {
+                list.innerHTML = '<div class="empty-state" style="width:100%">No skills</div>';
+            } else {
+                list.innerHTML = skills.map(function(s) {
+                    return '<span class="agent-skill-chip" data-skill="' + esc(s) + '">' + esc(s) + '</span>';
+                }).join('');
+                list.querySelectorAll('.agent-skill-chip').forEach(function(chip) {
+                    chip.addEventListener('click', function() { loadSkillContent(chip.dataset.skill); });
+                });
+            }
+            $('#agentSkillEditor').style.display = 'none';
+            _currentSkill = null;
+        } catch {}
+    }
+
+    async function loadSkillContent(skill) {
+        _currentSkill = skill;
+        document.querySelectorAll('.agent-skill-chip').forEach(function(c) {
+            c.classList.toggle('active', c.dataset.skill === skill);
+        });
+        try {
+            var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(skill));
+            if (!r.ok) return;
+            var d = await r.json();
+            $('#agentSkillEditorName').textContent = skill;
+            $('#agentSkillText').value = d.content || '';
+            $('#agentSkillEditor').style.display = '';
+            $('#agentSkillStatus').textContent = '';
+        } catch {}
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        $('#agentEditorClose').addEventListener('click', function() {
+            $('#agentEditorModal').style.display = 'none';
+        });
+        $('#agentEditorModal').addEventListener('click', function(e) {
+            if (e.target === this) this.style.display = 'none';
+        });
+        document.querySelectorAll('.agent-tab').forEach(function(t) {
+            t.addEventListener('click', function() { switchAgentTab(t.dataset.agentTab); });
+        });
+        $('#agentPromptSave').addEventListener('click', async function() {
+            if (!_currentAgent) return;
+            var content = $('#agentPromptText').value;
+            try {
+                var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/prompt', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({content: content}),
+                });
+                if (r.ok) { $('#agentPromptStatus').textContent = 'Saved'; setTimeout(function() { $('#agentPromptStatus').textContent = ''; }, 2000); }
+            } catch {}
+        });
+        $('#agentSkillSave').addEventListener('click', async function() {
+            if (!_currentAgent || !_currentSkill) return;
+            var content = $('#agentSkillText').value;
+            try {
+                var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(_currentSkill), {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({content: content}),
+                });
+                if (r.ok) { $('#agentSkillStatus').textContent = 'Saved'; setTimeout(function() { $('#agentSkillStatus').textContent = ''; }, 2000); }
+            } catch {}
+        });
+        $('#agentNewSkillBtn').addEventListener('click', function() {
+            $('#newSkillModal').style.display = 'flex';
+            $('#newSkillInput').value = '';
+            $('#newSkillInput').focus();
+        });
+        $('#newSkillClose').addEventListener('click', function() {
+            $('#newSkillModal').style.display = 'none';
+        });
+        $('#newSkillCancel').addEventListener('click', function() {
+            $('#newSkillModal').style.display = 'none';
+        });
+        $('#newSkillModal').addEventListener('click', function(e) {
+            if (e.target === this) this.style.display = 'none';
+        });
+        $('#newSkillSubmit').addEventListener('click', async function() {
+            var name = $('#newSkillInput').value.trim();
+            if (!name || !_currentAgent) { $('#newSkillInput').focus(); return; }
+            var template = '# ' + esc(name) + '\n\n';
+            try {
+                var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name: name, content: template}),
+                });
+                if (r.ok) {
+                    $('#newSkillModal').style.display = 'none';
+                    await loadAgentSkills(_currentAgent);
+                    loadSkillContent(name);
+                }
+            } catch {}
+        });
+        $('#agentSkillDelBtn').addEventListener('click', async function() {
+            if (!_currentAgent || !_currentSkill) return;
+            if (!confirm('Delete skill "' + _currentSkill + '"?')) return;
+            try {
+                var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(_currentSkill), {
+                    method: 'DELETE',
+                });
+                if (r.ok) {
+                    _currentSkill = null;
+                    $('#agentSkillEditor').style.display = 'none';
+                    await loadAgentSkills(_currentAgent);
+                }
+            } catch {}
+        });
+    });
 })();

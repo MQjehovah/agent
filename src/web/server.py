@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import logging
+import shutil
 import threading
 import asyncio
 import queue
@@ -543,6 +544,116 @@ class WebServer:
                 "messages": msgs,
                 "count": len(msgs),
             })
+
+        @self._app.route("/api/agents", methods=["GET"])
+        def list_agents():
+            config_dir = self.agent.config_dir if self.agent else ""
+            agents_dir = os.path.join(config_dir, "agents") if config_dir else ""
+            if not agents_dir or not os.path.isdir(agents_dir):
+                return self._json([])
+            result = []
+            for dir_name in os.listdir(agents_dir):
+                agent_path = os.path.join(agents_dir, dir_name)
+                if not os.path.isdir(agent_path):
+                    continue
+                prompt_file = os.path.join(agent_path, "PROMPT.md")
+                if not os.path.exists(prompt_file):
+                    continue
+                skills = []
+                skills_dir = os.path.join(agent_path, "skills")
+                if os.path.isdir(skills_dir):
+                    for sdir in os.listdir(skills_dir):
+                        if os.path.isfile(os.path.join(skills_dir, sdir, "SKILL.md")):
+                            skills.append(sdir)
+                result.append({"name": dir_name, "dir": dir_name, "skills": skills})
+            return self._json(result)
+
+        @self._app.route("/api/agents/<name>/prompt", methods=["GET"])
+        def get_agent_prompt(name):
+            config_dir = self.agent.config_dir if self.agent else ""
+            prompt_file = os.path.join(config_dir, "agents", name, "PROMPT.md") if config_dir else ""
+            if not prompt_file or not os.path.isfile(prompt_file):
+                return self._json({"error": "Not found"}, 404)
+            with open(prompt_file, encoding="utf-8") as f:
+                content = f.read()
+            return self._json({"content": content})
+
+        @self._app.route("/api/agents/<name>/prompt", methods=["PUT"])
+        def update_agent_prompt(name):
+            config_dir = self.agent.config_dir if self.agent else ""
+            prompt_file = os.path.join(config_dir, "agents", name, "PROMPT.md") if config_dir else ""
+            if not prompt_file or not os.path.isfile(prompt_file):
+                return self._json({"error": "Not found"}, 404)
+            data = request.get_json()
+            if not data or "content" not in data:
+                return self._json({"error": "Missing content"}, 400)
+            with open(prompt_file, "w", encoding="utf-8") as f:
+                f.write(data["content"])
+            if self.agent and self.agent.subagent_manager:
+                self.agent.subagent_manager.reload_template(name)
+            return self._json({"success": True})
+
+        @self._app.route("/api/agents/<name>/skills", methods=["GET"])
+        def list_agent_skills(name):
+            config_dir = self.agent.config_dir if self.agent else ""
+            skills_dir = os.path.join(config_dir, "agents", name, "skills") if config_dir else ""
+            if not skills_dir or not os.path.isdir(skills_dir):
+                return self._json([])
+            result = []
+            for sdir in os.listdir(skills_dir):
+                if os.path.isfile(os.path.join(skills_dir, sdir, "SKILL.md")):
+                    result.append(sdir)
+            return self._json(result)
+
+        @self._app.route("/api/agents/<name>/skills/<skill_name>", methods=["GET"])
+        def get_agent_skill(name, skill_name):
+            config_dir = self.agent.config_dir if self.agent else ""
+            skill_file = os.path.join(config_dir, "agents", name, "skills", skill_name, "SKILL.md") if config_dir else ""
+            if not skill_file or not os.path.isfile(skill_file):
+                return self._json({"error": "Not found"}, 404)
+            with open(skill_file, encoding="utf-8") as f:
+                content = f.read()
+            return self._json({"content": content})
+
+        @self._app.route("/api/agents/<name>/skills/<skill_name>", methods=["PUT"])
+        def update_agent_skill(name, skill_name):
+            config_dir = self.agent.config_dir if self.agent else ""
+            skill_file = os.path.join(config_dir, "agents", name, "skills", skill_name, "SKILL.md") if config_dir else ""
+            if not skill_file or not os.path.isfile(skill_file):
+                return self._json({"error": "Not found"}, 404)
+            data = request.get_json()
+            if not data or "content" not in data:
+                return self._json({"error": "Missing content"}, 400)
+            with open(skill_file, "w", encoding="utf-8") as f:
+                f.write(data["content"])
+            return self._json({"success": True})
+
+        @self._app.route("/api/agents/<name>/skills", methods=["POST"])
+        def create_agent_skill(name):
+            config_dir = self.agent.config_dir if self.agent else ""
+            skills_dir = os.path.join(config_dir, "agents", name, "skills") if config_dir else ""
+            if not skills_dir or not os.path.isdir(skills_dir):
+                return self._json({"error": "Agent not found"}, 404)
+            data = request.get_json()
+            if not data or "name" not in data:
+                return self._json({"error": "Missing name"}, 400)
+            skill_dir = os.path.join(skills_dir, data["name"])
+            if os.path.exists(skill_dir):
+                return self._json({"error": "Skill already exists"}, 409)
+            os.makedirs(skill_dir, exist_ok=True)
+            skill_file = os.path.join(skill_dir, "SKILL.md")
+            with open(skill_file, "w", encoding="utf-8") as f:
+                f.write(data.get("content", ""))
+            return self._json({"success": True})
+
+        @self._app.route("/api/agents/<name>/skills/<skill_name>", methods=["DELETE"])
+        def delete_agent_skill(name, skill_name):
+            config_dir = self.agent.config_dir if self.agent else ""
+            skill_dir = os.path.join(config_dir, "agents", name, "skills", skill_name) if config_dir else ""
+            if not skill_dir or not os.path.isdir(skill_dir):
+                return self._json({"error": "Not found"}, 404)
+            shutil.rmtree(skill_dir)
+            return self._json({"success": True})
 
     def _json(self, data: Any, status: int = 200) -> "Response":
         from flask import Response
