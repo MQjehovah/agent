@@ -207,6 +207,47 @@ def get_point_cloud(sn: str):
     return _post("/point_cloud", {"sn": sn})
 
 
+# ==================== 录包文件 ====================
+
+@mcp.tool()
+def get_bag_files(sn: str, page_no: int = 1, page_size: int = 10, from_time: str = None, to_time: str = None):
+    """获取录包文件分页数据
+    
+    参数:
+    - sn: 设备编码
+    - page_no: 页码
+    - page_size: 每页数量
+    - from_time: 开始时间（可选）
+    - to_time: 结束时间（可选）
+    """
+    logger.info(f"获取录包文件: {sn}, page={page_no}")
+    data = {"sn": sn, "pageNo": page_no, "pageSize": page_size}
+    if from_time:
+        data["fromTime"] = from_time
+    if to_time:
+        data["toTime"] = to_time
+    return _post("/bag/page", data)
+
+
+@mcp.tool()
+def upload_bag_file(sn: str, file_path: str, timestamp: int = None):
+    """上传录包文件
+
+    说明: 上传录包文件需要消耗流量和占用网盘空间，上传录包需要指定时刻上传特定录包。不要随意上传大量的bag文件
+
+    参数:
+    - sn: 设备编码
+    - file_path: 文件路径
+    - timestamp: 时间戳（可选）
+    """
+    logger.info(f"上传录包文件: {sn}, file={file_path}")
+    data = {"sn": sn, "filePath": file_path}
+    if timestamp:
+        data["timeStamp"] = timestamp
+    return _post("/upload_bag", data)
+
+
+
 # @mcp.tool()
 # def soft_restart(sn: str):
 #     """软重启设备
@@ -442,44 +483,6 @@ def start_ota(
         "timestamp": timestamp
     }
     return _post("/ota/start", data)
-
-
-# ==================== 录包文件 ====================
-
-@mcp.tool()
-def get_bag_files(sn: str, page_no: int = 1, page_size: int = 10, from_time: str = None, to_time: str = None):
-    """获取录包文件分页数据
-    
-    参数:
-    - sn: 设备编码
-    - page_no: 页码
-    - page_size: 每页数量
-    - from_time: 开始时间（可选）
-    - to_time: 结束时间（可选）
-    """
-    logger.info(f"获取录包文件: {sn}, page={page_no}")
-    data = {"sn": sn, "pageNo": page_no, "pageSize": page_size}
-    if from_time:
-        data["fromTime"] = from_time
-    if to_time:
-        data["toTime"] = to_time
-    return _post("/bag/page", data)
-
-
-@mcp.tool()
-def upload_bag_file(sn: str, file_path: str, timestamp: int = None):
-    """上传录包文件
-
-    参数:
-    - sn: 设备编码
-    - file_path: 文件路径
-    - timestamp: 时间戳（可选）
-    """
-    logger.info(f"上传录包文件: {sn}, file={file_path}")
-    data = {"sn": sn, "filePath": file_path}
-    if timestamp:
-        data["timeStamp"] = timestamp
-    return _post("/upload_bag", data)
 
 
 # ==================== 定时任务 ====================
