@@ -155,7 +155,46 @@ class Storage:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_kanban_column ON kanban_tasks(column, priority, created_at);
+
+                CREATE TABLE IF NOT EXISTS rbac_roles (
+                    name TEXT PRIMARY KEY,
+                    description TEXT DEFAULT '',
+                    allowed_tools TEXT DEFAULT '[]',
+                    allowed_agents TEXT DEFAULT '[]',
+                    created_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS rbac_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    department TEXT DEFAULT '',
+                    role TEXT NOT NULL DEFAULT 'default',
+                    status TEXT DEFAULT 'active',
+                    created_at TEXT,
+                    updated_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS rbac_user_identities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    platform TEXT NOT NULL,
+                    platform_uid TEXT NOT NULL,
+                    created_at TEXT,
+                    FOREIGN KEY (user_id) REFERENCES rbac_users(id),
+                    UNIQUE(platform, platform_uid)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_rbac_identities ON rbac_user_identities(platform, platform_uid);
             """)
+            conn.execute("""
+                INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at)
+                VALUES ('default', '默认角色-只能对话', '[]', '[]', datetime('now'))
+            """)
+            conn.execute("""
+                INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at)
+                VALUES ('admin', '管理员-全部权限', '["*"]', '["*"]', datetime('now'))
+            """)
+            conn.commit()
             # migration: add reasoning_content column if missing
             try:
                 conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")

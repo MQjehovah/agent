@@ -110,6 +110,9 @@ class Agent:
         self._current_task: str = ""
         self._retry_context: str = ""
 
+        self.rbac = None
+        self._current_user_id: str = ""
+
         self._learning_per_round = os.environ.get("LEARNING_PER_ROUND", "false").lower() in ("true", "1", "yes")
 
     async def initialize(self, session_id: str = None):
@@ -128,6 +131,9 @@ class Agent:
             self.storage = self.parent_agent.storage
         else:
             self.storage = init_storage(self.workspace, config_dir=self.config_dir)
+
+        from rbac import RBACManager
+        self.rbac = RBACManager(self.storage)
 
         self._init_subagents()
         self._init_memory()
@@ -493,10 +499,11 @@ class Agent:
 
         return tools
 
-    async def run(self, task: str, session_id: str = None) -> AgentResult:
+    async def run(self, task: str, session_id: str = None, user_id: str = "") -> AgentResult:
         self.status = "running"
         self._consecutive_errors = 0
         self._current_task = task
+        self._current_user_id = user_id
 
         if self.learner and self._learning_per_round:
             self.learner.check_user_correction(task)
@@ -749,6 +756,12 @@ class Agent:
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
 
+    def _parse_user_id(self) -> tuple[str, str]:
+        if ":" in self._current_user_id:
+            platform, uid = self._current_user_id.split(":", 1)
+            return platform, uid
+        return "dingtalk", self._current_user_id
+
     async def _execute_tool_safe(self, name: str, args: dict) -> str:
         """带权限检查、沙箱拦截、钩子和错误恢复的工具执行"""
         # 权限检查
@@ -756,6 +769,13 @@ class Agent:
         if not perm_result:
             logger.warning(f"工具调用被拦截: {name}, 原因: {perm_result.reason}")
             return json.dumps({"success": False, "error": perm_result.reason}, ensure_ascii=False)
+
+        if self.rbac and self._current_user_id:
+            platform, uid = self._parse_user_id()
+            role = self.rbac.get_user_role(platform=platform, platform_uid=uid)
+            if not self.rbac.check_tool(role, name):
+                logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}], user={self._current_user_id}")
+                return json.dumps({"success": False, "error": f"权限不足: 角色 [{role}] 无权执行工具 [{name}]"}, ensure_ascii=False)
 
         # DEFAULT 模式需要用户确认
         if perm_result.reason == "需要用户确认" and self.on_confirm:
@@ -1030,6 +1050,13 @@ class Agent:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
 
         agent_name = args.get("name", "") or args.get("template", "")
+
+        if self.rbac and self._current_user_id and agent_name:
+            platform, uid = self._parse_user_id()
+            role = self.rbac.get_user_role(platform=platform, platform_uid=uid)
+            if not self.rbac.check_agent(role, agent_name):
+                logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{agent_name}], user={self._current_user_id}")
+                return json.dumps({"success": False, "error": f"权限不足: 角色 [{role}] 无权访问子代理 [{agent_name}]"}, ensure_ascii=False)
 
         await self.hooks.fire(
             self._hook_event.SUBAGENT_START,

@@ -482,7 +482,6 @@ def get_bag_files(sn: str, page_no: int = 1, page_size: int = 10, from_time: str
 @mcp.tool()
 def upload_bag_file(sn: str, file_path: str, timestamp: int = None):
     """上传录包文件
-    文件上传成功后使用https://bms-cn.rosiwit.com/xz_sc50/fae/bag/download?filePath=xxx接口下载
 
     参数:
     - sn: 设备编码

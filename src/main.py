@@ -437,7 +437,7 @@ async def main():
         if not args.no_plugins:
             plugin_manager = PluginManager(os.path.join(src_dir, "plugins"), config_dir=config_dir)
             plugin_manager.load_all()
-            plugin_manager.register_executor(lambda sid, c: agent.run(c, session_id=sid))
+            plugin_manager.register_executor(lambda sid, c, uid="": agent.run(c, session_id=sid, user_id=uid))
             agent.plugin_manager = plugin_manager
 
             kanban_plugin = plugin_manager.get_plugin("kanban")
@@ -448,8 +448,8 @@ async def main():
 
             webhook_plugin = plugin_manager.get_plugin("webhook")
             if webhook_plugin:
-                async def _webhook_exec(sid, c):
-                    r = await agent.run(c, session_id=sid)
+                async def _webhook_exec(sid, c, uid=""):
+                    r = await agent.run(c, session_id=sid, user_id=uid)
                     return r.result if hasattr(r, 'result') else str(r)
 
                 webhook_plugin.agent_executor = _webhook_exec

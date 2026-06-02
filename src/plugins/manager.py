@@ -74,10 +74,10 @@ class PluginManager:
             if plugin.enabled:
                 plugin.set_plugin_manager(self)
     
-    async def execute(self, session_id: str, content: str) -> str:
+    async def execute(self, session_id: str, content: str, user_id: str = "") -> str:
         if not self._executor:
             raise RuntimeError("Executor not registered")
-        result = await self._executor(session_id, content)
+        result = await self._executor(session_id, content, user_id)
         return result.result if hasattr(result, 'result') else str(result)
     
     def start_all(self):

@@ -303,7 +303,12 @@ class AgentChatbotHandler:
             if not self.plugin.plugin_manager:
                 response = "执行器未注册，请稍后再试"
             else:
-                response = await session.send_to_agent(content)
+                user_id = f"dingtalk:{sender_id}"
+                response = await self.plugin.plugin_manager.execute(
+                    session_id=session.session_id,
+                    content=content,
+                    user_id=user_id
+                )
 
             self.reply_text(response, incoming_message)
 
