@@ -112,7 +112,7 @@ def get_device_detail(sn: str):
     参数:
     - sn: 设备编码
     
-    返回字段包括: 连接状态(connect)、定位状态(locate)、故障信息(faultDTOList)、电量(battery)等
+    返回字段包括: 在线状态(connect)、定位状态(locate)、故障信息(faultDTOList)、电量(battery)等
     """
     logger.info(f"获取设备详情: {sn}")
     result = _post("/detail", {"sn": sn})
@@ -183,17 +183,28 @@ def get_chassis_info(sn: str):
     return _post("/driver/chassis/info", {"sn": sn})
 
 
-# ==================== 故障诊断与恢复 ====================
+# ==================== 地图与点云 ====================
 
-# @mcp.tool()
-# def fault_diagnose(sn: str):
-#     """故障诊断
+@mcp.tool()
+def get_cost_map(sn: str):
+    """获取感知地图（Cost Map）
     
-#     参数:
-#     - sn: 设备编码
-#     """
-#     logger.info(f"故障诊断: {sn}")
-#     return _post("/fault_diagnose", {"sn": sn})
+    参数:
+    - sn: 设备编码
+    """
+    logger.info(f"获取感知地图: {sn}")
+    return _post("/cost_map", {"sn": sn})
+
+
+@mcp.tool()
+def get_point_cloud(sn: str):
+    """获取点云数据
+    
+    参数:
+    - sn: 设备编码
+    """
+    logger.info(f"获取点云数据: {sn}")
+    return _post("/point_cloud", {"sn": sn})
 
 
 # @mcp.tool()
@@ -352,30 +363,6 @@ def set_factory_params(sn: str, params: Dict[str, Any]):
     """
     logger.info(f"设置工程模式参数: {sn}")
     return _post("/factory_set", {"sn": sn, **params})
-
-
-# ==================== 地图与点云 ====================
-
-@mcp.tool()
-def get_cost_map(sn: str):
-    """获取感知地图
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取感知地图: {sn}")
-    return _post("/cost_map", {"sn": sn})
-
-
-@mcp.tool()
-def get_point_cloud(sn: str):
-    """获取点云数据
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取点云数据: {sn}")
-    return _post("/point_cloud", {"sn": sn})
 
 
 # ==================== 任务管理 ====================

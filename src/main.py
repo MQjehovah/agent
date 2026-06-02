@@ -107,7 +107,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         cmd_handler.set_current_task_id(task_id)
 
         try:
-            result = await agent.run(question, session_id=session_id)
+            result = await agent.run(question, session_id=session_id, user_id="cli:admin", user_name="管理员")
             console.print(Panel.fit(f"[green]任务 #{task_id} 完成:[/green]\n{result.result}",
                                      border_style="green"))
         except asyncio.CancelledError:

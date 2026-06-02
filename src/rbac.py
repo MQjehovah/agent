@@ -14,6 +14,8 @@ class RBACManager:
         return info["role"]
 
     def resolve_user(self, platform: str, platform_uid: str, fallback_name: str = "") -> dict:
+        if platform == "cli":
+            return {"user_id": None, "user_name": fallback_name or "管理员", "role": "admin"}
         with self.storage.get_connection() as conn:
             row = conn.execute(
                 """SELECT u.id, u.name, u.role, u.status FROM rbac_user_identities i

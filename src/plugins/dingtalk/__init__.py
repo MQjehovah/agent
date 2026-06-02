@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -99,6 +100,7 @@ class DingTalkPlugin(BasePlugin):
         self._client = None
         self._running = False
         self._task: asyncio.Task | None = None
+        self._token_cache: dict = {}
         self.enabled = self.config.enabled
 
     def start(self):
@@ -190,29 +192,98 @@ class DingTalkPlugin(BasePlugin):
 
     async def execute_tool(self, name: str, args: dict[str, Any]) -> str:
         if name == "send_image_to_dingtalk":
-            return await self._send_image(args.get("image_path", ""))
+            local_user_id = args.pop("_local_user_id", None)
+            return await self._send_image(args.get("image_path", ""), local_user_id)
         return f"Tool {name} not implemented"
 
-    async def _send_image(self, image_path: str) -> str:
-        if not self._client:
-            return "错误: 钉钉客户端未连接"
+    def _get_dingtalk_staff_id(self, local_user_id) -> str | None:
+        from storage import get_storage
+        storage = get_storage()
+        if not storage or not local_user_id:
+            return None
+        try:
+            int(local_user_id)
+        except (ValueError, TypeError):
+            return None
+        with storage.get_connection() as conn:
+            row = conn.execute(
+                "SELECT platform_uid FROM rbac_user_identities WHERE user_id = ? AND platform = 'dingtalk'",
+                (local_user_id,)
+            ).fetchone()
+        return row[0] if row else None
 
-        if not self.sessions:
-            return "错误: 没有活跃的钉钉会话"
+    async def _get_access_token(self) -> str:
+        now = time.time()
+        if self._token_cache.get("token") and now < self._token_cache.get("expires", 0):
+            return self._token_cache["token"]
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+                    json={
+                        "appKey": self.config.stream.client_id,
+                        "appSecret": self.config.stream.client_secret,
+                    }
+                )
+                data = r.json()
+                token = data.get("accessToken", "")
+                expire_in = data.get("expireIn", 7200)
+                self._token_cache = {"token": token, "expires": now + expire_in - 300}
+                return token
+        except Exception as e:
+            logger.error(f"获取access_token失败: {e}")
+            return ""
+
+    async def _upload_media(self, access_token: str, image_path: str) -> str:
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                with open(image_path, "rb") as f:
+                    r = await client.post(
+                        "https://oapi.dingtalk.com/media/upload",
+                        params={"access_token": access_token, "type": "image"},
+                        files={"media": (os.path.basename(image_path), f)},
+                    )
+                data = r.json()
+                return data.get("media_id", "")
+        except Exception as e:
+            logger.error(f"上传图片失败: {e}")
+            return ""
+
+    async def _send_image(self, image_path: str, local_user_id=None) -> str:
+        if not image_path or not os.path.isfile(image_path):
+            return f"图片文件不存在: {image_path}"
+
+        staff_id = self._get_dingtalk_staff_id(local_user_id)
+        if not staff_id:
+            return "当前用户未绑定钉钉账号，无法发送图片"
+
+        access_token = await self._get_access_token()
+        if not access_token:
+            return "获取钉钉access_token失败"
+
+        media_id = await self._upload_media(access_token, image_path)
+        if not media_id:
+            return "上传图片到钉钉失败"
 
         try:
-            import dingtalk_stream
-            session = list(self.sessions.values())[0]
-            media = await self._client.media.upload(
-                media_type=dingtalk_stream.MediaType.IMAGE,
-                file_path=image_path,
-                conversation_id=session.conversation_id
-            )
-
-            handler = self._client._callback_handler
-            handler.reply_image(media.media_id, type('Message', (), {'conversation_id': session.conversation_id})())
-
-            return f"图片已发送: {image_path}"
+            import httpx
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+                    headers={"x-acs-dingtalk-access-token": access_token},
+                    json={
+                        "robotCode": self.config.stream.client_id,
+                        "userIds": [staff_id],
+                        "msgKey": "sampleImage",
+                        "msgParam": json.dumps({"sampleImageMediaId": media_id}),
+                    }
+                )
+                if r.status_code == 200:
+                    logger.info(f"图片已发送给用户 staff_id={staff_id}: {image_path}")
+                    return f"图片已发送: {image_path}"
+                return f"发送图片失败: {r.text}"
         except Exception as e:
             return f"发送图片失败: {e}"
 
