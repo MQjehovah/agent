@@ -20,6 +20,7 @@
     const wsBody = $('#workspaceBody'), chatBody = $('#chatBody'), logsBody = $('#logsBody');
     const sessionsBody = $('#sessionsBody');
     const kanbanBody = $('#kanbanBody');
+    const usersBody = $('#usersBody');
     const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory');
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
     const btnNewChat = $('#newChatBtn');
@@ -67,9 +68,11 @@
         kanbanBody.style.display = tab === 'kanban' ? 'flex' : 'none';
         sessionsBody.style.display = tab === 'sessions' ? 'flex' : 'none';
         logsBody.style.display = tab === 'logs' ? 'flex' : 'none';
+        usersBody.style.display = tab === 'users' ? 'flex' : 'none';
         if (tab === 'chat') { chatIn.focus(); chatMsgs.scrollTop = chatMsgs.scrollHeight; }
         if (tab === 'kanban') { fetchKanban(); }
         if (tab === 'sessions') { fetchAgentSessions(); }
+        if (tab === 'users') { rbacFetchAll(); }
     }
     // Init: chat is default
     switchTab('chat');
@@ -1141,4 +1144,338 @@
             } catch {}
         });
     });
+
+    // ==================== RBAC USERS ====================
+    let _rbacRoles = [];
+    let _rbacUsers = [];
+    let _rbacEditIdentities = [];
+
+    function rbacFetchAll() {
+        rbacFetchRoles();
+        rbacFetchUsers();
+    }
+
+    async function rbacFetchRoles() {
+        try {
+            var r = await fetch(API + '/api/rbac/roles');
+            if (!r.ok) return;
+            var data = await r.json();
+            _rbacRoles = data.roles || [];
+            rbacRenderRoles();
+            rbacRenderRoleSelect();
+        } catch {}
+    }
+
+    async function rbacFetchUsers() {
+        try {
+            var r = await fetch(API + '/api/rbac/users');
+            if (!r.ok) return;
+            var data = await r.json();
+            _rbacUsers = data.users || [];
+            rbacRenderUsers();
+        } catch {}
+    }
+
+    function rbacRenderRoles() {
+        var html = '';
+        _rbacRoles.forEach(function(role) {
+            var tools = role.allowed_tools;
+            var toolsStr = tools[0] === '*' ? 'All tools' : tools.join(', ') || 'No tools';
+            var agentsStr = role.allowed_agents[0] === '*' ? 'All agents' : role.allowed_agents.join(', ') || 'No agents';
+            html += '<div class="users-role-card" data-role="' + esc(role.name) + '">'
+                + '<div class="users-role-name">' + esc(role.name) + '</div>'
+                + '<div class="users-role-desc">' + esc(role.description || '') + '</div>'
+                + '<div class="users-role-tools">' + esc(toolsStr) + ' | ' + esc(agentsStr) + '</div>'
+                + '</div>';
+        });
+        if (!html) html = '<div class="empty-state">No roles</div>';
+        $('#rbacRoleList').innerHTML = html;
+        document.querySelectorAll('.users-role-card').forEach(function(card) {
+            card.addEventListener('click', function() {
+                document.querySelectorAll('.users-role-card').forEach(function(c) { c.classList.remove('active'); });
+                card.classList.add('active');
+                var name = card.dataset.role;
+                rbacOpenRoleModal(name);
+            });
+        });
+    }
+
+    function rbacRenderRoleSelect() {
+        var sel = $('#rbacUserInputRole');
+        sel.innerHTML = '';
+        _rbacRoles.forEach(function(role) {
+            var opt = document.createElement('option');
+            opt.value = role.name;
+            opt.textContent = role.name;
+            sel.appendChild(opt);
+        });
+    }
+
+    function rbacRenderUsers() {
+        var html = '';
+        _rbacUsers.forEach(function(u) {
+            var statusClass = u.status === 'active' ? 'users-status-active' : 'users-status-disabled';
+            var statusText = u.status === 'active' ? 'Active' : 'Disabled';
+            var idents = (u.identities || []).map(function(id) {
+                return '<span class="users-identity-tag">' + esc(id.platform) + ':' + esc(id.platform_uid)
+                    + ' <span class="users-identity-remove" data-id="' + id.id + '">&times;</span></span>';
+            }).join('') || '<span style="color:var(--text-muted)">-</span>';
+            html += '<tr data-uid="' + u.id + '">'
+                + '<td>' + u.id + '</td>'
+                + '<td>' + esc(u.name) + '</td>'
+                + '<td>' + esc(u.department || '') + '</td>'
+                + '<td>' + esc(u.role) + '</td>'
+                + '<td>' + idents + '</td>'
+                + '<td><span class="users-status ' + statusClass + '">' + statusText + '</span></td>'
+                + '<td class="users-actions">'
+                + '<button class="users-btn users-btn-sm rbac-edit-user">Edit</button>'
+                + '<button class="users-btn users-btn-sm rbac-bind-user">Bind</button>'
+                + '<button class="users-btn users-btn-sm rbac-toggle-user">' + (u.status === 'active' ? 'Disable' : 'Enable') + '</button>'
+                + '<button class="users-btn users-btn-sm users-btn-danger rbac-del-user">Del</button>'
+                + '</td></tr>';
+        });
+        if (!html) html = '<tr><td colspan="7" class="empty-state">No users</td></tr>';
+        $('#rbacUserTbody').innerHTML = html;
+
+        document.querySelectorAll('.rbac-edit-user').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var uid = parseInt(btn.closest('tr').dataset.uid);
+                rbacOpenUserModal(uid);
+            });
+        });
+        document.querySelectorAll('.rbac-bind-user').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var uid = parseInt(btn.closest('tr').dataset.uid);
+                rbacOpenBindModal(uid);
+            });
+        });
+        document.querySelectorAll('.rbac-toggle-user').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var uid = parseInt(btn.closest('tr').dataset.uid);
+                rbacToggleUser(uid);
+            });
+        });
+        document.querySelectorAll('.rbac-del-user').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var uid = parseInt(btn.closest('tr').dataset.uid);
+                if (confirm('Delete this user?')) rbacDeleteUser(uid);
+            });
+        });
+        document.querySelectorAll('.users-identity-remove').forEach(function(span) {
+            span.addEventListener('click', function(e) {
+                e.stopPropagation();
+                var iid = parseInt(span.dataset.id);
+                rbacUnbindIdentity(iid);
+            });
+        });
+    }
+
+    function rbacOpenUserModal(userId) {
+        var modal = $('#rbacUserModal');
+        var user = userId ? _rbacUsers.find(function(u) { return u.id === userId; }) : null;
+        $('#rbacUserModalTitle').textContent = user ? 'Edit User' : 'New User';
+        $('#rbacUserEditId').value = user ? user.id : '';
+        $('#rbacUserInputName').value = user ? user.name : '';
+        $('#rbacUserInputDept').value = user ? (user.department || '') : '';
+        $('#rbacUserInputRole').value = user ? user.role : 'default';
+        _rbacEditIdentities = user ? (user.identities || []).map(function(id) {
+            return { platform: id.platform, platform_uid: id.platform_uid };
+        }) : [];
+        rbacRenderEditIdentities();
+        modal.style.display = 'flex';
+    }
+
+    function rbacRenderEditIdentities() {
+        var html = '';
+        _rbacEditIdentities.forEach(function(ident, i) {
+            html += '<div class="users-edit-identity-row">'
+                + '<select data-idx="' + i + '" class="rbac-ident-platform">'
+                + '<option value="dingtalk"' + (ident.platform === 'dingtalk' ? ' selected' : '') + '>DingTalk</option>'
+                + '<option value="feishu"' + (ident.platform === 'feishu' ? ' selected' : '') + '>Feishu</option>'
+                + '<option value="webhook"' + (ident.platform === 'webhook' ? ' selected' : '') + '>Webhook</option>'
+                + '</select>'
+                + '<input data-idx="' + i + '" class="rbac-ident-uid" value="' + esc(ident.platform_uid) + '" placeholder="Platform User ID" />'
+                + '<button class="users-btn users-btn-sm users-btn-danger rbac-remove-ident" data-idx="' + i + '">&times;</button>'
+                + '</div>';
+        });
+        $('#rbacIdentityList').innerHTML = html;
+        document.querySelectorAll('.rbac-ident-platform').forEach(function(sel) {
+            sel.addEventListener('change', function() {
+                _rbacEditIdentities[parseInt(sel.dataset.idx)].platform = sel.value;
+            });
+        });
+        document.querySelectorAll('.rbac-ident-uid').forEach(function(inp) {
+            inp.addEventListener('input', function() {
+                _rbacEditIdentities[parseInt(inp.dataset.idx)].platform_uid = inp.value;
+            });
+        });
+        document.querySelectorAll('.rbac-remove-ident').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                _rbacEditIdentities.splice(parseInt(btn.dataset.idx), 1);
+                rbacRenderEditIdentities();
+            });
+        });
+    }
+
+    $('#rbacAddIdentityBtn').addEventListener('click', function() {
+        _rbacEditIdentities.push({ platform: 'dingtalk', platform_uid: '' });
+        rbacRenderEditIdentities();
+    });
+
+    $('#rbacUserModalClose').addEventListener('click', function() {
+        $('#rbacUserModal').style.display = 'none';
+    });
+    $('#rbacUserModalCancel').addEventListener('click', function() {
+        $('#rbacUserModal').style.display = 'none';
+    });
+    $('#rbacUserModal').addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+    $('#rbacNewUserBtn').addEventListener('click', function() { rbacOpenUserModal(null); });
+    $('#rbacUserModalSubmit').addEventListener('click', async function() {
+        var editId = $('#rbacUserEditId').value;
+        var name = $('#rbacUserInputName').value.trim();
+        var dept = $('#rbacUserInputDept').value.trim();
+        var role = $('#rbacUserInputRole').value;
+        if (!name) { $('#rbacUserInputName').focus(); return; }
+        try {
+            var r;
+            if (editId) {
+                r = await fetch(API + '/api/rbac/users/' + editId, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ name: name, department: dept, role: role }),
+                });
+            } else {
+                r = await fetch(API + '/api/rbac/users', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ name: name, department: dept, role: role, identities: _rbacEditIdentities.filter(function(i) { return i.platform_uid; }) }),
+                });
+            }
+            if (r.ok) {
+                $('#rbacUserModal').style.display = 'none';
+                rbacFetchUsers();
+            } else {
+                var err = await r.json();
+                alert(err.error || 'Failed');
+            }
+        } catch {}
+    });
+
+    function rbacOpenRoleModal(name) {
+        var role = name ? _rbacRoles.find(function(r) { return r.name === name; }) : null;
+        var modal = $('#rbacRoleModal');
+        $('#rbacRoleModalTitle').textContent = role ? 'Edit Role' : 'New Role';
+        $('#rbacRoleEditName').value = role ? role.name : '';
+        $('#rbacRoleInputName').value = role ? role.name : '';
+        $('#rbacRoleInputName').disabled = !!role;
+        $('#rbacRoleInputDesc').value = role ? (role.description || '') : '';
+        $('#rbacRoleInputTools').value = role ? JSON.stringify(role.allowed_tools) : '';
+        $('#rbacRoleInputAgents').value = role ? JSON.stringify(role.allowed_agents) : '';
+        modal.style.display = 'flex';
+    }
+
+    $('#rbacRoleModalClose').addEventListener('click', function() {
+        $('#rbacRoleModal').style.display = 'none';
+        $('#rbacRoleInputName').disabled = false;
+    });
+    $('#rbacRoleModalCancel').addEventListener('click', function() {
+        $('#rbacRoleModal').style.display = 'none';
+        $('#rbacRoleInputName').disabled = false;
+    });
+    $('#rbacRoleModal').addEventListener('click', function(e) {
+        if (e.target === this) { this.style.display = 'none'; $('#rbacRoleInputName').disabled = false; }
+    });
+    $('#rbacNewRoleBtn').addEventListener('click', function() { rbacOpenRoleModal(null); });
+    $('#rbacRoleModalSubmit').addEventListener('click', async function() {
+        var editName = $('#rbacRoleEditName').value;
+        var name = $('#rbacRoleInputName').value.trim();
+        var desc = $('#rbacRoleInputDesc').value.trim();
+        var toolsStr = $('#rbacRoleInputTools').value.trim();
+        var agentsStr = $('#rbacRoleInputAgents').value.trim();
+        if (!name) { $('#rbacRoleInputName').focus(); return; }
+        var tools, agents;
+        try { tools = toolsStr ? JSON.parse(toolsStr) : []; } catch { alert('Invalid tools JSON'); return; }
+        try { agents = agentsStr ? JSON.parse(agentsStr) : []; } catch { alert('Invalid agents JSON'); return; }
+        try {
+            var r;
+            if (editName) {
+                r = await fetch(API + '/api/rbac/roles/' + encodeURIComponent(editName), {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ description: desc, allowed_tools: tools, allowed_agents: agents }),
+                });
+            } else {
+                r = await fetch(API + '/api/rbac/roles', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ name: name, description: desc, allowed_tools: tools, allowed_agents: agents }),
+                });
+            }
+            if (r.ok) {
+                $('#rbacRoleModal').style.display = 'none';
+                $('#rbacRoleInputName').disabled = false;
+                rbacFetchRoles();
+            } else {
+                var err = await r.json();
+                alert(err.error || 'Failed');
+            }
+        } catch {}
+    });
+
+    function rbacOpenBindModal(userId) {
+        $('#rbacBindUserId').value = userId;
+        $('#rbacBindPlatform').value = 'dingtalk';
+        $('#rbacBindUid').value = '';
+        $('#rbacBindModal').style.display = 'flex';
+    }
+
+    $('#rbacBindModalClose').addEventListener('click', function() {
+        $('#rbacBindModal').style.display = 'none';
+    });
+    $('#rbacBindModalCancel').addEventListener('click', function() {
+        $('#rbacBindModal').style.display = 'none';
+    });
+    $('#rbacBindModal').addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+    $('#rbacBindModalSubmit').addEventListener('click', async function() {
+        var uid = $('#rbacBindUserId').value;
+        var platform = $('#rbacBindPlatform').value;
+        var platformUid = $('#rbacBindUid').value.trim();
+        if (!platformUid) { $('#rbacBindUid').focus(); return; }
+        try {
+            var r = await fetch(API + '/api/rbac/users/' + uid + '/identities', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ platform: platform, platform_uid: platformUid }),
+            });
+            if (r.ok) {
+                $('#rbacBindModal').style.display = 'none';
+                rbacFetchUsers();
+            }
+        } catch {}
+    });
+
+    async function rbacToggleUser(uid) {
+        try {
+            await fetch(API + '/api/rbac/users/' + uid + '/toggle', { method: 'POST' });
+            rbacFetchUsers();
+        } catch {}
+    }
+
+    async function rbacDeleteUser(uid) {
+        try {
+            await fetch(API + '/api/rbac/users/' + uid, { method: 'DELETE' });
+            rbacFetchUsers();
+        } catch {}
+    }
+
+    async function rbacUnbindIdentity(identityId) {
+        try {
+            await fetch(API + '/api/rbac/identities/' + identityId, { method: 'DELETE' });
+            rbacFetchUsers();
+        } catch {}
+    }
 })();

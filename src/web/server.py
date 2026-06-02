@@ -655,6 +655,170 @@ class WebServer:
             shutil.rmtree(skill_dir)
             return self._json({"success": True})
 
+        # ===== RBAC API =====
+        def _get_rbac():
+            if not self.agent or not self.agent.rbac:
+                return None
+            return self.agent.rbac
+
+        @self._app.route("/api/rbac/roles", methods=["GET"])
+        def rbac_list_roles():
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            return self._json({"roles": rbac.list_roles()})
+
+        @self._app.route("/api/rbac/roles", methods=["POST"])
+        def rbac_create_role():
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            data = request.get_json()
+            if not data or "name" not in data:
+                return self._json({"error": "Missing name"}, 400)
+            rbac.create_role(
+                name=data["name"],
+                description=data.get("description", ""),
+                allowed_tools=data.get("allowed_tools", []),
+                allowed_agents=data.get("allowed_agents", []),
+            )
+            return self._json({"success": True, "name": data["name"]})
+
+        @self._app.route("/api/rbac/roles/<name>", methods=["GET"])
+        def rbac_get_role(name):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            role = rbac.get_role(name)
+            if not role:
+                return self._json({"error": "Role not found"}, 404)
+            return self._json(role)
+
+        @self._app.route("/api/rbac/roles/<name>", methods=["PUT"])
+        def rbac_update_role(name):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            data = request.get_json()
+            if not data:
+                return self._json({"error": "Missing body"}, 400)
+            rbac.update_role(
+                name=name,
+                description=data.get("description"),
+                allowed_tools=data.get("allowed_tools"),
+                allowed_agents=data.get("allowed_agents"),
+            )
+            return self._json({"success": True})
+
+        @self._app.route("/api/rbac/roles/<name>", methods=["DELETE"])
+        def rbac_delete_role(name):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            if not rbac.delete_role(name):
+                return self._json({"error": "Cannot delete built-in role"}, 400)
+            return self._json({"success": True})
+
+        @self._app.route("/api/rbac/users", methods=["GET"])
+        def rbac_list_users():
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            users = rbac.list_users()
+            for u in users:
+                u["identities"] = rbac.list_user_identities(u["id"])
+            return self._json({"users": users})
+
+        @self._app.route("/api/rbac/users", methods=["POST"])
+        def rbac_create_user():
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            data = request.get_json()
+            if not data or "name" not in data:
+                return self._json({"error": "Missing name"}, 400)
+            user_id = rbac.create_user(
+                name=data["name"],
+                department=data.get("department", ""),
+                role=data.get("role", "default"),
+            )
+            identities = data.get("identities", [])
+            for ident in identities:
+                if ident.get("platform") and ident.get("platform_uid"):
+                    rbac.bind_identity(user_id, ident["platform"], ident["platform_uid"])
+            user = rbac.get_user(user_id)
+            user["identities"] = rbac.list_user_identities(user_id)
+            return self._json({"success": True, "user": user})
+
+        @self._app.route("/api/rbac/users/<int:user_id>", methods=["GET"])
+        def rbac_get_user(user_id):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            user = rbac.get_user(user_id)
+            if not user:
+                return self._json({"error": "User not found"}, 404)
+            user["identities"] = rbac.list_user_identities(user_id)
+            return self._json(user)
+
+        @self._app.route("/api/rbac/users/<int:user_id>", methods=["PUT"])
+        def rbac_update_user(user_id):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            data = request.get_json()
+            if not data:
+                return self._json({"error": "Missing body"}, 400)
+            rbac.update_user(
+                user_id=user_id,
+                name=data.get("name"),
+                department=data.get("department"),
+                role=data.get("role"),
+            )
+            return self._json({"success": True})
+
+        @self._app.route("/api/rbac/users/<int:user_id>", methods=["DELETE"])
+        def rbac_delete_user(user_id):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            rbac.delete_user(user_id)
+            return self._json({"success": True})
+
+        @self._app.route("/api/rbac/users/<int:user_id>/toggle", methods=["POST"])
+        def rbac_toggle_user(user_id):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            user = rbac.get_user(user_id)
+            if not user:
+                return self._json({"error": "User not found"}, 404)
+            if user["status"] == "active":
+                rbac.disable_user(user_id)
+            else:
+                rbac.enable_user(user_id)
+            user = rbac.get_user(user_id)
+            return self._json({"success": True, "status": user["status"]})
+
+        @self._app.route("/api/rbac/users/<int:user_id>/identities", methods=["POST"])
+        def rbac_bind_identity(user_id):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            data = request.get_json()
+            if not data or "platform" not in data or "platform_uid" not in data:
+                return self._json({"error": "Missing platform or platform_uid"}, 400)
+            rbac.bind_identity(user_id, data["platform"], data["platform_uid"])
+            return self._json({"success": True})
+
+        @self._app.route("/api/rbac/identities/<int:identity_id>", methods=["DELETE"])
+        def rbac_unbind_identity(identity_id):
+            rbac = _get_rbac()
+            if not rbac:
+                return self._json({"error": "RBAC not initialized"}, 503)
+            rbac.unbind_identity(identity_id)
+            return self._json({"success": True})
+
     def _json(self, data: Any, status: int = 200) -> "Response":
         from flask import Response
         return Response(

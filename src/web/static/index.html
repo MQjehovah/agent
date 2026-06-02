@@ -62,6 +62,7 @@
                         <span class="main-tab" data-tab="sessions">Sessions</span>
                         <span class="main-tab" data-tab="workspace">Workspace</span>
                         <span class="main-tab" data-tab="logs">Logs</span>
+                        <span class="main-tab" data-tab="users">Users</span>
                     </div>
                     <span class="main-path" id="mainPath"></span>
                 </div>
@@ -153,6 +154,43 @@
                 <!-- Logs -->
                 <div class="main-body" id="logsBody" style="display:none">
                     <pre class="log-content" id="logContent">Loading logs...</pre>
+                </div>
+
+                <!-- Users (RBAC) -->
+                <div class="main-body" id="usersBody" style="display:none">
+                    <div class="users-layout">
+                        <div class="users-left">
+                            <div class="users-section-header">
+                                <span class="users-section-title">Roles</span>
+                                <button class="users-btn users-btn-sm" id="rbacNewRoleBtn">+ Role</button>
+                            </div>
+                            <div class="users-card-list" id="rbacRoleList">
+                                <div class="empty-state">Loading...</div>
+                            </div>
+                        </div>
+                        <div class="users-right">
+                            <div class="users-section-header">
+                                <span class="users-section-title">Users</span>
+                                <button class="users-btn users-btn-primary" id="rbacNewUserBtn">+ User</button>
+                            </div>
+                            <div class="users-table-wrap">
+                                <table class="users-table" id="rbacUserTable">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Name</th>
+                                            <th>Department</th>
+                                            <th>Role</th>
+                                            <th>Identities</th>
+                                            <th>Status</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="rbacUserTbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </section>
         </main>
@@ -257,6 +295,78 @@
                 <div class="modal-footer">
                     <button class="modal-btn" id="kanbanModalCancel">Cancel</button>
                     <button class="modal-btn modal-btn-primary" id="kanbanModalSubmit">Create</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RBAC User Modal -->
+        <div class="modal-overlay" id="rbacUserModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span id="rbacUserModalTitle">New User</span>
+                    <button class="modal-close" id="rbacUserModalClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="rbacUserEditId" value="" />
+                    <label class="modal-label">Name <input id="rbacUserInputName" class="modal-input" placeholder="User name" /></label>
+                    <label class="modal-label">Department <input id="rbacUserInputDept" class="modal-input" placeholder="Department" /></label>
+                    <label class="modal-label">Role
+                        <select id="rbacUserInputRole" class="modal-input"></select>
+                    </label>
+                    <div class="modal-label" style="margin-top:8px">
+                        <span style="display:flex;align-items:center;gap:6px;margin-bottom:6px">Identities <button class="users-btn users-btn-sm" id="rbacAddIdentityBtn">+ Add</button></span>
+                        <div id="rbacIdentityList"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="rbacUserModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="rbacUserModalSubmit">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RBAC Role Modal -->
+        <div class="modal-overlay" id="rbacRoleModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span id="rbacRoleModalTitle">New Role</span>
+                    <button class="modal-close" id="rbacRoleModalClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="rbacRoleEditName" value="" />
+                    <label class="modal-label">Name <input id="rbacRoleInputName" class="modal-input" placeholder="role-name" /></label>
+                    <label class="modal-label">Description <input id="rbacRoleInputDesc" class="modal-input" placeholder="Description" /></label>
+                    <label class="modal-label">Allowed Tools <input id="rbacRoleInputTools" class="modal-input" placeholder='["shell","file_operation"] or ["*"]' /></label>
+                    <label class="modal-label">Allowed Agents <input id="rbacRoleInputAgents" class="modal-input" placeholder='["设备运维"] or ["*"]' /></label>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="rbacRoleModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="rbacRoleModalSubmit">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RBAC Bind Identity Modal -->
+        <div class="modal-overlay" id="rbacBindModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span>Bind Identity</span>
+                    <button class="modal-close" id="rbacBindModalClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="rbacBindUserId" value="" />
+                    <label class="modal-label">Platform
+                        <select id="rbacBindPlatform" class="modal-input">
+                            <option value="dingtalk">DingTalk</option>
+                            <option value="feishu">Feishu</option>
+                            <option value="webhook">Webhook</option>
+                        </select>
+                    </label>
+                    <label class="modal-label">Platform User ID <input id="rbacBindUid" class="modal-input" placeholder="Platform user ID" /></label>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="rbacBindModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="rbacBindModalSubmit">Bind</button>
                 </div>
             </div>
         </div>
