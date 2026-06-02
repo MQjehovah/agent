@@ -500,7 +500,7 @@ class Agent:
 
         return tools
 
-    async def run(self, task: str, session_id: str = None, user_id: str = "") -> AgentResult:
+    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "") -> AgentResult:
         self.status = "running"
         self._consecutive_errors = 0
         self._current_task = task
@@ -511,12 +511,20 @@ class Agent:
             self._current_user_id = self.parent_agent._current_user_id
             user_id = self._current_user_id
 
+        resolved_user_id = None
+        resolved_user_name = user_name
         resolved_role = "default"
         if self.rbac and user_id:
             platform, uid = self._parse_user_id()
-            resolved_role = self.rbac.get_user_role(platform=platform, platform_uid=uid)
+            info = self.rbac.resolve_user(platform=platform, platform_uid=uid, fallback_name=user_name)
+            resolved_user_id = info["user_id"]
+            resolved_user_name = info["user_name"] or user_name
+            resolved_role = info["role"]
         elif self.parent_agent and self.parent_agent._current_session:
-            resolved_role = self.parent_agent._current_session.role or "default"
+            ps = self.parent_agent._current_session
+            resolved_user_id = ps.user_id
+            resolved_user_name = ps.user_name
+            resolved_role = ps.role or "default"
 
         if self.learner and self._learning_per_round:
             self.learner.check_user_correction(task)
@@ -552,7 +560,7 @@ class Agent:
                             session.messages = cast(
                                 list[ChatCompletionMessageParam], messages)
                             logger.info(
-                                f"Agent [{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
+                                f"[{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
                     session.add_message("user", task)
                     logger.debug(
                         f"Agent [{self.name}] 创建新session: {session_id}")
@@ -566,7 +574,8 @@ class Agent:
                 logger.info(f"Agent [{self.name}] 创建随机session: {session_id}")
 
             if user_id and not session.user_id:
-                session.user_id = user_id
+                session.user_id = resolved_user_id or ""
+                session.user_name = resolved_user_name
                 session.role = resolved_role
             elif not session.role:
                 session.role = resolved_role
@@ -576,13 +585,14 @@ class Agent:
                 agent_id=self.agent_id,
                 session_id=session_id or "temp",
                 system_prompt=self.system_prompt,
-                user_id=user_id,
+                user_id=resolved_user_id or "",
+                user_name=resolved_user_name,
                 role=resolved_role,
             )
             session.add_message("user", task)
 
         logger.info(
-            f"Agent [{self.name}] [{session.session_id}] 任务开始: {task}...")
+            f"[{self.name}] [{session.session_id}] 用户={session.user_name}({session.role}) 任务开始: {task}...")
 
         self._current_session = session
 
@@ -705,7 +715,7 @@ class Agent:
         ctx_stats = self.tracer.get_context_stats()
         if ctx_stats["samples"] > 0:
             logger.info(
-                f"[{session.session_id if session else ''}] 上下文统计: "
+                f"[{self.name}] [{session.session_id if session else ''}] 上下文统计: "
                 f"峰值={ctx_stats['peak']:,}token, "
                 f"最终={ctx_stats['final']:,}token, "
                 f"均值={ctx_stats['avg']:,}token, "

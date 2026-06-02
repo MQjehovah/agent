@@ -302,14 +302,6 @@ class AgentChatbotHandler:
             )
 
             user_id = f"dingtalk:{sender_staff_id}"
-            role = "default"
-            try:
-                pm = self.plugin.plugin_manager
-                if pm and hasattr(pm, '_agent') and pm._agent and pm._agent.rbac:
-                    role = pm._agent.rbac.get_user_role(platform="dingtalk", platform_uid=sender_staff_id)
-            except Exception:
-                pass
-            self.logger.info(f"用户信息: nick={sender_nick}, staff_id={sender_staff_id}, role={role}")
 
             if not self.plugin.plugin_manager:
                 response = "执行器未注册，请稍后再试"
@@ -317,7 +309,8 @@ class AgentChatbotHandler:
                 response = await self.plugin.plugin_manager.execute(
                     session_id=session.session_id,
                     content=content,
-                    user_id=user_id
+                    user_id=user_id,
+                    user_name=sender_nick
                 )
 
             self.reply_text(response, incoming_message)

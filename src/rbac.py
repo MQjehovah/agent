@@ -10,16 +10,20 @@ class RBACManager:
         self.storage = storage
 
     def get_user_role(self, platform: str, platform_uid: str) -> str:
+        info = self.resolve_user(platform, platform_uid)
+        return info["role"]
+
+    def resolve_user(self, platform: str, platform_uid: str, fallback_name: str = "") -> dict:
         with self.storage.get_connection() as conn:
             row = conn.execute(
-                """SELECT u.role, u.status FROM rbac_user_identities i
+                """SELECT u.id, u.name, u.role, u.status FROM rbac_user_identities i
                    JOIN rbac_users u ON i.user_id = u.id
                    WHERE i.platform = ? AND i.platform_uid = ?""",
                 (platform, platform_uid)
             ).fetchone()
-        if not row or row[1] == "disabled":
-            return "default"
-        return row[0]
+        if row and row[3] != "disabled":
+            return {"user_id": row[0], "user_name": row[1], "role": row[2]}
+        return {"user_id": None, "user_name": fallback_name, "role": "default"}
 
     def check_tool(self, role: str, tool_name: str) -> bool:
         allowed = self._get_allowed(role, "allowed_tools")

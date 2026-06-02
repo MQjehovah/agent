@@ -21,6 +21,7 @@ class AgentSession:
     created_at: datetime = field(default_factory=datetime.now)
     last_accessed: datetime = field(default_factory=datetime.now)
     user_id: str = ""
+    user_name: str = ""
     role: str = ""
 
     def __post_init__(self):
