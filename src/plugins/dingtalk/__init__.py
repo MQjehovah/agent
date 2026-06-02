@@ -287,11 +287,12 @@ class AgentChatbotHandler:
                 return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
 
             sender_id = incoming_message.sender_id or ""
+            sender_staff_id = getattr(incoming_message, 'sender_staff_id', "") or getattr(incoming_message, 'staff_id', "") or sender_id
             sender_nick = incoming_message.sender_nick or ""
             conversation_id = incoming_message.conversation_id or ""
             robot_code = incoming_message.robot_code or ""
 
-            self.logger.info(f"钉钉插件收到消息: [{sender_nick}] {content}...")
+            self.logger.info(f"钉钉插件收到消息: [{sender_nick}](staff_id={sender_staff_id}) {content}...")
 
             session = self.plugin.get_session(
                 conversation_id=conversation_id,
@@ -300,10 +301,19 @@ class AgentChatbotHandler:
                 robot_code=robot_code
             )
 
+            user_id = f"dingtalk:{sender_staff_id}"
+            role = "default"
+            try:
+                pm = self.plugin.plugin_manager
+                if pm and hasattr(pm, '_agent') and pm._agent and pm._agent.rbac:
+                    role = pm._agent.rbac.get_user_role(platform="dingtalk", platform_uid=sender_staff_id)
+            except Exception:
+                pass
+            self.logger.info(f"用户信息: nick={sender_nick}, staff_id={sender_staff_id}, role={role}")
+
             if not self.plugin.plugin_manager:
                 response = "执行器未注册，请稍后再试"
             else:
-                user_id = f"dingtalk:{sender_id}"
                 response = await self.plugin.plugin_manager.execute(
                     session_id=session.session_id,
                     content=content,

@@ -439,6 +439,7 @@ async def main():
             plugin_manager.load_all()
             plugin_manager.register_executor(lambda sid, c, uid="": agent.run(c, session_id=sid, user_id=uid))
             agent.plugin_manager = plugin_manager
+            plugin_manager._agent = agent
 
             kanban_plugin = plugin_manager.get_plugin("kanban")
             if kanban_plugin:
