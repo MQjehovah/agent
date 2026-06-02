@@ -20,6 +20,8 @@ class AgentSession:
     messages: List[ChatCompletionMessageParam] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     last_accessed: datetime = field(default_factory=datetime.now)
+    user_id: str = ""
+    role: str = ""
 
     def __post_init__(self):
         if self.system_prompt:

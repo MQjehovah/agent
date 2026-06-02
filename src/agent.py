@@ -112,6 +112,7 @@ class Agent:
 
         self.rbac = None
         self._current_user_id: str = ""
+        self._current_session = None
 
         self._learning_per_round = os.environ.get("LEARNING_PER_ROUND", "false").lower() in ("true", "1", "yes")
 
@@ -503,22 +504,30 @@ class Agent:
         self.status = "running"
         self._consecutive_errors = 0
         self._current_task = task
-        self._current_user_id = user_id
+
+        if user_id:
+            self._current_user_id = user_id
+        if not user_id and self.parent_agent:
+            self._current_user_id = self.parent_agent._current_user_id
+            user_id = self._current_user_id
+
+        resolved_role = "default"
+        if self.rbac and user_id:
+            platform, uid = self._parse_user_id()
+            resolved_role = self.rbac.get_user_role(platform=platform, platform_uid=uid)
+        elif self.parent_agent and self.parent_agent._current_session:
+            resolved_role = self.parent_agent._current_session.role or "default"
 
         if self.learner and self._learning_per_round:
             self.learner.check_user_correction(task)
 
-        # 根据当前任务重新拼装 prompt
         self._build_prompt(task)
 
-        # 新任务开始，清空上一轮激活的技能
         if self.skill_manager:
             self.skill_manager.clear_active_skills()
 
-        # 开始追踪
         self.tracer.start_trace(f"agent.run: {task[:50]}")
 
-        # 触发 AGENT_START 钩子
         await self.hooks.fire("agent_start", metadata={"task": task})
 
         from agent_session import AgentSession, AgentSessionManager
@@ -556,16 +565,26 @@ class Agent:
                 session.add_message("user", task)
                 logger.info(f"Agent [{self.name}] 创建随机session: {session_id}")
 
+            if user_id and not session.user_id:
+                session.user_id = user_id
+                session.role = resolved_role
+            elif not session.role:
+                session.role = resolved_role
+
         if not session:
             session = AgentSession(
                 agent_id=self.agent_id,
                 session_id=session_id or "temp",
-                system_prompt=self.system_prompt
+                system_prompt=self.system_prompt,
+                user_id=user_id,
+                role=resolved_role,
             )
             session.add_message("user", task)
 
         logger.info(
             f"Agent [{self.name}] [{session.session_id}] 任务开始: {task}...")
+
+        self._current_session = session
 
         try:
             for i in range(self.max_iterations):
@@ -770,11 +789,10 @@ class Agent:
             logger.warning(f"工具调用被拦截: {name}, 原因: {perm_result.reason}")
             return json.dumps({"success": False, "error": perm_result.reason}, ensure_ascii=False)
 
-        if self.rbac and self._current_user_id:
-            platform, uid = self._parse_user_id()
-            role = self.rbac.get_user_role(platform=platform, platform_uid=uid)
+        role = self._current_session.role if self._current_session else ""
+        if self.rbac and role:
             if not self.rbac.check_tool(role, name):
-                logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}], user={self._current_user_id}")
+                logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}]")
                 return json.dumps({"success": False, "error": f"权限不足: 角色 [{role}] 无权执行工具 [{name}]"}, ensure_ascii=False)
 
         # DEFAULT 模式需要用户确认
@@ -1051,11 +1069,10 @@ class Agent:
 
         agent_name = args.get("name", "") or args.get("template", "")
 
-        if self.rbac and self._current_user_id and agent_name:
-            platform, uid = self._parse_user_id()
-            role = self.rbac.get_user_role(platform=platform, platform_uid=uid)
+        role = self._current_session.role if self._current_session else ""
+        if self.rbac and role and agent_name:
             if not self.rbac.check_agent(role, agent_name):
-                logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{agent_name}], user={self._current_user_id}")
+                logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{agent_name}]")
                 return json.dumps({"success": False, "error": f"权限不足: 角色 [{role}] 无权访问子代理 [{agent_name}]"}, ensure_ascii=False)
 
         await self.hooks.fire(
