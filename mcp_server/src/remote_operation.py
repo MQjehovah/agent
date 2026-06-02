@@ -188,12 +188,26 @@ def get_chassis_info(sn: str):
 @mcp.tool()
 def get_cost_map(sn: str):
     """获取感知地图（Cost Map）
+
+    说明：获取实时感知图像，返回图像base64编码。图像编码后数据比较大，会被截断。大模型不适用，使用get_cost_map
     
     参数:
     - sn: 设备编码
     """
     logger.info(f"获取感知地图: {sn}")
     return _post("/cost_map", {"sn": sn})
+
+@mcp.tool()
+def upload_cost_map(sn: str):
+    """获取感知地图（Cost Map）
+
+    说明：获取实时感知图像存储在云端，返回访问路径URL
+    
+    参数:
+    - sn: 设备编码
+    """
+    logger.info(f"获取感知地图: {sn}")
+    return _post("/upload/costMap", {"sn": sn})
 
 
 @mcp.tool()

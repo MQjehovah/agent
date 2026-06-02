@@ -15,7 +15,7 @@
     },
     {
         "name": "remote_terminal",
-        "enabled": true,
+        "enabled": false,
         "command": "python",
         "args": [
             "mcp_server/src/remote_terminal.py"
