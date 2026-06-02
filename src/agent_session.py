@@ -1,3 +1,4 @@
+import os
 import uuid
 import asyncio
 import json
@@ -68,17 +69,14 @@ class AgentSession:
 class AgentSessionManager:
     MAX_ITERATIONS = 100
     CLEANUP_INTERVAL = 300  # 清理间隔: 5分钟
-    MAX_CONTEXT_TOKENS = 100 * 1000  # 上下文 token 上限（按模型调整）
-    # microcompact 参数
-    KEEP_RECENT_TOOL_RESULTS = 5       # 保留最近 N 条工具结果的完整内容
-    TOOL_RESULT_COLLAPSE_CHARS = 300   # 旧工具结果截断到多少字符
-    # context collapse 参数
-    TEXT_BLOCK_COLLAPSE_THRESHOLD = 3000  # 超过此长度的文本块被折叠
-    TEXT_BLOCK_COLLAPSE_HEAD = 500        # 折叠后保留头部字符数
-    TEXT_BLOCK_COLLAPSE_TAIL = 300        # 折叠后保留尾部字符数
-    # sliding window 参数（从 Config 加载，启动时覆盖）
-    SLIDING_WINDOW_SIZE = 40
-    SLIDING_WINDOW_SUMMARY_MAX = 6000
+    MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", 100 * 1000)) # 上下文 token 上限（按模型调整）
+    KEEP_RECENT_TOOL_RESULTS = int(os.environ.get("KEEP_RECENT_TOOL_RESULTS", 5)) # 保留最近 N 条工具结果的完整内容
+    TOOL_RESULT_COLLAPSE_CHARS = int(os.environ.get("TOOL_RESULT_COLLAPSE_CHARS", 300))  # 旧工具结果截断到多少字符
+    TEXT_BLOCK_COLLAPSE_THRESHOLD = int(os.environ.get("TEXT_BLOCK_COLLAPSE_THRESHOLD", 3000)) # 超过此长度的文本块被折叠
+    TEXT_BLOCK_COLLAPSE_HEAD = int(os.environ.get("TEXT_BLOCK_COLLAPSE_HEAD", 500)) # 折叠后保留头部字符数
+    TEXT_BLOCK_COLLAPSE_TAIL = int(os.environ.get("TEXT_BLOCK_COLLAPSE_TAIL", 300)) # 折叠后保留尾部字符数
+    SLIDING_WINDOW_SIZE = int(os.environ.get("SLIDING_WINDOW_SIZE", 40))
+    SLIDING_WINDOW_SUMMARY_MAX = int(os.environ.get("SLIDING_WINDOW_SUMMARY_MAX", 6000))
 
     @classmethod
     def load_config(cls):

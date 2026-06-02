@@ -33,7 +33,7 @@ class AgentResult:
         default_factory=lambda: datetime.now().isoformat())
 
 
-MAX_TOOL_OUTPUT_CHARS = 3000
+MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 3000))
 
 class Agent:
     def __init__(
