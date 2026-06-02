@@ -108,11 +108,9 @@ class MCPServerConnection:
         """安全清理 ExitStack"""
         if self._exit_stack:
             try:
-                await self._exit_stack.__aexit__(None, None, None)
-            except (RuntimeError, asyncio.CancelledError):
+                await asyncio.shield(self._exit_stack.__aexit__(None, None, None))
+            except BaseException:
                 pass
-            except Exception as e:
-                logger.debug(f"MCP [{self.name}] ExitStack 清理时出错: {e}")
             finally:
                 self._exit_stack = None
                 self.session = None
