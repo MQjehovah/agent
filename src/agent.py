@@ -596,6 +596,9 @@ class Agent:
 
         self._current_session = session
 
+        if session.role != "admin" and self.rbac:
+            self.system_prompt += "\n\n[注意] 当前用户权限有限，部分工具和子代理可能无法使用，遇到权限不足请友好提示用户。"
+
         try:
             for i in range(self.max_iterations):
                 logger.debug(
@@ -803,7 +806,7 @@ class Agent:
         if self.rbac and role:
             if not self.rbac.check_tool(role, name):
                 logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}]")
-                return json.dumps({"success": False, "error": f"权限不足: 角色 [{role}] 无权执行工具 [{name}]"}, ensure_ascii=False)
+                return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
 
         # DEFAULT 模式需要用户确认
         if perm_result.reason == "需要用户确认" and self.on_confirm:
@@ -1085,7 +1088,7 @@ class Agent:
         if self.rbac and role and agent_name:
             if not self.rbac.check_agent(role, agent_name):
                 logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{agent_name}]")
-                return json.dumps({"success": False, "error": f"权限不足: 角色 [{role}] 无权访问子代理 [{agent_name}]"}, ensure_ascii=False)
+                return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
 
         await self.hooks.fire(
             self._hook_event.SUBAGENT_START,
