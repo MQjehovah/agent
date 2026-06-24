@@ -1026,6 +1026,8 @@ class Agent:
                 return await self._execute_subagent(args)
 
             if self.tool_registry and self.tool_registry.has_tool(name):
+                if self._current_session and self._current_session.user_id:
+                    args["_local_user_id"] = self._current_session.user_id
                 return await self.tool_registry.execute(name, args)
 
             if self.skill_manager and name == "execute_skill":
