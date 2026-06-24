@@ -34,25 +34,6 @@ REFLECT_PROMPT = (
 
 REFLECT_SYSTEM_PROMPT = "你是经验提取助手。只有真正有通用价值的知识才保存。用 SAVE: 或 SKIP 回复。兼容中英文冒号。"
 
-# --- 每日提取 prompt ---
-DAILY_EXTRACT_PROMPT = (
-    "请从以下 Agent [{agent_id}] 的对话片段中提取关键信息。\n"
-    "要求：\n"
-    "1. 只保留有价值的信息，过滤掉闲聊、重复、工具调用细节\n"
-    "2. 每条信息用一句话概括\n"
-    "3. 按以下分类输出（某分类无内容则省略）\n\n"
-    "## 关键决策\n- ...\n\n"
-    "## 用户偏好\n- ...\n\n"
-    "## 重要事实\n- ...\n\n"
-    "## 待办事项\n- ...\n\n"
-    "对话片段：\n{chunk}\n\n"
-    "只输出提取结果，不要额外说明。如果对话无有价值信息，输出「无关键信息」。"
-)
-
-DAILY_EXTRACT_SYSTEM_PROMPT = "你是记忆提取助手。输出简洁的结构化摘要。"
-
-CHUNK_SIZE = 50000
-
 # --- 模式检测 prompt ---
 PATTERN_CLASSIFY_PROMPT = (
     "分析以下任务，判断它属于哪种任务模式。\n"

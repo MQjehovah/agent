@@ -417,44 +417,6 @@ class Agent:
         self._env_context_time = now
         return self._env_context_cache
 
-    async def _get_memory_context(self, task: str) -> str:
-        """获取与当前任务相关的记忆（优先使用相关性搜索）"""
-        if not task:
-            return self.memory.load_memory("")
-
-        try:
-            from memory.relevance import find_relevant_memories
-            relevant = await find_relevant_memories(
-                task, self.memory, self.client
-            )
-            if relevant:
-                return "以下是与当前任务相关的记忆:\n" + "\n\n".join(relevant)
-        except Exception:
-            pass
-
-        return self.memory.load_memory(task)
-
-    def _load_memory_context_sync(self, task: str) -> str:
-        """同步加载记忆上下文（纯关键词匹配，不调用LLM）"""
-        if not self.memory:
-            return ""
-
-        if not task:
-            return self.memory.load_memory("")
-
-        try:
-            from memory.relevance import _keyword_search
-            keyword_results = _keyword_search(task, self.memory, max_results=5)
-            # shared_results = _search_shared_knowledge(task, self.memory, max_results=2)
-            # keyword_results.extend(r for r in shared_results if r not in keyword_results)
-
-            if keyword_results:
-                return "以下是与当前任务相关的记忆:\n" + "\n\n".join(keyword_results)
-        except Exception:
-            pass
-
-        return self.memory.load_memory(task)
-
     def _get_tool_summary(self) -> str:
         """生成工具描述汇总"""
         if not self.tool_registry:
