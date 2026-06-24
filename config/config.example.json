@@ -47,14 +47,6 @@
     "searxng_timeout": 10
   },
 
-  "smtp": {
-    "host": "smtp.qiye.aliyun.com",
-    "port": 465,
-    "username": "",
-    "password": "",
-    "from_name": ""
-  },
-
   "rag": {
     "base_url": "",
     "username": "",

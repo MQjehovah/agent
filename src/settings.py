@@ -42,13 +42,6 @@ _DEFAULTS = {
         "searxng_engines": "google,bing,duckduckgo",
         "searxng_timeout": 10,
     },
-    "smtp": {
-        "host": "",
-        "port": 465,
-        "username": "",
-        "password": "",
-        "from_name": "",
-    },
     "rag": {
         "base_url": "",
         "username": "",
@@ -156,10 +149,6 @@ class Settings:
             safe["llm"]["endpoints"] = [
                 {**ep, "api_key": "***"} for ep in safe["llm"]["endpoints"]
             ]
-        if "smtp" in safe:
-            for k in ("password",):
-                if k in safe["smtp"]:
-                    safe["smtp"][k] = "***"
         if "search" in safe:
             for k in safe["search"]:
                 if "key" in k and safe["search"][k]:
