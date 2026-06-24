@@ -38,6 +38,7 @@ class Storage:
         self._write_thread: Optional[threading.Thread] = None
         self._running = True
         self._init_db()
+        self._rename_legacy_memory_files()
         self._init_pool()
         self._start_write_thread()
         if config_dir:
@@ -511,6 +512,26 @@ class Storage:
                 "SELECT * FROM memory_proposals WHERE id = ?", (proposal_id,)
             ).fetchone()
         return dict(row) if row else None
+
+    def _rename_legacy_memory_files(self):
+        """将旧文件记忆重命名为 .legacy.bak（不读入系统，方案B丢弃旧数据）"""
+        import os as _os
+        roots = []
+        if self.config_dir:
+            roots.append(_os.path.join(self.config_dir, "memory"))
+        roots.append(_os.path.join(self.workspace, "memory"))
+        for memory_dir in roots:
+            if not _os.path.isdir(memory_dir):
+                continue
+            for name in _os.listdir(memory_dir):
+                if name.endswith(".legacy.bak"):
+                    continue
+                path = _os.path.join(memory_dir, name)
+                try:
+                    _os.rename(path, path + ".legacy.bak")
+                    logger.info(f"旧记忆文件已归档: {name}")
+                except Exception:
+                    pass
 
     def close(self):
         """关闭存储管理器"""

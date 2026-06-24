@@ -13,8 +13,6 @@ def tmp_workspace(tmp_path):
     ws.mkdir()
     (ws / "agents").mkdir()
     (ws / "skills").mkdir()
-    (ws / "memory").mkdir()
-    (ws / "memory" / "agents").mkdir()
     return str(ws)
 
 
