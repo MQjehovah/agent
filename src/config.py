@@ -84,9 +84,6 @@ class Config:
         cls.BING_SEARCH_API_KEY = s.get("tools.search.bing_search_api_key", "")
         cls.SEARCH_BACKENDS = s.get("tools.search.backends", "")
 
-        logger.info("配置已从 config/config.json 加载")
-
-
 def validate_config() -> bool:
     """启动时的配置校验（从 Settings 读取，不再依赖环境变量）"""
     from settings import get_settings
