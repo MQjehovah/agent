@@ -68,50 +68,43 @@ class LLMClient:
 
     def _load_endpoints(self, model: str, base_url: Optional[str],
                         api_key: Optional[str], config_dir: Optional[str]) -> list:
-        """加载端点配置：优先 config/llm_endpoints.json，回退 env 变量（单端点）"""
+        """加载端点配置：config/llm_endpoints.json 为唯一来源"""
         import os as _os
 
-        # 尝试配置文件
         if not config_dir:
-            config_dir_from_main = os.getenv("LLM_CONFIG_DIR", "")
-            if config_dir_from_main:
-                config_dir = config_dir_from_main
-            else:
-                config_dir = _os.path.join(_os.getcwd(), "config")
+            config_dir = _os.path.join(_os.getcwd(), "config")
+
         path = _os.path.join(config_dir, "llm_endpoints.json")
-        if _os.path.isfile(path):
-            try:
-                with open(path, encoding="utf-8") as f:
-                    eps = json.load(f)
-                if isinstance(eps, list) and eps:
-                    result = []
-                    for ep in eps:
-                        result.append(self._build_endpoint(
-                            model=ep.get("model", ""),
-                            base_url=ep.get("base_url", ""),
-                            api_key=ep.get("api_key", ""),
-                        ))
-                    return result
-            except (json.JSONDecodeError, OSError) as e:
-                api_logger.warning(f"加载 llm_endpoints.json 失败: {e}，回退到 env")
-
-        # 回退：env 变量或入参（单端点）
-        resolved_model = model or os.getenv("MODEL_NAME", "glm-5")
-        resolved_base_url = base_url or os.getenv("OPENAI_BASE_URL")
-        resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
-
-        if not resolved_api_key:
+        if not _os.path.isfile(path):
             raise ValueError(
-                "API Key 未配置。请设置 OPENAI_API_KEY 环境变量，"
-                "或在 config/llm_endpoints.json 中配置多个端点"
+                f"LLM 端点配置未找到: {path}\n"
+                f"请创建该文件，格式为 JSON 数组，每个元素包含 model/base_url/api_key。\n"
+                f"参考 config/llm_endpoints.example.json"
             )
 
-        if not resolved_base_url:
-            resolved_base_url = "https://coding.dashscope.aliyuncs.com/v1"
+        try:
+            with open(path, encoding="utf-8") as f:
+                eps = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            raise ValueError(f"解析 llm_endpoints.json 失败: {e}") from e
 
-        return [self._build_endpoint(
-            model=resolved_model, base_url=resolved_base_url, api_key=resolved_api_key
-        )]
+        if not isinstance(eps, list) or not eps:
+            raise ValueError("llm_endpoints.json 必须是非空 JSON 数组")
+
+        result = []
+        for ep in eps:
+            ep_model = ep.get("model", "")
+            ep_url = ep.get("base_url", "")
+            ep_key = ep.get("api_key", "")
+            if not ep_model or not ep_url or not ep_key:
+                raise ValueError(
+                    f"llm_endpoints.json 端点缺字段: model/base_url/api_key 均为必填\n"
+                    f"当前: {ep}"
+                )
+            result.append(self._build_endpoint(
+                model=ep_model, base_url=ep_url, api_key=ep_key,
+            ))
+        return result
 
     @staticmethod
     def _build_endpoint(model: str, base_url: str, api_key: str) -> dict:

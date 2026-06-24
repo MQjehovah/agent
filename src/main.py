@@ -410,7 +410,7 @@ async def main():
     os.makedirs(workspace, exist_ok=True)
     src_dir = os.path.dirname(os.path.abspath(__file__))
 
-    agent = Agent(workspace=workspace, config_dir=config_dir, client=LLMClient())
+    agent = Agent(workspace=workspace, config_dir=config_dir, client=LLMClient(config_dir=config_dir))
     await agent.initialize()
 
     if args.agent:
