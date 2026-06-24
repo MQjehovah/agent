@@ -34,11 +34,35 @@ SMTP_CONFIG = {
 
 @mcp.tool()
 def get_current_time():
-    """获取当前时间"""
+    """获取服务器当前的本地时间。
+
+    无需任何参数。返回一个包含多种常用格式的字典，便于不同场景使用：
+    - datetime: 标准可读格式 "YYYY-MM-DD HH:MM:SS"
+    - iso: ISO 8601 格式（带本地时区偏移，便于跨系统解析）
+    - date: 仅日期 "YYYY-MM-DD"
+    - time: 仅时间 "HH:MM:SS"
+    - weekday: 星期几（中文，如 "星期三"）
+    - timezone: 本地时区名称与 UTC 偏移（如 "UTC+08:00"）
+
+    适用场景：日志记录、定时任务判断、报表时间戳、为用户展示当前时间等。
+    注意：返回的是服务器所在系统的本地时间，非调用方时间。
+    """
     logger.info("获取当前时间")
 
-    now = datetime.datetime.now()
-    return now.strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.datetime.now().astimezone()
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    offset = now.utcoffset()
+    offset_hours = offset.total_seconds() / 3600 if offset else 0
+    tz_str = f"UTC{'+' if offset_hours >= 0 else ''}{offset_hours:g}:00"
+
+    return {
+        "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "iso": now.isoformat(),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "weekday": weekdays[now.weekday()],
+        "timezone": tz_str,
+    }
 
 @mcp.tool()
 def send_email(
