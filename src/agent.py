@@ -936,7 +936,7 @@ class Agent:
 
             # LLM 响应 info 日志
             content_preview = (msg.content or "")[:200]
-            logger.info(f"[LLM响应] content: {content_preview or '(空)'} | tool_calls: {len(msg.tool_calls) if msg.tool_calls else 0}")
+            logger.info(f"[LLM响应] model: {response.model} | content: {content_preview or '(空)'} | tool_calls: {len(msg.tool_calls) if msg.tool_calls else 0}")
 
             tool_calls = None
             if msg.tool_calls:
