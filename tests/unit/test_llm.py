@@ -1,5 +1,5 @@
 """LLM 多端点 failover 测试"""
-import sys, os, json, tempfile
+import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -7,44 +7,27 @@ from openai import APITimeoutError
 from llm import LLMClient
 
 
-def _tmp_config(eps):
-    """在临时目录创建 llm_endpoints.json，返回 (config_dir, cleanup)"""
-    td = tempfile.mkdtemp()
-    path = os.path.join(td, "llm_endpoints.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(eps, f)
-    return td, lambda: os.remove(path) or os.rmdir(td)
-
-
 def test_single_endpoint():
-    """单端点：数组只一个元素"""
-    td, clean = _tmp_config([
+    """单端点"""
+    c = LLMClient(endpoints=[
         {"model": "gpt-4", "base_url": "https://x.com/v1", "api_key": "sk-test"},
     ])
-    try:
-        c = LLMClient(config_dir=td)
-        assert not c._is_multi
-        assert len(c._endpoints) == 1
-        assert c.model == "gpt-4"
-        assert c.base_url == "https://x.com/v1"
-    finally:
-        clean()
+    assert not c._is_multi
+    assert len(c._endpoints) == 1
+    assert c.model == "gpt-4"
+    assert c.base_url == "https://x.com/v1"
 
 
 def test_multi_endpoint():
-    """多端点：数组多个元素"""
-    td, clean = _tmp_config([
+    """多端点"""
+    c = LLMClient(endpoints=[
         {"model": "ep1", "base_url": "https://a.com", "api_key": "sk-a"},
         {"model": "ep2", "base_url": "https://b.com", "api_key": "sk-b"},
     ])
-    try:
-        c = LLMClient(config_dir=td)
-        assert c._is_multi
-        assert len(c._endpoints) == 2
-        assert c.model == "ep1"
-        assert c._endpoints[1]["model"] == "ep2"
-    finally:
-        clean()
+    assert c._is_multi
+    assert len(c._endpoints) == 2
+    assert c.model == "ep1"
+    assert c._endpoints[1]["model"] == "ep2"
 
 
 @pytest.mark.asyncio
@@ -81,27 +64,13 @@ async def test_failover_on_timeout():
     mock2.chat.completions.create.assert_called_once()
 
 
-def test_missing_config():
-    """无 llm_endpoints.json 时应报错"""
-    with pytest.raises(ValueError, match="LLM 端点配置未找到"):
-        LLMClient(config_dir="/nonexistent")
-
-
-def test_empty_config():
-    """空数组应报错"""
-    td, clean = _tmp_config([])
-    try:
-        with pytest.raises(ValueError, match="非空 JSON 数组"):
-            LLMClient(config_dir=td)
-    finally:
-        clean()
+def test_no_endpoints():
+    """无端点应报错"""
+    with pytest.raises(ValueError, match="端点未配置"):
+        LLMClient(endpoints=[])
 
 
 def test_missing_field():
     """缺必填字段应报错"""
-    td, clean = _tmp_config([{"model": "x", "base_url": "https://x.com"}])
-    try:
-        with pytest.raises(ValueError, match="缺字段"):
-            LLMClient(config_dir=td)
-    finally:
-        clean()
+    with pytest.raises(ValueError, match="缺字段"):
+        LLMClient(endpoints=[{"model": "x", "base_url": "https://x.com"}])

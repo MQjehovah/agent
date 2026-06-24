@@ -41,18 +41,24 @@ LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "30"))
 
 
 class LLMClient:
-    def __init__(self, model: str = None, base_url: Optional[str] = None,
-                 api_key: Optional[str] = None, enable_cache: bool = True,
-                 config_dir: str = None):
+    def __init__(self, endpoints: list = None, timeout: float = 300,
+                 connect_timeout: float = 30, enable_cache: bool = True):
         self.enable_cache = enable_cache
         self.usage_tracker = UsageTracker()
+        self._timeout = timeout
+        self._connect_timeout = connect_timeout
 
-        # 加载端点列表（多端点模式或单端点兼容模式）
-        endpoints = self._load_endpoints(model, base_url, api_key, config_dir)
-        self._endpoints: List[Dict[str, Any]] = endpoints
+        # 加载端点
+        eps = endpoints or []
+        if not eps:
+            raise ValueError(
+                "LLM 端点未配置。请在 config/config.json 的 llm.endpoints 中配置。\n"
+                "参考 config/config.example.json"
+            )
+        self._endpoints = [self._build_endpoint(ep) for ep in eps]
         self._is_multi = len(self._endpoints) > 1
 
-        # 向后兼容：暴露第一个端点的信息
+        # 向后兼容：暴露第一端点的信息
         primary = self._endpoints[0]
         self.model = primary["model"]
         self.base_url = primary["base_url"]
@@ -66,57 +72,22 @@ class LLMClient:
         else:
             api_logger.info(f"LLM 单端点模式: {self.base_url} 模型={self.model}")
 
-    def _load_endpoints(self, model: str, base_url: Optional[str],
-                        api_key: Optional[str], config_dir: Optional[str]) -> list:
-        """加载端点配置：config/llm_endpoints.json 为唯一来源"""
-        import os as _os
 
-        if not config_dir:
-            config_dir = _os.path.join(_os.getcwd(), "config")
-
-        path = _os.path.join(config_dir, "llm_endpoints.json")
-        if not _os.path.isfile(path):
-            raise ValueError(
-                f"LLM 端点配置未找到: {path}\n"
-                f"请创建该文件，格式为 JSON 数组，每个元素包含 model/base_url/api_key。\n"
-                f"参考 config/llm_endpoints.example.json"
-            )
-
-        try:
-            with open(path, encoding="utf-8") as f:
-                eps = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            raise ValueError(f"解析 llm_endpoints.json 失败: {e}") from e
-
-        if not isinstance(eps, list) or not eps:
-            raise ValueError("llm_endpoints.json 必须是非空 JSON 数组")
-
-        result = []
-        for ep in eps:
-            ep_model = ep.get("model", "")
-            ep_url = ep.get("base_url", "")
-            ep_key = ep.get("api_key", "")
-            if not ep_model or not ep_url or not ep_key:
-                raise ValueError(
-                    f"llm_endpoints.json 端点缺字段: model/base_url/api_key 均为必填\n"
-                    f"当前: {ep}"
-                )
-            result.append(self._build_endpoint(
-                model=ep_model, base_url=ep_url, api_key=ep_key,
-            ))
-        return result
-
-    @staticmethod
-    def _build_endpoint(model: str, base_url: str, api_key: str) -> dict:
+    def _build_endpoint(self, ep: dict) -> dict:
         """创建一个端点：AsyncOpenAI 客户端 + 元信息"""
+        model = ep.get("model", "")
+        base_url = ep.get("base_url", "")
+        api_key = ep.get("api_key", "")
+        if not model or not base_url or not api_key:
+            raise ValueError(f"LLM 端点缺字段: model/base_url/api_key 均为必填，当前: {ep}")
         client = AsyncOpenAI(
             base_url=base_url,
             api_key=api_key,
             timeout=httpx.Timeout(
-                connect=LLM_CONNECT_TIMEOUT,
-                read=LLM_TIMEOUT,
-                write=LLM_CONNECT_TIMEOUT,
-                pool=LLM_CONNECT_TIMEOUT,
+                connect=self._connect_timeout,
+                read=self._timeout,
+                write=self._connect_timeout,
+                pool=self._connect_timeout,
             ),
             max_retries=0,
         )

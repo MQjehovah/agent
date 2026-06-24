@@ -31,6 +31,7 @@ from cmd_handler import CommandHandler
 from config import Config, validate_config
 from llm import LLMClient
 from plugins import PluginManager
+from settings import get_settings, init_settings
 
 console = Console()
 
@@ -395,6 +396,12 @@ async def main():
     )
     args = parser.parse_args()
 
+    config_dir = os.path.abspath(args.config)
+    workspace = os.path.abspath(args.workspace)
+    os.makedirs(workspace, exist_ok=True)
+
+    init_settings(config_dir)
+
     Config.load_from_env()
     AgentSessionManager.load_config()
 
@@ -405,12 +412,14 @@ async def main():
     if args.debug:
         logging.getLogger("agent").setLevel(logging.DEBUG)
 
-    config_dir = os.path.abspath(args.config)
-    workspace = os.path.abspath(args.workspace)
-    os.makedirs(workspace, exist_ok=True)
     src_dir = os.path.dirname(os.path.abspath(__file__))
 
-    agent = Agent(workspace=workspace, config_dir=config_dir, client=LLMClient(config_dir=config_dir))
+    client = LLMClient(
+        endpoints=get_settings().llm_endpoints,
+        timeout=get_settings().llm_timeout,
+        connect_timeout=get_settings().llm_connect_timeout,
+    )
+    agent = Agent(workspace=workspace, config_dir=config_dir, client=client)
     await agent.initialize()
 
     if args.agent:

@@ -1,0 +1,66 @@
+{
+  "_说明": "这是系统的统一配置文件。所有配置均有默认值，只需覆写需要修改的字段。",
+  "_说明2": "复制为 config.json 并填入实际值。",
+
+  "llm": {
+    "endpoints": [
+      {
+        "model": "glm-5",
+        "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+        "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    ],
+    "timeout": 300,
+    "connect_timeout": 30
+  },
+
+  "session": {
+    "ttl_seconds": 3600,
+    "max_sessions": 100
+  },
+
+  "cache": {
+    "max_size": 1000,
+    "ttl_seconds": 3600
+  },
+
+  "logging": {
+    "level": "INFO"
+  },
+
+  "autonomous": {
+    "discovery_interval": 1800
+  },
+
+  "context": {
+    "sliding_window_size": 40,
+    "sliding_window_summary_max": 6000
+  },
+
+  "search": {
+    "backends": "",
+    "tavily_api_key": "",
+    "serper_api_key": "",
+    "bing_search_api_key": "",
+    "searxng_url": "",
+    "searxng_engines": "google,bing,duckduckgo",
+    "searxng_timeout": 10
+  },
+
+  "device_api_base_url": "https://bms-cn.rosiwit.com",
+
+  "smtp": {
+    "host": "smtp.qiye.aliyun.com",
+    "port": 465,
+    "username": "",
+    "password": "",
+    "from_name": ""
+  },
+
+  "rag": {
+    "base_url": "",
+    "username": "",
+    "password": "",
+    "token": ""
+  }
+}
