@@ -67,6 +67,7 @@ class WebServer:
 
     def _setup_routes(self):
         from flask import request, Response, send_from_directory, abort
+        from storage import get_storage
 
         @self._app.route("/")
         def index():
@@ -817,6 +818,47 @@ class WebServer:
             if not rbac:
                 return self._json({"error": "RBAC not initialized"}, 503)
             rbac.unbind_identity(identity_id)
+            return self._json({"success": True})
+
+        # ===== Memory Proposals API（仅 admin 可操作） =====
+        # TODO: 校验调用者为 admin 角色 —— 当前 web 层尚无统一 admin 鉴权中间件，
+        #       待补中间件后，在下列每个路由入口统一拦截非 admin 请求。
+        @self._app.route("/api/memory/proposals", methods=["GET"])
+        def memory_list_proposals():
+            # TODO: 校验调用者为 admin 角色
+            storage = get_storage()
+            if not storage:
+                return self._json({"error": "storage unavailable"}, 500)
+            status = request.args.get("status", "pending")
+            return self._json({"proposals": storage.list_proposals(status)})
+
+        @self._app.route("/api/memory/proposals/<int:pid>/approve", methods=["POST"])
+        def memory_approve(pid):
+            # TODO: 校验调用者为 admin 角色
+            # TODO: reviewer 目前固定 "admin"，待鉴权中间件确定当前操作者后替换
+            storage = get_storage()
+            if not storage:
+                return self._json({"error": "storage unavailable"}, 500)
+            p = storage.get_proposal(pid)
+            if not p or p["status"] != "pending":
+                return self._json({"error": "invalid proposal"}, 400)
+            # 审批通过：写入 global 记忆（对所有用户可见），并标记 approved
+            storage.save_memory(
+                scope="global", owner_id="", category="knowledge",
+                content=p["content"], source="admin",
+            )
+            storage.update_proposal_status(pid, "approved", "admin")
+            return self._json({"success": True})
+
+        @self._app.route("/api/memory/proposals/<int:pid>/reject", methods=["POST"])
+        def memory_reject(pid):
+            # TODO: 校验调用者为 admin 角色
+            # TODO: reviewer 目前固定 "admin"，待鉴权中间件确定当前操作者后替换
+            storage = get_storage()
+            if not storage:
+                return self._json({"error": "storage unavailable"}, 500)
+            # 驳回：仅标记 rejected，不写入 global 记忆
+            storage.update_proposal_status(pid, "rejected", "admin")
             return self._json({"success": True})
 
     def _json(self, data: Any, status: int = 200) -> "Response":
