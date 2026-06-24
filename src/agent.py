@@ -1021,13 +1021,20 @@ class Agent:
         }
 
     async def _execute_tool(self, name: str, args: dict) -> str:
+        # 提取当前用户 ID：优先 session.user_id，回退 _current_user_id
+        current_uid = ""
+        if self._current_session and self._current_session.user_id:
+            current_uid = self._current_session.user_id
+        elif getattr(self, '_current_user_id', ''):
+            current_uid = self._current_user_id
+        if current_uid:
+            args["_local_user_id"] = current_uid
+
         try:
             if name == "subagent" and self.subagent_manager:
                 return await self._execute_subagent(args)
 
             if self.tool_registry and self.tool_registry.has_tool(name):
-                if self._current_session and self._current_session.user_id:
-                    args["_local_user_id"] = self._current_session.user_id
                 return await self.tool_registry.execute(name, args)
 
             if self.skill_manager and name == "execute_skill":
@@ -1045,8 +1052,6 @@ class Agent:
                             f"插件 {plugin.name} 工具定义: {[t.get('function', {}).get('name') for t in tool_defs]}")
                         if any(t.get("function", {}).get("name") == name for t in tool_defs):
                             logger.info(f"执行插件工具: {plugin.name}.{name}")
-                            if self._current_session and self._current_session.user_id:
-                                args["_local_user_id"] = self._current_session.user_id
                             return await plugin.execute_tool(name, args)
 
             return f"工具 {name} 不存在"
