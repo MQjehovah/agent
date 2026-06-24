@@ -405,6 +405,10 @@ async def main():
     Config.load_from_env()
     AgentSessionManager.load_config()
 
+    # 应用日志等级（Settings 已加载，覆盖 basicConfig 的默认 INFO）
+    logging.getLogger().setLevel(getattr(logging, Config.LOG_LEVEL, logging.INFO))
+    logging.getLogger("agent").setLevel(getattr(logging, Config.LOG_LEVEL, logging.INFO))
+
     if not args.skip_config_check and not validate_config():
         console.print("[red]配置验证失败[/red]")
         return
