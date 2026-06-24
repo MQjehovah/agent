@@ -44,3 +44,25 @@ def test_categorized_format(tmp_path):
     assert "用户偏好" in text
     assert "避坑经验" in text
     s.close()
+
+
+def test_load_memory_empty_user_returns_empty(tmp_path):
+    """无 user_id 时返回空串，不加载任何记忆"""
+    m, s = _setup(tmp_path)
+    m.add_key_info("userA", "A的数据")
+    assert m.load_memory("") == ""
+    assert m.load_memory(None) == ""   # None 也应被视为无 user_id
+    s.close()
+
+
+def test_add_user_without_user_id_skips_and_warns(tmp_path, caplog):
+    """无 user_id 时跳过写入且不抛异常，记忆不被存储"""
+    import logging
+    m, s = _setup(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="agent.memory"):
+        m.add_key_info("", "不应被存的孤立数据")   # 不抛异常
+    # 该数据不应出现在任何用户视角
+    assert "不应被存的孤立数据" not in m.load_memory("userA")
+    # 应有 warning 日志
+    assert any("无 user_id" in r.message for r in caplog.records)
+    s.close()
