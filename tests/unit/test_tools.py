@@ -1115,21 +1115,21 @@ class TestMemoryTool:
     @pytest.mark.asyncio
     async def test_save_key_info(self):
         self.mock_manager.add_key_info = MagicMock()
-        r = await self.tool.execute(action="save", content="重要信息", category="key_info")
+        r = await self.tool.execute(action="save", content="重要信息", category="key_info", _local_user_id="userA")
         data = json.loads(r)
         assert data["success"] is True
-        self.mock_manager.add_key_info.assert_called_once_with("重要信息")
+        self.mock_manager.add_key_info.assert_called_once_with("userA", "重要信息")
 
     @pytest.mark.asyncio
     async def test_save_without_content(self):
-        r = await self.tool.execute(action="save", category="key_info")
+        r = await self.tool.execute(action="save", category="key_info", _local_user_id="userA")
         data = json.loads(r)
         assert data["success"] is False
 
     @pytest.mark.asyncio
     async def test_search(self):
         self.mock_manager.load_memory = MagicMock(return_value=["记忆1"])
-        r = await self.tool.execute(action="search", query="测试")
+        r = await self.tool.execute(action="search", query="测试", _local_user_id="userA")
         data = json.loads(r)
         assert data["success"] is True
         assert len(data["results"]) == 1
@@ -1137,17 +1137,15 @@ class TestMemoryTool:
     @pytest.mark.asyncio
     async def test_search_no_results(self):
         self.mock_manager.load_memory = MagicMock(return_value=[])
-        r = await self.tool.execute(action="search", query="不存在")
+        r = await self.tool.execute(action="search", query="不存在", _local_user_id="userA")
         data = json.loads(r)
         assert data["success"] is True
 
     @pytest.mark.asyncio
     async def test_list_daily(self):
-        self.mock_manager.list_daily_files = MagicMock(return_value=["2024-01-01.md"])
         r = await self.tool.execute(action="list", memory_type="daily")
         data = json.loads(r)
         assert data["success"] is True
-        assert len(data["files"]) == 1
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
@@ -1166,25 +1164,10 @@ class TestMemoryTool:
     @pytest.mark.asyncio
     async def test_save_preference(self):
         self.mock_manager.add_preference = MagicMock()
-        r = await self.tool.execute(action="save", content="喜欢简洁", category="preference")
+        r = await self.tool.execute(action="save", content="喜欢简洁", category="preference", _local_user_id="userA")
         data = json.loads(r)
         assert data["success"] is True
-        self.mock_manager.add_preference.assert_called_once_with("喜欢简洁")
-
-    @pytest.mark.asyncio
-    async def test_share(self):
-        self.mock_manager.agent_id = "test_agent"
-        self.mock_manager.share_knowledge = MagicMock()
-        r = await self.tool.execute(action="share", content="共享知识")
-        data = json.loads(r)
-        assert data["success"] is True
-        self.mock_manager.share_knowledge.assert_called_once_with("test_agent", "共享知识")
-
-    @pytest.mark.asyncio
-    async def test_share_without_content(self):
-        r = await self.tool.execute(action="share")
-        data = json.loads(r)
-        assert data["success"] is False
+        self.mock_manager.add_preference.assert_called_once_with("userA", "喜欢简洁")
 
 
 # ═══════════════════════════════════════════════════════════

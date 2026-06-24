@@ -299,7 +299,6 @@ class TeamOrchestrator:
                 task=full_task,
             )
             self.context.add_node_result(stage, role, result)
-            self._save_to_memory(stage, role, result)
             return result
         except Exception as e:
             logger.error(f"阶段 [{stage}] 异常: {e}")
@@ -387,17 +386,6 @@ class TeamOrchestrator:
         except Exception as e:
             logger.warning(f"LLM 测试判定失败: {e}")
             return False
-
-    def _save_to_memory(self, stage: str, role: str, result: str):
-        if not self.memory:
-            return
-        try:
-            self.memory.share_knowledge(
-                from_agent=f"{self.team_name}/{role}",
-                knowledge=f"[{stage}] {result[:500]}",
-            )
-        except Exception as e:
-            logger.warning(f"保存记忆失败: {e}")
 
     def _build_report(self) -> str:
         import time as _time

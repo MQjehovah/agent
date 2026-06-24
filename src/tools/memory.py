@@ -19,8 +19,8 @@ class MemoryTool(BuiltinTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["save", "search", "list", "share"],
-                    "description": "操作类型：save保存记忆，search搜索记忆，list列出记忆文件，share共享知识"
+                    "enum": ["save", "search", "list"],
+                    "description": "操作类型：save保存记忆，search搜索记忆，list列出记忆"
                 },
                 "content": {
                     "type": "string",
@@ -62,58 +62,41 @@ class MemoryTool(BuiltinTool):
             return self._search(kwargs)
         elif action == "list":
             return self._list(kwargs)
-        elif action == "share":
-            return self._share(kwargs)
         else:
             return json.dumps({"success": False, "error": f"Unknown action: {action}"}, ensure_ascii=False)
 
     def _save(self, args: Dict[str, Any]) -> str:
         category = args.get("category", "key_info")
         content = args.get("content", "")
+        user_id = args.get("_local_user_id", "")
 
         if not content:
             return json.dumps({"success": False, "error": "Content is required"}, ensure_ascii=False)
 
         if category == "preference":
-            self.memory_manager.add_preference(content)
+            self.memory_manager.add_preference(user_id, content)
         elif category == "key_info":
-            self.memory_manager.add_key_info(content)
+            self.memory_manager.add_key_info(user_id, content)
         elif category == "todo":
-            self.memory_manager.add_todo(content)
+            self.memory_manager.add_todo(user_id, content)
         elif category == "knowledge":
-            self.memory_manager.add_key_info(f"[知识] {content}")
+            self.memory_manager.add_key_info(user_id, f"[知识] {content}")
         elif category == "failure_lesson":
-            self.memory_manager.add_failure_lesson("manual", content, "")
+            self.memory_manager.add_failure_lesson(user_id, "manual", content, "")
         elif category == "correction":
-            self.memory_manager.add_correction(content, "")
+            self.memory_manager.add_correction(user_id, content, "")
         elif category == "reflection":
-            self.memory_manager.add_reflection(content)
+            self.memory_manager.add_reflection(user_id, content)
 
         return json.dumps({"success": True, "message": f"Memory saved to {category}"}, ensure_ascii=False)
 
     def _search(self, args: Dict[str, Any]) -> str:
-        query = args.get("query", "")
-        results = self.memory_manager.load_memory(query)
+        user_id = args.get("_local_user_id", "")
+        results = self.memory_manager.load_memory(user_id)
 
         if results:
             return json.dumps({"success": True, "results": results}, ensure_ascii=False)
         return json.dumps({"success": True, "results": "No matching memories found"}, ensure_ascii=False)
 
     def _list(self, args: Dict[str, Any]) -> str:
-        memory_type = args.get("memory_type", "daily")
-
-        if memory_type == "daily":
-            files = self.memory_manager.list_daily_files()
-            return json.dumps({"success": True, "files": sorted(files, reverse=True)}, ensure_ascii=False)
-        elif memory_type == "long_term":
-            return json.dumps({"success": True, "files": [self.memory_manager.long_term_file]}, ensure_ascii=False)
-        return json.dumps({"success": True, "files": []}, ensure_ascii=False)
-
-    def _share(self, args: Dict[str, Any]) -> str:
-        content = args.get("content", "")
-        if not content:
-            return json.dumps({"success": False, "error": "Content is required for sharing"}, ensure_ascii=False)
-
-        agent_id = self.memory_manager.agent_id or "unknown"
-        self.memory_manager.share_knowledge(agent_id, content)
-        return json.dumps({"success": True, "message": "Knowledge shared"}, ensure_ascii=False)
+        return json.dumps({"success": True, "files": [], "note": "记忆已迁移至数据库，按用户隔离"}, ensure_ascii=False)

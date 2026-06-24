@@ -20,7 +20,6 @@ def mock_subagent_manager():
 @pytest.fixture
 def mock_memory():
     mem = MagicMock()
-    mem.share_knowledge = MagicMock()
     return mem
 
 
@@ -103,16 +102,6 @@ async def test_retry_exhausted(executor, mock_subagent_manager, mock_memory):
     success = await executor.execute_pipeline(pipeline, "Build a SLAM system")
     assert success is False
     assert stage.attempt_count == 1
-
-
-@pytest.mark.asyncio
-async def test_shared_memory_written(executor, mock_subagent_manager, mock_memory):
-    pipeline = Pipeline(stages=[
-        PipelineStage(name="arch", agent="软件架构师",
-                      retry_policy=RetryPolicy(max_retries=0)),
-    ])
-    await executor.execute_pipeline(pipeline, "Build a SLAM system")
-    assert mock_memory.share_knowledge.call_count >= 1
 
 
 @pytest.mark.asyncio

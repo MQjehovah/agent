@@ -8,7 +8,6 @@ from typing import Optional, TYPE_CHECKING
 from .categories import (
     CORRECTION_KEYWORDS, REFLECT_PROMPT, REFLECT_SYSTEM_PROMPT,
     REFLECT_SKIP_TOOLS, MAX_SUMMARY_LENGTH, TOOL_RESULT_MAX,
-    DAILY_EXTRACT_PROMPT, DAILY_EXTRACT_SYSTEM_PROMPT, CHUNK_SIZE,
 )
 
 if TYPE_CHECKING:
@@ -32,6 +31,10 @@ class Learner:
         self._skill_manager: Optional["SkillManager"] = None
         self._subagent_manager: Optional["SubagentManager"] = None
         self._workspace = ""
+        self._curator = None
+
+    def set_curator(self, curator):
+        self._curator = curator
 
     def set_llm_client(self, client):
         self.llm_client = client
@@ -119,20 +122,21 @@ class Learner:
     #  任务反思（任务完成后后台调用）
     # ------------------------------------------------------------------ #
 
-    def check_user_correction(self, task: str) -> bool:
+    def check_user_correction(self, task: str, user_id: str = "") -> bool:
         if any(kw in task for kw in CORRECTION_KEYWORDS):
             self.memory.add_correction(
-                context=task[:200],
-                correction="之前的方法不被认可，需要换思路",
+                user_id,
+                task[:200],
+                "之前的方法不被认可，需要换思路",
             )
             logger.info("[自学习] 检测到用户纠正信号")
             return True
         return False
 
-    def record_failure(self, tool_name: str, args_summary: str, error: str):
-        self.memory.add_failure_lesson(tool_name, args_summary[:80], error[:150])
+    def record_failure(self, tool_name: str, args_summary: str, error: str, user_id: str = ""):
+        self.memory.add_failure_lesson(user_id, tool_name, args_summary[:80], error[:150])
 
-    async def reflect_on_task(self, task: str, messages: list) -> int:
+    async def reflect_on_task(self, task: str, messages: list, user_id: str = "") -> int:
         summary = self._summarize_messages(messages)
         if not summary:
             logger.info("[自学习] 任务无有效摘要，跳过反思")
@@ -147,7 +151,7 @@ class Learner:
 
         try:
             text = await self._call_llm(REFLECT_SYSTEM_PROMPT, prompt)
-            saved = self._parse_reflection(text)
+            saved = self._parse_reflection(text, user_id)
 
             # 模式追踪：记录任务并检测是否需要自动创建
             if self._pattern_tracker and self._auto_creator:
@@ -179,130 +183,16 @@ class Learner:
             )
 
     # ------------------------------------------------------------------ #
-    #  每日提取（凌晨定时调用，由 MemoryManager 的定时任务触发）
+    #  每日提取（凌晨定时调用，触发 curator 提炼通用知识）
     # ------------------------------------------------------------------ #
 
     async def daily_extract(self) -> None:
-        """每日记忆提取入口：提取 → 保存 → 归档 → 整理"""
-        # 确保 MemoryManager 有 LLM 客户端（归档整理需要）
-        if self.llm_client and not self.memory._llm_client:
-            self.memory.set_llm_client(self.llm_client)
-
-        storage = self.memory._get_storage()
-        if not storage:
-            logger.debug("Storage未初始化，跳过每日提取")
-            return
-
-        date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        agent_ids = storage.get_all_agent_ids()
-
-        # 构建 agent_id -> workspace 映射（用于定位子代理记忆目录）
-        subagent_workspaces = {}
-        workspace_root = self.memory.workspace
-        for agent_id in agent_ids:
-            if agent_id == self.memory.agent_id:
-                continue
-            # 子代理的 workspace 在 agents/<agent_id> 下
-            sub_ws = os.path.join(workspace_root, "agents", agent_id)
-            if os.path.isdir(sub_ws):
-                subagent_workspaces[agent_id] = sub_ws
-
-        for agent_id in agent_ids:
-            messages = storage.get_messages_by_date(date_str, agent_id=agent_id)
-            if not messages:
-                logger.debug(f"[{agent_id}] 无 {date_str} 的对话记录")
-                continue
-
-            session_text = self._format_daily_messages(messages)
-            if not session_text:
-                continue
-
-            extracted = await self._extract_daily_text(session_text, agent_id)
-            if extracted:
-                header = f"# 每日记忆 - {date_str}\n\n"
-                ws = subagent_workspaces.get(agent_id)
-                self.memory.save_daily(agent_id, date_str, header + extracted, workspace=ws)
-                logger.info(f"[每日提取] Agent [{agent_id}] 提取完成")
-            else:
-                logger.debug(f"[每日提取] Agent [{agent_id}] 无关键信息")
-
-        # 归档与整理
-        await self.memory.archive_to_long_term(subagent_workspaces=subagent_workspaces)
-        await self.memory.consolidate_long_term(subagent_workspaces=subagent_workspaces)
-        await self.memory.prune_long_term(subagent_workspaces=subagent_workspaces)
-
-    async def _extract_daily_text(self, session_text: str, agent_id: str) -> str:
-        """用 LLM 从对话文本提取关键信息，失败则回退到简单截断"""
-        if not self.llm_client:
-            return self._simple_extract(session_text)
-
-        try:
-            if len(session_text) <= CHUNK_SIZE:
-                return await self._extract_chunk(session_text, agent_id)
-
-            # 长文本分片
-            chunks = self._split_text(session_text)
-            logger.info(f"对话过长 ({len(session_text)} 字符)，分为 {len(chunks)} 片提取")
-
-            results = []
-            for chunk in chunks:
-                extracted = await self._extract_chunk(chunk, agent_id)
-                if extracted:
-                    results.append(extracted)
-
-            return "\n\n".join(results) if results else ""
-        except Exception as e:
-            logger.warning(f"每日 LLM 提取失败，回退到简单模式: {e}")
-            return self._simple_extract(session_text)
-
-    async def _extract_chunk(self, chunk: str, agent_id: str) -> str:
-        prompt = DAILY_EXTRACT_PROMPT.format(agent_id=agent_id, chunk=chunk)
-        try:
-            result = await self._call_llm(DAILY_EXTRACT_SYSTEM_PROMPT, prompt)
-            if "无关键信息" in result:
-                return ""
-            return result
-        except Exception as e:
-            logger.warning(f"每日记忆提取失败: {e}")
-            return ""
-
-    def _simple_extract(self, session_text: str) -> str:
-        """无 LLM 时的简单回退"""
-        lines = session_text.split("\n")
-        trimmed = [line[:200] + "..." if len(line) > 200 else line for line in lines]
-        return f"## 会话摘要\n\n" + "\n".join(trimmed[:50])
-
-    def _split_text(self, text: str) -> list:
-        lines = text.split("\n")
-        chunks = []
-        current = []
-        current_len = 0
-        for line in lines:
-            line_len = len(line) + 1
-            if current_len + line_len > CHUNK_SIZE and current:
-                chunks.append("\n".join(current))
-                current = []
-                current_len = 0
-            current.append(line)
-            current_len += line_len
-        if current:
-            chunks.append("\n".join(current))
-        return chunks
-
-    def _format_daily_messages(self, messages: list) -> str:
-        """将存储的消息格式化为提取用文本"""
-        session_lines = []
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                session_lines.append(f"用户: {content[:500]}")
-            elif role == "assistant":
-                session_lines.append(f"助手: {content[:500]}")
-            elif role == "tool":
-                session_lines.append(f"工具结果: {content[:200]}")
-
-        return "\n".join(session_lines) if session_lines else ""
+        """每日：触发 curator 提炼通用知识（替代旧文件归档）"""
+        if self._curator:
+            try:
+                await self._curator.curate_once()
+            except Exception as e:
+                logger.warning(f"[自学习] curator 执行失败: {e}")
 
     # ------------------------------------------------------------------ #
     #  内部方法
@@ -385,7 +275,7 @@ class Learner:
         logger.debug(f"[自学习] 消息摘要: {len(lines)} 行, 跳过: {skipped}")
         return "\n".join(lines) if lines else ""
 
-    def _parse_reflection(self, text: str) -> int:
+    def _parse_reflection(self, text: str, user_id: str = "") -> int:
         saved = 0
         for line in text.split("\n"):
             line = line.strip()
@@ -398,8 +288,7 @@ class Learner:
             if save_match:
                 knowledge = save_match.group(1).strip()
                 if knowledge:
-                    self.memory.add_reflection(knowledge)
-                    self.memory.share_knowledge(self.agent_id or "主代理", knowledge)
+                    self.memory.add_reflection(user_id, knowledge)
                     logger.info(f"[自学习] 反思提取: {knowledge[:80]}")
                     saved += 1
         return saved

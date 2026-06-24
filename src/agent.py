@@ -284,11 +284,12 @@ class Agent:
 
     def _init_memory(self):
         from memory import MemoryManager
-        self.memory = MemoryManager(self.config_dir, agent_id=self.agent_id)
-        self.memory.set_llm_client(self.client)
-
         if self.parent_agent and self.parent_agent.memory:
-            self.memory.shared_knowledge_file = self.parent_agent.memory.shared_knowledge_file
+            # 子 agent 复用父 memory（DB 统一，按 user_id 隔离）
+            self.memory = self.parent_agent.memory
+        else:
+            from storage import get_storage
+            self.memory = MemoryManager(storage=get_storage(), agent_id=self.agent_id)
 
         # 初始化自学习模块
         self.learner = Learner(
@@ -304,6 +305,11 @@ class Agent:
                 skill_manager=self.skill_manager,
                 subagent_manager=self.subagent_manager,
             )
+            # 主 agent 初始化 curator（定时提炼通用知识）
+            from memory.curator import MemoryCurator
+            from storage import get_storage
+            self.curator = MemoryCurator(storage=get_storage(), llm_client=self.client)
+            self.learner.set_curator(self.curator)
 
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
@@ -357,9 +363,10 @@ class Agent:
 
                 # 记忆上下文（按任务相关性筛选）
 
-        # 记忆系统
+        # 记忆系统（按 user_id 隔离）
         if self.memory:
-            memory_context = self._load_memory_context_sync(task)
+            uid = getattr(self, '_current_user_id', '')
+            memory_context = self.memory.load_memory(uid) if uid else ""
             if memory_context:
                 self._prompt_builder.add(
                     "记忆上下文", memory_context,
@@ -526,8 +533,12 @@ class Agent:
             resolved_user_name = ps.user_name
             resolved_role = ps.role or "default"
 
+        # 供 _build_prompt/_run_reflection 使用（优先用 RBAC 解析后的 id）
+        if resolved_user_id:
+            self._current_user_id = resolved_user_id
+
         if self.learner and self._learning_per_round:
-            self.learner.check_user_correction(task)
+            self.learner.check_user_correction(task, self._current_user_id)
 
         self._build_prompt(task)
 
@@ -702,7 +713,8 @@ class Agent:
             task_copy = task
             messages_copy = list(session.messages)
             learner = self.learner
-            bg_task = asyncio.create_task(self._run_reflection(learner, task_copy, messages_copy))
+            reflect_uid = getattr(self, '_current_user_id', '')
+            bg_task = asyncio.create_task(self._run_reflection(learner, task_copy, messages_copy, reflect_uid))
             self._background_tasks.add(bg_task)
             bg_task.add_done_callback(self._background_tasks.discard)
 
@@ -894,7 +906,7 @@ class Agent:
                                   arguments=args, error=e)
             if self.learner and self._learning_per_round:
                 args_summary = json.dumps(args, ensure_ascii=False)[:100]
-                self.learner.record_failure(name, args_summary, f"{type(e).__name__}: {e}"[:150])
+                self.learner.record_failure(name, args_summary, f"{type(e).__name__}: {e}"[:150], getattr(self, '_current_user_id', ''))
             return json.dumps({
                 "success": False,
                 "error": f"工具执行失败: {type(e).__name__}: {e}"
@@ -926,11 +938,11 @@ class Agent:
 
         return None
 
-    async def _run_reflection(self, learner, task: str, messages: list):
+    async def _run_reflection(self, learner, task: str, messages: list, user_id: str = ""):
         """后台执行任务反思，不阻塞主流程"""
         try:
             logger.info(f"[自学习] 开始任务反思, 消息数: {len(messages)}")
-            saved = await learner.reflect_on_task(task, messages)
+            saved = await learner.reflect_on_task(task, messages, user_id)
             if saved > 0:
                 logger.info(f"[自学习] 任务反思完成，保存了 {saved} 条经验")
             else:
