@@ -475,9 +475,9 @@ class Agent:
         self._current_task = task
 
         if user_id:
-            self._current_user_id = user_id
+            self._current_user_id = str(user_id)
         if not user_id and self.parent_agent:
-            self._current_user_id = self.parent_agent._current_user_id
+            self._current_user_id = str(self.parent_agent._current_user_id)
             user_id = self._current_user_id
 
         resolved_user_id = None
@@ -497,7 +497,7 @@ class Agent:
 
         # 供 _build_prompt/_run_reflection 使用（优先用 RBAC 解析后的 id）
         if resolved_user_id:
-            self._current_user_id = resolved_user_id
+            self._current_user_id = str(resolved_user_id)
 
         if self.learner and self._learning_per_round:
             self.learner.check_user_correction(task, self._current_user_id)
@@ -547,7 +547,7 @@ class Agent:
                 logger.info(f"Agent [{self.name}] 创建随机session: {session_id}")
 
             if user_id and not session.user_id:
-                session.user_id = resolved_user_id or ""
+                session.user_id = str(resolved_user_id) if resolved_user_id else ""
                 session.user_name = resolved_user_name
                 session.role = resolved_role
             elif not session.role:
