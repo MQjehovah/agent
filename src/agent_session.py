@@ -182,6 +182,21 @@ class AgentSessionManager:
                 missing.discard(m["tool_call_id"])
             start_idx -= 1
 
+        # 清理孤儿 tool_response：其 tool_calls 已被滑出窗口，留在 kept 中会破坏 LLM 配对要求
+        tool_call_ids_in_kept = set()
+        for m in kept:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    tc_id = tc.get("id", "")
+                    if tc_id:
+                        tool_call_ids_in_kept.add(tc_id)
+
+        kept = [m for m in kept if not (
+            m.get("role") == "tool"
+            and m.get("tool_call_id")
+            and m["tool_call_id"] not in tool_call_ids_in_kept
+        )]
+
         # 滑落的消息 -> 摘要
         kept_set = set(id(m) for m in kept)
         evicted = [m for m in non_system if id(m) not in kept_set]
@@ -321,6 +336,20 @@ class AgentSessionManager:
                     missing_ids.discard(m["tool_call_id"])
                 if not missing_ids:
                     break
+
+        # 清理 recent_msgs 中的孤儿 tool_response（对应 tool_calls 在 history 中）
+        recent_tc_ids = set()
+        for m in recent_msgs:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    tc_id = tc.get("id", "")
+                    if tc_id:
+                        recent_tc_ids.add(tc_id)
+        recent_msgs = [m for m in recent_msgs if not (
+            m.get("role") == "tool"
+            and m.get("tool_call_id")
+            and m["tool_call_id"] not in recent_tc_ids
+        )]
 
         history_msgs = [
             m for m in messages
