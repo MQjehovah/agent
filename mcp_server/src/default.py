@@ -27,9 +27,9 @@ mcp = FastMCP("Rosiwit MCP Server")
 SMTP_CONFIG = {
     "host": os.getenv("SMTP_HOST", "smtp.qiye.aliyun.com"),
     "port": int(os.getenv("SMTP_PORT", "465")),
-    "username": os.getenv("SMTP_USERNAME", "shuzizhongtai@xzrobot.com"),
-    "password": os.getenv("SMTP_PASSWORD", "pm1Fw4y2pHMDTyMB"),
-    "from_name": os.getenv("SMTP_FROM_NAME", "数字中台")
+    "username": os.getenv("SMTP_USERNAME", "xxx"),
+    "password": os.getenv("SMTP_PASSWORD", "xxx"),
+    "from_name": os.getenv("SMTP_FROM_NAME", "xxx")
 }
 
 @mcp.tool()

@@ -33,15 +33,18 @@ _DEFAULTS = {
         "sliding_window_size": 40,
         "sliding_window_summary_max": 6000,
     },
-    "search": {
-        "backends": "",
-        "tavily_api_key": "",
-        "serper_api_key": "",
-        "bing_search_api_key": "",
-        "searxng_url": "",
-        "searxng_engines": "google,bing,duckduckgo",
-        "searxng_timeout": 10,
+    "tools": {
+        "search": {
+            "backends": "",
+            "tavily_api_key": "",
+            "serper_api_key": "",
+            "bing_search_api_key": "",
+            "searxng_url": "",
+            "searxng_engines": "google,bing,duckduckgo",
+            "searxng_timeout": 10,
+        },
     },
+    "rag": {
     "rag": {
         "base_url": "",
         "username": "",
@@ -149,8 +152,9 @@ class Settings:
             safe["llm"]["endpoints"] = [
                 {**ep, "api_key": "***"} for ep in safe["llm"]["endpoints"]
             ]
-        if "search" in safe:
-            for k in safe["search"]:
-                if "key" in k and safe["search"][k]:
-                    safe["search"][k] = "***"
+        if "tools" in safe and "search" in safe["tools"]:
+            search = safe["tools"]["search"]
+            for k in list(search):
+                if "key" in k and search[k]:
+                    search[k] = "***"
         return json.dumps(safe, indent=2, ensure_ascii=False)

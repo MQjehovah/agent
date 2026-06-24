@@ -23,10 +23,33 @@ _SEARCH_BACKENDS = [
 
 
 def _get_env(key: str, default: str = "") -> str:
+    try:
+        from settings import get_settings
+        _MAP = {
+            "TAVILY_API_KEY": "tools.search.tavily_api_key",
+            "SERPER_API_KEY": "tools.search.serper_api_key",
+            "BING_SEARCH_API_KEY": "tools.search.bing_search_api_key",
+            "SEARXNG_URL": "tools.search.searxng_url",
+            "SEARXNG_ENGINES": "tools.search.searxng_engines",
+            "SEARCH_BACKENDS": "tools.search.backends",
+        }
+        val = get_settings().get(_MAP.get(key, ""))
+        if val is not None and val != "":
+            return val
+    except Exception:
+        pass
     return os.getenv(key, default)
 
 
 def _get_env_int(key: str, default: int = 0) -> int:
+    try:
+        from settings import get_settings
+        _MAP = {"SEARXNG_TIMEOUT": "tools.search.searxng_timeout"}
+        val = get_settings().get(_MAP.get(key, ""))
+        if val is not None:
+            return int(val)
+    except Exception:
+        pass
     try:
         return int(os.getenv(key, str(default)))
     except (ValueError, TypeError):

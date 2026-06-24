@@ -37,14 +37,16 @@
     "sliding_window_summary_max": 6000
   },
 
-  "search": {
-    "backends": "",
-    "tavily_api_key": "",
-    "serper_api_key": "",
-    "bing_search_api_key": "",
-    "searxng_url": "",
-    "searxng_engines": "google,bing,duckduckgo",
-    "searxng_timeout": 10
+  "tools": {
+    "search": {
+      "backends": "",
+      "tavily_api_key": "",
+      "serper_api_key": "",
+      "bing_search_api_key": "",
+      "searxng_url": "",
+      "searxng_engines": "google,bing,duckduckgo",
+      "searxng_timeout": 10
+    }
   },
 
   "rag": {
