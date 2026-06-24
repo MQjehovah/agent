@@ -29,7 +29,8 @@ handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
 api_logger.addHandler(handler)
 
 # 重试配置
-MAX_RETRIES = 3
+MAX_RETRIES_PER_ENDPOINT = 3     # 单端点模式下的最大重试次数
+MULTI_ENDPOINT_RETRIES = 1       # 多端点模式下每端点的重试次数（快速切换）
 RETRY_DELAY_BASE = 2.0
 RETRY_DELAY_MAX = 60.0
 RATE_LIMIT_COOLDOWN = 60.0
@@ -41,26 +42,83 @@ LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "30"))
 
 class LLMClient:
     def __init__(self, model: str = None, base_url: Optional[str] = None,
-                 api_key: Optional[str] = None, enable_cache: bool = True):
-        self.model = model or os.getenv("MODEL_NAME", "glm-5")
+                 api_key: Optional[str] = None, enable_cache: bool = True,
+                 config_dir: str = None):
         self.enable_cache = enable_cache
         self.usage_tracker = UsageTracker()
 
+        # 加载端点列表（多端点模式或单端点兼容模式）
+        endpoints = self._load_endpoints(model, base_url, api_key, config_dir)
+        self._endpoints: List[Dict[str, Any]] = endpoints
+        self._is_multi = len(self._endpoints) > 1
+
+        # 向后兼容：暴露第一个端点的信息
+        primary = self._endpoints[0]
+        self.model = primary["model"]
+        self.base_url = primary["base_url"]
+        self.api_key = primary["api_key"]
+        self.client = primary["client"]
+        self._primary_client = primary["client"]
+
+        if self._is_multi:
+            models = [ep["model"] for ep in self._endpoints]
+            api_logger.info(f"LLM 多端点模式: {len(self._endpoints)} 个端点, 模型={models}")
+        else:
+            api_logger.info(f"LLM 单端点模式: {self.base_url} 模型={self.model}")
+
+    def _load_endpoints(self, model: str, base_url: Optional[str],
+                        api_key: Optional[str], config_dir: Optional[str]) -> list:
+        """加载端点配置：优先 config/llm_endpoints.json，回退 env 变量（单端点）"""
+        import os as _os
+
+        # 尝试配置文件
+        if not config_dir:
+            config_dir_from_main = os.getenv("LLM_CONFIG_DIR", "")
+            if config_dir_from_main:
+                config_dir = config_dir_from_main
+            else:
+                config_dir = _os.path.join(_os.getcwd(), "config")
+        path = _os.path.join(config_dir, "llm_endpoints.json")
+        if _os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    eps = json.load(f)
+                if isinstance(eps, list) and eps:
+                    result = []
+                    for ep in eps:
+                        result.append(self._build_endpoint(
+                            model=ep.get("model", ""),
+                            base_url=ep.get("base_url", ""),
+                            api_key=ep.get("api_key", ""),
+                        ))
+                    return result
+            except (json.JSONDecodeError, OSError) as e:
+                api_logger.warning(f"加载 llm_endpoints.json 失败: {e}，回退到 env")
+
+        # 回退：env 变量或入参（单端点）
+        resolved_model = model or os.getenv("MODEL_NAME", "glm-5")
         resolved_base_url = base_url or os.getenv("OPENAI_BASE_URL")
         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
 
         if not resolved_api_key:
-            raise ValueError("API Key 未配置。请设置 OPENAI_API_KEY 环境变量或在初始化时传入 api_key 参数")
+            raise ValueError(
+                "API Key 未配置。请设置 OPENAI_API_KEY 环境变量，"
+                "或在 config/llm_endpoints.json 中配置多个端点"
+            )
 
         if not resolved_base_url:
             resolved_base_url = "https://coding.dashscope.aliyuncs.com/v1"
 
-        self.base_url = resolved_base_url
-        self.api_key = resolved_api_key
+        return [self._build_endpoint(
+            model=resolved_model, base_url=resolved_base_url, api_key=resolved_api_key
+        )]
 
-        self.client = AsyncOpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key,
+    @staticmethod
+    def _build_endpoint(model: str, base_url: str, api_key: str) -> dict:
+        """创建一个端点：AsyncOpenAI 客户端 + 元信息"""
+        client = AsyncOpenAI(
+            base_url=base_url,
+            api_key=api_key,
             timeout=httpx.Timeout(
                 connect=LLM_CONNECT_TIMEOUT,
                 read=LLM_TIMEOUT,
@@ -69,6 +127,12 @@ class LLMClient:
             ),
             max_retries=0,
         )
+        return {
+            "client": client,
+            "model": model,
+            "base_url": base_url,
+            "api_key": api_key,
+        }
 
     def _log_request(self, params: Dict[str, Any]):
         log_data = {"type": "request", "model": params.get("model"), "messages": params.get(
@@ -145,7 +209,7 @@ class LLMClient:
 
     async def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None,
                    stream: bool = False, use_cache: bool = True):
-        """发送聊天请求，支持自动重试和缓存"""
+        """发送聊天请求，支持多端点自动 failover 与重试"""
         # 流式请求不使用缓存
         if self.enable_cache and use_cache and not stream:
             cache = get_cache()
@@ -154,142 +218,177 @@ class LLMClient:
                 api_logger.debug("使用缓存响应")
                 return cached_response
 
-        params = {
-            "model": self.model,
-            "messages": messages,
-            "stream": stream
-        }
-        if tools:
-            params["tools"] = tools
-        # DeepSeek/DashScope thinking mode
-        if any(k in (self.model or "").lower() for k in ("deepseek", "glm")):
-            params["reasoning_effort"] = "high"
-            params["extra_body"] = {"thinking": {"type": "enabled"}}
-
-        self._log_request(params)
         self.usage_tracker.start_timer()
 
+        # 每端点重试次数
+        retries_per_ep = MULTI_ENDPOINT_RETRIES if self._is_multi else MAX_RETRIES_PER_ENDPOINT
         last_exception = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                response = await self.client.chat.completions.create(**params)
 
-                if not stream:
-                    self._log_response(response)
-                    # 用量追踪
-                    if hasattr(response, 'usage') and response.usage:
-                        self.usage_tracker.track(self.model, {
-                            "prompt_tokens": response.usage.prompt_tokens,
-                            "completion_tokens": response.usage.completion_tokens,
-                        })
-                    # 缓存非流式响应
-                    if self.enable_cache and use_cache:
-                        cache = get_cache()
-                        cache.set(messages, tools, self.model, response)
+        for ep_idx, ep in enumerate(self._endpoints):
+            client = ep["client"]
+            model = ep["model"]
 
-                return response
+            if self._is_multi and ep_idx > 0:
+                api_logger.warning(
+                    f"LLM failover: 切换到端点 #{ep_idx + 1} "
+                    f"({ep['base_url']} 模型={model})"
+                )
 
-            except Exception as e:
-                last_exception = e
-                retry_type = type(e).__name__
-                if isinstance(e, APITimeoutError):
-                    api_logger.warning(
-                        f"API超时 (尝试 {attempt + 1}/{MAX_RETRIES}, "
-                        f"timeout={LLM_TIMEOUT}s): {retry_type}"
-                    )
-                elif isinstance(e, (APIConnectionError, RateLimitError)):
-                    api_logger.warning(
-                        f"API调用失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {retry_type}: {e}"
-                    )
-                else:
-                    api_logger.error(
-                        f"API调用失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {retry_type}: {e}"
-                    )
+            for attempt in range(retries_per_ep):
+                params = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": stream,
+                }
+                if tools:
+                    params["tools"] = tools
+                if any(k in (model or "").lower() for k in ("deepseek", "glm")):
+                    params["reasoning_effort"] = "high"
+                    params["extra_body"] = {"thinking": {"type": "enabled"}}
 
-                if not self._should_retry(e):
-                    api_logger.error(f"不可重试的错误，放弃重试: {type(e).__name__}")
-                    raise e
+                self._log_request(params)
 
-                if attempt < MAX_RETRIES - 1:
-                    delay = self._calculate_retry_delay(attempt, e)
-                    api_logger.info(f"将在 {delay:.1f} 秒后重试...")
-                    await asyncio.sleep(delay)
-                else:
-                    api_logger.error(f"已达最大重试次数 {MAX_RETRIES}")
+                try:
+                    response = await client.chat.completions.create(**params)
 
-        raise last_exception or Exception("Unknown error")
+                    if not stream:
+                        self._log_response(response)
+                        if hasattr(response, 'usage') and response.usage:
+                            self.usage_tracker.track(model, {
+                                "prompt_tokens": response.usage.prompt_tokens,
+                                "completion_tokens": response.usage.completion_tokens,
+                            })
+                        if self.enable_cache and use_cache:
+                            cache = get_cache()
+                            cache.set(messages, tools, model, response)
 
-    async def _create_stream(self, params: Dict[str, Any]):
-        """创建流式连接，失败时自动重试"""
+                    return response
+
+                except Exception as e:
+                    last_exception = e
+                    retry_type = type(e).__name__
+                    ctx = f"端点#{ep_idx + 1}({model}) 尝试 {attempt + 1}/{retries_per_ep}"
+
+                    if isinstance(e, APITimeoutError):
+                        api_logger.warning(f"API超时 {ctx}: {retry_type}")
+                    elif isinstance(e, (APIConnectionError, RateLimitError)):
+                        api_logger.warning(f"API调用失败 {ctx}: {retry_type}: {e}")
+                    else:
+                        api_logger.error(f"API调用失败 {ctx}: {retry_type}: {e}")
+
+                    if not self._should_retry(e):
+                        if self._is_multi and ep_idx < len(self._endpoints) - 1:
+                            api_logger.warning(f"端点 #{ep_idx + 1} 不可重试，切换下一个")
+                            break
+                        api_logger.error(f"不可重试的错误，放弃: {type(e).__name__}")
+                        raise e
+
+                    if attempt < retries_per_ep - 1:
+                        delay = self._calculate_retry_delay(attempt, e)
+                        api_logger.info(f"将在 {delay:.1f} 秒后重试 (同端点)")
+                        await asyncio.sleep(delay)
+                    else:
+                        if self._is_multi and ep_idx < len(self._endpoints) - 1:
+                            api_logger.warning(
+                                f"端点 #{ep_idx + 1} 重试耗尽 ({retries_per_ep}次)，切换下一个")
+                        else:
+                            api_logger.error(f"所有端点均已尝试，放弃")
+
+        raise last_exception or Exception("All LLM endpoints failed")
+
+    async def _create_stream(self, params: Dict[str, Any],
+                              ep: Dict[str, Any], ep_idx: int, retries: int):
+        """创建流式连接（单端点内重试），返回 (stream, first_chunk)"""
+        client = ep["client"]
+        model = ep["model"]
+        params["model"] = model
+
         last_exception = None
-        for attempt in range(MAX_RETRIES):
+        for attempt in range(retries):
             try:
-                stream = await self.client.chat.completions.create(**params)
-                # 尝试消费第一个 chunk 以验证连接建立成功
+                stream = await client.chat.completions.create(**params)
                 first_chunk = await stream.__anext__()
                 return stream, first_chunk
             except StopAsyncIteration:
-                # 空流，直接返回
                 return stream, None
             except Exception as e:
                 last_exception = e
-                api_logger.error(f"流式API调用失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {e}")
+                ctx = f"流式 端点#{ep_idx + 1}({model}) 尝试 {attempt + 1}/{retries}"
+                api_logger.error(f"流式API调用失败 {ctx}: {e}")
 
                 if not self._should_retry(e):
-                    api_logger.error(f"不可重试的错误，放弃重试: {type(e).__name__}")
+                    if self._is_multi and ep_idx < len(self._endpoints) - 1:
+                        break
                     raise e
 
-                if attempt < MAX_RETRIES - 1:
+                if attempt < retries - 1:
                     delay = self._calculate_retry_delay(attempt, e)
-                    api_logger.info(f"将在 {delay:.1f} 秒后重试...")
+                    api_logger.info(f"将在 {delay:.1f} 秒后重试 (同端点)")
                     await asyncio.sleep(delay)
-                else:
-                    api_logger.error(f"已达最大重试次数 {MAX_RETRIES}")
 
-        raise last_exception or Exception("Unknown error")
+        raise last_exception or Exception("Stream creation failed on all endpoints")
 
     async def stream_chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None):
-        """流式聊天，逐 token 返回，支持自动重试"""
-        params = {
-            "model": self.model,
-            "messages": messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        if tools:
-            params["tools"] = tools
+        """流式聊天，逐 token 返回，支持多端点 failover"""
+        retries_per_ep = MULTI_ENDPOINT_RETRIES if self._is_multi else MAX_RETRIES_PER_ENDPOINT
+        last_exception = None
 
-        self._log_request(params)
-        self.usage_tracker.start_timer()
+        for ep_idx, ep in enumerate(self._endpoints):
+            if self._is_multi and ep_idx > 0:
+                api_logger.warning(
+                    f"LLM failover (流式): 切换到端点 #{ep_idx + 1} "
+                    f"({ep['base_url']} 模型={ep['model']})"
+                )
 
-        stream, first_chunk = await self._create_stream(params)
+            params = {
+                "messages": messages,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
+            if tools:
+                params["tools"] = tools
 
-        total_tokens = 0
-        prompt_tokens = 0
-        completion_tokens = 0
-        chunks = 0
+            self._log_request({**params, "model": ep["model"]})
+            self.usage_tracker.start_timer()
 
-        # 先 yield 第一个 chunk（_create_stream 中已预取）
-        if first_chunk is not None:
-            chunks += 1
-            if first_chunk.usage:
-                total_tokens = first_chunk.usage.total_tokens
-                prompt_tokens = getattr(first_chunk.usage, "prompt_tokens", 0) or 0
-                completion_tokens = getattr(first_chunk.usage, "completion_tokens", 0) or 0
-            yield first_chunk
+            try:
+                stream, first_chunk = await self._create_stream(
+                    params, ep, ep_idx, retries_per_ep
+                )
+            except Exception as e:
+                last_exception = e
+                if self._is_multi and ep_idx < len(self._endpoints) - 1:
+                    continue
+                raise
 
-        async for chunk in stream:
-            chunks += 1
-            if chunk.usage:
-                total_tokens = chunk.usage.total_tokens
-                prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
-                completion_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
-            yield chunk
+            total_tokens = 0
+            prompt_tokens = 0
+            completion_tokens = 0
+            chunks = 0
 
-        if prompt_tokens > 0 or completion_tokens > 0:
-            self.usage_tracker.track(self.model, {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-            }, is_stream=True)
+            if first_chunk is not None:
+                chunks += 1
+                if first_chunk.usage:
+                    total_tokens = first_chunk.usage.total_tokens
+                    prompt_tokens = getattr(first_chunk.usage, "prompt_tokens", 0) or 0
+                    completion_tokens = getattr(first_chunk.usage, "completion_tokens", 0) or 0
+                yield first_chunk
 
-        self._log_stream_response(total_tokens, chunks)
+            async for chunk in stream:
+                chunks += 1
+                if chunk.usage:
+                    total_tokens = chunk.usage.total_tokens
+                    prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    completion_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+                yield chunk
+
+            if prompt_tokens > 0 or completion_tokens > 0:
+                self.usage_tracker.track(ep["model"], {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                }, is_stream=True)
+
+            self._log_stream_response(total_tokens, chunks)
+            return
+
+        raise last_exception or Exception("All LLM stream endpoints failed")
