@@ -483,7 +483,7 @@ class Agent:
         resolved_user_id = None
         resolved_user_name = user_name
         resolved_role = "default"
-        if self.rbac and user_id:
+        if self.rbac and user_id and not self.parent_agent:
             platform, uid = self._parse_user_id()
             info = self.rbac.resolve_user(platform=platform, platform_uid=uid, fallback_name=user_name)
             resolved_user_id = info["user_id"]
