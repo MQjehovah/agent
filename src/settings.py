@@ -45,7 +45,6 @@ _DEFAULTS = {
         },
     },
     "rag": {
-    "rag": {
         "base_url": "",
         "username": "",
         "password": "",
