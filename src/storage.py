@@ -451,6 +451,67 @@ class Storage:
             """).fetchall()
         return [row[0] for row in rows]
 
+    def save_memory(self, scope: str, owner_id: str, category: str, content: str,
+                    agent_id: str = "", source: str = "", importance: int = 3,
+                    created_at: str = None) -> int:
+        """写入一条记忆，返回 id"""
+        now = created_at or datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                """INSERT INTO memories (scope, owner_id, agent_id, category, content, source, importance, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (scope, owner_id, agent_id, category, content, source, importance, now, now),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def query_memories(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """查询某用户可见记忆：自身 user 私有 + global 公共"""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """SELECT id, scope, owner_id, category, content, source, importance, created_at
+                   FROM memories
+                   WHERE (scope='user' AND owner_id = ?) OR scope = 'global'
+                   ORDER BY scope DESC, importance DESC, updated_at DESC
+                   LIMIT ?""",
+                (user_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def save_proposal(self, content: str, source_users: str = "[]", reason: str = "") -> int:
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                """INSERT INTO memory_proposals (content, source_users, reason, status, created_at)
+                   VALUES (?, ?, ?, 'pending', ?)""",
+                (content, source_users, reason, now),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def list_proposals(self, status: str = "pending") -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM memory_proposals WHERE status = ? ORDER BY id DESC", (status,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_proposal_status(self, proposal_id: int, status: str, reviewer: str) -> None:
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE memory_proposals SET status = ?, reviewer = ?, reviewed_at = ? WHERE id = ?",
+                (status, reviewer, now, proposal_id),
+            )
+            conn.commit()
+
+    def get_proposal(self, proposal_id: int) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM memory_proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
     def close(self):
         """关闭存储管理器"""
         self._running = False
