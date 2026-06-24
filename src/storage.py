@@ -185,6 +185,35 @@ class Storage:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_rbac_identities ON rbac_user_identities(platform, platform_uid);
+
+                CREATE TABLE IF NOT EXISTS memories (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope       TEXT NOT NULL,
+                    owner_id    TEXT NOT NULL DEFAULT '',
+                    agent_id    TEXT DEFAULT '',
+                    category    TEXT NOT NULL,
+                    content     TEXT NOT NULL,
+                    source      TEXT DEFAULT '',
+                    importance  INTEGER DEFAULT 3,
+                    created_at  TEXT,
+                    updated_at  TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_memories_scope_owner ON memories(scope, owner_id);
+                CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+
+                CREATE TABLE IF NOT EXISTS memory_proposals (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content       TEXT NOT NULL,
+                    source_users  TEXT DEFAULT '[]',
+                    reason        TEXT DEFAULT '',
+                    status        TEXT DEFAULT 'pending',
+                    created_at    TEXT,
+                    reviewed_at   TEXT,
+                    reviewer      TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_proposals_status ON memory_proposals(status);
             """)
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at)
