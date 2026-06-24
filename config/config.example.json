@@ -47,8 +47,6 @@
     "searxng_timeout": 10
   },
 
-  "device_api_base_url": "https://bms-cn.rosiwit.com",
-
   "smtp": {
     "host": "smtp.qiye.aliyun.com",
     "port": 465,

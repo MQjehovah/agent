@@ -42,7 +42,6 @@ _DEFAULTS = {
         "searxng_engines": "google,bing,duckduckgo",
         "searxng_timeout": 10,
     },
-    "device_api_base_url": "https://bms-cn.rosiwit.com",
     "smtp": {
         "host": "",
         "port": 465,
