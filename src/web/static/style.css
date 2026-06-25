@@ -1040,3 +1040,11 @@ body {
 .mem-card-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
 
 .modal-hint { color: var(--text-muted); font-size: 11px; font-weight: 400; }
+
+/* Sessions agent 筛选 */
+.sessions-filter { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.sessions-filter-select {
+    width: 100%; padding: 4px 6px; background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text-primary); font-size: 12px;
+}
+.sessions-filter-select:focus { outline: none; border-color: var(--accent-blue); }

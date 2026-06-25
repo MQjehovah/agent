@@ -234,6 +234,38 @@ def test_session_messages_handles_special_chars_in_id(tmp_path):
         storage_mod._storage_instance = prev
 
 
+def test_sessions_filter_by_agent(tmp_path):
+    """Sessions 按 agent 筛选：history?agent_id=xxx 仅返回该 agent 的会话；/agents 返回聚合列表"""
+    import storage as storage_mod
+    from storage import Storage
+    from web.server import WebServer
+
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    s.save_message_sync("设备运维", "sess_a1", "user", "a1")
+    s.save_message_sync("设备运维", "sess_a2", "user", "a2")
+    s.save_message_sync("代码审查", "sess_b1", "user", "b1")
+    try:
+        w = WebServer()
+        client = TestClient(w._app)
+
+        # /agents 聚合
+        r = client.get("/api/agent/sessions/agents")
+        agents = {a["agent_id"]: a["sessions"] for a in r.json()["agents"]}
+        assert agents.get("设备运维") == 2
+        assert agents.get("代码审查") == 1
+
+        # 按 agent 筛选
+        r = client.get("/api/agent/sessions/history", params={"agent_id": "设备运维"})
+        rows = r.json()["sessions"]
+        assert {x["id"] for x in rows} == {"sess_a1", "sess_a2"}
+        assert all(x["agent_id"] == "设备运维" for x in rows)
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
+
+
 @pytest.mark.asyncio
 async def test_log_stream_handler_broadcasts_across_threads():
     """LogStreamHandler 应把日志广播给订阅者（跨线程安全）"""

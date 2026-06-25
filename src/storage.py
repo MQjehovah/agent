@@ -478,25 +478,36 @@ class Storage:
             """).fetchall()
         return [row[0] for row in rows]
 
-    def list_recent_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def list_recent_sessions(self, limit: int = 20, agent_id: str = "") -> List[Dict[str, Any]]:
         """从 messages 表聚合最近 N 个会话（按最后活跃时间倒序）。
 
         内存中的 session_manager 仅保留活跃会话，重启即丢失；此方法基于
-        持久化的 messages 表，可展示全部历史会话。
+        持久化的 messages 表，可展示全部历史会话。agent_id 非空时仅返回该 agent 的会话。
         """
+        sql = ("SELECT session_id, MAX(agent_id) AS agent_id, COUNT(*) AS msg_count, "
+               "MIN(created_at) AS first_at, MAX(created_at) AS last_at "
+               "FROM messages "
+               "WHERE session_id IS NOT NULL AND session_id != '' AND session_id != 'temp'")
+        args: List[Any] = []
+        if agent_id:
+            sql += " AND agent_id = ?"; args.append(agent_id)
+        sql += " GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT ?"
+        args.append(limit)
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_session_agents(self) -> List[Dict[str, Any]]:
+        """所有出现过的 agent_id 及其会话数（供 Sessions 按 agent 筛选下拉使用）"""
         with self._get_connection() as conn:
             rows = conn.execute("""
-                SELECT session_id,
-                       MAX(agent_id) AS agent_id,
-                       COUNT(*)       AS msg_count,
-                       MIN(created_at) AS first_at,
-                       MAX(created_at) AS last_at
+                SELECT agent_id, COUNT(DISTINCT session_id) AS sessions, MAX(created_at) AS last_at
                 FROM messages
                 WHERE session_id IS NOT NULL AND session_id != '' AND session_id != 'temp'
-                GROUP BY session_id
+                  AND agent_id != ''
+                GROUP BY agent_id
                 ORDER BY MAX(created_at) DESC
-                LIMIT ?
-            """, (limit,)).fetchall()
+            """).fetchall()
         return [dict(r) for r in rows]
 
     def save_memory(self, scope: str, owner_id: str, category: str, content: str,

@@ -587,13 +587,21 @@ class WebServer:
 
             return {"total": len(sessions), "sessions": sessions}
 
+        @self._app.get("/api/agent/sessions/agents")
+        async def agent_sessions_agents():
+            """所有 agent 列表（供 Sessions 按 agent 筛选下拉）"""
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            return {"agents": storage.list_session_agents()}
+
         @self._app.get("/api/agent/sessions/history")
-        async def agent_sessions_history(limit: int = Query(20)):
+        async def agent_sessions_history(limit: int = Query(20), agent_id: str = Query("")):
             """从数据库查询最近 N 个会话（不依赖内存活跃 session，重启后仍可见）"""
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            rows = storage.list_recent_sessions(min(max(limit, 1), 200))
+            rows = storage.list_recent_sessions(min(max(limit, 1), 200), agent_id=agent_id)
             sessions = [{
                 "id": r["session_id"],
                 "agent_id": r.get("agent_id") or "",

@@ -74,7 +74,7 @@
         memoryBody.style.display = tab === 'memory' ? 'flex' : 'none';
         if (tab === 'chat') { chatIn.focus(); chatMsgs.scrollTop = chatMsgs.scrollHeight; }
         if (tab === 'kanban') { fetchKanban(); }
-        if (tab === 'sessions') { fetchAgentSessions(); }
+        if (tab === 'sessions') { fetchSessionAgents(); fetchAgentSessions(); }
         if (tab === 'users') { rbacFetchAll(); }
         if (tab === 'memory') { fetchMemories(); fetchMemProposals(); }
         if (tab === 'logs') { startLogStream(); } else { stopLogStream(); }
@@ -763,9 +763,27 @@
     }
 
     // ==================== SESSIONS ====================
+    async function fetchSessionAgents() {
+        try {
+            const r = await fetch(API + '/api/agent/sessions/agents');
+            if (!r.ok) return;
+            const d = await r.json();
+            const sel = $('#sessionAgentFilter');
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">全部 Agent</option>' +
+                (d.agents || []).map(a =>
+                    '<option value="' + esc(a.agent_id) + '">' + esc(a.agent_id) + ' (' + a.sessions + ')</option>'
+                ).join('');
+            sel.value = cur;
+        } catch {}
+    }
+
     async function fetchAgentSessions() {
         try {
-            const r = await fetch(API + '/api/agent/sessions/history?limit=20');
+            const params = new URLSearchParams({ limit: '50' });
+            const aid = $('#sessionAgentFilter').value;
+            if (aid) params.set('agent_id', aid);
+            const r = await fetch(API + '/api/agent/sessions/history?' + params.toString());
             if (!r.ok) { sessionsSessionList.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
             const d = await r.json();
             const sessions = d.sessions || [];
@@ -1653,5 +1671,7 @@
     $('#memoryModalClose').onclick = () => { $('#memoryModal').style.display = 'none'; };
     $('#memoryModalCancel').onclick = () => { $('#memoryModal').style.display = 'none'; };
     $('#memoryModalSave').onclick = saveMemory;
+    // sessions 按 agent 筛选
+    $('#sessionAgentFilter').onchange = fetchAgentSessions;
 
 })();
