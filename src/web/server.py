@@ -603,8 +603,8 @@ class WebServer:
             } for r in rows]
             return {"total": len(sessions), "sessions": sessions}
 
-        @self._app.get("/api/agent/sessions/{session_id}/messages")
-        async def agent_session_messages(session_id: str):
+        @self._app.get("/api/agent/sessions/messages")
+        async def agent_session_messages(session_id: str = Query(...)):
             if not self.agent or not self.agent.session_manager:
                 return JSONResponse({"error": "Session manager not initialized"}, status_code=503)
 

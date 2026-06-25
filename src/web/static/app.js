@@ -809,7 +809,7 @@
 
     async function loadSessionMessages(sessionId) {
         try {
-            const r = await fetch(API + '/api/agent/sessions/' + encodeURIComponent(sessionId) + '/messages');
+            const r = await fetch(API + '/api/agent/sessions/messages?session_id=' + encodeURIComponent(sessionId));
             if (!r.ok) { sessionMessagesList.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
             const d = await r.json();
             const msgs = d.messages || [];

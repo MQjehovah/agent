@@ -190,11 +190,45 @@ def test_session_messages_falls_back_to_db(tmp_path):
         w.set_agent(mock_agent)
 
         client = TestClient(w._app)
-        resp = client.get("/api/agent/sessions/hist_sess/messages")
+        resp = client.get("/api/agent/sessions/messages?session_id=hist_sess")
         assert resp.status_code == 200
         data = resp.json()
         assert data["agent_id"] == "(history)"
         assert any("old message" in (m.get("content") or "") for m in data["messages"])
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
+
+
+def test_session_messages_handles_special_chars_in_id(tmp_path):
+    """session_id 含 / + = 等字符（钉钉会话ID）时，query 参数方式可正常取消息。
+
+    回归：旧实现用路径参数 {session_id}，uvicorn 把 %2F 解码成 / 导致路由匹配失败 404。
+    """
+    import storage as storage_mod
+    from storage import Storage
+    from web.server import WebServer
+
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    tricky = "cidabc+def/ghi=_$:LWCP_v1:$xyz=="
+    s.save_message_sync("dingtalk", tricky, "user", "特殊ID的消息内容")
+    try:
+        w = WebServer()
+        mock_sm = MagicMock()
+        mock_sm.sessions = {}
+        mock_agent = MagicMock()
+        mock_agent.session_manager = mock_sm
+        mock_agent.subagent_manager = None
+        mock_agent.name = "main"
+        w.set_agent(mock_agent)
+
+        client = TestClient(w._app)
+        resp = client.get("/api/agent/sessions/messages", params={"session_id": tricky})
+        assert resp.status_code == 200, resp.text
+        msgs = resp.json()["messages"]
+        assert any("特殊ID的消息内容" in (m.get("content") or "") for m in msgs)
     finally:
         s.close()
         storage_mod._storage_instance = prev
