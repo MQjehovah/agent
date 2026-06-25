@@ -265,7 +265,9 @@ class Agent:
             + (f" [沙箱: {type(self.sandbox).__name__}]" if self.sandbox else " [沙箱: 未启用]"))
 
     def _init_retrieval(self):
-        rag_url = os.environ.get("RAG_BASE_URL", "")
+        from settings import get_settings
+        settings = get_settings()
+        rag_url = settings.env_str("rag.base_url", "RAG_BASE_URL", "")
         if not rag_url:
             return
 
@@ -273,9 +275,9 @@ class Agent:
         tool = RetrievalTool()
         tool.configure(
             base_url=rag_url,
-            username=os.environ.get("RAG_USERNAME", ""),
-            password=os.environ.get("RAG_PASSWORD", ""),
-            token=os.environ.get("RAG_TOKEN", ""),
+            username=settings.env_str("rag.username", "RAG_USERNAME", ""),
+            password=settings.env_str("rag.password", "RAG_PASSWORD", ""),
+            token=settings.env_str("rag.token", "RAG_TOKEN", ""),
         )
         self.tool_registry.register_tool(tool)
         logger.info(f"Agent [{self.name}] RAG 知识库已接入: {rag_url}")
