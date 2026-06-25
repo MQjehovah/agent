@@ -46,19 +46,17 @@ def test_reject_flow_keeps_no_global(tmp_path):
 
 
 def _make_app(tmp_path):
-    """构造 WebServer 的 Flask app 并注入临时 storage 单例，返回 (app, client)"""
+    """构造 WebServer 的 FastAPI app 并注入临时 storage 单例，返回 (client, restore)"""
     prev = storage_mod._storage_instance
     s = Storage(str(tmp_path))
     storage_mod._storage_instance = s
 
-    from flask import Flask
+    from fastapi.testclient import TestClient
 
     from web.server import WebServer
 
     w = WebServer()
-    w._app = Flask("test")
-    w._setup_routes()
-    client = w._app.test_client()
+    client = TestClient(w._app)
 
     def restore():
         s.close()
@@ -74,7 +72,7 @@ def test_route_list_proposals_default_pending(tmp_path):
         get_storage().save_proposal(content="待审A", reason="测试")
         resp = client.get("/api/memory/proposals")
         assert resp.status_code == 200
-        contents = [p["content"] for p in resp.get_json()["proposals"]]
+        contents = [p["content"] for p in resp.json()["proposals"]]
         assert "待审A" in contents
     finally:
         restore()
@@ -90,11 +88,11 @@ def test_route_list_proposals_filter_status(tmp_path):
 
         # 默认 pending 不含已审B
         resp = client.get("/api/memory/proposals")
-        assert "已审B" not in [p["content"] for p in resp.get_json()["proposals"]]
+        assert "已审B" not in [p["content"] for p in resp.json()["proposals"]]
 
         # 显式查 approved
         resp = client.get("/api/memory/proposals?status=approved")
-        assert "已审B" in [p["content"] for p in resp.get_json()["proposals"]]
+        assert "已审B" in [p["content"] for p in resp.json()["proposals"]]
     finally:
         restore()
 
@@ -108,7 +106,7 @@ def test_route_approve_writes_global_and_marks_approved(tmp_path):
 
         resp = client.post(f"/api/memory/proposals/{pid}/approve")
         assert resp.status_code == 200
-        assert resp.get_json() == {"success": True}
+        assert resp.json() == {"success": True}
 
         # proposal 已 approved
         assert s.get_proposal(pid)["status"] == "approved"
@@ -152,7 +150,7 @@ def test_route_reject_marks_rejected_no_global(tmp_path):
 
         resp = client.post(f"/api/memory/proposals/{pid}/reject")
         assert resp.status_code == 200
-        assert resp.get_json() == {"success": True}
+        assert resp.json() == {"success": True}
 
         # proposal 已 rejected
         assert s.get_proposal(pid)["status"] == "rejected"

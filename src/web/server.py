@@ -1,28 +1,34 @@
-import os
-import json
-import uuid
-import logging
-import shutil
-import threading
 import asyncio
-import queue
-import time
-from typing import Optional, Dict, Any, List
+import json
+import logging
+import os
+import threading
+import uuid
 from datetime import datetime
+from typing import Any
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("agent.web")
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
+def _sse(payload: dict) -> str:
+    """格式化一条 SSE 事件"""
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 class ChatSession:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.created_at = datetime.now().isoformat()
-        self.token_queue: queue.Queue = queue.Queue()
         self.is_streaming = False
-        self.messages: List[Dict[str, Any]] = []
-        # 保护 messages 列表：Flask 多线程下 append/读取会竞态（迭代时被修改报错）
+        self.messages: list[dict[str, Any]] = []
+        # 保护 messages 列表：并发请求下 append/读取会竞态（迭代时被修改报错）
         self._lock = threading.Lock()
 
     def add_message(self, role: str, content: str):
@@ -33,22 +39,32 @@ class ChatSession:
         with self._lock:
             return len(self.messages)
 
-    def snapshot(self) -> List[Dict[str, Any]]:
+    def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return list(self.messages)
 
 
 class WebServer:
+    """FastAPI Web 服务。
+
+    与旧 Flask 版本的关键差异：整个服务运行在 agent 的 asyncio 事件循环内，
+    路由为 async，可直接 `await agent.run(...)`，彻底消除了原先
+    独立线程 + asyncio.run_coroutine_threadsafe 跨线程调用的复杂度与隐患。
+    """
+
+    MAX_WEB_SESSIONS = 500
+
     def __init__(self, host: str = "0.0.0.0", port: int = 8080, loop: asyncio.AbstractEventLoop = None):
         self.host = host
         self.port = port
         self.agent = None
         self._kanban = None
-        self.loop: Optional[asyncio.AbstractEventLoop] = loop
-        self._app = None
-        self._thread: Optional[threading.Thread] = None
-        self._sessions: Dict[str, ChatSession] = {}
+        self.loop: asyncio.AbstractEventLoop | None = loop
+        self._app: FastAPI = FastAPI(title="Agent Web UI", docs_url="/api/docs")
+        self._server: uvicorn.Server | None = None
+        self._sessions: dict[str, ChatSession] = {}
         self._session_lock = threading.Lock()
+        self._setup_routes()
 
     def set_agent(self, agent):
         self.agent = agent
@@ -58,8 +74,6 @@ class WebServer:
 
     def set_kanban(self, kanban_board):
         self._kanban = kanban_board
-
-    MAX_WEB_SESSIONS = 500
 
     def _get_or_create_session(self, session_id: str) -> ChatSession:
         """获取或创建 Web 会话，带线程安全与上限淘汰（防止内存无限增长）。"""
@@ -72,41 +86,45 @@ class WebServer:
             return self._sessions[session_id]
 
     def start(self):
-        if not self.loop:
-            logger.error("WebServer requires an event loop")
-            return
-        try:
-            from flask import Flask, request, Response, send_from_directory
-        except ImportError:
-            logger.error("flask is required. Install: pip install flask")
-            return
-
-        logging.getLogger("werkzeug").setLevel(logging.WARNING)
-
-        self._app = Flask(__name__, static_folder=None)
-        self._setup_routes()
-        self._thread = threading.Thread(
-            target=self._run_server, args=(self.host, self.port), daemon=True
+        """在当前 asyncio 事件循环内启动 uvicorn（非阻塞后台 task）。"""
+        loop = self.loop or asyncio.get_event_loop()
+        config = uvicorn.Config(
+            self._app, host=self.host, port=self.port,
+            log_level="warning", loop="asyncio", access_log=False,
         )
-        self._thread.start()
-        logger.info(f"Web UI started at http://{self.host}:{self.port}")
+        self._server = uvicorn.Server(config)
+        # 嵌入式运行：禁用 uvicorn 自带的信号处理，统一由 main.py 控制
+        self._server.install_signal_handlers = lambda: None
+        loop.create_task(self._server.serve())
+        logger.info(f"Web UI (FastAPI/uvicorn) started at http://{self.host}:{self.port}")
+
+    def stop(self):
+        if self._server is not None:
+            self._server.should_exit = True
+        logger.info("WebServer stopped")
+
+    # ------------------------------------------------------------------ #
+    #  路由
+    # ------------------------------------------------------------------ #
 
     def _setup_routes(self):
-        from flask import request, Response, send_from_directory, abort
         from storage import get_storage
 
-        @self._app.route("/")
-        def index():
-            return send_from_directory(STATIC_DIR, "index.html")
+        # 静态资源
+        if os.path.isdir(STATIC_DIR):
+            self._app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-        @self._app.route("/static/<path:filename>")
-        def static_files(filename):
-            return send_from_directory(STATIC_DIR, filename)
+        @self._app.get("/")
+        async def index():
+            idx = os.path.join(STATIC_DIR, "index.html")
+            if not os.path.isfile(idx):
+                raise HTTPException(404, "index.html not found")
+            return FileResponse(idx)
 
-        @self._app.route("/api/agent/status", methods=["GET"])
-        def agent_status():
+        @self._app.get("/api/agent/status")
+        async def agent_status():
             if not self.agent:
-                return self._json({"error": "Agent not initialized"}, 503)
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
             task_mgr = self.agent.task_manager
             tasks = task_mgr.list_tasks() if task_mgr else []
             status_counts = {"pending": 0, "running": 0, "completed": 0, "failed": 0, "cancelled": 0}
@@ -127,7 +145,7 @@ class WebServer:
             if self._kanban:
                 panel_stats = self._kanban.get_stats()
 
-            return self._json({
+            return {
                 "name": self.agent.name or "Agent",
                 "description": self.agent.description or "",
                 "status": self.agent.status,
@@ -137,85 +155,74 @@ class WebServer:
                 "tools": self.agent.tool_registry.list_tools() if self.agent.tool_registry else [],
                 "subagents": subagents,
                 "panel": panel_stats,
-            })
+            }
 
-        @self._app.route("/api/chat", methods=["POST"])
-        def chat():
+        @self._app.post("/api/chat")
+        async def chat(request: Request):
             if not self.agent:
-                return self._json({"error": "Agent not initialized"}, 503)
-            data = request.get_json()
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            data = await request.json()
             if not data or not data.get("message"):
-                return self._json({"error": "Missing message"}, 400)
+                return JSONResponse({"error": "Missing message"}, status_code=400)
 
             message = data["message"].strip()
             if not message:
-                return self._json({"error": "Empty message"}, 400)
+                return JSONResponse({"error": "Empty message"}, status_code=400)
 
-            session_id = data.get("session_id")
-            if not session_id:
-                session_id = f"web_{uuid.uuid4().hex[:8]}"
-
+            session_id = data.get("session_id") or f"web_{uuid.uuid4().hex[:8]}"
             chat_session = self._get_or_create_session(session_id)
-
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
 
-            return self._json({"session_id": session_id, "status": "processing"})
+            # 非流式：后台执行，立即返回 session_id
+            asyncio.create_task(
+                self.agent.run(message, session_id=session_id)
+            )
+            return {"session_id": session_id, "status": "processing"}
 
-        @self._app.route("/api/chat/stream", methods=["POST"])
-        def chat_stream():
+        @self._app.post("/api/chat/stream")
+        async def chat_stream(request: Request):
             if not self.agent:
-                return self._json({"error": "Agent not initialized"}, 503)
-            data = request.get_json()
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            data = await request.json()
             if not data or not data.get("message"):
-                return self._json({"error": "Missing message"}, 400)
+                return JSONResponse({"error": "Missing message"}, status_code=400)
 
             message = data["message"].strip()
-            session_id = data.get("session_id", f"web_{uuid.uuid4().hex[:8]}")
-
+            session_id = data.get("session_id") or f"web_{uuid.uuid4().hex[:8]}"
             chat_session = self._get_or_create_session(session_id)
-
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
 
-            # 本次流式请求的唯一 run_id，用于把流式事件限定在本请求内，
-            # 避免并发流式请求之间互相串流（cross-talk）
+            # 本次流式请求的唯一 run_id，把流式事件限定在本请求内，杜绝并发串流
             stream_run_id = uuid.uuid4().hex
+            agent_ref = self.agent
 
-            def generate():
-                # 每个流式连接使用独立队列，避免同 session 并发请求互相覆盖
-                token_queue = queue.Queue()
-                agent_ref = self.agent
-                loop_ref = self.loop
+            async def event_stream():
                 from hooks import HookEvent
+                q: asyncio.Queue = asyncio.Queue()
+                full_response: list[str] = []
 
-                full_response = []
+                async def chat_handler(ctx):
+                    if ctx.token:
+                        full_response.append(ctx.token)
+                        await q.put(("token", ctx.token))
 
-                def _make_handler(put_type):
-                    async def handler(ctx):
-                        if put_type == "chat":
-                            full_response.append(ctx.token)
-                            token_queue.put(("token", ctx.token))
-                        elif put_type == "tool_event":
-                            event_name = ctx.event.value
-                            data = {}
-                            if ctx.token:
-                                data["content"] = ctx.token
-                            if ctx.tool_name:
-                                data["name"] = ctx.tool_name
-                            if ctx.result:
-                                data["result"] = ctx.result
-                            if ctx.agent_name:
-                                data["agent_name"] = ctx.agent_name
-                            if ctx.agent_type:
-                                data["agent_type"] = ctx.agent_type
-                            if ctx.metadata:
-                                data.update(ctx.metadata)
-                            token_queue.put(("tool_event", {"event_type": event_name, "data": data}))
-                    return handler
-
-                chat_handler = _make_handler("chat")
-                event_handler = _make_handler("tool_event")
+                async def event_handler(ctx):
+                    d: dict[str, Any] = {}
+                    if ctx.token:
+                        d["content"] = ctx.token
+                    if ctx.tool_name:
+                        d["name"] = ctx.tool_name
+                    if ctx.result:
+                        d["result"] = ctx.result
+                    if ctx.agent_name:
+                        d["agent_name"] = ctx.agent_name
+                    if ctx.agent_type:
+                        d["agent_type"] = ctx.agent_type
+                    if ctx.metadata:
+                        d.update(ctx.metadata)
+                    await q.put(("tool_event", {"event_type": ctx.event.value, "data": d}))
 
                 hook_events = [
                     HookEvent.CHAT_EVENT,
@@ -229,143 +236,138 @@ class WebServer:
                     HookEvent.SUBAGENT_TOOL_RESULT,
                     HookEvent.SUBAGENT_ROUND_START,
                 ]
-
                 for evt in hook_events:
-                    if evt == HookEvent.CHAT_EVENT:
-                        agent_ref.hooks.register(evt, chat_handler, run_id=stream_run_id)
-                    else:
-                        agent_ref.hooks.register(evt, event_handler, run_id=stream_run_id)
+                    agent_ref.hooks.register(
+                        evt,
+                        chat_handler if evt == HookEvent.CHAT_EVENT else event_handler,
+                        run_id=stream_run_id,
+                    )
 
                 async def run_agent():
                     try:
                         result = await agent_ref.run(message, session_id=session_id, run_id=stream_run_id)
-                        resp_text = result.result if result and hasattr(result, 'result') else ""
+                        resp_text = result.result if result and hasattr(result, "result") else ""
                         if full_response:
                             resp_text = "".join(full_response)
-                        token_queue.put(("done", resp_text))
+                        await q.put(("done", resp_text))
                     except Exception as e:
-                        token_queue.put(("error", str(e)))
+                        await q.put(("error", str(e)))
                     finally:
                         for evt in hook_events:
-                            if evt == HookEvent.CHAT_EVENT:
-                                agent_ref.hooks.unregister(evt, chat_handler)
-                            else:
-                                agent_ref.hooks.unregister(evt, event_handler)
+                            agent_ref.hooks.unregister(
+                                evt,
+                                chat_handler if evt == HookEvent.CHAT_EVENT else event_handler,
+                            )
                         chat_session.is_streaming = False
 
-                future = asyncio.run_coroutine_threadsafe(run_agent(), loop_ref)
-
+                agent_task = asyncio.create_task(run_agent())
                 try:
                     while True:
                         try:
-                            event_type, content = token_queue.get(timeout=1.0)
-                            if event_type == "token":
-                                yield f"data: {json.dumps({'type': 'token', 'content': content}, ensure_ascii=False)}\n\n"
-                            elif event_type == "tool_event":
-                                yield f"data: {json.dumps({'type': content['event_type'], 'data': content['data']}, ensure_ascii=False)}\n\n"
-                            elif event_type == "done":
-                                chat_session.add_message("assistant", content)
-                                yield f"data: {json.dumps({'type': 'done', 'content': content}, ensure_ascii=False)}\n\n"
+                            event_type, content = await asyncio.wait_for(q.get(), timeout=15.0)
+                        except asyncio.TimeoutError:
+                            if agent_task.done():
+                                exc = agent_task.exception()
+                                if exc:
+                                    yield _sse({"type": "error", "content": str(exc)})
                                 break
-                            elif event_type == "error":
-                                chat_session.add_message("assistant", f"Error: {content}")
-                                yield f"data: {json.dumps({'type': 'error', 'content': content}, ensure_ascii=False)}\n\n"
-                                break
-                        except queue.Empty:
-                            if future.done():
-                                try:
-                                    future.result()
-                                except Exception as e:
-                                    yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
-                                break
-                            yield f"data: {json.dumps({'type': 'heartbeat'}, ensure_ascii=False)}\n\n"
-                except GeneratorExit:
-                    pass
+                            yield _sse({"type": "heartbeat"})
+                            continue
+
+                        if event_type == "token":
+                            yield _sse({"type": "token", "content": content})
+                        elif event_type == "tool_event":
+                            yield _sse({"type": content["event_type"], "data": content["data"]})
+                        elif event_type == "done":
+                            chat_session.add_message("assistant", content)
+                            yield _sse({"type": "done", "content": content})
+                            break
+                        elif event_type == "error":
+                            chat_session.add_message("assistant", f"Error: {content}")
+                            yield _sse({"type": "error", "content": content})
+                            break
                 finally:
+                    if not agent_task.done():
+                        agent_task.cancel()
                     chat_session.is_streaming = False
 
-            return Response(generate(), mimetype="text/event-stream", headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            })
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+            )
 
-        @self._app.route("/api/tasks", methods=["GET"])
-        def list_tasks():
+        @self._app.get("/api/tasks")
+        async def list_tasks():
             if not self.agent or not self.agent.task_manager:
-                return self._json({"tasks": []})
+                return {"tasks": [], "count": 0}
             tasks = self.agent.task_manager.list_tasks()
-            return self._json({"tasks": tasks, "count": len(tasks)})
+            return {"tasks": tasks, "count": len(tasks)}
 
-        @self._app.route("/api/tasks/<task_id>", methods=["GET"])
-        def get_task(task_id):
+        @self._app.get("/api/tasks/{task_id}")
+        async def get_task(task_id: str):
             if not self.agent or not self.agent.task_manager:
-                return self._json({"error": "Not found"}, 404)
+                raise HTTPException(404, "Not found")
             task = self.agent.task_manager.get_task(task_id)
             if not task:
-                return self._json({"error": "Task not found"}, 404)
-            return self._json({
+                raise HTTPException(404, "Task not found")
+            return {
                 "id": task.id, "description": task.description,
                 "status": task.status, "created_at": task.created_at,
                 "result": task.result, "error": task.error,
-            })
+            }
 
-        @self._app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
-        def cancel_task(task_id):
+        @self._app.post("/api/tasks/{task_id}/cancel")
+        async def cancel_task(task_id: str):
             if not self.agent or not self.agent.task_manager:
-                return self._json({"error": "Not found"}, 404)
-            future = asyncio.run_coroutine_threadsafe(
-                self.agent.task_manager.cancel_task(task_id), self.loop
-            )
-            success = future.result(timeout=5)
-            return self._json({"success": success, "task_id": task_id})
+                raise HTTPException(404, "Not found")
+            success = await self.agent.task_manager.cancel_task(task_id)
+            return {"success": success, "task_id": task_id}
 
-        @self._app.route("/api/sessions", methods=["GET"])
-        def list_sessions():
+        @self._app.get("/api/sessions")
+        async def list_sessions():
             with self._session_lock:
-                sessions = []
-                for sid, s in self._sessions.items():
-                    sessions.append({
-                        "id": sid, "created_at": s.created_at,
-                        "message_count": s.message_count(),
-                        "is_streaming": s.is_streaming,
-                    })
-            return self._json({"sessions": sessions})
+                sessions = [{
+                    "id": sid, "created_at": s.created_at,
+                    "message_count": s.message_count(),
+                    "is_streaming": s.is_streaming,
+                } for sid, s in self._sessions.items()]
+            return {"sessions": sessions}
 
-        @self._app.route("/api/sessions/<session_id>/messages", methods=["GET"])
-        def session_messages(session_id):
+        @self._app.get("/api/sessions/{session_id}/messages")
+        async def session_messages(session_id: str):
             with self._session_lock:
                 chat_session = self._sessions.get(session_id)
             if not chat_session:
-                return self._json({"error": "Session not found"}, 404)
-            return self._json({"messages": chat_session.snapshot()})
+                return JSONResponse({"error": "Session not found"}, status_code=404)
+            return {"messages": chat_session.snapshot()}
 
-        @self._app.route("/api/sessions/<session_id>", methods=["DELETE"])
-        def delete_session(session_id):
+        @self._app.delete("/api/sessions/{session_id}")
+        async def delete_session(session_id: str):
             with self._session_lock:
                 self._sessions.pop(session_id, None)
-            return self._json({"success": True})
+            return {"success": True}
 
-        # 看板 API
-        @self._app.route("/api/kanban", methods=["GET"])
-        def kanban_list():
+        # ===== 看板 API =====
+        @self._app.get("/api/kanban")
+        async def kanban_list():
             if not self._kanban:
-                return self._json({"error": "Kanban not available", "code": 503}, 503)
+                return JSONResponse({"error": "Kanban not available", "code": 503}, status_code=503)
             try:
                 stats = self._kanban.get_stats()
                 tasks = self._kanban.list_tasks()
-                return self._json({"stats": stats, "tasks": [t.to_dict() for t in tasks]})
+                return {"stats": stats, "tasks": [t.to_dict() for t in tasks]}
             except Exception as e:
                 logger.exception("Kanban API error")
-                return self._json({"error": str(e), "code": 500}, 500)
+                return JSONResponse({"error": str(e), "code": 500}, status_code=500)
 
-        @self._app.route("/api/kanban", methods=["POST"])
-        def kanban_add():
+        @self._app.post("/api/kanban")
+        async def kanban_add(request: Request):
             if not self._kanban:
-                return self._json({"error": "Kanban not available"}, 503)
-            data = request.get_json()
+                return JSONResponse({"error": "Kanban not available"}, status_code=503)
+            data = await request.json()
             if not data or "title" not in data:
-                return self._json({"error": "Missing title"}, 400)
+                return JSONResponse({"error": "Missing title"}, status_code=400)
             task = self._kanban.add_task(
                 title=data["title"],
                 description=data.get("description", ""),
@@ -375,69 +377,65 @@ class WebServer:
                 tags=data.get("tags"),
                 interval=data.get("interval"),
             )
-            return self._json({"task": task.to_dict()})
+            return {"task": task.to_dict()}
 
-        @self._app.route("/api/kanban/<task_id>", methods=["PATCH"])
-        def kanban_update(task_id):
+        @self._app.patch("/api/kanban/{task_id}")
+        async def kanban_update(task_id: str, request: Request):
             if not self._kanban:
-                return self._json({"error": "Kanban not available"}, 503)
-            data = request.get_json()
+                return JSONResponse({"error": "Kanban not available"}, status_code=503)
+            data = await request.json()
             if not data:
-                return self._json({"error": "Missing body"}, 400)
+                return JSONResponse({"error": "Missing body"}, status_code=400)
             if "column" in data:
                 self._kanban.move_task(task_id, data["column"], data.get("assignee"))
             if "assignee" in data and "column" not in data:
                 task = self._kanban.get_task(task_id)
                 if task:
                     self._kanban.move_task(task_id, task.column, assignee=data["assignee"])
-            return self._json({"success": True})
+            return {"success": True}
 
-        @self._app.route("/api/kanban/<task_id>", methods=["DELETE"])
-        def kanban_remove(task_id):
+        @self._app.delete("/api/kanban/{task_id}")
+        async def kanban_remove(task_id: str):
             if not self._kanban:
-                return self._json({"error": "Kanban not available"}, 503)
+                return JSONResponse({"error": "Kanban not available"}, status_code=503)
             if self._kanban.remove_task(task_id):
-                return self._json({"success": True})
-            return self._json({"error": "Task not found"}, 404)
+                return {"success": True}
+            return JSONResponse({"error": "Task not found"}, status_code=404)
 
-        @self._app.route("/api/kanban/<task_id>/move", methods=["POST"])
-        def kanban_move(task_id):
+        @self._app.post("/api/kanban/{task_id}/move")
+        async def kanban_move(task_id: str, request: Request):
             if not self._kanban:
-                return self._json({"error": "Kanban not available"}, 503)
-            data = request.get_json()
+                return JSONResponse({"error": "Kanban not available"}, status_code=503)
+            data = await request.json()
             if not data or "column" not in data:
-                return self._json({"error": "Missing column"}, 400)
+                return JSONResponse({"error": "Missing column"}, status_code=400)
             ok = self._kanban.move_task(task_id, data["column"])
-            return self._json({"success": ok})
+            return {"success": ok}
 
         # 兼容旧 API
-        @self._app.route("/api/panel", methods=["GET"])
-        def panel_list_compat():
+        @self._app.get("/api/panel")
+        async def panel_list_compat():
             if not self._kanban:
-                return self._json({"error": "Panel not available", "code": 503}, 503)
+                return JSONResponse({"error": "Panel not available", "code": 503}, status_code=503)
             try:
                 stats = self._kanban.get_stats()
                 tasks = self._kanban.list_tasks()
+                status_map = {"backlog": "pending", "todo": "pending", "in_progress": "active", "done": "completed"}
                 compat_tasks = []
-                status_map = {
-                    "backlog": "pending", "todo": "pending",
-                    "in_progress": "active", "done": "completed",
-                }
                 for t in tasks:
                     d = t.to_dict()
                     d["status"] = status_map.get(d["column"], "pending")
                     compat_tasks.append(d)
-                return self._json({"stats": stats, "tasks": compat_tasks})
+                return {"stats": stats, "tasks": compat_tasks}
             except Exception as e:
-                return self._json({"error": str(e)}, 500)
+                return JSONResponse({"error": str(e)}, status_code=500)
 
         # Todo API
-        @self._app.route("/api/todos", methods=["GET"])
-        def todo_list():
+        @self._app.get("/api/todos")
+        async def todo_list(status: str = Query("active")):
             if not self.agent or not self.agent.tool_registry:
-                return self._json({"error": "Agent not initialized"}, 503)
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
 
-            status = request.args.get("status", "active")
             main_todos = []
             sub_todos = []
             seen_ids = set()
@@ -472,18 +470,16 @@ class WebServer:
                 except Exception as e:
                     logger.warning(f"[Todos API] 遍历子代理todo失败: {e}")
 
-            # 子代理 todo 排在前面
             all_todos = sub_todos + main_todos
-            return self._json({"todos": all_todos, "count": len(all_todos)})
+            return {"todos": all_todos, "count": len(all_todos)}
 
         # Agent Sessions API (in-memory)
-        @self._app.route("/api/agent/sessions", methods=["GET"])
-        def agent_sessions_list():
+        @self._app.get("/api/agent/sessions")
+        async def agent_sessions_list():
             if not self.agent or not self.agent.session_manager:
-                return self._json({"error": "Session manager not initialized"}, 503)
+                return JSONResponse({"error": "Session manager not initialized"}, status_code=503)
 
             sessions = []
-
             try:
                 for sid, sess in list(self.agent.session_manager.sessions.items()):
                     sessions.append({
@@ -518,18 +514,16 @@ class WebServer:
                 except Exception as e:
                     logger.warning(f"[Sessions API] 遍历子代理失败: {e}")
 
-            return self._json({"total": len(sessions), "sessions": sessions})
+            return {"total": len(sessions), "sessions": sessions}
 
-        @self._app.route("/api/agent/sessions/<session_id>/messages", methods=["GET"])
-        def agent_session_messages(session_id):
+        @self._app.get("/api/agent/sessions/{session_id}/messages")
+        async def agent_session_messages(session_id: str):
             if not self.agent or not self.agent.session_manager:
-                return self._json({"error": "Session manager not initialized"}, 503)
+                return JSONResponse({"error": "Session manager not initialized"}, status_code=503)
 
-            # 在主 agent 中查找
             session = self.agent.session_manager.sessions.get(session_id)
             agent_name = self.agent.name or "main"
 
-            # 在子 agent 中查找
             if not session and self.agent.subagent_manager:
                 try:
                     for inst in list(self.agent.subagent_manager._active_subagents.values()):
@@ -544,7 +538,7 @@ class WebServer:
                     logger.warning(f"[Sessions API] 查找子代理session失败: {e}")
 
             if not session:
-                return self._json({"error": "Session not found"}, 404)
+                return JSONResponse({"error": "Session not found"}, status_code=404)
 
             msgs = []
             for m in session.messages:
@@ -557,19 +551,14 @@ class WebServer:
                     if m.get("name"):
                         msg["name"] = m["name"]
                     msgs.append(msg)
-            return self._json({
-                "session_id": session_id,
-                "agent_id": agent_name,
-                "messages": msgs,
-                "count": len(msgs),
-            })
+            return {"session_id": session_id, "agent_id": agent_name, "messages": msgs, "count": len(msgs)}
 
-        @self._app.route("/api/agents", methods=["GET"])
-        def list_agents():
+        @self._app.get("/api/agents")
+        async def list_agents():
             config_dir = self.agent.config_dir if self.agent else ""
             agents_dir = os.path.join(config_dir, "agents") if config_dir else ""
             if not agents_dir or not os.path.isdir(agents_dir):
-                return self._json([])
+                return []
             result = []
             for dir_name in os.listdir(agents_dir):
                 agent_path = os.path.join(agents_dir, dir_name)
@@ -585,94 +574,108 @@ class WebServer:
                         if os.path.isfile(os.path.join(skills_dir, sdir, "SKILL.md")):
                             skills.append(sdir)
                 result.append({"name": dir_name, "dir": dir_name, "skills": skills})
-            return self._json(result)
+            return result
 
-        @self._app.route("/api/agents/<name>/prompt", methods=["GET"])
-        def get_agent_prompt(name):
+        def _agent_prompt_file(name: str) -> str | None:
             config_dir = self.agent.config_dir if self.agent else ""
-            prompt_file = os.path.join(config_dir, "agents", name, "PROMPT.md") if config_dir else ""
-            if not prompt_file or not os.path.isfile(prompt_file):
-                return self._json({"error": "Not found"}, 404)
+            if not config_dir:
+                return None
+            p = os.path.join(config_dir, "agents", name, "PROMPT.md")
+            return p if os.path.isfile(p) else None
+
+        @self._app.get("/api/agents/{name}/prompt")
+        async def get_agent_prompt(name: str):
+            prompt_file = _agent_prompt_file(name)
+            if not prompt_file:
+                raise HTTPException(404, "Not found")
             with open(prompt_file, encoding="utf-8") as f:
-                content = f.read()
-            return self._json({"content": content})
+                return {"content": f.read()}
 
-        @self._app.route("/api/agents/<name>/prompt", methods=["PUT"])
-        def update_agent_prompt(name):
-            config_dir = self.agent.config_dir if self.agent else ""
-            prompt_file = os.path.join(config_dir, "agents", name, "PROMPT.md") if config_dir else ""
-            if not prompt_file or not os.path.isfile(prompt_file):
-                return self._json({"error": "Not found"}, 404)
-            data = request.get_json()
+        @self._app.put("/api/agents/{name}/prompt")
+        async def update_agent_prompt(name: str, request: Request):
+            prompt_file = _agent_prompt_file(name)
+            if not prompt_file:
+                raise HTTPException(404, "Not found")
+            data = await request.json()
             if not data or "content" not in data:
-                return self._json({"error": "Missing content"}, 400)
+                return JSONResponse({"error": "Missing content"}, status_code=400)
             with open(prompt_file, "w", encoding="utf-8") as f:
                 f.write(data["content"])
             if self.agent and self.agent.subagent_manager:
                 self.agent.subagent_manager.reload_template(name)
-            return self._json({"success": True})
+            return {"success": True}
 
-        @self._app.route("/api/agents/<name>/skills", methods=["GET"])
-        def list_agent_skills(name):
+        def _skills_dir_for(name: str) -> str | None:
             config_dir = self.agent.config_dir if self.agent else ""
-            skills_dir = os.path.join(config_dir, "agents", name, "skills") if config_dir else ""
-            if not skills_dir or not os.path.isdir(skills_dir):
-                return self._json([])
+            if not config_dir:
+                return None
+            d = os.path.join(config_dir, "agents", name, "skills")
+            return d if os.path.isdir(d) else None
+
+        @self._app.get("/api/agents/{name}/skills")
+        async def list_agent_skills(name: str):
+            skills_dir = _skills_dir_for(name)
+            if not skills_dir:
+                return []
             result = []
             for sdir in os.listdir(skills_dir):
                 if os.path.isfile(os.path.join(skills_dir, sdir, "SKILL.md")):
                     result.append(sdir)
-            return self._json(result)
+            return result
 
-        @self._app.route("/api/agents/<name>/skills/<skill_name>", methods=["GET"])
-        def get_agent_skill(name, skill_name):
-            config_dir = self.agent.config_dir if self.agent else ""
-            skill_file = os.path.join(config_dir, "agents", name, "skills", skill_name, "SKILL.md") if config_dir else ""
-            if not skill_file or not os.path.isfile(skill_file):
-                return self._json({"error": "Not found"}, 404)
+        @self._app.get("/api/agents/{name}/skills/{skill_name}")
+        async def get_agent_skill(name: str, skill_name: str):
+            skills_dir = _skills_dir_for(name)
+            if not skills_dir:
+                raise HTTPException(404, "Not found")
+            skill_file = os.path.join(skills_dir, skill_name, "SKILL.md")
+            if not os.path.isfile(skill_file):
+                raise HTTPException(404, "Not found")
             with open(skill_file, encoding="utf-8") as f:
-                content = f.read()
-            return self._json({"content": content})
+                return {"content": f.read()}
 
-        @self._app.route("/api/agents/<name>/skills/<skill_name>", methods=["PUT"])
-        def update_agent_skill(name, skill_name):
-            config_dir = self.agent.config_dir if self.agent else ""
-            skill_file = os.path.join(config_dir, "agents", name, "skills", skill_name, "SKILL.md") if config_dir else ""
-            if not skill_file or not os.path.isfile(skill_file):
-                return self._json({"error": "Not found"}, 404)
-            data = request.get_json()
+        @self._app.put("/api/agents/{name}/skills/{skill_name}")
+        async def update_agent_skill(name: str, skill_name: str, request: Request):
+            skills_dir = _skills_dir_for(name)
+            if not skills_dir:
+                raise HTTPException(404, "Not found")
+            skill_file = os.path.join(skills_dir, skill_name, "SKILL.md")
+            if not os.path.isfile(skill_file):
+                raise HTTPException(404, "Not found")
+            data = await request.json()
             if not data or "content" not in data:
-                return self._json({"error": "Missing content"}, 400)
+                return JSONResponse({"error": "Missing content"}, status_code=400)
             with open(skill_file, "w", encoding="utf-8") as f:
                 f.write(data["content"])
-            return self._json({"success": True})
+            return {"success": True}
 
-        @self._app.route("/api/agents/<name>/skills", methods=["POST"])
-        def create_agent_skill(name):
-            config_dir = self.agent.config_dir if self.agent else ""
-            skills_dir = os.path.join(config_dir, "agents", name, "skills") if config_dir else ""
-            if not skills_dir or not os.path.isdir(skills_dir):
-                return self._json({"error": "Agent not found"}, 404)
-            data = request.get_json()
+        @self._app.post("/api/agents/{name}/skills")
+        async def create_agent_skill(name: str, request: Request):
+            skills_dir = _skills_dir_for(name)
+            if not skills_dir:
+                return JSONResponse({"error": "Agent not found"}, status_code=404)
+            data = await request.json()
             if not data or "name" not in data:
-                return self._json({"error": "Missing name"}, 400)
+                return JSONResponse({"error": "Missing name"}, status_code=400)
             skill_dir = os.path.join(skills_dir, data["name"])
             if os.path.exists(skill_dir):
-                return self._json({"error": "Skill already exists"}, 409)
+                return JSONResponse({"error": "Skill already exists"}, status_code=409)
             os.makedirs(skill_dir, exist_ok=True)
-            skill_file = os.path.join(skill_dir, "SKILL.md")
-            with open(skill_file, "w", encoding="utf-8") as f:
+            with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
                 f.write(data.get("content", ""))
-            return self._json({"success": True})
+            return {"success": True}
 
-        @self._app.route("/api/agents/<name>/skills/<skill_name>", methods=["DELETE"])
-        def delete_agent_skill(name, skill_name):
-            config_dir = self.agent.config_dir if self.agent else ""
-            skill_dir = os.path.join(config_dir, "agents", name, "skills", skill_name) if config_dir else ""
-            if not skill_dir or not os.path.isdir(skill_dir):
-                return self._json({"error": "Not found"}, 404)
+        @self._app.delete("/api/agents/{name}/skills/{skill_name}")
+        async def delete_agent_skill(name: str, skill_name: str):
+            import shutil
+            skills_dir = _skills_dir_for(name)
+            if not skills_dir:
+                raise HTTPException(404, "Not found")
+            skill_dir = os.path.join(skills_dir, skill_name)
+            if not os.path.isdir(skill_dir):
+                raise HTTPException(404, "Not found")
             shutil.rmtree(skill_dir)
-            return self._json({"success": True})
+            return {"success": True}
 
         # ===== RBAC API =====
         def _get_rbac():
@@ -680,225 +683,170 @@ class WebServer:
                 return None
             return self.agent.rbac
 
-        @self._app.route("/api/rbac/roles", methods=["GET"])
-        def rbac_list_roles():
+        def _require_rbac():
             rbac = _get_rbac()
             if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
-            return self._json({"roles": rbac.list_roles()})
+                raise HTTPException(503, "RBAC not initialized")
+            return rbac
 
-        @self._app.route("/api/rbac/roles", methods=["POST"])
-        def rbac_create_role():
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
-            data = request.get_json()
+        @self._app.get("/api/rbac/roles")
+        async def rbac_list_roles():
+            return {"roles": _require_rbac().list_roles()}
+
+        @self._app.post("/api/rbac/roles")
+        async def rbac_create_role(request: Request):
+            rbac = _require_rbac()
+            data = await request.json()
             if not data or "name" not in data:
-                return self._json({"error": "Missing name"}, 400)
+                return JSONResponse({"error": "Missing name"}, status_code=400)
             rbac.create_role(
                 name=data["name"],
                 description=data.get("description", ""),
                 allowed_tools=data.get("allowed_tools", []),
                 allowed_agents=data.get("allowed_agents", []),
             )
-            return self._json({"success": True, "name": data["name"]})
+            return {"success": True, "name": data["name"]}
 
-        @self._app.route("/api/rbac/roles/<name>", methods=["GET"])
-        def rbac_get_role(name):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
+        @self._app.get("/api/rbac/roles/{name}")
+        async def rbac_get_role(name: str):
+            rbac = _require_rbac()
             role = rbac.get_role(name)
             if not role:
-                return self._json({"error": "Role not found"}, 404)
-            return self._json(role)
+                raise HTTPException(404, "Role not found")
+            return role
 
-        @self._app.route("/api/rbac/roles/<name>", methods=["PUT"])
-        def rbac_update_role(name):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
-            data = request.get_json()
+        @self._app.put("/api/rbac/roles/{name}")
+        async def rbac_update_role(name: str, request: Request):
+            rbac = _require_rbac()
+            data = await request.json()
             if not data:
-                return self._json({"error": "Missing body"}, 400)
+                return JSONResponse({"error": "Missing body"}, status_code=400)
             rbac.update_role(
                 name=name,
                 description=data.get("description"),
                 allowed_tools=data.get("allowed_tools"),
                 allowed_agents=data.get("allowed_agents"),
             )
-            return self._json({"success": True})
+            return {"success": True}
 
-        @self._app.route("/api/rbac/roles/<name>", methods=["DELETE"])
-        def rbac_delete_role(name):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
+        @self._app.delete("/api/rbac/roles/{name}")
+        async def rbac_delete_role(name: str):
+            rbac = _require_rbac()
             if not rbac.delete_role(name):
-                return self._json({"error": "Cannot delete built-in role"}, 400)
-            return self._json({"success": True})
+                return JSONResponse({"error": "Cannot delete built-in role"}, status_code=400)
+            return {"success": True}
 
-        @self._app.route("/api/rbac/users", methods=["GET"])
-        def rbac_list_users():
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
+        @self._app.get("/api/rbac/users")
+        async def rbac_list_users():
+            rbac = _require_rbac()
             users = rbac.list_users()
             for u in users:
                 u["identities"] = rbac.list_user_identities(u["id"])
-            return self._json({"users": users})
+            return {"users": users}
 
-        @self._app.route("/api/rbac/users", methods=["POST"])
-        def rbac_create_user():
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
-            data = request.get_json()
+        @self._app.post("/api/rbac/users")
+        async def rbac_create_user(request: Request):
+            rbac = _require_rbac()
+            data = await request.json()
             if not data or "name" not in data:
-                return self._json({"error": "Missing name"}, 400)
+                return JSONResponse({"error": "Missing name"}, status_code=400)
             user_id = rbac.create_user(
                 name=data["name"],
                 department=data.get("department", ""),
                 role=data.get("role", "default"),
             )
-            identities = data.get("identities", [])
-            for ident in identities:
+            for ident in data.get("identities", []):
                 if ident.get("platform") and ident.get("platform_uid"):
                     rbac.bind_identity(user_id, ident["platform"], ident["platform_uid"])
             user = rbac.get_user(user_id)
             user["identities"] = rbac.list_user_identities(user_id)
-            return self._json({"success": True, "user": user})
+            return {"success": True, "user": user}
 
-        @self._app.route("/api/rbac/users/<int:user_id>", methods=["GET"])
-        def rbac_get_user(user_id):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
+        @self._app.get("/api/rbac/users/{user_id}")
+        async def rbac_get_user(user_id: int):
+            rbac = _require_rbac()
             user = rbac.get_user(user_id)
             if not user:
-                return self._json({"error": "User not found"}, 404)
+                raise HTTPException(404, "User not found")
             user["identities"] = rbac.list_user_identities(user_id)
-            return self._json(user)
+            return user
 
-        @self._app.route("/api/rbac/users/<int:user_id>", methods=["PUT"])
-        def rbac_update_user(user_id):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
-            data = request.get_json()
+        @self._app.put("/api/rbac/users/{user_id}")
+        async def rbac_update_user(user_id: int, request: Request):
+            rbac = _require_rbac()
+            data = await request.json()
             if not data:
-                return self._json({"error": "Missing body"}, 400)
+                return JSONResponse({"error": "Missing body"}, status_code=400)
             rbac.update_user(
                 user_id=user_id,
                 name=data.get("name"),
                 department=data.get("department"),
                 role=data.get("role"),
             )
-            return self._json({"success": True})
+            return {"success": True}
 
-        @self._app.route("/api/rbac/users/<int:user_id>", methods=["DELETE"])
-        def rbac_delete_user(user_id):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
-            rbac.delete_user(user_id)
-            return self._json({"success": True})
+        @self._app.delete("/api/rbac/users/{user_id}")
+        async def rbac_delete_user(user_id: int):
+            _require_rbac().delete_user(user_id)
+            return {"success": True}
 
-        @self._app.route("/api/rbac/users/<int:user_id>/toggle", methods=["POST"])
-        def rbac_toggle_user(user_id):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
+        @self._app.post("/api/rbac/users/{user_id}/toggle")
+        async def rbac_toggle_user(user_id: int):
+            rbac = _require_rbac()
             user = rbac.get_user(user_id)
             if not user:
-                return self._json({"error": "User not found"}, 404)
+                raise HTTPException(404, "User not found")
             if user["status"] == "active":
                 rbac.disable_user(user_id)
             else:
                 rbac.enable_user(user_id)
             user = rbac.get_user(user_id)
-            return self._json({"success": True, "status": user["status"]})
+            return {"success": True, "status": user["status"]}
 
-        @self._app.route("/api/rbac/users/<int:user_id>/identities", methods=["POST"])
-        def rbac_bind_identity(user_id):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
-            data = request.get_json()
+        @self._app.post("/api/rbac/users/{user_id}/identities")
+        async def rbac_bind_identity(user_id: int, request: Request):
+            rbac = _require_rbac()
+            data = await request.json()
             if not data or "platform" not in data or "platform_uid" not in data:
-                return self._json({"error": "Missing platform or platform_uid"}, 400)
+                return JSONResponse({"error": "Missing platform or platform_uid"}, status_code=400)
             rbac.bind_identity(user_id, data["platform"], data["platform_uid"])
-            return self._json({"success": True})
+            return {"success": True}
 
-        @self._app.route("/api/rbac/identities/<int:identity_id>", methods=["DELETE"])
-        def rbac_unbind_identity(identity_id):
-            rbac = _get_rbac()
-            if not rbac:
-                return self._json({"error": "RBAC not initialized"}, 503)
-            rbac.unbind_identity(identity_id)
-            return self._json({"success": True})
+        @self._app.delete("/api/rbac/identities/{identity_id}")
+        async def rbac_unbind_identity(identity_id: int):
+            _require_rbac().unbind_identity(identity_id)
+            return {"success": True}
 
-        # ===== Memory Proposals API（仅 admin 可操作） =====
-        # TODO: 校验调用者为 admin 角色 —— 当前 web 层尚无统一 admin 鉴权中间件，
-        #       待补中间件后，在下列每个路由入口统一拦截非 admin 请求。
-        @self._app.route("/api/memory/proposals", methods=["GET"])
-        def memory_list_proposals():
+        # ===== Memory Proposals API（仅 admin 可操作，待补鉴权中间件） =====
+        @self._app.get("/api/memory/proposals")
+        async def memory_list_proposals(status: str = Query("pending")):
             # TODO: 校验调用者为 admin 角色
             storage = get_storage()
             if not storage:
-                return self._json({"error": "storage unavailable"}, 500)
-            status = request.args.get("status", "pending")
-            return self._json({"proposals": storage.list_proposals(status)})
+                return JSONResponse({"error": "storage unavailable"}, status_code=500)
+            return {"proposals": storage.list_proposals(status)}
 
-        @self._app.route("/api/memory/proposals/<int:pid>/approve", methods=["POST"])
-        def memory_approve(pid):
-            # TODO: 校验调用者为 admin 角色
-            # TODO: reviewer 目前固定 "admin"，待鉴权中间件确定当前操作者后替换
+        @self._app.post("/api/memory/proposals/{pid}/approve")
+        async def memory_approve(pid: int):
+            # TODO: 校验调用者为 admin 角色；reviewer 待鉴权后替换
             storage = get_storage()
             if not storage:
-                return self._json({"error": "storage unavailable"}, 500)
+                return JSONResponse({"error": "storage unavailable"}, status_code=500)
             p = storage.get_proposal(pid)
             if not p or p["status"] != "pending":
-                return self._json({"error": "invalid proposal"}, 400)
-            # 审批通过：写入 global 记忆（对所有用户可见），并标记 approved
+                return JSONResponse({"error": "invalid proposal"}, status_code=400)
             storage.save_memory(
                 scope="global", owner_id="", category="knowledge",
                 content=p["content"], source="admin",
             )
             storage.update_proposal_status(pid, "approved", "admin")
-            return self._json({"success": True})
+            return {"success": True}
 
-        @self._app.route("/api/memory/proposals/<int:pid>/reject", methods=["POST"])
-        def memory_reject(pid):
-            # TODO: 校验调用者为 admin 角色
-            # TODO: reviewer 目前固定 "admin"，待鉴权中间件确定当前操作者后替换
+        @self._app.post("/api/memory/proposals/{pid}/reject")
+        async def memory_reject(pid: int):
+            # TODO: 校验调用者为 admin 角色；reviewer 待鉴权后替换
             storage = get_storage()
             if not storage:
-                return self._json({"error": "storage unavailable"}, 500)
-            # 驳回：仅标记 rejected，不写入 global 记忆
+                return JSONResponse({"error": "storage unavailable"}, status_code=500)
             storage.update_proposal_status(pid, "rejected", "admin")
-            return self._json({"success": True})
-
-    def _json(self, data: Any, status: int = 200) -> "Response":
-        from flask import Response
-        return Response(
-            json.dumps(data, ensure_ascii=False),
-            status=status,
-            mimetype="application/json; charset=utf-8",
-        )
-
-    def _run_server(self, host: str, port: int):
-        # 生产级 WSGI：优先用 waitress（纯 Python、跨平台、真正的线程池并发）。
-        # Flask 自带的 werkzeug 开发服务器不适合生产（无背压、性能差）。
-        try:
-            from waitress import serve
-            logger.info(f"使用 waitress 生产 WSGI 服务器启动: {host}:{port}")
-            serve(self._app, host=host, port=port, threads=16, _quiet=True)
-        except ImportError:
-            logger.warning(
-                "未安装 waitress，回退到 Flask 开发服务器（不适合生产！建议执行: pip install waitress）"
-            )
-            self._app.run(host=host, port=port, threaded=True, use_reloader=False)
-
-    def stop(self):
-        logger.info("WebServer stopped")
+            return {"success": True}

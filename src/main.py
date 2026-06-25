@@ -486,7 +486,6 @@ async def main():
             if kanban_board:
                 web_server.set_kanban(kanban_board)
             web_server.start()
-            console.print(f"[bold green]Web UI:[/bold green] http://localhost:{args.web_port}")
 
         if args.mode == "autonomous":
             await autonomous_mode(agent, shutdown_event, args)
