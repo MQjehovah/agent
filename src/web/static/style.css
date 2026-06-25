@@ -1048,3 +1048,29 @@ body {
     border-radius: var(--radius); color: var(--text-primary); font-size: 12px;
 }
 .sessions-filter-select:focus { outline: none; border-color: var(--accent-blue); }
+
+/* ============= Auth 登录 ============= */
+.auth-overlay {
+    position: fixed; inset: 0; background: var(--bg-primary); z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+}
+.auth-box {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 12px; padding: 40px 36px; width: 340px; text-align: center;
+}
+.auth-title { font-size: 20px; font-weight: 700; color: var(--accent-blue); margin-bottom: 4px; }
+.auth-subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 24px; }
+.auth-input {
+    display: block; width: 100%; padding: 10px 12px; margin-bottom: 12px;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text-primary); font-size: 14px;
+}
+.auth-input:focus { outline: none; border-color: var(--accent-blue); }
+.auth-error { color: var(--accent-red); font-size: 12px; margin-bottom: 8px; }
+.auth-btn {
+    width: 100%; padding: 10px; background: var(--accent-blue); color: #0a0e14;
+    border: none; border-radius: var(--radius); font-size: 14px; font-weight: 700; cursor: pointer;
+}
+.auth-btn:hover { opacity: 0.9; }
+.auth-footer { margin-top: 16px; font-size: 12px; color: var(--text-muted); display: flex; justify-content: center; gap: 12px; }
+.auth-logout { color: var(--accent-orange); cursor: pointer; }

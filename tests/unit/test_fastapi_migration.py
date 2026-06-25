@@ -4,10 +4,17 @@ import contextlib
 import os
 import socket
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
+import pytest
+from fastapi.testclient import TestClient  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
+
+# 测试用 JWT
+import jwt as _jwt  # noqa: E402
+os.environ["WEBUI_DISABLE_AUTH"] = "1"  # 测试模式下绕过鉴权中间件
 
 import pytest
 from fastapi.testclient import TestClient  # noqa: E402

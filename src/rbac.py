@@ -112,6 +112,22 @@ class RBACManager:
             })
         return result
 
+    def list_users_with_password_flag(self) -> list:
+        with self.storage.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, name, department, role, status, created_at, updated_at, "
+                "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_pw "
+                "FROM rbac_users ORDER BY id"
+            ).fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                "id": r[0], "name": r[1], "department": r[2],
+                "role": r[3], "status": r[4], "created_at": r[5], "updated_at": r[6],
+                "has_password": bool(r[7])
+            })
+        return result
+
     def get_user(self, user_id: int) -> dict | None:
         with self.storage.get_connection() as conn:
             row = conn.execute(
@@ -123,6 +139,21 @@ class RBACManager:
         return {
             "id": row[0], "name": row[1], "department": row[2],
             "role": row[3], "status": row[4], "created_at": row[5], "updated_at": row[6]
+        }
+
+    def get_user_with_password_flag(self, user_id: int) -> dict | None:
+        with self.storage.get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, name, department, role, status, created_at, updated_at, "
+                "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_pw "
+                "FROM rbac_users WHERE id=?", (user_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "name": row[1], "department": row[2],
+            "role": row[3], "status": row[4], "created_at": row[5], "updated_at": row[6],
+            "has_password": bool(row[7])
         }
 
     def update_user(self, user_id: int, name: str = None, department: str = None, role: str = None) -> bool:

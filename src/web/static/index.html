@@ -189,6 +189,7 @@
                                             <th>Role</th>
                                             <th>Identities</th>
                                             <th>Status</th>
+                                            <th>密码</th>
                                             <th>Actions</th>
                                         </tr>
                                     </thead>
@@ -354,6 +355,9 @@
                     <label class="modal-label">Role
                         <select id="rbacUserInputRole" class="modal-input"></select>
                     </label>
+                    <label class="modal-label">密码 <span class="modal-hint">(留空不修改)</span>
+                        <input id="rbacUserInputPassword" type="password" class="modal-input" placeholder="新密码(留空不修改)" autocomplete="new-password" />
+                    </label>
                     <div class="modal-label" style="margin-top:8px">
                         <span style="display:flex;align-items:center;gap:6px;margin-bottom:6px">Identities <button class="users-btn users-btn-sm" id="rbacAddIdentityBtn">+ Add</button></span>
                         <div id="rbacIdentityList"></div>
@@ -451,6 +455,22 @@
                 <div class="modal-footer">
                     <button class="modal-btn" id="memoryModalCancel">Cancel</button>
                     <button class="modal-btn modal-btn-primary" id="memoryModalSave">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Auth 登录覆盖层 -->
+        <div class="auth-overlay" id="authOverlay">
+            <div class="auth-box">
+                <div class="auth-title">Agent WebUI</div>
+                <div class="auth-subtitle">登录以继续</div>
+                <input id="authUsername" class="auth-input" placeholder="用户名" autocomplete="username" autofocus />
+                <input id="authPassword" class="auth-input" type="password" placeholder="密码" autocomplete="current-password" />
+                <div class="auth-error" id="authError" style="display:none"></div>
+                <button class="auth-btn" id="authLoginBtn">登 录</button>
+                <div class="auth-footer">
+                    <span class="auth-user-info" id="authUserInfo"></span>
+                    <a class="auth-logout" id="authLogoutLink" style="display:none">退出</a>
                 </div>
             </div>
         </div>

@@ -6,8 +6,72 @@
     let isStreaming = false;
     let activeTab = 'chat';
     currentSessionId = sessionStorage.getItem('agent_session_id') || null;
-
     const $ = s => document.querySelector(s);
+
+    // ---- Auth ----
+    let _authUser = null, _authToken = '';
+    function apiFetch(url, opts = {}) {
+        if (!opts.headers) opts.headers = {};
+        const t = localStorage.getItem('token');
+        if (t) opts.headers['Authorization'] = 'Bearer ' + t;
+        return fetch(url, opts);
+    }
+    async function authLogin() {
+        const u = $('#authUsername').value.trim(), p = $('#authPassword').value;
+        if (!u || !p) { showAuthError('请输入用户名和密码'); return; }
+        try {
+            const r = await apiFetch(API + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) });
+            const d = await r.json();
+            if (!r.ok) { showAuthError(d.error || '登录失败'); return; }
+            localStorage.setItem('token', d.token);
+            _authToken = d.token; _authUser = d.user;
+            $('#authOverlay').style.display = 'none';
+            $('#authUserInfo').textContent = (d.user.name || d.user.id) + ' [' + d.user.role + ']';
+            $('#authLogoutLink').style.display = 'inline';
+            if (_authUser.role === 'admin') document.body.classList.add('is-admin');
+            loadChatHistory(); loadAgents(); fetchAll();
+        } catch (e) { showAuthError(e.message); }
+    }
+    function authLogout() {
+        localStorage.removeItem('token'); _authToken = ''; _authUser = null;
+        document.body.classList.remove('is-admin');
+        $('#authOverlay').style.display = 'flex';
+        $('#authUserInfo').textContent = ''; $('#authLogoutLink').style.display = 'none';
+        if (typeof logStream !== 'undefined' && logStream) { logStream.close(); logStream = null; }
+        $('#chatMessages').innerHTML = '';
+        $('#memList').innerHTML = '<div class="empty-state">请先登录</div>';
+        $('#sessionsSessionList').innerHTML = '<div class="empty-state">请先登录</div>';
+    }
+    function showAuthError(msg) { const e = $('#authError'); e.textContent = msg; e.style.display = 'block'; }
+    $('#authLoginBtn').onclick = authLogin;
+    $('#authPassword').addEventListener('keydown', e => { if (e.key === 'Enter') authLogin(); });
+    $('#authLogoutLink').onclick = authLogout;
+
+    // 启动时检查是否已登录
+    const _savedToken = localStorage.getItem('token');
+    if (_savedToken) {
+        _authToken = _savedToken;
+        apiFetch(API + '/api/auth/me', { headers: { 'Authorization': 'Bearer ' + _savedToken } })
+            .then(r => r.ok ? r.json() : null)
+            .then(u => {
+                if (u && u.role) {
+                    _authUser = u;
+                    $('#authOverlay').style.display = 'none';
+                    $('#authUserInfo').textContent = (u.name || u.id) + ' [' + u.role + ']';
+                    $('#authLogoutLink').style.display = 'inline';
+                    if (u.role === 'admin') document.body.classList.add('is-admin');
+                } else { authLogout(); }
+            }).catch(() => authLogout());
+    }
+
+    // ---- hooks for auth events (overlay elements may not be in DOM yet) ----
+    document.addEventListener('DOMContentLoaded', () => {
+        if (_authToken) return;
+        const l = $('#authLoginBtn'); const p = $('#authPassword');
+        if (l) l.onclick = authLogin;
+        if (p) p.addEventListener('keydown', e => { if (e.key === 'Enter') authLogin(); });
+        const lo = $('#authLogoutLink'); if (lo) lo.onclick = authLogout;
+    });
 
     // Header
     const elName = $('#agentName'), elDot = $('#statusDot'), elStatus = $('#statusText');
@@ -127,7 +191,7 @@
 
     async function fetchStatus() {
         try {
-            const r = await fetch(API + '/api/agent/status');
+            const r = await apiFetch(API + '/api/agent/status');
             if (!r.ok) throw 0;
             const d = await r.json();
             elName.textContent = d.name || 'Agent';
@@ -147,7 +211,7 @@
 
     async function fetchKanbanSidebar() {
         try {
-            const r = await fetch(API + '/api/kanban');
+            const r = await apiFetch(API + '/api/kanban');
             if (!r.ok) {
                 elTaskList.innerHTML = '<div class="empty-state">Kanban HTTP ' + r.status + '</div>';
                 return;
@@ -206,7 +270,7 @@
 
     async function fetchKanban() {
         try {
-            const r = await fetch(API + '/api/kanban');
+            const r = await apiFetch(API + '/api/kanban');
             if (!r.ok) return;
             const d = await r.json();
             kanbanTasks = d.tasks || [];
@@ -271,7 +335,7 @@
 
     async function moveKanbanTask(id, column) {
         try {
-            await fetch(API + '/api/kanban/' + id + '/move', {
+            await apiFetch(API + '/api/kanban/' + id + '/move', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({column: column}),
@@ -283,7 +347,7 @@
 
     async function deleteKanbanTask(id) {
         try {
-            await fetch(API + '/api/kanban/' + id, {method: 'DELETE'});
+            await apiFetch(API + '/api/kanban/' + id, {method: 'DELETE'});
             await fetchKanban();
             await fetchKanbanSidebar();
         } catch {}
@@ -312,7 +376,7 @@
             column: $('#kanbanInputColumn').value,
         };
         try {
-            const r = await fetch(API + '/api/kanban', {
+            const r = await apiFetch(API + '/api/kanban', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body),
@@ -348,7 +412,7 @@
     async function loadChatHistory() {
         if (!currentSessionId) return;
         try {
-            const r = await fetch(API + '/api/sessions/' + currentSessionId + '/messages');
+            const r = await apiFetch(API + '/api/sessions/' + currentSessionId + '/messages');
             if (!r.ok) return;
             const d = await r.json();
             if (!d.messages || !d.messages.length) return;
@@ -366,7 +430,7 @@
     }
     async function fetchTodos() {
         try {
-            const r = await fetch(API + '/api/todos?status=active');
+            const r = await apiFetch(API + '/api/todos?status=active');
             if (!r.ok) return;
             const d = await r.json();
             const todos = d.todos || [];
@@ -674,7 +738,7 @@
         addMsg('assistant', '', true);
 
         try {
-            const r = await fetch(API + '/api/chat/stream', {
+            const r = await apiFetch(API + '/api/chat/stream', {
                 method:'POST', headers:{'Content-Type':'application/json'},
                 body: JSON.stringify({message:msg, session_id:currentSessionId}),
             });
@@ -765,7 +829,7 @@
     // ==================== SESSIONS ====================
     async function fetchSessionAgents() {
         try {
-            const r = await fetch(API + '/api/agent/sessions/agents');
+            const r = await apiFetch(API + '/api/agent/sessions/agents');
             if (!r.ok) return;
             const d = await r.json();
             const sel = $('#sessionAgentFilter');
@@ -783,7 +847,7 @@
             const params = new URLSearchParams({ limit: '50' });
             const aid = $('#sessionAgentFilter').value;
             if (aid) params.set('agent_id', aid);
-            const r = await fetch(API + '/api/agent/sessions/history?' + params.toString());
+            const r = await apiFetch(API + '/api/agent/sessions/history?' + params.toString());
             if (!r.ok) { sessionsSessionList.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
             const d = await r.json();
             const sessions = d.sessions || [];
@@ -827,7 +891,7 @@
 
     async function loadSessionMessages(sessionId) {
         try {
-            const r = await fetch(API + '/api/agent/sessions/messages?session_id=' + encodeURIComponent(sessionId));
+            const r = await apiFetch(API + '/api/agent/sessions/messages?session_id=' + encodeURIComponent(sessionId));
             if (!r.ok) { sessionMessagesList.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
             const d = await r.json();
             const msgs = d.messages || [];
@@ -969,7 +1033,7 @@
 
     async function loadAgents() {
         try {
-            var r = await fetch(API + '/api/agents');
+            var r = await apiFetch(API + '/api/agents');
             if (!r.ok) { wsAgents.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
             var d = await r.json();
             var agents = Array.isArray(d) ? d : (d.agents || []);
@@ -1066,7 +1130,7 @@
 
     async function loadAgentPrompt(name) {
         try {
-            var r = await fetch(API + '/api/agents/' + encodeURIComponent(name) + '/prompt');
+            var r = await apiFetch(API + '/api/agents/' + encodeURIComponent(name) + '/prompt');
             if (!r.ok) return;
             var d = await r.json();
             $('#agentPromptText').value = d.content || '';
@@ -1077,7 +1141,7 @@
 
     async function loadAgentSkills(name) {
         try {
-            var r = await fetch(API + '/api/agents/' + encodeURIComponent(name) + '/skills');
+            var r = await apiFetch(API + '/api/agents/' + encodeURIComponent(name) + '/skills');
             if (!r.ok) return;
             var d = await r.json();
             var skills = Array.isArray(d) ? d : (d.skills || []);
@@ -1103,7 +1167,7 @@
             c.classList.toggle('active', c.dataset.skill === skill);
         });
         try {
-            var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(skill));
+            var r = await apiFetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(skill));
             if (!r.ok) return;
             var d = await r.json();
             $('#agentSkillEditorName').textContent = skill;
@@ -1138,7 +1202,7 @@
             if (!_currentAgent) return;
             var content = $('#agentPromptText').value;
             try {
-                var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/prompt', {
+                var r = await apiFetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/prompt', {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({content: content}),
@@ -1150,7 +1214,7 @@
             if (!_currentAgent || !_currentSkill) return;
             var content = $('#agentSkillText').value;
             try {
-                var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(_currentSkill), {
+                var r = await apiFetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(_currentSkill), {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({content: content}),
@@ -1177,7 +1241,7 @@
             if (!name || !_currentAgent) { $('#newSkillInput').focus(); return; }
             var template = '# ' + esc(name) + '\n\n';
             try {
-                var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills', {
+                var r = await apiFetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({name: name, content: template}),
@@ -1193,7 +1257,7 @@
             if (!_currentAgent || !_currentSkill) return;
             if (!confirm('Delete skill "' + _currentSkill + '"?')) return;
             try {
-                var r = await fetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(_currentSkill), {
+                var r = await apiFetch(API + '/api/agents/' + encodeURIComponent(_currentAgent) + '/skills/' + encodeURIComponent(_currentSkill), {
                     method: 'DELETE',
                 });
                 if (r.ok) {
@@ -1217,7 +1281,7 @@
 
     async function rbacFetchRoles() {
         try {
-            var r = await fetch(API + '/api/rbac/roles');
+            var r = await apiFetch(API + '/api/rbac/roles');
             if (!r.ok) return;
             var data = await r.json();
             _rbacRoles = data.roles || [];
@@ -1228,7 +1292,7 @@
 
     async function rbacFetchUsers() {
         try {
-            var r = await fetch(API + '/api/rbac/users');
+            var r = await apiFetch(API + '/api/rbac/users');
             if (!r.ok) return;
             var data = await r.json();
             _rbacUsers = data.users || [];
@@ -1287,6 +1351,7 @@
                 + '<td>' + esc(u.role) + '</td>'
                 + '<td>' + idents + '</td>'
                 + '<td><span class="users-status ' + statusClass + '">' + statusText + '</span></td>'
+                + '<td><span class="' + (u.has_password ? 'users-status-active' : 'users-status-disabled') + '" style="font-size:11px">' + (u.has_password ? '已设' : '未设') + '</span></td>'
                 + '<td class="users-actions">'
                 + '<button class="users-btn users-btn-sm rbac-edit-user">Edit</button>'
                 + '<button class="users-btn users-btn-sm rbac-bind-user">Bind</button>'
@@ -1294,7 +1359,7 @@
                 + '<button class="users-btn users-btn-sm users-btn-danger rbac-del-user">Del</button>'
                 + '</td></tr>';
         });
-        if (!html) html = '<tr><td colspan="7" class="empty-state">No users</td></tr>';
+        if (!html) html = '<tr><td colspan="8" class="empty-state">No users</td></tr>';
         $('#rbacUserTbody').innerHTML = html;
 
         document.querySelectorAll('.rbac-edit-user').forEach(function(btn) {
@@ -1338,6 +1403,8 @@
         $('#rbacUserInputName').value = user ? user.name : '';
         $('#rbacUserInputDept').value = user ? (user.department || '') : '';
         $('#rbacUserInputRole').value = user ? user.role : 'default';
+        $('#rbacUserInputPassword').value = '';
+        $('#rbacUserInputPassword').placeholder = user && user.has_password ? '留空不修改密码' : '设置登录密码';
         _rbacEditIdentities = user ? (user.identities || []).map(function(id) {
             return { platform: id.platform, platform_uid: id.platform_uid };
         }) : [];
@@ -1397,20 +1464,24 @@
         var name = $('#rbacUserInputName').value.trim();
         var dept = $('#rbacUserInputDept').value.trim();
         var role = $('#rbacUserInputRole').value;
+        var pw = $('#rbacUserInputPassword').value.trim();
         if (!name) { $('#rbacUserInputName').focus(); return; }
         try {
+            var body = { name: name, department: dept, role: role };
+            if (pw) body.password = pw;
+            if (!editId) body.identities = _rbacEditIdentities.filter(function(i) { return i.platform_uid; });
             var r;
             if (editId) {
-                r = await fetch(API + '/api/rbac/users/' + editId, {
+                r = await apiFetch(API + '/api/rbac/users/' + editId, {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ name: name, department: dept, role: role }),
+                    body: JSON.stringify(body),
                 });
             } else {
-                r = await fetch(API + '/api/rbac/users', {
+                r = await apiFetch(API + '/api/rbac/users', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ name: name, department: dept, role: role, identities: _rbacEditIdentities.filter(function(i) { return i.platform_uid; }) }),
+                    body: JSON.stringify(body),
                 });
             }
             if (r.ok) {
@@ -1461,13 +1532,13 @@
         try {
             var r;
             if (editName) {
-                r = await fetch(API + '/api/rbac/roles/' + encodeURIComponent(editName), {
+                r = await apiFetch(API + '/api/rbac/roles/' + encodeURIComponent(editName), {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ description: desc, allowed_tools: tools, allowed_agents: agents }),
                 });
             } else {
-                r = await fetch(API + '/api/rbac/roles', {
+                r = await apiFetch(API + '/api/rbac/roles', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ name: name, description: desc, allowed_tools: tools, allowed_agents: agents }),
@@ -1506,7 +1577,7 @@
         var platformUid = $('#rbacBindUid').value.trim();
         if (!platformUid) { $('#rbacBindUid').focus(); return; }
         try {
-            var r = await fetch(API + '/api/rbac/users/' + uid + '/identities', {
+            var r = await apiFetch(API + '/api/rbac/users/' + uid + '/identities', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ platform: platform, platform_uid: platformUid }),
@@ -1520,21 +1591,21 @@
 
     async function rbacToggleUser(uid) {
         try {
-            await fetch(API + '/api/rbac/users/' + uid + '/toggle', { method: 'POST' });
+            await apiFetch(API + '/api/rbac/users/' + uid + '/toggle', { method: 'POST' });
             rbacFetchUsers();
         } catch {}
     }
 
     async function rbacDeleteUser(uid) {
         try {
-            await fetch(API + '/api/rbac/users/' + uid, { method: 'DELETE' });
+            await apiFetch(API + '/api/rbac/users/' + uid, { method: 'DELETE' });
             rbacFetchUsers();
         } catch {}
     }
 
     async function rbacUnbindIdentity(identityId) {
         try {
-            await fetch(API + '/api/rbac/identities/' + identityId, { method: 'DELETE' });
+            await apiFetch(API + '/api/rbac/identities/' + identityId, { method: 'DELETE' });
             rbacFetchUsers();
         } catch {}
     }
@@ -1559,7 +1630,7 @@
         const owner = $('#memFilterOwner').value.trim(); if (owner) params.set('owner_id', owner);
         const q = $('#memFilterKeyword').value.trim(); if (q) params.set('q', q);
         try {
-            const r = await fetch(API + '/api/memories?' + params.toString());
+            const r = await apiFetch(API + '/api/memories?' + params.toString());
             if (!r.ok) { memList.innerHTML = '<div class="empty-state">加载失败</div>'; return; }
             const d = await r.json();
             memCountEl.textContent = '共 ' + d.total + ' 条';
@@ -1596,7 +1667,7 @@
 
     async function fetchMemProposals() {
         try {
-            const r = await fetch(API + '/api/memory/proposals?status=pending');
+            const r = await apiFetch(API + '/api/memory/proposals?status=pending');
             if (!r.ok) return;
             const d = await r.json();
             const items = d.proposals || [];
@@ -1618,11 +1689,11 @@
     }
 
     async function memApprove(id) {
-        try { await fetch(API + '/api/memory/proposals/' + id + '/approve', { method: 'POST' }); } catch {}
+        try { await apiFetch(API + '/api/memory/proposals/' + id + '/approve', { method: 'POST' }); } catch {}
         fetchMemProposals(); fetchMemories();
     }
     async function memReject(id) {
-        try { await fetch(API + '/api/memory/proposals/' + id + '/reject', { method: 'POST' }); } catch {}
+        try { await apiFetch(API + '/api/memory/proposals/' + id + '/reject', { method: 'POST' }); } catch {}
         fetchMemProposals();
     }
 
@@ -1660,7 +1731,7 @@
 
     async function deleteMemory(id) {
         if (!confirm('确认删除这条记忆？')) return;
-        try { await fetch(API + '/api/memories/' + id, { method: 'DELETE' }); } catch {}
+        try { await apiFetch(API + '/api/memories/' + id, { method: 'DELETE' }); } catch {}
         fetchMemories();
     }
 

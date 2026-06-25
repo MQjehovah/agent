@@ -9,6 +9,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
+os.environ["WEBUI_DISABLE_AUTH"] = "1"  # 测试模式
+
 import storage as storage_mod
 from storage import Storage, get_storage
 
@@ -47,6 +49,7 @@ def test_reject_flow_keeps_no_global(tmp_path):
 
 def _make_app(tmp_path):
     """构造 WebServer 的 FastAPI app 并注入临时 storage 单例，返回 (client, restore)"""
+    os.environ["WEBUI_DISABLE_AUTH"] = "1"  # 确保测试模式
     prev = storage_mod._storage_instance
     s = Storage(str(tmp_path))
     storage_mod._storage_instance = s

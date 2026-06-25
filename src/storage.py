@@ -217,6 +217,17 @@ class Storage:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_proposals_status ON memory_proposals(status);
+
+                CREATE TABLE IF NOT EXISTS web_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token TEXT NOT NULL UNIQUE,
+                    user_id INTEGER NOT NULL,
+                    description TEXT DEFAULT '',
+                    created_at TEXT,
+                    last_used_at TEXT,
+                    FOREIGN KEY (user_id) REFERENCES rbac_users(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_web_tokens_token ON web_tokens(token);
             """)
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at)
@@ -230,6 +241,11 @@ class Storage:
             # migration: add reasoning_content column if missing
             try:
                 conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")
+            except sqlite3.OperationalError:
+                pass
+            # migration: add password_hash column for webui login
+            try:
+                conn.execute("ALTER TABLE rbac_users ADD COLUMN password_hash TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
 
@@ -662,6 +678,75 @@ class Storage:
                     logger.info(f"旧记忆文件已归档: {name}")
                 except Exception:
                     pass
+
+    # ---------------- WebUI Token & 密码 鉴权 ----------------
+
+    def create_token(self, token: str, user_id: int, description: str = "") -> int:
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO web_tokens (token, user_id, description, created_at) VALUES (?,?,?,?)",
+                (token, user_id, description, datetime.now().isoformat()),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def get_user_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute("""
+                SELECT u.id, u.name, u.department, u.role, u.status, t.id AS token_id
+                FROM web_tokens t JOIN rbac_users u ON t.user_id = u.id WHERE t.token = ?
+            """, (token,)).fetchone()
+        if row:
+            with self._write_lock, self._get_connection() as conn:
+                conn.execute("UPDATE web_tokens SET last_used_at = ? WHERE token = ?",
+                             (datetime.now().isoformat(), token))
+                conn.commit()
+            return dict(row)
+        return None
+
+    def list_tokens(self) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute("""
+                SELECT t.id, substring(t.token,1,8)||'...' AS token_preview, t.user_id,
+                       u.name AS user_name, t.description, t.created_at, t.last_used_at
+                FROM web_tokens t JOIN rbac_users u ON t.user_id = u.id ORDER BY t.id DESC
+            """).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_token(self, token_id: int) -> bool:
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM web_tokens WHERE id = ?", (token_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def set_user_password(self, user_id: int, password: str):
+        import hashlib, secrets, base64
+        salt = secrets.token_bytes(16)
+        key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200000)
+        ph = base64.b64encode(salt + key).decode()
+        with self._write_lock, self._get_connection() as conn:
+            conn.execute("UPDATE rbac_users SET password_hash = ? WHERE id = ?", (ph, user_id))
+            conn.commit()
+
+    def verify_user_password(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+        import hashlib, base64
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, name, department, role, status, password_hash FROM rbac_users WHERE name = ? AND status = 'active'",
+                (username,),
+            ).fetchone()
+        if not row or not row["password_hash"]:
+            return None
+        try:
+            raw = base64.b64decode(row["password_hash"])
+            salt, stored = raw[:16], raw[16:]
+            key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200000)
+            if key != stored:
+                return None
+        except Exception:
+            return None
+        return {"id": row["id"], "name": row["name"], "department": row["department"],
+                "role": row["role"], "status": row["status"]}
 
     def close(self):
         """关闭存储管理器"""

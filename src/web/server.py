@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import jwt
 import logging
 import os
 import threading
@@ -16,6 +17,42 @@ from fastapi.staticfiles import StaticFiles
 logger = logging.getLogger("agent.web")
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+# ---- JWT Secret（持久化，重启不失效）----
+_jwt_secret: str = ""
+def _load_jwt_secret() -> str:
+    global _jwt_secret
+    if _jwt_secret:
+        return _jwt_secret
+    s = os.environ.get("JWT_SECRET", "")
+    if s:
+        _jwt_secret = s
+        return s
+    # fallback：读 config/jwt_secret，不存在则生成
+    import secrets as _secrets
+    f = os.path.join(os.path.dirname(__file__), "..", "..", "config", "jwt_secret")
+    try:
+        with open(f, encoding="utf-8") as fh:
+            _jwt_secret = fh.read().strip()
+        if _jwt_secret:
+            return _jwt_secret
+    except FileNotFoundError:
+        pass
+    _jwt_secret = _secrets.token_hex(32)
+    with open(f, "w", encoding="utf-8") as fh:
+        fh.write(_jwt_secret)
+    return _jwt_secret
+
+
+def create_jwt(user: dict, expires_seconds: int = 86400 * 7) -> str:
+    import time
+    payload = {"uid": user["id"], "name": user["name"], "role": user["role"],
+               "exp": int(time.time()) + expires_seconds}
+    return jwt.encode(payload, _load_jwt_secret(), algorithm="HS256")
+
+
+def decode_jwt(token: str) -> dict:
+    return jwt.decode(token, _load_jwt_secret(), algorithms=["HS256"])
 
 
 def _sse(payload: dict) -> str:
@@ -149,6 +186,7 @@ class WebServer:
         # 绑定事件循环并把日志流 handler 挂到 agent logger（含所有子 logger）
         self._log_handler.set_loop(loop)
         logging.getLogger("agent").addHandler(self._log_handler)
+        self._ensure_admin_user()
         loop.create_task(self._server.serve())
         logger.info(f"Web UI (FastAPI/uvicorn) started at http://{self.host}:{self.port}")
 
@@ -157,12 +195,135 @@ class WebServer:
             self._server.should_exit = True
         logger.info("WebServer stopped")
 
+    def _ensure_admin_user(self):
+        """首次启动时创建默认 admin 用户 (admin / admin123)，若无密码用户则初始化"""
+        from storage import get_storage
+        storage = get_storage()
+        if not storage:
+            return
+        with storage.get_connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM rbac_users WHERE role = 'admin' AND password_hash != ''"
+            ).fetchone()
+            if row and row[0] > 0:
+                return  # 已有带密码的 admin，跳过
+            # 创建或确保 admin 用户存在
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO rbac_users (name, department, role, status, created_at) "
+                "VALUES ('admin', '', 'admin', 'active', datetime('now'))"
+            )
+            user_id = cur.lastrowid
+            if not user_id:
+                user_id = conn.execute(
+                    "SELECT id FROM rbac_users WHERE name = 'admin' AND role = 'admin'"
+                ).fetchone()[0]
+            conn.commit()
+        storage.set_user_password(user_id, "admin123")
+        logger.info("已创建默认 admin 用户 (admin/admin123)，请尽快修改密码")
+
     # ------------------------------------------------------------------ #
     #  路由
     # ------------------------------------------------------------------ #
 
     def _setup_routes(self):
         from storage import get_storage
+
+        # ===== Auth 中间件：所有 /api/* 需有效 token（auth 端点、OPTIONS、或 DISABLE_AUTH 除外） =====
+        @self._app.middleware("http")
+        async def auth_middleware(request: Request, call_next):
+            if request.method == "OPTIONS":
+                return await call_next(request)
+            if os.environ.get("WEBUI_DISABLE_AUTH") == "1":
+                return await call_next(request)
+            if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/auth/"):
+                h = request.headers.get("Authorization", "")
+                if not h.startswith("Bearer "):
+                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+                try:
+                    decode_jwt(h[7:])
+                except Exception:
+                    return JSONResponse({"error": "Invalid or expired token"}, status_code=401)
+            return await call_next(request)
+
+        # ===== Auth 依赖（路由内精细控制用） =====
+        async def _get_auth(request: Request) -> dict[str, Any]:
+            if os.environ.get("WEBUI_DISABLE_AUTH") == "1":
+                return {"uid": 1, "name": "test", "role": "admin"}
+            h = request.headers.get("Authorization", "")
+            return decode_jwt(h[7:])
+
+        async def _get_admin(request: Request) -> dict[str, Any]:
+            u = await _get_auth(request)
+            if u.get("role") != "admin":
+                raise HTTPException(403, "Admin required")
+            return u
+
+        # ===== Auth API =====
+        @self._app.post("/api/auth/login")
+        async def auth_login(request: Request):
+            data = await request.json()
+            username = (data.get("username") or "").strip()
+            password = data.get("password", "")
+            if not username or not password:
+                return JSONResponse({"error": "Missing credentials"}, status_code=400)
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=500)
+            user = storage.verify_user_password(username, password)
+            if not user:
+                return JSONResponse({"error": "Invalid username or password"}, status_code=401)
+            token = create_jwt(user)
+            return {"token": token, "user": {"id": user["id"], "name": user["name"],
+                     "role": user["role"], "department": user.get("department", "")}}
+
+        @self._app.get("/api/auth/me")
+        async def auth_me(request: Request):
+            u = await _get_auth(request)
+            return {"id": u["uid"], "name": u["name"], "role": u["role"]}
+
+        @self._app.post("/api/auth/change-password")
+        async def auth_change_password(request: Request):
+            u = await _get_auth(request)
+            data = await request.json()
+            old_pw = data.get("old_password", "")
+            new_pw = (data.get("new_password") or "").strip()
+            if not new_pw or len(new_pw) < 4:
+                return JSONResponse({"error": "New password too short (min 4)"}, status_code=400)
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=500)
+            # 验证旧密码
+            with storage.get_connection() as conn:
+                row = conn.execute(
+                    "SELECT password_hash FROM rbac_users WHERE id = ?", (u["uid"],)
+                ).fetchone()
+            if row:
+                import hashlib, base64
+                try:
+                    raw = base64.b64decode(row["password_hash"])
+                    salt, stored = raw[:16], raw[16:]
+                    if hashlib.pbkdf2_hmac("sha256", old_pw.encode(), salt, 200000) != stored:
+                        return JSONResponse({"error": "Old password incorrect"}, status_code=403)
+                except Exception:
+                    return JSONResponse({"error": "Old password incorrect"}, status_code=403)
+            storage.set_user_password(u["uid"], new_pw)
+            return {"success": True}
+
+        @self._app.post("/api/auth/set-password")
+        async def auth_set_password(request: Request):
+            """Admin 为用户设置/重置密码"""
+            await _get_admin(request)
+            data = await request.json()
+            uid = data.get("user_id")
+            new_pw = (data.get("password") or "").strip()
+            if not uid or len(new_pw) < 4:
+                return JSONResponse({"error": "Invalid params"}, status_code=400)
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=500)
+            storage.set_user_password(uid, new_pw)
+            return {"success": True}
 
         # 静态资源
         if os.path.isdir(STATIC_DIR):
@@ -795,12 +956,17 @@ class WebServer:
                 raise HTTPException(503, "RBAC not initialized")
             return rbac
 
+        async def _require_rbac_admin(request: Request):
+            await _get_admin(request)
+            return _require_rbac()
+
         @self._app.get("/api/rbac/roles")
         async def rbac_list_roles():
             return {"roles": _require_rbac().list_roles()}
 
         @self._app.post("/api/rbac/roles")
         async def rbac_create_role(request: Request):
+            await _get_admin(request)
             rbac = _require_rbac()
             data = await request.json()
             if not data or "name" not in data:
@@ -823,6 +989,7 @@ class WebServer:
 
         @self._app.put("/api/rbac/roles/{name}")
         async def rbac_update_role(name: str, request: Request):
+            await _get_admin(request)
             rbac = _require_rbac()
             data = await request.json()
             if not data:
@@ -845,22 +1012,26 @@ class WebServer:
         @self._app.get("/api/rbac/users")
         async def rbac_list_users():
             rbac = _require_rbac()
-            users = rbac.list_users()
+            users = rbac.list_users_with_password_flag()
             for u in users:
                 u["identities"] = rbac.list_user_identities(u["id"])
             return {"users": users}
 
         @self._app.post("/api/rbac/users")
         async def rbac_create_user(request: Request):
+            await _get_admin(request)
             rbac = _require_rbac()
             data = await request.json()
             if not data or "name" not in data:
                 return JSONResponse({"error": "Missing name"}, status_code=400)
-            user_id = rbac.create_user(
+            user_id =             rbac.create_user(
                 name=data["name"],
                 department=data.get("department", ""),
                 role=data.get("role", "default"),
             )
+            pw = (data.get("password") or "").strip()
+            if pw:
+                get_storage().set_user_password(user_id, pw)
             for ident in data.get("identities", []):
                 if ident.get("platform") and ident.get("platform_uid"):
                     rbac.bind_identity(user_id, ident["platform"], ident["platform_uid"])
@@ -871,7 +1042,7 @@ class WebServer:
         @self._app.get("/api/rbac/users/{user_id}")
         async def rbac_get_user(user_id: int):
             rbac = _require_rbac()
-            user = rbac.get_user(user_id)
+            user = rbac.get_user_with_password_flag(user_id)
             if not user:
                 raise HTTPException(404, "User not found")
             user["identities"] = rbac.list_user_identities(user_id)
@@ -879,6 +1050,7 @@ class WebServer:
 
         @self._app.put("/api/rbac/users/{user_id}")
         async def rbac_update_user(user_id: int, request: Request):
+            await _get_admin(request)
             rbac = _require_rbac()
             data = await request.json()
             if not data:
@@ -889,6 +1061,9 @@ class WebServer:
                 department=data.get("department"),
                 role=data.get("role"),
             )
+            pw = (data.get("password") or "").strip()
+            if pw:
+                get_storage().set_user_password(user_id, pw)
             return {"success": True}
 
         @self._app.delete("/api/rbac/users/{user_id}")
@@ -911,6 +1086,7 @@ class WebServer:
 
         @self._app.post("/api/rbac/users/{user_id}/identities")
         async def rbac_bind_identity(user_id: int, request: Request):
+            await _get_admin(request)
             rbac = _require_rbac()
             data = await request.json()
             if not data or "platform" not in data or "platform_uid" not in data:
@@ -940,6 +1116,7 @@ class WebServer:
 
         @self._app.post("/api/memories")
         async def create_memory(request: Request):
+            await _get_admin(request)
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
@@ -959,6 +1136,7 @@ class WebServer:
 
         @self._app.put("/api/memories/{memory_id}")
         async def update_memory(memory_id: int, request: Request):
+            await _get_admin(request)
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
@@ -976,7 +1154,8 @@ class WebServer:
             return {"success": ok}
 
         @self._app.delete("/api/memories/{memory_id}")
-        async def delete_memory(memory_id: int):
+        async def delete_memory(memory_id: int, request: Request):
+            await _get_admin(request)
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
@@ -995,7 +1174,8 @@ class WebServer:
             return {"proposals": storage.list_proposals(status)}
 
         @self._app.post("/api/memory/proposals/{pid}/approve")
-        async def memory_approve(pid: int):
+        async def memory_approve(pid: int, request: Request):
+            await _get_admin(request)
             # TODO: 校验调用者为 admin 角色；reviewer 待鉴权后替换
             storage = get_storage()
             if not storage:
@@ -1011,7 +1191,8 @@ class WebServer:
             return {"success": True}
 
         @self._app.post("/api/memory/proposals/{pid}/reject")
-        async def memory_reject(pid: int):
+        async def memory_reject(pid: int, request: Request):
+            await _get_admin(request)
             # TODO: 校验调用者为 admin 角色；reviewer 待鉴权后替换
             storage = get_storage()
             if not storage:
