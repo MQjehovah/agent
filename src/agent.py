@@ -584,6 +584,9 @@ class Agent:
             ctx.user_id = str(resolved_user_id)
         ctx.user_name = resolved_user_name
         ctx.role = resolved_role
+        # webhook 请求默认 admin 权限（不受 RBAC 表约束）
+        if user_id and user_id.startswith("webhook:"):
+            ctx.role = "admin"
 
         if self.learner and self._learning_per_round:
             self.learner.check_user_correction(task, ctx.user_id)

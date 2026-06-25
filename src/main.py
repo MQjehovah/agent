@@ -461,7 +461,7 @@ async def main():
 
             webhook_plugin = plugin_manager.get_plugin("webhook")
             if webhook_plugin:
-                async def _webhook_exec(sid, c, uid="", uname=""):
+                async def _webhook_exec(sid, c, uid="webhook:admin", uname="Webhook"):
                     r = await agent.run(c, session_id=sid, user_id=uid, user_name=uname)
                     return r.result if hasattr(r, 'result') else str(r)
 
