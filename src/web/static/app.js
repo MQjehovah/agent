@@ -21,6 +21,7 @@
     const sessionsBody = $('#sessionsBody');
     const kanbanBody = $('#kanbanBody');
     const usersBody = $('#usersBody');
+    const memoryBody = $('#memoryBody');
     const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory');
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
     const btnNewChat = $('#newChatBtn');
@@ -70,10 +71,12 @@
         sessionsBody.style.display = tab === 'sessions' ? 'flex' : 'none';
         logsBody.style.display = tab === 'logs' ? 'flex' : 'none';
         usersBody.style.display = tab === 'users' ? 'flex' : 'none';
+        memoryBody.style.display = tab === 'memory' ? 'flex' : 'none';
         if (tab === 'chat') { chatIn.focus(); chatMsgs.scrollTop = chatMsgs.scrollHeight; }
         if (tab === 'kanban') { fetchKanban(); }
         if (tab === 'sessions') { fetchAgentSessions(); }
         if (tab === 'users') { rbacFetchAll(); }
+        if (tab === 'memory') { fetchMemories(); fetchMemProposals(); }
         if (tab === 'logs') { startLogStream(); } else { stopLogStream(); }
     }
     // Init: chat is default
@@ -1517,4 +1520,138 @@
             rbacFetchUsers();
         } catch {}
     }
+
+    // ==================== MEMORY 记忆管理 ====================
+    const MEM_CAT_LABELS = {
+        preference: '用户偏好', key_info: '关键信息', todo: '待办事项',
+        failure_lesson: '避坑经验', correction: '用户纠正',
+        reflection: '自学习', knowledge: '通用知识'
+    };
+    const memList = $('#memList');
+    const memCountEl = $('#memCount');
+    const memProposalsBox = $('#memProposalsBox');
+    const memProposalsList = $('#memProposalsList');
+    const memPropCount = $('#memPropCount');
+    let _memCache = {};
+
+    async function fetchMemories() {
+        const params = new URLSearchParams({ limit: '200' });
+        const scope = $('#memFilterScope').value; if (scope) params.set('scope', scope);
+        const cat = $('#memFilterCategory').value; if (cat) params.set('category', cat);
+        const owner = $('#memFilterOwner').value.trim(); if (owner) params.set('owner_id', owner);
+        const q = $('#memFilterKeyword').value.trim(); if (q) params.set('q', q);
+        try {
+            const r = await fetch(API + '/api/memories?' + params.toString());
+            if (!r.ok) { memList.innerHTML = '<div class="empty-state">加载失败</div>'; return; }
+            const d = await r.json();
+            memCountEl.textContent = '共 ' + d.total + ' 条';
+            const items = d.memories || [];
+            _memCache = {}; items.forEach(m => { _memCache[m.id] = m; });
+            if (!items.length) { memList.innerHTML = '<div class="empty-state">暂无记忆</div>'; return; }
+            memList.innerHTML = items.map(renderMemCard).join('');
+            memList.querySelectorAll('.mem-edit').forEach(b => b.onclick = () => openMemoryModal(b.dataset.id));
+            memList.querySelectorAll('.mem-del').forEach(b => b.onclick = () => deleteMemory(b.dataset.id));
+        } catch (e) {
+            memList.innerHTML = '<div class="empty-state">错误: ' + esc(e.message) + '</div>';
+        }
+    }
+
+    function renderMemCard(m) {
+        const cat = MEM_CAT_LABELS[m.category] || m.category;
+        const scopeBadge = m.scope === 'global'
+            ? '<span class="mem-badge mem-badge-global">global</span>'
+            : '<span class="mem-badge mem-badge-user">user</span>';
+        const owner = m.owner_id ? ' <span class="mem-owner">@' + esc(m.owner_id) + '</span>' : '';
+        return '<div class="mem-card">' +
+            '<div class="mem-card-head">' + scopeBadge +
+                '<span class="mem-cat">' + esc(cat) + '</span>' + owner +
+                '<span class="mem-imp" title="重要度">★' + esc(String(m.importance)) + '</span>' +
+                '<span class="mem-card-actions">' +
+                    '<button class="mem-edit" data-id="' + esc(String(m.id)) + '">编辑</button>' +
+                    '<button class="mem-del" data-id="' + esc(String(m.id)) + '">删除</button>' +
+                '</span>' +
+            '</div>' +
+            '<div class="mem-card-content">' + esc(m.content) + '</div>' +
+            '<div class="mem-card-meta">' + esc(m.source || '') + (m.updated_at ? ' · ' + esc(m.updated_at) : '') + '</div>' +
+        '</div>';
+    }
+
+    async function fetchMemProposals() {
+        try {
+            const r = await fetch(API + '/api/memory/proposals?status=pending');
+            if (!r.ok) return;
+            const d = await r.json();
+            const items = d.proposals || [];
+            if (!items.length) { memProposalsBox.style.display = 'none'; return; }
+            memProposalsBox.style.display = 'block';
+            memPropCount.textContent = '(' + items.length + ')';
+            memProposalsList.innerHTML = items.map(p =>
+                '<div class="mem-prop">' +
+                    '<div class="mem-prop-content">' + esc(p.content) + '</div>' +
+                    '<div class="mem-prop-meta">' + esc(p.reason || '') + (p.created_at ? ' · ' + esc(p.created_at) : '') + '</div>' +
+                    '<div class="mem-prop-actions">' +
+                        '<button class="mem-btn mem-btn-primary mem-approve" data-id="' + p.id + '">批准</button>' +
+                        '<button class="mem-btn mem-reject" data-id="' + p.id + '">驳回</button>' +
+                    '</div>' +
+                '</div>').join('');
+            memProposalsList.querySelectorAll('.mem-approve').forEach(b => b.onclick = () => memApprove(b.dataset.id));
+            memProposalsList.querySelectorAll('.mem-reject').forEach(b => b.onclick = () => memReject(b.dataset.id));
+        } catch {}
+    }
+
+    async function memApprove(id) {
+        try { await fetch(API + '/api/memory/proposals/' + id + '/approve', { method: 'POST' }); } catch {}
+        fetchMemProposals(); fetchMemories();
+    }
+    async function memReject(id) {
+        try { await fetch(API + '/api/memory/proposals/' + id + '/reject', { method: 'POST' }); } catch {}
+        fetchMemProposals();
+    }
+
+    function openMemoryModal(id) {
+        const m = id ? _memCache[id] : null;
+        $('#memoryModalTitle').textContent = id ? '编辑记忆' : '新增记忆';
+        $('#memEditId').value = id || '';
+        $('#memScope').value = m ? m.scope : 'global';
+        $('#memOwner').value = m ? (m.owner_id || '') : '';
+        $('#memCategory').value = m ? m.category : 'knowledge';
+        $('#memImportance').value = m ? m.importance : 3;
+        $('#memContent').value = m ? m.content : '';
+        $('#memoryModal').style.display = 'flex';
+    }
+
+    async function saveMemory() {
+        const id = $('#memEditId').value;
+        const body = {
+            scope: $('#memScope').value,
+            owner_id: $('#memOwner').value.trim(),
+            category: $('#memCategory').value,
+            importance: parseInt($('#memImportance').value) || 3,
+            content: $('#memContent').value.trim(),
+        };
+        if (!body.content) { alert('内容不能为空'); return; }
+        try {
+            const url = id ? API + '/api/memories/' + id : API + '/api/memories';
+            const method = id ? 'PUT' : 'POST';
+            const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            if (!r.ok) { const e = await r.json().catch(() => ({})); alert('保存失败: ' + (e.error || r.status)); return; }
+            $('#memoryModal').style.display = 'none';
+            fetchMemories();
+        } catch (e) { alert('保存失败: ' + e.message); }
+    }
+
+    async function deleteMemory(id) {
+        if (!confirm('确认删除这条记忆？')) return;
+        try { await fetch(API + '/api/memories/' + id, { method: 'DELETE' }); } catch {}
+        fetchMemories();
+    }
+
+    // memory 事件绑定
+    $('#memSearchBtn').onclick = fetchMemories;
+    $('#memFilterKeyword').addEventListener('keydown', e => { if (e.key === 'Enter') fetchMemories(); });
+    $('#memNewBtn').onclick = () => openMemoryModal('');
+    $('#memoryModalClose').onclick = () => { $('#memoryModal').style.display = 'none'; };
+    $('#memoryModalCancel').onclick = () => { $('#memoryModal').style.display = 'none'; };
+    $('#memoryModalSave').onclick = saveMemory;
+
 })();

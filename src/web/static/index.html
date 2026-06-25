@@ -63,6 +63,7 @@
                         <span class="main-tab" data-tab="workspace">Workspace</span>
                         <span class="main-tab" data-tab="logs">Logs</span>
                         <span class="main-tab" data-tab="users">Users</span>
+                        <span class="main-tab" data-tab="memory">Memory</span>
                     </div>
                     <span class="main-path" id="mainPath"></span>
                 </div>
@@ -189,6 +190,41 @@
                                     <tbody id="rbacUserTbody"></tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Memory 管理 -->
+                <div class="main-body" id="memoryBody" style="display:none">
+                    <div class="memory-layout">
+                        <div class="memory-toolbar">
+                            <select id="memFilterScope" class="mem-input">
+                                <option value="">全部范围</option>
+                                <option value="global">global</option>
+                                <option value="user">user</option>
+                            </select>
+                            <select id="memFilterCategory" class="mem-input">
+                                <option value="">全部类别</option>
+                                <option value="preference">用户偏好</option>
+                                <option value="key_info">关键信息</option>
+                                <option value="todo">待办事项</option>
+                                <option value="failure_lesson">避坑经验</option>
+                                <option value="correction">用户纠正</option>
+                                <option value="reflection">自学习</option>
+                                <option value="knowledge">通用知识</option>
+                            </select>
+                            <input id="memFilterOwner" class="mem-input" placeholder="owner_id 筛选" />
+                            <input id="memFilterKeyword" class="mem-input" placeholder="搜索内容..." />
+                            <button class="mem-btn" id="memSearchBtn">搜索</button>
+                            <button class="mem-btn mem-btn-primary" id="memNewBtn">+ 新增记忆</button>
+                            <span class="mem-count" id="memCount">共 0 条</span>
+                        </div>
+                        <div class="memory-proposals" id="memProposalsBox" style="display:none">
+                            <div class="memory-section-title">待审提案 <span id="memPropCount"></span></div>
+                            <div id="memProposalsList"></div>
+                        </div>
+                        <div class="memory-list" id="memList">
+                            <div class="empty-state">Loading...</div>
                         </div>
                     </div>
                 </div>
@@ -371,6 +407,49 @@
             </div>
         </div>
     </div>
+        <!-- Memory 编辑 Modal -->
+        <div class="modal-overlay" id="memoryModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span id="memoryModalTitle">新增记忆</span>
+                    <button class="modal-close" id="memoryModalClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="memEditId" />
+                    <label class="modal-label">范围
+                        <select id="memScope" class="modal-input">
+                            <option value="global">global (全局可见)</option>
+                            <option value="user">user (私有)</option>
+                        </select>
+                    </label>
+                    <label class="modal-label">Owner ID <span class="modal-hint">(user 私有时填写，global 留空)</span>
+                        <input id="memOwner" class="modal-input" placeholder="用户ID" />
+                    </label>
+                    <label class="modal-label">类别
+                        <select id="memCategory" class="modal-input">
+                            <option value="knowledge">通用知识</option>
+                            <option value="preference">用户偏好</option>
+                            <option value="key_info">关键信息</option>
+                            <option value="todo">待办事项</option>
+                            <option value="failure_lesson">避坑经验</option>
+                            <option value="correction">用户纠正</option>
+                            <option value="reflection">自学习</option>
+                        </select>
+                    </label>
+                    <label class="modal-label">重要度 (1-5)
+                        <input id="memImportance" type="number" min="1" max="5" value="3" class="modal-input" />
+                    </label>
+                    <label class="modal-label">内容
+                        <textarea id="memContent" class="modal-input" rows="4" placeholder="记忆内容"></textarea>
+                    </label>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="memoryModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="memoryModalSave">Save</button>
+                </div>
+            </div>
+        </div>
+
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="/static/app.js"></script>
 </body>

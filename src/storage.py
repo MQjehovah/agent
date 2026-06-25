@@ -526,6 +526,78 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # ---------------- 记忆管理（WebUI 后台用）----------------
+
+    def list_memories(self, scope: str = "", owner_id: str = "",
+                      category: str = "", keyword: str = "",
+                      limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """管理用：带筛选的记忆列表（跨用户，按更新时间倒序）"""
+        sql = ("SELECT id, scope, owner_id, agent_id, category, content, source, "
+               "importance, created_at, updated_at FROM memories WHERE 1=1")
+        args: List[Any] = []
+        if scope:
+            sql += " AND scope = ?"; args.append(scope)
+        if owner_id:
+            sql += " AND owner_id = ?"; args.append(owner_id)
+        if category:
+            sql += " AND category = ?"; args.append(category)
+        if keyword:
+            sql += " AND content LIKE ?"; args.append(f"%{keyword}%")
+        sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        args.extend([limit, offset])
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_memories(self, scope: str = "", owner_id: str = "",
+                       category: str = "", keyword: str = "") -> int:
+        sql = "SELECT COUNT(*) FROM memories WHERE 1=1"
+        args: List[Any] = []
+        if scope:
+            sql += " AND scope = ?"; args.append(scope)
+        if owner_id:
+            sql += " AND owner_id = ?"; args.append(owner_id)
+        if category:
+            sql += " AND category = ?"; args.append(category)
+        if keyword:
+            sql += " AND content LIKE ?"; args.append(f"%{keyword}%")
+        with self._get_connection() as conn:
+            return conn.execute(sql, args).fetchone()[0]
+
+    def get_memory(self, memory_id: int) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_memory(self, memory_id: int, content: str = None,
+                      importance: int = None, category: str = None,
+                      scope: str = None, owner_id: str = None) -> bool:
+        sets, args = [], []
+        if content is not None:
+            sets.append("content = ?"); args.append(content)
+        if importance is not None:
+            sets.append("importance = ?"); args.append(int(importance))
+        if category is not None:
+            sets.append("category = ?"); args.append(category)
+        if scope is not None:
+            sets.append("scope = ?"); args.append(scope)
+        if owner_id is not None:
+            sets.append("owner_id = ?"); args.append(owner_id)
+        if not sets:
+            return False
+        sets.append("updated_at = ?"); args.append(datetime.now().isoformat())
+        args.append(memory_id)
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute(f"UPDATE memories SET {', '.join(sets)} WHERE id = ?", args)
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_memory(self, memory_id: int) -> bool:
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
     def save_proposal(self, content: str, source_users: str = "[]", reason: str = "") -> int:
         now = datetime.now().isoformat()
         with self._write_lock, self._get_connection() as conn:

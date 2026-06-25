@@ -915,6 +915,68 @@ class WebServer:
             _require_rbac().unbind_identity(identity_id)
             return {"success": True}
 
+        # ===== Memory 管理 API（WebUI 后台，默认 admin 权限） =====
+        @self._app.get("/api/memories")
+        async def list_memories(scope: str = Query(""), category: str = Query(""),
+                                owner_id: str = Query(""), q: str = Query(""),
+                                limit: int = Query(100), offset: int = Query(0)):
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            rows = storage.list_memories(scope=scope, owner_id=owner_id,
+                                          category=category, keyword=q,
+                                          limit=min(max(limit, 1), 500), offset=max(offset, 0))
+            total = storage.count_memories(scope=scope, owner_id=owner_id,
+                                            category=category, keyword=q)
+            return {"memories": rows, "total": total}
+
+        @self._app.post("/api/memories")
+        async def create_memory(request: Request):
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            data = await request.json()
+            if not data or not (data.get("content") or "").strip():
+                return JSONResponse({"error": "Missing content"}, status_code=400)
+            mid = storage.save_memory(
+                scope=data.get("scope", "global"),
+                owner_id=data.get("owner_id", ""),
+                category=data.get("category", "knowledge"),
+                content=data.get("content", ""),
+                agent_id=data.get("agent_id", ""),
+                source=data.get("source", "admin"),
+                importance=data.get("importance", 3),
+            )
+            return {"id": mid, "success": True}
+
+        @self._app.put("/api/memories/{memory_id}")
+        async def update_memory(memory_id: int, request: Request):
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            data = await request.json()
+            if not data:
+                return JSONResponse({"error": "Missing body"}, status_code=400)
+            ok = storage.update_memory(
+                memory_id,
+                content=data.get("content"),
+                importance=data.get("importance"),
+                category=data.get("category"),
+                scope=data.get("scope"),
+                owner_id=data.get("owner_id"),
+            )
+            return {"success": ok}
+
+        @self._app.delete("/api/memories/{memory_id}")
+        async def delete_memory(memory_id: int):
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            ok = storage.delete_memory(memory_id)
+            if not ok:
+                return JSONResponse({"error": "Memory not found"}, status_code=404)
+            return {"success": True}
+
         # ===== Memory Proposals API（仅 admin 可操作，待补鉴权中间件） =====
         @self._app.get("/api/memory/proposals")
         async def memory_list_proposals(status: str = Query("pending")):

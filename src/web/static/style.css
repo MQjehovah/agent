@@ -994,3 +994,49 @@ body {
 }
 .users-edit-identity-row select { width: 90px; }
 .users-edit-identity-row input { flex: 1; }
+
+/* ============= MEMORY 记忆管理 ============= */
+.memory-layout { display: flex; flex-direction: column; gap: 12px; height: 100%; overflow: hidden; padding: 4px; }
+.memory-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.mem-input {
+    padding: 4px 8px; background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text-primary); font-size: 12px;
+}
+.mem-input:focus { outline: none; border-color: var(--accent-blue); }
+.mem-input#memFilterKeyword { flex: 1; min-width: 160px; }
+.mem-btn {
+    padding: 4px 12px; background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text-primary); cursor: pointer; font-size: 12px;
+}
+.mem-btn:hover { background: var(--bg-hover); }
+.mem-btn-primary { background: var(--accent-blue); color: #0a0e14; border-color: var(--accent-blue); font-weight: 600; }
+.mem-btn-primary:hover { opacity: 0.9; background: var(--accent-blue); }
+.mem-count { color: var(--text-muted); font-size: 11px; margin-left: auto; }
+
+.memory-proposals { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
+.memory-section-title { font-weight: 700; color: var(--accent-orange); margin-bottom: 8px; font-size: 12px; }
+.mem-prop { padding: 8px; background: var(--bg-tertiary); border-radius: var(--radius); margin-bottom: 6px; }
+.mem-prop:last-child { margin-bottom: 0; }
+.mem-prop-content { color: var(--text-primary); margin-bottom: 4px; white-space: pre-wrap; word-break: break-word; }
+.mem-prop-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+.mem-prop-actions { display: flex; gap: 6px; }
+
+.memory-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.mem-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
+.mem-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.mem-badge { padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+.mem-badge-global { background: rgba(108,184,255,0.15); color: var(--accent-blue); }
+.mem-badge-user { background: rgba(196,156,255,0.15); color: var(--accent-purple); }
+.mem-cat { font-weight: 600; color: var(--text-secondary); font-size: 12px; }
+.mem-owner { font-size: 11px; color: var(--accent-cyan); }
+.mem-imp { margin-left: auto; color: var(--accent-orange); font-size: 12px; }
+.mem-card-actions { display: flex; gap: 4px; }
+.mem-card-actions button {
+    padding: 2px 8px; background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: 3px; color: var(--text-secondary); cursor: pointer; font-size: 11px;
+}
+.mem-card-actions button:hover { color: var(--text-primary); background: var(--bg-hover); }
+.mem-card-content { color: var(--text-primary); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.mem-card-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+
+.modal-hint { color: var(--text-muted); font-size: 11px; font-weight: 400; }

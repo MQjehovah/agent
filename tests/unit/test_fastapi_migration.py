@@ -1,5 +1,6 @@
 """FastAPI 迁移冒烟测试：验证 web/server 与 webhook 插件的 FastAPI app 可正常工作。"""
 import asyncio
+import contextlib
 import os
 import socket
 import sys
@@ -230,7 +231,9 @@ async def test_log_stream_handler_broadcasts_across_threads():
 async def test_logs_stream_end_to_end():
     """端到端：真实 uvicorn + agent 日志 -> SSE 客户端收到（补全此前缺失的集成验证）"""
     import logging
+
     import httpx
+
     from web.server import WebServer
 
     logging.getLogger("agent").setLevel(logging.INFO)
@@ -247,23 +250,69 @@ async def test_logs_stream_end_to_end():
     received = []
 
     async def reader():
-        async with httpx.AsyncClient(timeout=10) as client:
-            async with client.stream("GET", f"http://127.0.0.1:{port}/api/logs/stream") as r:
-                async for line in r.aiter_lines():
-                    received.append(line)
-                    if any("E2E_LOG_TOKEN_X" in x for x in received):
-                        break
+        async with httpx.AsyncClient(timeout=10) as client, client.stream("GET", f"http://127.0.0.1:{port}/api/logs/stream") as r:
+            async for line in r.aiter_lines():
+                received.append(line)
+                if any("E2E_LOG_TOKEN_X" in x for x in received):
+                    break
 
     try:
         rt = asyncio.create_task(reader())
         await asyncio.sleep(1.0)  # 等 SSE 连接建立
         logging.getLogger("agent.e2e_test").info("E2E_LOG_TOKEN_X marked")
-        try:
+        with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.shield(rt), timeout=5)
-        except asyncio.TimeoutError:
-            pass
         assert any("E2E_LOG_TOKEN_X" in x for x in received), f"未收到日志，got: {received}"
     finally:
         logging.getLogger("agent").removeHandler(w._log_handler)
         w.stop()
         await asyncio.sleep(0.3)
+
+
+# ===== Memory 管理 CRUD =====
+
+def test_memories_crud(tmp_path):
+    """记忆管理：新增 / 查询(筛选) / 编辑 / 删除 全链路"""
+    import storage as storage_mod
+    from storage import Storage
+    from web.server import WebServer
+
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    try:
+        w = WebServer()
+        client = TestClient(w._app)
+
+        # 新增 global 记忆
+        r = client.post("/api/memories", json={
+            "scope": "global", "category": "knowledge",
+            "content": "测试知识XYZ", "importance": 4,
+        })
+        assert r.status_code == 200, r.text
+        mid = r.json()["id"]
+        assert mid
+
+        # 关键词查询应命中
+        r = client.get("/api/memories?q=知识XYZ")
+        assert r.status_code == 200
+        assert any(m["id"] == mid for m in r.json()["memories"])
+
+        # scope 筛选
+        r = client.get("/api/memories?scope=user")
+        assert all(m["scope"] == "user" for m in r.json()["memories"])
+
+        # 编辑
+        r = client.put(f"/api/memories/{mid}", json={"content": "已修改内容", "importance": 5})
+        assert r.status_code == 200 and r.json()["success"] is True
+
+        # 删除
+        r = client.delete(f"/api/memories/{mid}")
+        assert r.status_code == 200 and r.json()["success"] is True
+
+        # 删除后查不到
+        r = client.get("/api/memories?q=已修改内容")
+        assert not any(m["id"] == mid for m in r.json()["memories"])
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
