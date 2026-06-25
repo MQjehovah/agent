@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("agent.web")
@@ -20,6 +21,51 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 def _sse(payload: dict) -> str:
     """格式化一条 SSE 事件"""
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+class LogStreamHandler(logging.Handler):
+    """把日志记录广播给所有 SSE 订阅者。
+
+    日志可能来自任意线程（主事件循环 / 存储写线程 / 钉钉 stream 等），
+    故用 loop.call_soon_threadsafe 把投递动作调度回事件循环线程，
+    确保 asyncio.Queue 的操作线程安全。
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop | None = None):
+        super().__init__()
+        self._subscribers: set[asyncio.Queue] = set()
+        self._loop = loop
+        self._lock = threading.Lock()
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=500)
+        with self._lock:
+            self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue):
+        with self._lock:
+            self._subscribers.discard(q)
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            line = self.format(record)
+            loop = self._loop
+            with self._lock:
+                subs = list(self._subscribers)
+            if not loop or not subs:
+                return
+            for q in subs:
+                loop.call_soon_threadsafe(self._safe_put, q, line)
+        except Exception:
+            pass
+
+    def _safe_put(self, q: asyncio.Queue, line: str):
+        with contextlib.suppress(asyncio.QueueFull):
+            q.put_nowait(line)  # 订阅者消费过慢则丢弃，防止积压撑爆内存
 
 
 class ChatSession:
@@ -64,6 +110,11 @@ class WebServer:
         self._server: uvicorn.Server | None = None
         self._sessions: dict[str, ChatSession] = {}
         self._session_lock = threading.Lock()
+        # 日志流 handler：把 agent 日志广播给 /api/logs/stream 订阅者
+        self._log_handler = LogStreamHandler()
+        self._log_handler.setFormatter(
+            logging.Formatter("[%(name)s] %(levelname)s %(message)s")
+        )
         self._setup_routes()
 
     def set_agent(self, agent):
@@ -95,6 +146,9 @@ class WebServer:
         self._server = uvicorn.Server(config)
         # 嵌入式运行：禁用 uvicorn 自带的信号处理，统一由 main.py 控制
         self._server.install_signal_handlers = lambda: None
+        # 绑定事件循环并把日志流 handler 挂到 agent logger（含所有子 logger）
+        self._log_handler.set_loop(loop)
+        logging.getLogger("agent").addHandler(self._log_handler)
         loop.create_task(self._server.serve())
         logger.info(f"Web UI (FastAPI/uvicorn) started at http://{self.host}:{self.port}")
 
@@ -114,12 +168,29 @@ class WebServer:
         if os.path.isdir(STATIC_DIR):
             self._app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+        # 首页：注入静态资源版本号（基于 mtime），避免浏览器缓存旧版 app.js / style.css
+        _index_cache: dict = {}
+
         @self._app.get("/")
         async def index():
             idx = os.path.join(STATIC_DIR, "index.html")
             if not os.path.isfile(idx):
                 raise HTTPException(404, "index.html not found")
-            return FileResponse(idx)
+            key = int(os.path.getmtime(idx))
+            cached = _index_cache.get(key)
+            if cached is not None:
+                return HTMLResponse(cached)
+            with open(idx, encoding="utf-8") as f:
+                html = f.read()
+            # 给静态资源加 ?v=mtime，文件一变浏览器自动重新拉取
+            for name in ("app.js", "style.css"):
+                p = os.path.join(STATIC_DIR, name)
+                if os.path.isfile(p):
+                    mt = int(os.path.getmtime(p))
+                    html = html.replace(f"/static/{name}", f"/static/{name}?v={mt}")
+            _index_cache.clear()
+            _index_cache[key] = html
+            return HTMLResponse(html)
 
         @self._app.get("/api/agent/status")
         async def agent_status():
@@ -516,6 +587,22 @@ class WebServer:
 
             return {"total": len(sessions), "sessions": sessions}
 
+        @self._app.get("/api/agent/sessions/history")
+        async def agent_sessions_history(limit: int = Query(20)):
+            """从数据库查询最近 N 个会话（不依赖内存活跃 session，重启后仍可见）"""
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            rows = storage.list_recent_sessions(min(max(limit, 1), 200))
+            sessions = [{
+                "id": r["session_id"],
+                "agent_id": r.get("agent_id") or "",
+                "messages": r["msg_count"],
+                "last_accessed": r["last_at"],
+                "first_accessed": r["first_at"],
+            } for r in rows]
+            return {"total": len(sessions), "sessions": sessions}
+
         @self._app.get("/api/agent/sessions/{session_id}/messages")
         async def agent_session_messages(session_id: str):
             if not self.agent or not self.agent.session_manager:
@@ -538,6 +625,17 @@ class WebServer:
                     logger.warning(f"[Sessions API] 查找子代理session失败: {e}")
 
             if not session:
+                # 内存未命中：从数据库恢复历史会话消息
+                storage = get_storage()
+                if storage:
+                    db_msgs = storage.get_messages(session_id)
+                    if db_msgs:
+                        return {
+                            "session_id": session_id,
+                            "agent_id": "(history)",
+                            "messages": db_msgs,
+                            "count": len(db_msgs),
+                        }
                 return JSONResponse({"error": "Session not found"}, status_code=404)
 
             msgs = []
@@ -850,3 +948,25 @@ class WebServer:
                 return JSONResponse({"error": "storage unavailable"}, status_code=500)
             storage.update_proposal_status(pid, "rejected", "admin")
             return {"success": True}
+
+        # ===== 日志流（SSE） =====
+        @self._app.get("/api/logs/stream")
+        async def log_stream():
+            """实时推送 agent 日志给前端 Logs 标签页"""
+            q = self._log_handler.subscribe()
+
+            async def gen():
+                try:
+                    while True:
+                        try:
+                            line = await asyncio.wait_for(q.get(), timeout=5)
+                            yield _sse({"line": line})
+                        except asyncio.TimeoutError:
+                            yield _sse({"type": "heartbeat"})
+                finally:
+                    self._log_handler.unsubscribe(q)
+
+            return StreamingResponse(
+                gen(), media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+            )

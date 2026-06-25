@@ -478,6 +478,27 @@ class Storage:
             """).fetchall()
         return [row[0] for row in rows]
 
+    def list_recent_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """从 messages 表聚合最近 N 个会话（按最后活跃时间倒序）。
+
+        内存中的 session_manager 仅保留活跃会话，重启即丢失；此方法基于
+        持久化的 messages 表，可展示全部历史会话。
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute("""
+                SELECT session_id,
+                       MAX(agent_id) AS agent_id,
+                       COUNT(*)       AS msg_count,
+                       MIN(created_at) AS first_at,
+                       MAX(created_at) AS last_at
+                FROM messages
+                WHERE session_id IS NOT NULL AND session_id != '' AND session_id != 'temp'
+                GROUP BY session_id
+                ORDER BY MAX(created_at) DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
     def save_memory(self, scope: str, owner_id: str, category: str, content: str,
                     agent_id: str = "", source: str = "", importance: int = 3,
                     created_at: str = None) -> int:

@@ -6,6 +6,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
+from unittest.mock import MagicMock  # noqa: E402
+
 import pytest
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -131,3 +133,137 @@ async def test_uvicorn_embedded_in_agent_loop_serves_real_http():
             if not server.started:
                 break
             await asyncio.sleep(0.1)
+
+
+# ===== Sessions 从数据库查询 / 日志流 =====
+
+def test_sessions_history_reads_from_db(tmp_path):
+    """Sessions 标签页应从数据库聚合历史会话，而非仅内存活跃 session"""
+    import storage as storage_mod
+    from storage import Storage
+    from web.server import WebServer
+
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    s.save_message_sync("agentA", "sess1", "user", "hello")
+    s.save_message_sync("agentA", "sess1", "assistant", "hi")
+    s.save_message_sync("agentB", "sess2", "user", "test")
+
+    try:
+        w = WebServer()
+        client = TestClient(w._app)
+        resp = client.get("/api/agent/sessions/history?limit=20")
+        assert resp.status_code == 200
+        sessions = resp.json()["sessions"]
+        ids = [x["id"] for x in sessions]
+        assert "sess1" in ids and "sess2" in ids
+        s1 = next(x for x in sessions if x["id"] == "sess1")
+        assert s1["messages"] == 2
+        assert s1["agent_id"] == "agentA"
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
+
+
+def test_session_messages_falls_back_to_db(tmp_path):
+    """内存未命中的历史会话，应从数据库恢复消息"""
+    import storage as storage_mod
+    from storage import Storage
+    from web.server import WebServer
+
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    s.save_message_sync("agentX", "hist_sess", "user", "old message")
+
+    try:
+        w = WebServer()
+        # 模拟 agent 已初始化但内存 session 为空（重启后的典型场景）
+        mock_sm = MagicMock()
+        mock_sm.sessions = {}
+        mock_agent = MagicMock()
+        mock_agent.session_manager = mock_sm
+        mock_agent.subagent_manager = None
+        mock_agent.name = "main"
+        w.set_agent(mock_agent)
+
+        client = TestClient(w._app)
+        resp = client.get("/api/agent/sessions/hist_sess/messages")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agent_id"] == "(history)"
+        assert any("old message" in (m.get("content") or "") for m in data["messages"])
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
+
+
+@pytest.mark.asyncio
+async def test_log_stream_handler_broadcasts_across_threads():
+    """LogStreamHandler 应把日志广播给订阅者（跨线程安全）"""
+    import logging
+
+    from web.server import LogStreamHandler
+
+    loop = asyncio.get_running_loop()
+    h = LogStreamHandler(loop)
+    q = h.subscribe()
+
+    # 模拟来自其它线程的日志（存储写线程 / 钉钉 stream 等）
+    import threading
+    rec = logging.LogRecord("agent.test", logging.INFO, "", 0, "hello-stream", None, None)
+
+    def emit_from_thread():
+        h.emit(rec)
+
+    t = threading.Thread(target=emit_from_thread)
+    t.start()
+    t.join()
+
+    line = await asyncio.wait_for(q.get(), timeout=2)
+    assert "hello-stream" in line
+    h.unsubscribe(q)
+
+
+@pytest.mark.asyncio
+async def test_logs_stream_end_to_end():
+    """端到端：真实 uvicorn + agent 日志 -> SSE 客户端收到（补全此前缺失的集成验证）"""
+    import logging
+    import httpx
+    from web.server import WebServer
+
+    logging.getLogger("agent").setLevel(logging.INFO)
+    port = _free_port()
+    w = WebServer(host="127.0.0.1", port=port)
+    w.start()
+    srv = w._server
+    for _ in range(50):
+        if srv.started:
+            break
+        await asyncio.sleep(0.1)
+    assert srv.started, "uvicorn 未启动"
+
+    received = []
+
+    async def reader():
+        async with httpx.AsyncClient(timeout=10) as client:
+            async with client.stream("GET", f"http://127.0.0.1:{port}/api/logs/stream") as r:
+                async for line in r.aiter_lines():
+                    received.append(line)
+                    if any("E2E_LOG_TOKEN_X" in x for x in received):
+                        break
+
+    try:
+        rt = asyncio.create_task(reader())
+        await asyncio.sleep(1.0)  # 等 SSE 连接建立
+        logging.getLogger("agent.e2e_test").info("E2E_LOG_TOKEN_X marked")
+        try:
+            await asyncio.wait_for(asyncio.shield(rt), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        assert any("E2E_LOG_TOKEN_X" in x for x in received), f"未收到日志，got: {received}"
+    finally:
+        logging.getLogger("agent").removeHandler(w._log_handler)
+        w.stop()
+        await asyncio.sleep(0.3)

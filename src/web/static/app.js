@@ -25,6 +25,7 @@
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
     const btnNewChat = $('#newChatBtn');
     const logContent = $('#logContent');
+    let logStream = null; // 日志流 EventSource；提前声明，避免 switchTab 初始化时 TDZ
     const elTodoList = $('#todoList');
     // Sessions
     const sessionsSessionList = $('#sessionsSessionList');
@@ -73,6 +74,7 @@
         if (tab === 'kanban') { fetchKanban(); }
         if (tab === 'sessions') { fetchAgentSessions(); }
         if (tab === 'users') { rbacFetchAll(); }
+        if (tab === 'logs') { startLogStream(); } else { stopLogStream(); }
     }
     // Init: chat is default
     switchTab('chat');
@@ -720,10 +722,47 @@
         }
     }
 
+    // ==================== LOGS ====================
+    function startLogStream() {
+        if (logStream) return;
+        logContent.textContent = '✅ 已连接实时日志流，等待 agent 活动（系统空闲时无日志输出）…\n';
+        try {
+            logStream = new EventSource(API + '/api/logs/stream');
+            logStream.onopen = () => {
+                // 连接已建立；首条真实日志到来后会替换提示
+            };
+            logStream.onmessage = (e) => {
+                try {
+                    const d = JSON.parse(e.data);
+                    if (d.line) {
+                        // 首条真实日志到来时，若仍为初始提示则清掉
+                        if (logContent.textContent.startsWith('✅ 已连接实时日志流')) {
+                            logContent.textContent = '';
+                        }
+                        logContent.textContent += d.line + '\n';
+                        // 限制最大行数，防止 DOM 无限膨胀
+                        const lines = logContent.textContent.split('\n');
+                        if (lines.length > 1000) {
+                            logContent.textContent = lines.slice(-1000).join('\n');
+                        }
+                        logContent.scrollTop = logContent.scrollHeight;
+                    }
+                    // heartbeat：连接保活，无需渲染
+                } catch {}
+            };
+            logStream.onerror = () => { /* EventSource 会自动重连 */ };
+        } catch (e) {
+            logContent.textContent = 'Failed to connect log stream: ' + e.message;
+        }
+    }
+    function stopLogStream() {
+        if (logStream) { logStream.close(); logStream = null; }
+    }
+
     // ==================== SESSIONS ====================
     async function fetchAgentSessions() {
         try {
-            const r = await fetch(API + '/api/agent/sessions');
+            const r = await fetch(API + '/api/agent/sessions/history?limit=20');
             if (!r.ok) { sessionsSessionList.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
             const d = await r.json();
             const sessions = d.sessions || [];
