@@ -3,6 +3,7 @@ import json
 import logging
 import threading
 import asyncio
+import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,7 @@ class Storage:
         self.pool_size = pool_size
         self._connection_pool: List[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
+        self._write_lock = threading.RLock()
         self._write_queue: Queue = Queue()
         self._write_thread: Optional[threading.Thread] = None
         self._running = True
@@ -231,12 +233,27 @@ class Storage:
             except sqlite3.OperationalError:
                 pass
 
+    def _new_connection(self) -> sqlite3.Connection:
+        """创建一个设置了并发保护参数的 SQLite 连接
+
+        - timeout / busy_timeout：写锁冲突时内部等待，而非立即抛 database is locked
+        - WAL：读写并发，读不阻塞写
+        - synchronous=NORMAL：WAL 下安全且更快
+        """
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            pass
+        return conn
+
     def _init_pool(self):
         """初始化连接池"""
         for _ in range(self.pool_size):
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            self._connection_pool.append(conn)
+            self._connection_pool.append(self._new_connection())
         logger.debug(f"数据库连接池初始化完成，大小: {self.pool_size}")
 
     @contextmanager
@@ -248,8 +265,7 @@ class Storage:
                 conn = self._connection_pool.pop()
             else:
                 # 连接池耗尽，创建临时连接
-                conn = sqlite3.connect(self.db_path, check_same_thread=False)
-                conn.row_factory = sqlite3.Row
+                conn = self._new_connection()
 
         try:
             yield conn
@@ -304,43 +320,53 @@ class Storage:
         logger.debug("批量写入线程已启动")
 
     def _write_worker(self):
-        """批量写入工作线程"""
+        """批量写入工作线程
+
+        注意：原实现用单个 `except Exception` 同时吞掉 queue.Empty 和 flush 异常，
+        且 flush 失败不记日志、不重试，导致静默丢消息。现已分离处理。
+        """
         batch = []
         batch_size = 10
         flush_interval = 1.0  # 秒
-
-        import time
         last_flush = time.time()
 
         while self._running:
             try:
-                # 从队列获取消息
                 item = self._write_queue.get(timeout=0.1)
                 batch.append(item)
-
-                # 批量写入条件: 达到批次大小或超过刷新间隔
-                if len(batch) >= batch_size or (time.time() - last_flush) >= flush_interval:
-                    self._flush_batch(batch)
-                    batch = []
-                    last_flush = time.time()
-
             except Exception:
-                # 队列获取超时，检查是否需要刷新
+                # queue.Empty 超时：检查是否需要按时间刷新
                 if batch and (time.time() - last_flush) >= flush_interval:
-                    self._flush_batch(batch)
+                    self._safe_flush(batch)
                     batch = []
                     last_flush = time.time()
+                continue
+
+            if len(batch) >= batch_size or (time.time() - last_flush) >= flush_interval:
+                self._safe_flush(batch)
+                batch = []
+                last_flush = time.time()
 
         # 线程停止时，写入剩余消息
         if batch:
+            self._safe_flush(batch)
+
+    def _safe_flush(self, batch: List[Dict]):
+        """刷新写入批次；失败时记录日志并把消息重新入队等待重试，绝不静默丢弃"""
+        try:
             self._flush_batch(batch)
+        except Exception as e:
+            logger.error(f"批量写入失败（{len(batch)} 条），已重新入队等待重试: {e}", exc_info=True)
+            time.sleep(1.0)
+            for item in batch:
+                self._write_queue.put(item)
 
     def _flush_batch(self, batch: List[Dict]):
         """执行批量写入"""
         if not batch:
             return
 
-        with self._get_connection() as conn:
+        with self._write_lock, self._get_connection() as conn:
             conn.executemany("""
                 INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -382,7 +408,7 @@ class Storage:
                           tool_calls: Optional[List] = None,
                           tool_call_id: str = "", name: str = "", reasoning_content: str = ""):
         """同步保存消息（立即写入）"""
-        with self._get_connection() as conn:
+        with self._write_lock, self._get_connection() as conn:
             conn.execute("""
                 INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -457,7 +483,7 @@ class Storage:
                     created_at: str = None) -> int:
         """写入一条记忆，返回 id"""
         now = created_at or datetime.now().isoformat()
-        with self._get_connection() as conn:
+        with self._write_lock, self._get_connection() as conn:
             cur = conn.execute(
                 """INSERT INTO memories (scope, owner_id, agent_id, category, content, source, importance, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -481,7 +507,7 @@ class Storage:
 
     def save_proposal(self, content: str, source_users: str = "[]", reason: str = "") -> int:
         now = datetime.now().isoformat()
-        with self._get_connection() as conn:
+        with self._write_lock, self._get_connection() as conn:
             cur = conn.execute(
                 """INSERT INTO memory_proposals (content, source_users, reason, status, created_at)
                    VALUES (?, ?, ?, 'pending', ?)""",
@@ -499,7 +525,7 @@ class Storage:
 
     def update_proposal_status(self, proposal_id: int, status: str, reviewer: str) -> None:
         now = datetime.now().isoformat()
-        with self._get_connection() as conn:
+        with self._write_lock, self._get_connection() as conn:
             conn.execute(
                 "UPDATE memory_proposals SET status = ?, reviewer = ?, reviewed_at = ? WHERE id = ?",
                 (status, reviewer, now, proposal_id),

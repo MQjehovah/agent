@@ -33,3 +33,6 @@ class HookContext:
     token: str = ""
     agent_name: str = ""
     agent_type: str = ""
+    # 本次 run 的唯一标识，用于把流式事件（token / 工具调用）限定在触发它的 run 内，
+    # 避免并发流式请求之间互相串流（cross-talk）。
+    run_id: str = ""

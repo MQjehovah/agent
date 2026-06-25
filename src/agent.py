@@ -1,10 +1,12 @@
 import asyncio
+import contextvars
 import json
 import logging
 import os
 import platform
 import re
 import subprocess
+import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -34,6 +36,51 @@ class AgentResult:
 
 
 MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 3000))
+
+
+@dataclass
+class RunContext:
+    """单次 agent.run() 的执行上下文。
+
+    通过 contextvars.ContextVar 绑定到当前 asyncio Task，因此多个并发 run()
+    （Web 多请求 / webhook / scheduler / 子代理）各自拥有独立上下文，彻底消除原先
+    把用户身份、会话、错误计数等写入 self 实例属性导致的竞态：
+      - 用户身份串号（RBAC 越权 / 记忆隔离失效）
+      - _consecutive_errors / _retry_context 跨请求互相干扰
+      - self.status / self.result 返回错误结果
+    """
+
+    user_id: str = ""
+    user_name: str = ""
+    role: str = "default"
+    session: Any = None
+    task: str = ""
+    consecutive_errors: int = 0
+    retry_context: str = ""
+    status: str = "pending"
+    result: str = ""
+    # 本次 run 的唯一标识，配合 HookManager 做流式事件作用域过滤
+    run_id: str = ""
+    # 本次 run 的分层 prompt 构建器与最终系统提示（局部化，避免并发 run 互相覆盖，
+    # 也避免记忆上下文按 user_id 串号）
+    system_prompt: str = ""
+    prompt_builder: Any = None
+
+
+# 模块级 ContextVar：run() 内 set()，协程任意位置 get() 取回“当前 run”的上下文。
+# asyncio Task 会拷贝上下文，故每个并发 run 天然隔离。
+# 注意：default 用 None 而非共享的可变 RunContext 实例（见 ruff B039）。
+_current_run: contextvars.ContextVar[RunContext | None] = contextvars.ContextVar(
+    "agent_current_run", default=None
+)
+# run() 之外读取时返回的只读空上下文（仅用于读取字段，不应被修改）
+_EMPTY_RUN = RunContext()
+
+
+def current_run() -> RunContext:
+    """获取当前 run() 的执行上下文（并发安全）。run() 之外调用返回空上下文（只读）。"""
+    return _current_run.get() or _EMPTY_RUN
+
 
 class Agent:
     def __init__(
@@ -106,13 +153,7 @@ class Agent:
         self._env_context_cache: str = ""
         self._env_context_time: float = 0.0
 
-        self._consecutive_errors = 0
-        self._current_task: str = ""
-        self._retry_context: str = ""
-
         self.rbac = None
-        self._current_user_id: str = ""
-        self._current_session = None
 
         self._learning_per_round = os.environ.get("LEARNING_PER_ROUND", "false").lower() in ("true", "1", "yes")
 
@@ -323,22 +364,18 @@ class Agent:
     # ------------------------------------------------------------------ #
 
     def _build_prompt(self, task: str = ""):
-        """使用 PromptBuilder 构建分层 prompt"""
-        self._prompt_builder = PromptBuilder()
+        """使用 PromptBuilder 构建分层 prompt（写入当前 run 上下文；initialize 时写实例）"""
+        rc = _current_run.get()
+        builder = PromptBuilder()
 
         # === 静态区 (可被 LLM prompt cache 缓存) ===
-        self._prompt_builder.add(
+        builder.add(
             "角色定义", self.system_prompt_raw,
             is_static=True, priority=0
         )
 
-        # self._prompt_builder.add(
-        #     "工具列表", self._get_tool_summary(),
-        #     is_static=True, priority=10
-        # )
-
         # === 动态区 (每轮可能变化) ===
-        self._prompt_builder.add(
+        builder.add(
             "环境上下文", self._get_env_context(),
             is_static=False, priority=30
         )
@@ -347,7 +384,7 @@ class Agent:
         if self.skill_manager:
             skills_prompt = self.skill_manager.get_skills_prompt()
             if skills_prompt:
-                self._prompt_builder.add(
+                builder.add(
                     "技能列表", skills_prompt,
                     is_static=False, priority=40
                 )
@@ -356,36 +393,62 @@ class Agent:
         if self.subagent_manager:
             subagent_prompt = self.subagent_manager.get_subagent_prompt()
             if subagent_prompt:
-                self._prompt_builder.add(
+                builder.add(
                     "子代理列表", subagent_prompt,
                     is_static=False, priority=50
                 )
 
-                # 记忆上下文（按任务相关性筛选）
-
         # 记忆系统（按 user_id 隔离）
         if self.memory:
-            uid = getattr(self, '_current_user_id', '')
+            uid = rc.user_id if rc else ""
             memory_context = self.memory.load_memory(uid) if uid else ""
             if memory_context:
-                self._prompt_builder.add(
+                builder.add(
                     "记忆上下文", memory_context,
                     is_static=False, priority=60
                 )
 
-        self.system_prompt = self._prompt_builder.build_full()
+        full = builder.build_full()
+        if rc is not None:
+            # run 内：写入本次 run 的上下文（并发隔离）
+            rc.prompt_builder = builder
+            rc.system_prompt = full
+        else:
+            # initialize 路径：单线程启动期，写入实例属性作为初始值
+            self._prompt_builder = builder
+            self.system_prompt = full
+
+    def _active_prompt_builder(self):
+        """当前 run 的 prompt builder；run 之外回退到实例级（initialize）"""
+        rc = _current_run.get()
+        if rc is not None:
+            return rc.prompt_builder
+        return self._prompt_builder
+
+    def _active_system_prompt(self) -> str:
+        """当前 run 的系统提示；run 之外回退到实例级"""
+        rc = _current_run.get()
+        if rc is not None:
+            return rc.system_prompt
+        return self.system_prompt
 
     def _update_dynamic_prompt(self, task: str = ""):
-        """每轮更新动态 prompt 区块"""
-        if not self._prompt_builder:
+        """每轮更新动态 prompt 区块（操作当前 run 上下文中的 builder）"""
+        builder = self._active_prompt_builder()
+        if not builder:
             return
 
-        self._prompt_builder.add(
+        builder.add(
             "环境上下文", self._get_env_context(),
             is_static=False, priority=40
         )
 
-        self.system_prompt = self._prompt_builder.build_full()
+        full = builder.build_full()
+        rc = _current_run.get()
+        if rc is not None:
+            rc.system_prompt = full
+        else:
+            self.system_prompt = full
 
     def _get_env_context(self) -> str:
         """动态生成环境上下文（结果缓存30秒，避免每轮都执行git命令）"""
@@ -469,38 +532,61 @@ class Agent:
 
         return tools
 
-    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "") -> AgentResult:
-        self.status = "running"
-        self._consecutive_errors = 0
-        self._current_task = task
+    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "") -> AgentResult:
+        from hooks import get_run_id, reset_run_id, set_run_id
+        # 读取调用方（父级 run）上下文：子代理在同 Task 内 await 执行，可继承父级身份；
+        # 顶层调用时返回空 RunContext。
+        inherited = current_run()
+        # 创建本次 run 的独立上下文，绑定到当前 asyncio Task —— 并发隔离的关键
+        ctx = RunContext(task=task, run_id=run_id or uuid.uuid4().hex)
+        run_token = _current_run.set(ctx)
 
+        # 建立流式事件作用域：仅顶层 run 建立；嵌套子代理 run 继承父级作用域，
+        # 使整条调用树共享同一 run_id（配合 HookManager 的 run_id 过滤，杜绝并发串流）。
+        hook_token = set_run_id(ctx.run_id) if not get_run_id() else None
+
+        try:
+            return await self._run_impl(task, session_id, user_id, user_name, inherited)
+        finally:
+            if hook_token is not None:
+                reset_run_id(hook_token)
+            # 恢复父级上下文：避免子代理的 ctx 泄漏到父级 run 的剩余逻辑
+            _current_run.reset(run_token)
+
+    async def _run_impl(self, task: str, session_id: str, user_id: str, user_name: str, inherited: RunContext) -> AgentResult:
+        ctx = current_run()
+        self.status = "running"
+        ctx.task = task
+
+        # 子代理若未显式传入 user_id，则继承父级身份
+        if not user_id and self.parent_agent and inherited.user_id:
+            user_id = inherited.user_id
         if user_id:
-            self._current_user_id = str(user_id)
-        if not user_id and self.parent_agent:
-            self._current_user_id = str(self.parent_agent._current_user_id)
-            user_id = self._current_user_id
+            ctx.user_id = str(user_id)
 
         resolved_user_id = None
         resolved_user_name = user_name
         resolved_role = "default"
         if self.rbac and user_id and not self.parent_agent:
-            platform, uid = self._parse_user_id()
-            info = self.rbac.resolve_user(platform=platform, platform_uid=uid, fallback_name=user_name)
+            platform_, uid = self._parse_user_id()
+            info = self.rbac.resolve_user(platform=platform_, platform_uid=uid, fallback_name=user_name)
             resolved_user_id = info["user_id"]
             resolved_user_name = info["user_name"] or user_name
             resolved_role = info["role"]
-        elif self.parent_agent and self.parent_agent._current_session:
-            ps = self.parent_agent._current_session
+        elif self.parent_agent and inherited.session:
+            ps = inherited.session
             resolved_user_id = ps.user_id
             resolved_user_name = ps.user_name
             resolved_role = ps.role or "default"
 
         # 供 _build_prompt/_run_reflection 使用（优先用 RBAC 解析后的 id）
         if resolved_user_id:
-            self._current_user_id = str(resolved_user_id)
+            ctx.user_id = str(resolved_user_id)
+        ctx.user_name = resolved_user_name
+        ctx.role = resolved_role
 
         if self.learner and self._learning_per_round:
-            self.learner.check_user_correction(task, self._current_user_id)
+            self.learner.check_user_correction(task, ctx.user_id)
 
         self._build_prompt(task)
 
@@ -525,7 +611,7 @@ class Agent:
                     session = await self.session_manager.create_session(
                         agent_id=self.agent_id,
                         session_id=session_id,
-                        system_prompt=self.system_prompt,
+                        system_prompt=ctx.system_prompt,
                     )
                     if self.storage:
                         messages = self.storage.get_messages(session_id)
@@ -540,7 +626,7 @@ class Agent:
             else:
                 session = await self.session_manager.create_session(
                     agent_id=self.agent_id,
-                    system_prompt=self.system_prompt,
+                    system_prompt=ctx.system_prompt,
                 )
                 session_id = session.session_id
                 session.add_message("user", task)
@@ -557,7 +643,7 @@ class Agent:
             session = AgentSession(
                 agent_id=self.agent_id,
                 session_id=session_id or "temp",
-                system_prompt=self.system_prompt,
+                system_prompt=ctx.system_prompt,
                 user_id=resolved_user_id or "",
                 user_name=resolved_user_name,
                 role=resolved_role,
@@ -567,10 +653,16 @@ class Agent:
         logger.info(
             f"[{self.name}] [{session.session_id}] 用户={session.user_name}({session.role}) 任务开始: {task}...")
 
-        self._current_session = session
+        ctx.session = session
 
         if session.role != "admin" and self.rbac:
-            self.system_prompt += "\n\n[注意] 当前用户权限有限，部分工具和子代理可能无法使用，遇到权限不足请友好提示用户。"
+            # 作为动态区块加入 builder（同名区块会被替换，不会随多轮/多次 run 累积）
+            ctx.prompt_builder.add(
+                "权限提示",
+                "当前用户权限有限，部分工具和子代理可能无法使用，遇到权限不足请友好提示用户。",
+                is_static=False, priority=70,
+            )
+            ctx.system_prompt = ctx.prompt_builder.build_full()
 
         try:
             for i in range(self.max_iterations):
@@ -592,9 +684,9 @@ class Agent:
                     # 每轮更新动态 prompt 区块
                     self._update_dynamic_prompt(task)
                     if not session.messages or session.messages[0].get("role") != "system":
-                        session.messages.insert(0, {"role": "system", "content": self.system_prompt})
+                        session.messages.insert(0, {"role": "system", "content": ctx.system_prompt})
                     else:
-                        session.messages[0]["content"] = self.system_prompt
+                        session.messages[0]["content"] = ctx.system_prompt
 
                     # 思考
                     self.tracer.start_span("agent.think")
@@ -614,10 +706,10 @@ class Agent:
                             metadata={"iteration": i + 1},
                         )
                     think_messages = session.messages
-                    if self._retry_context:
+                    if ctx.retry_context:
                         think_messages = list(session.messages)
-                        think_messages.append({"role": "user", "content": self._retry_context})
-                        self._retry_context = ""
+                        think_messages.append({"role": "user", "content": ctx.retry_context})
+                        ctx.retry_context = ""
                     response = await self._think(think_messages)
                     self.tracer.end_span()
 
@@ -635,38 +727,38 @@ class Agent:
                         await self._execute_tool_calls_parallel(
                             msg["tool_calls"], session
                         )
-                        self._consecutive_errors = 0
+                        ctx.consecutive_errors = 0
                         continue
 
                     if msg.get("content"):
-                        self.status = "completed"
-                        self.result = msg.get("content")
-                        self._retry_context = ""
+                        ctx.status = "completed"
+                        ctx.result = msg.get("content")
+                        ctx.retry_context = ""
                         break
 
                 except Exception as e:
-                    self._consecutive_errors += 1
+                    ctx.consecutive_errors += 1
                     logger.error(
                         f"Agent [{self.name}] 第 {i+1} 轮出错: {e}")
                     self.tracer.end_span(status="error")
 
-                    if self._consecutive_errors >= 3:
-                        self.status = "failed"
-                        self.result = f"连续 {self._consecutive_errors} 次思考出错"
+                    if ctx.consecutive_errors >= 3:
+                        ctx.status = "failed"
+                        ctx.result = f"连续 {ctx.consecutive_errors} 次思考出错"
                         break
 
-                    self._retry_context = f"上一轮思考出错: {e}，请尝试用其他方式继续完成任务。"
+                    ctx.retry_context = f"上一轮思考出错: {e}，请尝试用其他方式继续完成任务。"
                     continue
             else:
-                self.status = "max_iterations"
-                self.result = "达到最大迭代次数"
+                ctx.status = "max_iterations"
+                ctx.result = "达到最大迭代次数"
                 logger.warning(f"Agent [{self.name}] max iterations reached")
 
         except asyncio.CancelledError:
             logger.warning(f"Agent [{self.name}] 任务被取消")
-            self.status = "cancelled"
+            ctx.status = "cancelled"
         except Exception as e:
-            self.status = "failed"
+            ctx.status = "failed"
             logger.error(
                 f"Agent [{self.name}] [{session.session_id}] failed: {e}")
 
@@ -675,18 +767,18 @@ class Agent:
             task_copy = task
             messages_copy = list(session.messages)
             learner = self.learner
-            reflect_uid = getattr(self, '_current_user_id', '')
+            reflect_uid = ctx.user_id
             bg_task = asyncio.create_task(self._run_reflection(learner, task_copy, messages_copy, reflect_uid))
             self._background_tasks.add(bg_task)
             bg_task.add_done_callback(self._background_tasks.discard)
 
         # 触发 AGENT_STOP 钩子
         await self.hooks.fire("agent_stop", metadata={
-            "status": self.status,
-            "result_length": len(self.result) if self.result else 0,
+            "status": ctx.status,
+            "result_length": len(ctx.result) if ctx.result else 0,
         })
 
-        self.tracer.end_span(status="ok" if self.status == "completed" else "error")
+        self.tracer.end_span(status="ok" if ctx.status == "completed" else "error")
 
         # 输出上下文统计
         ctx_stats = self.tracer.get_context_stats()
@@ -700,12 +792,16 @@ class Agent:
             )
 
         logger.debug(
-            f"Agent [{self.name}] [{session.session_id}] 任务完成: {self.status}")
+            f"Agent [{self.name}] [{session.session_id}] 任务完成: {ctx.status}")
+
+        # 仪表盘镜像（best-effort：并发下取最后完成的 run；返回值始终来自本次 ctx，保证正确）
+        self.status = ctx.status
+        self.result = ctx.result or ""
 
         return AgentResult(
             agent_id=self.agent_id,
-            status=self.status,
-            result=self.result or "",
+            status=ctx.status,
+            result=ctx.result or "",
         )
 
     async def _execute_tool_calls_parallel(self, tool_calls: list, session):
@@ -763,10 +859,11 @@ class Agent:
             raise
 
     def _parse_user_id(self) -> tuple[str, str]:
-        if ":" in self._current_user_id:
-            platform, uid = self._current_user_id.split(":", 1)
-            return platform, uid
-        return "dingtalk", self._current_user_id
+        uid = current_run().user_id
+        if ":" in uid:
+            platform_, uid = uid.split(":", 1)
+            return platform_, uid
+        return "dingtalk", uid
 
     async def _execute_tool_safe(self, name: str, args: dict) -> str:
         """带权限检查、沙箱拦截、钩子和错误恢复的工具执行"""
@@ -776,7 +873,7 @@ class Agent:
             logger.warning(f"工具调用被拦截: {name}, 原因: {perm_result.reason}")
             return json.dumps({"success": False, "error": perm_result.reason}, ensure_ascii=False)
 
-        role = self._current_session.role if self._current_session else ""
+        role = current_run().session.role if current_run().session else ""
         if self.rbac and role:
             if not self.rbac.check_tool(role, name):
                 logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}]")
@@ -868,7 +965,7 @@ class Agent:
                                   arguments=args, error=e)
             if self.learner and self._learning_per_round:
                 args_summary = json.dumps(args, ensure_ascii=False)[:100]
-                self.learner.record_failure(name, args_summary, f"{type(e).__name__}: {e}"[:150], getattr(self, '_current_user_id', ''))
+                self.learner.record_failure(name, args_summary, f"{type(e).__name__}: {e}"[:150], current_run().user_id)
             return json.dumps({
                 "success": False,
                 "error": f"工具执行失败: {type(e).__name__}: {e}"
@@ -1021,12 +1118,13 @@ class Agent:
         }
 
     async def _execute_tool(self, name: str, args: dict) -> str:
-        # 提取当前用户 ID：优先 session.user_id，回退 _current_user_id
+        # 提取当前用户 ID：优先 session.user_id，回退 ctx.user_id（均来自当前 run 上下文）
+        rc = current_run()
         current_uid = ""
-        if self._current_session and self._current_session.user_id:
-            current_uid = self._current_session.user_id
-        elif getattr(self, '_current_user_id', ''):
-            current_uid = self._current_user_id
+        if rc.session and rc.session.user_id:
+            current_uid = rc.session.user_id
+        elif rc.user_id:
+            current_uid = rc.user_id
 
         try:
             if name == "subagent" and self.subagent_manager:
@@ -1067,7 +1165,7 @@ class Agent:
 
         agent_name = args.get("name", "") or args.get("template", "")
 
-        role = self._current_session.role if self._current_session else ""
+        role = current_run().session.role if current_run().session else ""
         if self.rbac and role and agent_name:
             if not self.rbac.check_agent(role, agent_name):
                 logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{agent_name}]")

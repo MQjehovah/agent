@@ -22,6 +22,20 @@ class ChatSession:
         self.token_queue: queue.Queue = queue.Queue()
         self.is_streaming = False
         self.messages: List[Dict[str, Any]] = []
+        # 保护 messages 列表：Flask 多线程下 append/读取会竞态（迭代时被修改报错）
+        self._lock = threading.Lock()
+
+    def add_message(self, role: str, content: str):
+        with self._lock:
+            self.messages.append({"role": role, "content": content, "time": datetime.now().isoformat()})
+
+    def message_count(self) -> int:
+        with self._lock:
+            return len(self.messages)
+
+    def snapshot(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self.messages)
 
 
 class WebServer:
@@ -44,6 +58,18 @@ class WebServer:
 
     def set_kanban(self, kanban_board):
         self._kanban = kanban_board
+
+    MAX_WEB_SESSIONS = 500
+
+    def _get_or_create_session(self, session_id: str) -> ChatSession:
+        """获取或创建 Web 会话，带线程安全与上限淘汰（防止内存无限增长）。"""
+        with self._session_lock:
+            if session_id not in self._sessions:
+                if len(self._sessions) >= self.MAX_WEB_SESSIONS:
+                    oldest = min(self._sessions.values(), key=lambda s: s.created_at)
+                    self._sessions.pop(oldest.session_id, None)
+                self._sessions[session_id] = ChatSession(session_id)
+            return self._sessions[session_id]
 
     def start(self):
         if not self.loop:
@@ -129,12 +155,9 @@ class WebServer:
             if not session_id:
                 session_id = f"web_{uuid.uuid4().hex[:8]}"
 
-            with self._session_lock:
-                if session_id not in self._sessions:
-                    self._sessions[session_id] = ChatSession(session_id)
+            chat_session = self._get_or_create_session(session_id)
 
-            chat_session = self._sessions[session_id]
-            chat_session.messages.append({"role": "user", "content": message, "time": datetime.now().isoformat()})
+            chat_session.add_message("user", message)
             chat_session.is_streaming = True
 
             return self._json({"session_id": session_id, "status": "processing"})
@@ -150,17 +173,18 @@ class WebServer:
             message = data["message"].strip()
             session_id = data.get("session_id", f"web_{uuid.uuid4().hex[:8]}")
 
-            with self._session_lock:
-                if session_id not in self._sessions:
-                    self._sessions[session_id] = ChatSession(session_id)
-                chat_session = self._sessions[session_id]
+            chat_session = self._get_or_create_session(session_id)
 
-            chat_session.messages.append({"role": "user", "content": message, "time": datetime.now().isoformat()})
+            chat_session.add_message("user", message)
             chat_session.is_streaming = True
-            chat_session.token_queue = queue.Queue()
+
+            # 本次流式请求的唯一 run_id，用于把流式事件限定在本请求内，
+            # 避免并发流式请求之间互相串流（cross-talk）
+            stream_run_id = uuid.uuid4().hex
 
             def generate():
-                token_queue = chat_session.token_queue
+                # 每个流式连接使用独立队列，避免同 session 并发请求互相覆盖
+                token_queue = queue.Queue()
                 agent_ref = self.agent
                 loop_ref = self.loop
                 from hooks import HookEvent
@@ -208,13 +232,13 @@ class WebServer:
 
                 for evt in hook_events:
                     if evt == HookEvent.CHAT_EVENT:
-                        agent_ref.hooks.register(evt, chat_handler)
+                        agent_ref.hooks.register(evt, chat_handler, run_id=stream_run_id)
                     else:
-                        agent_ref.hooks.register(evt, event_handler)
+                        agent_ref.hooks.register(evt, event_handler, run_id=stream_run_id)
 
                 async def run_agent():
                     try:
-                        result = await agent_ref.run(message, session_id=session_id)
+                        result = await agent_ref.run(message, session_id=session_id, run_id=stream_run_id)
                         resp_text = result.result if result and hasattr(result, 'result') else ""
                         if full_response:
                             resp_text = "".join(full_response)
@@ -240,17 +264,11 @@ class WebServer:
                             elif event_type == "tool_event":
                                 yield f"data: {json.dumps({'type': content['event_type'], 'data': content['data']}, ensure_ascii=False)}\n\n"
                             elif event_type == "done":
-                                chat_session.messages.append({
-                                    "role": "assistant", "content": content,
-                                    "time": datetime.now().isoformat()
-                                })
+                                chat_session.add_message("assistant", content)
                                 yield f"data: {json.dumps({'type': 'done', 'content': content}, ensure_ascii=False)}\n\n"
                                 break
                             elif event_type == "error":
-                                chat_session.messages.append({
-                                    "role": "assistant", "content": f"Error: {content}",
-                                    "time": datetime.now().isoformat()
-                                })
+                                chat_session.add_message("assistant", f"Error: {content}")
                                 yield f"data: {json.dumps({'type': 'error', 'content': content}, ensure_ascii=False)}\n\n"
                                 break
                         except queue.Empty:
@@ -309,7 +327,7 @@ class WebServer:
                 for sid, s in self._sessions.items():
                     sessions.append({
                         "id": sid, "created_at": s.created_at,
-                        "message_count": len(s.messages),
+                        "message_count": s.message_count(),
                         "is_streaming": s.is_streaming,
                     })
             return self._json({"sessions": sessions})
@@ -320,7 +338,7 @@ class WebServer:
                 chat_session = self._sessions.get(session_id)
             if not chat_session:
                 return self._json({"error": "Session not found"}, 404)
-            return self._json({"messages": chat_session.messages})
+            return self._json({"messages": chat_session.snapshot()})
 
         @self._app.route("/api/sessions/<session_id>", methods=["DELETE"])
         def delete_session(session_id):
@@ -870,7 +888,17 @@ class WebServer:
         )
 
     def _run_server(self, host: str, port: int):
-        self._app.run(host=host, port=port, threaded=True, use_reloader=False)
+        # 生产级 WSGI：优先用 waitress（纯 Python、跨平台、真正的线程池并发）。
+        # Flask 自带的 werkzeug 开发服务器不适合生产（无背压、性能差）。
+        try:
+            from waitress import serve
+            logger.info(f"使用 waitress 生产 WSGI 服务器启动: {host}:{port}")
+            serve(self._app, host=host, port=port, threads=16, _quiet=True)
+        except ImportError:
+            logger.warning(
+                "未安装 waitress，回退到 Flask 开发服务器（不适合生产！建议执行: pip install waitress）"
+            )
+            self._app.run(host=host, port=port, threaded=True, use_reloader=False)
 
     def stop(self):
         logger.info("WebServer stopped")
