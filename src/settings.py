@@ -50,6 +50,9 @@ _DEFAULTS = {
         "password": "",
         "token": "",
     },
+    "learning": {
+        "per_round": False,
+    },
 }
 
 _settings_instance: "Settings | None" = None

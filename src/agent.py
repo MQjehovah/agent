@@ -155,7 +155,8 @@ class Agent:
 
         self.rbac = None
 
-        self._learning_per_round = os.environ.get("LEARNING_PER_ROUND", "false").lower() in ("true", "1", "yes")
+        from settings import get_settings
+        self._learning_per_round = get_settings().get("learning.per_round", False)
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()

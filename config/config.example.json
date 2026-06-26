@@ -12,6 +12,9 @@
         "timeout": 300,
         "connect_timeout": 30
     },
+    "learning": {
+        "per_round": true
+    },
     "session": {
         "ttl_seconds": 3600,
         "max_sessions": 100
