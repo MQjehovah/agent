@@ -184,6 +184,13 @@ body {
     font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;
     color: var(--text-secondary);
 }
+.ws-file-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 6px; border-bottom: 1px solid var(--border);
+}
+.ws-file-item:last-child { border-bottom: none; }
+.ws-file-name { color: var(--accent-cyan); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-file-meta { font-size: 10px; color: var(--text-muted); flex-shrink: 0; margin-left: 8px; }
 
 /* Chat */
 .chat-messages {

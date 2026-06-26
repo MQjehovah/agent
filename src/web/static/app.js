@@ -186,7 +186,7 @@
 
     // ==================== FETCH ====================
     async function fetchAll() {
-        await Promise.all([fetchStatus(), fetchKanbanSidebar(), fetchTodos()]);
+        await Promise.all([fetchStatus(), fetchKanbanSidebar(), fetchTodos(), fetchWorkspaceFiles()]);
     }
 
     async function fetchStatus() {
@@ -207,6 +207,24 @@
                 '\nTools: ' + esc(String((d.tools||[]).length)) +
                 '\nTasks: ' + esc(JSON.stringify(d.tasks||{}));
         } catch { elDot.className = 'status-dot'; elStatus.textContent = 'disconnected'; }
+    }
+
+    async function fetchWorkspaceFiles() {
+        try {
+            const r = await apiFetch(API + '/api/workspace/files');
+            if (!r.ok) { wsMemory.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
+            const d = await r.json();
+            const files = d.files || [];
+            if (!files.length) {
+                wsMemory.innerHTML = '<div class="empty-state">Workspace empty</div>';
+                return;
+            }
+            wsMemory.innerHTML = files.map(f => {
+                const size = f.size < 1024 ? f.size + ' B' : f.size < 1048576 ? (f.size / 1024).toFixed(1) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB';
+                const time = new Date(f.modified).toLocaleString();
+                return '<div class="ws-file-item"><span class="ws-file-name">' + esc(f.name) + '</span><span class="ws-file-meta">' + size + ' · ' + esc(time) + '</span></div>';
+            }).join('');
+        } catch { wsMemory.innerHTML = '<div class="empty-state">Failed to load</div>'; }
     }
 
     async function fetchKanbanSidebar() {

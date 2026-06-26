@@ -1200,6 +1200,27 @@ class WebServer:
             storage.update_proposal_status(pid, "rejected", "admin")
             return {"success": True}
 
+        # ===== 工作区文件列表 =====
+        @self._app.get("/api/workspace/files")
+        async def workspace_files():
+            if not self.agent:
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            ws = self.agent.workspace
+            if not os.path.isdir(ws):
+                return {"files": []}
+            entries = []
+            for fname in os.listdir(ws):
+                fpath = os.path.join(ws, fname)
+                if os.path.isfile(fpath):
+                    stat = os.stat(fpath)
+                    entries.append({
+                        "name": fname,
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    })
+            entries.sort(key=lambda e: e["modified"], reverse=True)
+            return {"files": entries}
+
         # ===== 日志流（SSE） =====
         @self._app.get("/api/logs/stream")
         async def log_stream():
