@@ -694,6 +694,9 @@ class Agent:
                     else:
                         session.messages[0]["content"] = ctx.system_prompt
 
+                    # 清理孤立的 tool_calls（防止 session 复用时历史数据损坏）
+                    session.messages = AgentSessionManager.cleanup_orphaned_tool_calls(session.messages)
+
                     # 思考
                     self.tracer.start_span("agent.think")
                     usage_summary = self.client.usage_tracker.get_summary()
