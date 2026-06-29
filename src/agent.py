@@ -822,9 +822,14 @@ class Agent:
                     except (json.JSONDecodeError, ValueError):
                         func_args = {}
 
-                result = await self._execute_tool_safe(func_name, func_args)
-                session.add_message("tool", str(result), name=func_name,
-                                    tool_call_id=tc.get("id", ""))
+                try:
+                    result = await self._execute_tool_safe(func_name, func_args)
+                    session.add_message("tool", str(result), name=func_name,
+                                        tool_call_id=tc.get("id", ""))
+                except Exception as e:
+                    logger.error(f"工具执行异常: {e}")
+                    session.add_message("tool", f"工具执行异常: {e}", name=func_name,
+                                        tool_call_id=tc.get("id", ""))
             return
 
         # 并行执行多个工具
@@ -887,9 +892,13 @@ class Agent:
 
         # DEFAULT 模式需要用户确认
         if perm_result.reason == "需要用户确认" and self.on_confirm:
-            confirmed = await self.on_confirm(name, args)
-            if not confirmed:
-                return json.dumps({"success": False, "error": "用户拒绝执行此操作"}, ensure_ascii=False)
+            try:
+                confirmed = await self.on_confirm(name, args)
+                if not confirmed:
+                    return json.dumps({"success": False, "error": "用户拒绝执行此操作"}, ensure_ascii=False)
+            except Exception as e:
+                logger.error(f"用户确认回调异常: {e}")
+                return json.dumps({"success": False, "error": f"用户确认回调异常: {e}"}, ensure_ascii=False)
 
         # 沙箱中间层拦截
         sandbox_result = await self._sandbox_intercept(name, args)
@@ -903,10 +912,13 @@ class Agent:
         if self.plugin_manager:
             for plugin in self.plugin_manager.plugins.values():
                 if plugin.enabled:
-                    intercepted = await plugin.on_pre_tool_call(name, args)
-                    if intercepted is not None:
-                        logger.info(f"[插件拦截] {plugin.name} 拦截了工具调用: {name}")
-                        return json.dumps(intercepted, ensure_ascii=False)
+                    try:
+                        intercepted = await plugin.on_pre_tool_call(name, args)
+                        if intercepted is not None:
+                            logger.info(f"[插件拦截] {plugin.name} 拦截了工具调用: {name}")
+                            return json.dumps(intercepted, ensure_ascii=False)
+                    except Exception as e:
+                        logger.error(f"插件 [{plugin.name}] on_pre_tool_call 异常: {e}")
 
         # 追踪
         self.tracer.start_span(f"tool.{name}")
