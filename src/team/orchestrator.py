@@ -391,8 +391,28 @@ class TeamOrchestrator:
                     result = partial
                     logger.info(f"Leader 确认阶段 [{stage}] 产出可用")
                 else:
-                    logger.warning(f"Leader 判定阶段 [{stage}] 产出不足: {feedback[:100]}")
-                    result = f"ERROR: 阶段产出不完整: {feedback[:300]}"
+                    logger.info(f"Leader 判定产出不足，追加 50 轮继续: {feedback[:100]}")
+                    if self.progress_callback:
+                        self.progress_callback(stage, "feedback", f"追加迭代: {feedback[:100]}")
+                    stage_max_iter = (stage_max_iter or 200) + 50
+                    continue_task = f"继续完成阶段性工作。Leader 反馈: {feedback[:300]}"
+                    _ask_token2 = set_ask_user_mode("auto")
+                    try:
+                        result = await asyncio.wait_for(
+                            self.subagent_manager.run_team_agent(
+                                team_name=self.team_name,
+                                member_name=role,
+                                task=continue_task,
+                                tool_callback=lambda evt, name, args, res: (
+                                    _cb(f"{name}|{_stage}", evt, args, res)
+                                ) if _cb else None,
+                                parent_session_id=self.parent_session_id,
+                                max_iterations=stage_max_iter,
+                            ),
+                            timeout=600,
+                        )
+                    finally:
+                        reset_ask_user_mode(_ask_token2)
 
             if _cb:
                 summary = (result or "")[:300].strip()
