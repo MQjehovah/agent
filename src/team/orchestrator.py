@@ -314,15 +314,14 @@ class TeamOrchestrator:
         full_task += f"\n\n请根据用户的上述问题完成「{stage}」阶段的工作，直接回应用户的需求。"
         full_task += f"\n工作目录: {self.workspace}"
 
-        # 可用技能列表
-        try:
-            _pa = getattr(self.subagent_manager, '_parent_agent', None)
-            if _pa and _pa.skill_manager:
-                _sk = _pa.skill_manager.list_skills()
-                if _sk:
-                    full_task += "\n\n## 可用技能\n" + "\n".join(f"- {s}" for s in _sk)
-        except Exception:
-            pass
+        # 技能激活（从团队技能目录加载，与子 agent 自身技能列表一致）
+        team_body = self.config.get("team_body", "")
+        if team_body:
+            full_task += f"\n\n## 团队规范与技能激活规则\n{team_body[:2000]}"
+
+        full_task += "\n\n## 工作流要求"
+        full_task += "\n- **优先调用 `skill` 工具加载适用于你角色和工作阶段的技能**，技能会提供完整的工作流程和检查清单"
+        full_task += "\n- 如果当前工作没有合适的技能对应，直接按角色职责处理即可"
 
         if output_file:
             full_task += f"\n\n## 输出说明\n如果本次产出内容量大且结构化，请写入 `{output_file}` 供后续查阅；如果只是简单结论，直接回复即可。"
@@ -342,18 +341,23 @@ class TeamOrchestrator:
         _stage = stage
         _cb = self.progress_callback
         try:
-            result = await asyncio.wait_for(
-                self.subagent_manager.run_team_agent(
-                    team_name=self.team_name,
-                    member_name=role,
-                    task=full_task,
-                    tool_callback=lambda evt, name, args, res: (
-                        _cb(f"{name}|{_stage}", evt, args, res)
-                    ) if _cb else None,
-                    parent_session_id=self.parent_session_id,
-                ),
-                timeout=600,
-            )
+            from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+            _ask_token = set_ask_user_mode("auto")
+            try:
+                result = await asyncio.wait_for(
+                    self.subagent_manager.run_team_agent(
+                        team_name=self.team_name,
+                        member_name=role,
+                        task=full_task,
+                        tool_callback=lambda evt, name, args, res: (
+                            _cb(f"{name}|{_stage}", evt, args, res)
+                        ) if _cb else None,
+                        parent_session_id=self.parent_session_id,
+                    ),
+                    timeout=600,
+                )
+            finally:
+                reset_ask_user_mode(_ask_token)
             if _cb:
                 summary = (result or "")[:300].strip()
                 _cb(f"{role}|{_stage}", "stage_done", summary, None)

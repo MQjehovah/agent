@@ -306,16 +306,31 @@ class SubagentManager:
 
         # 注入团队共享技能（config/agents/<team>/skills/）
         team_skills_dir = os.path.join(self.base_dir, team_name, "skills")
-        if os.path.exists(team_skills_dir) and agent.skill_manager:
+        if os.path.exists(team_skills_dir):
             from skills import SkillManager
-            _tsm = SkillManager(team_skills_dir)
-            for _sn in _tsm.list_skills():
-                if _sn not in agent.skill_manager.skills:
-                    _sk = _tsm.get_skill(_sn)
-                    if _sk:
-                        agent.skill_manager.skills[_sn] = _sk
-            # 重建 execute_skill 工具定义，使 LLM 能看到新注入的技能
+            if not agent.skill_manager:
+                agent.skill_manager = SkillManager(team_skills_dir)
+            else:
+                _tsm = SkillManager(team_skills_dir)
+                for _sn in _tsm.list_skills():
+                    if _sn not in agent.skill_manager.skills:
+                        _sk = _tsm.get_skill(_sn)
+                        if _sk:
+                            agent.skill_manager.skills[_sn] = _sk
             agent.skill_manager._build_builtin_tools()
+
+        # 在 system prompt 末尾注入技能使用指引（比 task prompt 更有权威性）
+        if agent.skill_manager:
+            skill_names = agent.skill_manager.list_skills()
+            if skill_names:
+                skill_guide = (
+                    "\n\n## 技能工具\n"
+                    "你有一个 `skill` 工具，可以加载结构化的工作流指引。\n"
+                    "执行任务前，先判断是否有适用于当前工作阶段的 skill，如果有则优先调用 `skill` 工具加载。\n"
+                    f"可用技能: {', '.join(skill_names)}"
+                )
+                agent.system_prompt += skill_guide
+                agent.system_prompt_raw += skill_guide
 
         # 注入事件回调（用于 Web UI 展示团队工具调用和流式输出）
         self._forward_hooks(agent, template_name=f"{team_name}/{member_name}", agent_type="team")

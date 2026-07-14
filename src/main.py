@@ -866,16 +866,6 @@ async def main():
 
     if target_agent:
         _team_dir = os.path.join(config_dir, "agents", target_agent)
-        _team_skills_dir = os.path.join(_team_dir, "skills")
-        # 加载团队共享技能
-        if os.path.exists(_team_skills_dir) and agent.skill_manager:
-            from skills import SkillManager
-            _tsm = SkillManager(_team_skills_dir)
-            for _sn in _tsm.list_skills():
-                if _sn not in agent.skill_manager.skills:
-                    _sk = _tsm.get_skill(_sn)
-                    if _sk:
-                        agent.skill_manager.skills[_sn] = _sk
         # 替换为团队自身的 system prompt（config/agents/团队名/PROMPT.md）
         _team_prompt = os.path.join(_team_dir, "PROMPT.md")
         if os.path.exists(_team_prompt):
@@ -887,6 +877,30 @@ async def main():
                 agent.name = _fm.get("name", target_agent) if isinstance(_fm, dict) else target_agent
                 agent.description = _fm.get("description", "") if isinstance(_fm, dict) else ""
                 agent.system_prompt = agent.system_prompt_raw = _body
+                # 确保根 agent 有团队技能
+                _team_skills_dir = os.path.join(_team_dir, "skills")
+                if os.path.exists(_team_skills_dir):
+                    from skills import SkillManager
+                    if not agent.skill_manager:
+                        agent.skill_manager = SkillManager(_team_skills_dir)
+                    else:
+                        _tsm = SkillManager(_team_skills_dir)
+                        for _sn in _tsm.list_skills():
+                            if _sn not in agent.skill_manager.skills:
+                                _sk = _tsm.get_skill(_sn)
+                                if _sk:
+                                    agent.skill_manager.skills[_sn] = _sk
+                    agent.skill_manager._build_builtin_tools()
+                    _skill_names = agent.skill_manager.list_skills()
+                    if _skill_names:
+                        _skill_guide = (
+                            "\n\n## 技能工具\n"
+                            "你有一个 `skill` 工具，可以加载结构化的工作流指引。\n"
+                            "执行任务前，先判断是否有适用于当前工作阶段的 skill，如果有则优先调用 `skill` 工具加载。\n"
+                            f"可用技能: {', '.join(_skill_names)}"
+                        )
+                        agent.system_prompt += _skill_guide
+                        agent.system_prompt_raw += _skill_guide
                 # 用团队成员替换子代理列表
                 if agent.subagent_manager:
                     _members = agent.subagent_manager._team_members.get(target_agent, {})

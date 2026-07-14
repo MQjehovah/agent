@@ -383,15 +383,6 @@ class Agent:
             is_static=False, priority=30
         )
 
-        # 技能列表
-        if self.skill_manager:
-            skills_prompt = self.skill_manager.get_skills_prompt()
-            if skills_prompt:
-                builder.add(
-                    "技能列表", skills_prompt,
-                    is_static=False, priority=40
-                )
-
         # 子代理列表
         if self.subagent_manager:
             subagent_prompt = self.subagent_manager.get_subagent_prompt()
@@ -440,6 +431,14 @@ class Agent:
         builder = self._active_prompt_builder()
         if not builder:
             return
+
+        if self.skill_manager:
+            active_skills = self.skill_manager.get_active_skills_prompt()
+            if active_skills:
+                builder.add(
+                    "已激活技能", active_skills,
+                    is_static=False, priority=35
+                )
 
         builder.add(
             "环境上下文", self._get_env_context(),
@@ -1167,7 +1166,7 @@ class Agent:
                     args["_local_user_id"] = current_uid
                 return await self.tool_registry.execute(name, args)
 
-            if self.skill_manager and name == "execute_skill":
+            if self.skill_manager and name in ("skill", "execute_skill"):
                 return await self.skill_manager.execute_tool(name, args)
 
             if self.mcp and self.mcp.has_tool(name):

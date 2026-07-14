@@ -197,28 +197,29 @@ class SkillManager:
             return None
 
     def _build_builtin_tools(self):
-        skill_names = self.list_skills()
-        skill_hint = ""
-        if skill_names:
-            skill_hint = f"\n当前可用技能: {', '.join(skill_names)}"
+        skills_xml = ""
+        for s in self.skills.values():
+            if s.enabled:
+                skills_xml += f"  <skill>\n    <name>{s.name}</name>\n    <description>{s.description}</description>\n  </skill>\n"
+        skill_block = f"\n<available_skills>\n{skills_xml}</available_skills>" if skills_xml else ""
         self._builtin_tool_defs = [{
             "type": "function",
             "function": {
-                "name": "execute_skill",
-                "description": f"激活并使用指定的技能指导完成任务。当你需要执行特定流程（如需求分析、代码审查、安全审计、发布上线等）时，先调用此工具加载对应技能的指导文档，然后按照技能指导执行。{skill_hint}",
+                "name": "skill",
+                "description": f"加载并使用指定的技能指导完成任务。执行特定流程前先调用此工具加载对应技能，然后按技能指导执行。{skill_block}",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "skill_name": {
+                        "name": {
                             "type": "string",
-                            "description": f"技能名称: {', '.join(skill_names) if skill_names else '(无可用技能)'}"
+                            "description": "技能名称"
                         },
                         "user_input": {
                             "type": "string",
                             "description": "用户输入或上下文，用于技能渲染"
                         }
                     },
-                    "required": ["skill_name"]
+                    "required": ["name"]
                 }
             }
         }]
@@ -230,12 +231,12 @@ class SkillManager:
         return [s.name for s in self.skills.values() if s.enabled]
 
     async def execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
-        if tool_name == "execute_skill":
+        if tool_name in ("skill", "execute_skill"):
             return await self._execute_skill(args)
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
     async def _execute_skill(self, args: Dict[str, Any]) -> str:
-        skill_name = args.get("skill_name", "")
+        skill_name = args.get("name") or args.get("skill_name", "")
         user_input = args.get("user_input", "")
 
         skill = self.skills.get(skill_name)
