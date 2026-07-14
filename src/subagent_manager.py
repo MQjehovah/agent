@@ -375,6 +375,9 @@ class SubagentManager:
                         agent.tracer.get_context_stats().get("final", 0) or
                         agent.tracer.get_context_stats().get("peak", 0)
                     )}, None))
+                # LLM 文本回复
+                agent.hooks.register(HookEvent.LLM_RESPONSE, lambda _ctx: tool_callback(
+                    "llm", "llm", _ctx.content or "", None))
 
 
             try:

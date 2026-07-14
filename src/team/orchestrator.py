@@ -344,7 +344,7 @@ class TeamOrchestrator:
                     ) if _cb else None,
                     parent_session_id=self.parent_session_id,
                 ),
-                timeout=300,
+                timeout=600,
             )
             if _cb:
                 summary = (result or "")[:300].strip()

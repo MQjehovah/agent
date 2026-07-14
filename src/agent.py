@@ -727,6 +727,13 @@ class Agent:
                     self.tracer.end_span()
 
                     msg = response.get("message", {})
+                    content = msg.get("content") or ""
+                    if content:
+                        await self.hooks.fire(
+                            self._hook_event.LLM_RESPONSE,
+                            content=content,
+                            reasoning=getattr(msg, "reasoning_content", None) or "",
+                        )
 
                     session.add_message(
                         "assistant",

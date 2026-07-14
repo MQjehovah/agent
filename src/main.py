@@ -373,46 +373,46 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
     def _team_progress(stage, status, info, extra=None):
         nonlocal progress_shown
         progress_shown = True
+        now = time.time()
         if status == "start":
+            _STATE["stage_ts"] = now
             _clear_line()
-            ui.dim(f"  {_CYAN}▶{_RESET} {stage}  ({info})")
+            _write(f"  {_DIM}{'─' * 40}{_RESET}")
+            _write(f"  {_BOLD}{_CYAN}{stage}{_RESET}  {_GRAY}({info}){_RESET}")
         elif status == "pipeline":
-            stages_str = ", ".join(info)
-            ui.dim(f"  流水线: {_DIM}{stages_str}{_RESET}")
+            _write(f"  {_DIM}pipeline: {', '.join(info)}{_RESET}")
         elif status == "stage_timeout":
-            name, _ = stage.split("|", 1)
-            _write(f"  {_DIM}  └─ {_YELLOW}⚠{_RESET} {name}  超时跳过")
+            _clear_line()
+            _write(f"  {_DIM}  {_YELLOW}⚠{_RESET} {_GRAY}timeout{_RESET}")
         elif status == "stage_done":
             parts = stage.split("|", 1)
             name = parts[0]
             _STATE["current_stage"] = ""
+            elapsed = now - _STATE.get("stage_ts", now)
             _clear_line()
-            brief = info or ""
-            _write(f"  {_DIM}  └─ {_GREEN}✓{_RESET} {name}  {_DIM}阶段完成{_RESET}")
-            if brief:
-                for line in brief.split("\n")[:5]:
-                    t = _truncate(line.strip(), 160)
-                    if t:
-                        _write(f"  {_DIM}     {t}{_RESET}")
+            _write(f"  {_DIM}  {_GREEN}✔{_RESET} {name}  {_GRAY}{elapsed:.0f}s{_RESET}")
+        elif status == "llm":
+            # 显示 LLM 推理摘要首句
+            text = str(info or "").strip()
+            if text:
+                first = text.split("\n")[0].strip()[:120]
+                if first:
+                    _write(f"  {_DIM}  · {_GRAY}{first}{_RESET}")
         elif status == "tool_start":
             _clear_line()
             tname = stage.split("|", 1)[0] if "|" in stage else stage
             brief = _fmt_args(info) if info else ""
-            _write(f"  {_DIM}  ┊  {_CYAN}▶{_RESET} {tname} {_GRAY}{brief}{_RESET}")
+            _write(f"  {_DIM}  · {tname} {_GRAY}{brief}{_RESET}")
         elif status == "tool_result":
-            _clear_line()
-            tname = stage.split("|", 1)[0] if "|" in stage else stage
-            brief = _truncate(extra or "", 55)
+            brief = _truncate(extra or "", 45)
             if brief:
                 if brief.startswith('{"success": false') or "错误" in brief or "失败" in brief:
-                    _write(f"  {_DIM}  ┊  {_RED}✗{_RESET} {_DIM}{brief}{_RESET}")
-                elif not brief.startswith('{"success": true'):
-                    _write(f"  {_DIM}  ┊  {_GREEN}✔{_RESET} {_DIM}{brief}{_RESET}")
+                    _write(f"  {_DIM}  · {_RED}✗{_RESET} {_DIM}{brief[:60]}{_RESET}")
         if status == "_ctx":
             _STATE["ctx_tokens"] = (info or {}).get("tokens", 0) if isinstance(info, dict) else 0
         if status == "start":
             _STATE["current_stage"] = stage
-            _STATE["agent_name"] = info  # info = role name (产品经理/代码工程师/etc)
+            _STATE["agent_name"] = info
 
     async def _spinner():
         chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -423,28 +423,25 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             stage = _STATE.get("current_stage", "")
             model = _STATE.get("model_name", "")
             agent_name = _STATE.get("agent_name", agent.name or "")
-            tag = f" {_GRAY}┆ {stage}{_RESET}" if stage else ""
-            an = f" {_CYAN}{agent_name}{_RESET}" if agent_name else ""
-            mod = f" {_GRAY}[{model}]{_RESET}" if model else ""
+            parts = []
+            if stage:
+                parts.append(f"{_GRAY}{stage}{_RESET}")
+            if agent_name and agent_name != stage:
+                parts.append(f"{_DIM}{agent_name}{_RESET}")
+            if model:
+                parts.append(f"{_DIM}[{model}]{_RESET}")
             try:
                 u = agent.client.usage_tracker.get_summary() if hasattr(agent.client, 'usage_tracker') else {}
                 total = u.get("total_prompt_tokens", 0) + u.get("total_completion_tokens", 0)
-                apis = f"  {_DIM}∑{total:,}{_RESET}" if total else ""
+                if total:
+                    parts.append(f"{_DIM}∑{total:,}{_RESET}")
             except Exception:
-                apis = ""
-            ctxs = ""
-            _ctx_val = _STATE.get("ctx_tokens", 0)
-            if _ctx_val:
-                ctxs = f"  {_GRAY}ctx {_ctx_val:,}{_RESET}"
-            elif hasattr(agent, 'tracer'):
-                try:
-                    _cs = agent.tracer.get_context_stats()
-                    _ctx_v = _cs.get("final", 0) or _cs.get("peak", 0)
-                    if _ctx_v:
-                        ctxs = f"  {_GRAY}ctx {_ctx_v:,}{_RESET}"
-                except Exception:
-                    pass
-            _write(f"\r  {_DIM}{ch}{an}  {elapsed:.0f}s{tag}{mod}{ctxs}{apis}", end="")
+                pass
+            ctx_val = _STATE.get("ctx_tokens", 0)
+            if ctx_val:
+                parts.append(f"{_DIM}ctx {ctx_val:,}{_RESET}")
+            info = f"  {_DIM}·{_RESET} ".join(parts)
+            _write(f"\r  {_DIM}{ch}{_RESET}  {info}", end="")
             await asyncio.sleep(0.2)
         _clear_line()
 
