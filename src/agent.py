@@ -100,8 +100,9 @@ class Agent:
         self.name = ""
         self.description = ""
         self.system_prompt = ""
-        self.system_prompt_raw = ""  # PROMPT.md 原始内容（不含技能/子代理追加）
+        self.system_prompt_raw = ""
         self.max_iterations = 200
+        self.tool_denylist: set[str] = set()
 
         # Prompt 分层拼装器
         self._prompt_builder: PromptBuilder | None = None
@@ -519,7 +520,9 @@ class Agent:
         tools = []
 
         if self.tool_registry:
-            tools.extend(self.tool_registry.get_tool_definitions())
+            for t in self.tool_registry.get_tool_definitions():
+                if t.get("function", {}).get("name") not in self.tool_denylist:
+                    tools.append(t)
 
         if self.mcp:
             tools.extend(self.mcp.tool_defs)
@@ -530,7 +533,9 @@ class Agent:
         if self.plugin_manager:
             for plugin in self.plugin_manager.plugins.values():
                 if plugin.enabled:
-                    tools.extend(plugin.get_tool_defs())
+                    for t in plugin.get_tool_defs():
+                        if t.get("function", {}).get("name") not in self.tool_denylist:
+                            tools.append(t)
 
         return tools
 

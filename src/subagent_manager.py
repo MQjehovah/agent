@@ -307,6 +307,12 @@ class SubagentManager:
         if max_iterations > 0:
             agent.max_iterations = max_iterations
 
+        # 团队子 agent 只保留必要工具，砍掉无关工具定义节省 token
+        agent.tool_denylist = {
+            "subagent", "knowledge_search", "web_search", "web_fetch",
+            "task_create", "task_list", "task_get", "task_cancel",
+        }
+
         # 注入团队共享技能（config/agents/<team>/skills/）
         team_skills_dir = os.path.join(self.base_dir, team_name, "skills")
         if os.path.exists(team_skills_dir):

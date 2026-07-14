@@ -320,19 +320,13 @@ class AgentSessionManager:
         non_system = [m for m in messages if m.get("role") != "system"]
         if len(non_system) > AgentSessionManager.SLIDING_WINDOW_SIZE:
             messages = AgentSessionManager.sliding_window(messages)
-            token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
-            if token_count < max_tokens * 0.5:
-                return messages
 
-        if token_count < max_tokens * 0.5:
+        # Layer 1: microcompact — 每轮无条件截断旧工具结果
+        messages = AgentSessionManager.microcompact(messages)
+        token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
+
+        if token_count < max_tokens * 0.65:
             return messages
-
-        # Layer 1: microcompact — 截断旧工具结果
-        if token_count >= max_tokens * 0.5:
-            messages = AgentSessionManager.microcompact(messages)
-            token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
-            if token_count < max_tokens * 0.65:
-                return messages
 
         # Layer 2: context_collapse — 折叠超长文本块
         if token_count >= max_tokens * 0.65:

@@ -171,6 +171,20 @@ class LLMClient:
                 return True
         return False
 
+    @staticmethod
+    def _add_prompt_cache(messages: list, model: str) -> list:
+        """为支持 prompt caching 的模型添加缓存标记"""
+        cache_models = {"deepseek", "gpt-4", "claude"}
+        if not any(m in model.lower() for m in cache_models):
+            return messages
+        result = list(messages)
+        for i, msg in enumerate(result):
+            if msg.get("role") == "system" and i < 2:
+                if "cache_control" not in msg:
+                    result[i] = {**msg, "cache_control": {"type": "ephemeral"}}
+                break
+        return result
+
     async def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None,
                    stream: bool = False, use_cache: bool = True):
         """发送聊天请求，支持多端点自动 failover 与重试"""
@@ -199,9 +213,10 @@ class LLMClient:
                 )
 
             for attempt in range(retries_per_ep):
+                cached_messages = self._add_prompt_cache(messages, model)
                 params = {
                     "model": model,
-                    "messages": messages,
+                    "messages": cached_messages,
                     "stream": stream,
                 }
                 if tools:
