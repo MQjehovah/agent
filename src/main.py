@@ -298,9 +298,16 @@ class TerminalUI:
                 _write(f"  {_DIM}┊ {t}{_RESET}")
 
 
+# 当前 CLI 会话 ID
+CLI_SESSION_ID: str = ""
+# 绑定到 CLI 会话的插件会话（如 feishu 绑定后共享上下文）
+BOUND_PLUGIN_SESSION: str = ""
+
 async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_agent: str = ""):
     """交互模式 — target_agent 不为空时直接路由到子代理"""
+    global CLI_SESSION_ID
     session_id = str(uuid.uuid4())
+    CLI_SESSION_ID = session_id
     current_task: asyncio.Task | None = None
     task_counter = 0
     input_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -946,7 +953,21 @@ async def main():
         if not args.no_plugins:
             plugin_manager = PluginManager(os.path.join(src_dir, "plugins"), config_dir=config_dir)
             plugin_manager.load_all()
-            plugin_manager.register_executor(lambda sid, c, uid="", uname="": agent.run(c, session_id=sid, user_id=uid, user_name=uname))
+            async def _plugin_exec(sid, c, uid="", uname=""):
+                from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+                token = set_ask_user_mode("auto")
+                if BOUND_PLUGIN_SESSION:
+                    bsid = BOUND_PLUGIN_SESSION
+                    uid = "cli:admin"
+                    uname = "管理员(绑定)"
+                else:
+                    bsid = sid
+                try:
+                    r = await agent.run(c, session_id=bsid, user_id=uid, user_name=uname)
+                    return r.result if hasattr(r, 'result') else str(r)
+                finally:
+                    reset_ask_user_mode(token)
+            plugin_manager.register_executor(_plugin_exec)
             agent.plugin_manager = plugin_manager
 
             kanban_plugin = plugin_manager.get_plugin("kanban")

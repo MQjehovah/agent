@@ -72,6 +72,21 @@ class CommandHandler:
             await self._show_session(cmd.strip()[9:].strip())
         elif cmd_lower.startswith("/messages"):
             await self._show_messages()
+        elif cmd_lower == "/bind":
+            import sys
+            main_mod = sys.modules.get("__main__")
+            if main_mod and hasattr(main_mod, "BOUND_PLUGIN_SESSION"):
+                main_mod.BOUND_PLUGIN_SESSION = getattr(main_mod, "CLI_SESSION_ID", "")
+                cid = main_mod.CLI_SESSION_ID[:8] if getattr(main_mod, "CLI_SESSION_ID", "") else ""
+                console.print(f"[green]插件会话已绑定到 CLI ({cid}...)[/green]")
+            else:
+                console.print("[red]无法获取 CLI 会话[/red]")
+        elif cmd_lower == "/unbind":
+            import sys
+            main_mod = sys.modules.get("__main__")
+            if main_mod and hasattr(main_mod, "BOUND_PLUGIN_SESSION"):
+                main_mod.BOUND_PLUGIN_SESSION = ""
+                console.print("[yellow]插件会话已解绑[/yellow]")
         elif cmd_lower in ["/q", "/quit", "/exit"]:
             if self._on_exit:
                 self._on_exit()
@@ -91,6 +106,8 @@ class CommandHandler:
             ("/prompt", "查看系统提示词"),
             ("/tools", "列出可用工具"),
             ("/skills", "列出可用技能"),
+            ("/bind", "绑定插件会话到 CLI（飞书/钉钉共享上下文）"),
+            ("/unbind", "解绑插件会话"),
             ("/tasks", "查看任务状态"),
             ("/subagents", "列出活跃子代理"),
             ("/subagent <模板>", "查看指定模板的子代理会话"),
