@@ -172,7 +172,8 @@ class TeamOrchestrator:
 
         logger.info(f"团队 [{self.team_name}] 阶段 [{node.id}] -> {role}")
         if self.progress_callback:
-            self.progress_callback(node.id, "start", role)
+            stage_max_iter = stage_config.get("max_iterations", 0) or 0
+            self.progress_callback(node.id, "start", role, stage_max_iter)
 
         result = await self._run_stage(role, node.id, output_file)
         if result is None:
@@ -274,7 +275,16 @@ class TeamOrchestrator:
                 "summary": failure_details[:500],
             })
 
+            # 通知 UI 进入反馈循环
+            if self.progress_callback:
+                self.progress_callback("feedback", "start",
+                                       f"第{loop.iteration}/{max_loops}轮",
+                                       failure_details[:200])
+
             # 重新执行开发阶段
+            if self.progress_callback:
+                self.progress_callback(f"{feedback_target}_fix_{loop.iteration}", "start",
+                                       target_config["role"])
             dev_result = await self._run_stage(
                 target_config["role"],
                 f"{feedback_target}_fix_{loop.iteration}",
@@ -283,6 +293,9 @@ class TeamOrchestrator:
 
             if dev_result and not dev_result.startswith("ERROR:"):
                 # 重新执行测试
+                if self.progress_callback:
+                    self.progress_callback(f"{test_node.id}_retest_{loop.iteration}", "start",
+                                           stage_config["role"])
                 test_result = await self._run_stage(
                     stage_config["role"],
                     f"{test_node.id}_retest_{loop.iteration}",
@@ -331,6 +344,7 @@ class TeamOrchestrator:
         if stage in ("implementation", "fix", "bug_fix"):
             full_task += (
                 "\n\n## 铁律\n"
+                "- 用 `grep` 定位目标代码，用 `code_preview` 看关键片段，不要通读无关文件\n"
                 "- 读完文件后必须立即动手修改代码，禁止反复读取同一文件\n"
                 "- 每个文件最多读 2 次，第 3 次读到同一文件视为分析瘫痪，直接报错\n"
                 "- 必须使用 edit 或 file_operation(write) 工具修改源文件\n"
@@ -340,6 +354,12 @@ class TeamOrchestrator:
 
         _stage = stage
         _cb = self.progress_callback
+        # 读取 LLM 设定的阶段迭代上限，0 表示用 agent 默认 200
+        stage_config = self._get_stage_config(stage)
+        stage_max_iter = stage_config.get("max_iterations", 0) if stage_config else 0
+        if _cb:
+            _cb("_max_iter", "_max_iter", {"max_iter": stage_max_iter or 200}, None)
+
         try:
             from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
             _ask_token = set_ask_user_mode("auto")
@@ -353,11 +373,27 @@ class TeamOrchestrator:
                             _cb(f"{name}|{_stage}", evt, args, res)
                         ) if _cb else None,
                         parent_session_id=self.parent_session_id,
+                        max_iterations=stage_max_iter,
                     ),
                     timeout=600,
                 )
             finally:
                 reset_ask_user_mode(_ask_token)
+
+            # 达到最大迭代次数时让 Leader 审核部分产出是否可用
+            if result and result.startswith("MAXITER:"):
+                partial = result.split("|", 1)[1] if "|" in result else ""
+                logger.info(f"阶段 [{stage}] 达到迭代上限，Leader 审核部分产出")
+                if self.progress_callback:
+                    self.progress_callback(stage, "stage_timeout", "迭代上限，Leader 审核中")
+                confirmed, feedback = await self._leader_review_partial(stage, partial)
+                if confirmed:
+                    result = partial
+                    logger.info(f"Leader 确认阶段 [{stage}] 产出可用")
+                else:
+                    logger.warning(f"Leader 判定阶段 [{stage}] 产出不足: {feedback[:100]}")
+                    result = f"ERROR: 阶段产出不完整: {feedback[:300]}"
+
             if _cb:
                 summary = (result or "")[:300].strip()
                 _cb(f"{role}|{_stage}", "stage_done", summary, None)
@@ -453,6 +489,32 @@ class TeamOrchestrator:
         except Exception as e:
             logger.warning(f"Leader 流水线审核失败，使用原配置: {e}")
         return self.pipeline_stages
+
+    async def _leader_review_partial(self, stage: str, partial: str) -> tuple[bool, str]:
+        """Leader 审核达到迭代上限的部分产出，决定是否可接受"""
+        leader_prompt = self.config.get("leader_prompt", "")
+        prompt = f"""你是团队 "{self.team_name}" 的 Leader ({self.leader})。
+{leader_prompt}
+
+## 原始任务
+{self.context.original_task}
+
+## 阶段
+{stage}
+
+## 部分产出（达到迭代上限被截断）
+{partial[:2000]}
+
+请判断这份部分产出是否足够交付给下一阶段使用，还是必须继续完善。
+只返回 JSON: {{"confirmed": true/false, "feedback": "理由"}}"""
+        try:
+            resp = await self.llm.chat([{"role": "user", "content": prompt}])
+            content = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
+            result = json.loads(_extract_json_from_llm(content))
+            return result.get("confirmed", False), result.get("feedback", "")
+        except Exception as e:
+            logger.warning(f"Leader 部分产出审核失败: {e}")
+            return False, ""
 
     async def _leader_review(self) -> tuple[bool, str]:
         if not self.leader or self.leader not in self.members:

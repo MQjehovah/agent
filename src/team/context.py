@@ -97,6 +97,17 @@ class TeamContext:
 
         parts.append(f"## 团队任务\n{self.original_task}")
 
+        # 上游阶段产出（避免下游重读文件）
+        upstream_results = [(nid, r) for nid, r in self.node_results.items() if r]
+        if upstream_results:
+            lines = ["## 上游阶段产出", "以下是你之前各阶段的产出摘要，避免重复劳动：", ""]
+            for nid, result in upstream_results:
+                truncated = result[:1500]
+                if len(result) > 1500:
+                    truncated += "\n...（截断）"
+                lines.append(f"### {nid}\n{truncated}\n")
+            parts.append("\n".join(lines))
+
         artifact_index = self._get_artifact_index()
         if artifact_index:
             parts.append(artifact_index)

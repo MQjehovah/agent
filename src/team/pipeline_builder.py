@@ -142,7 +142,8 @@ async def generate_pipeline_async(task: str, members: dict, llm_client) -> list[
     "output": "产出文件名或 null",
     "deps": ["依赖的阶段标识"],
     "feedback_to": "如果此阶段失败需要回退到哪个阶段",
-    "max_loops": 3
+    "max_loops": 3,
+    "max_iterations": 0
   }}
 ]
 ```
@@ -151,6 +152,9 @@ async def generate_pipeline_async(task: str, members: dict, llm_client) -> list[
 - **简单对话/问答/问候** → 返回空数组 []，不需要流水线
 - **需要分析的简单任务** → 只用1个阶段（如 "analysis" 或 "research"）
 - **开发任务** → 根据复杂度决定阶段数量（如 bug 修复可能只需 implementation + testing）
+- **简单问题/快速分析**：`max_iterations` 设为 50（快速回答、小范围修改）
+- **常规代码分析**：`max_iterations` 设为 100（需要理解代码逻辑的任务）
+- 复杂任务不设 `max_iterations`（或设为 0），使用 agent 默认值
 - 只使用列出的团队成员
 - 开发任务中测试阶段应设置 feedback_to 指向实现阶段
 
@@ -169,6 +173,7 @@ async def generate_pipeline_async(task: str, members: dict, llm_client) -> list[
             s.setdefault("deps", [])
             s.setdefault("feedback_to", None)
             s.setdefault("max_loops", 3)
+            s.setdefault("max_iterations", 0)
         return pipeline
     except Exception as e:
         logger.warning(f"LLM 动态流水线生成失败，使用默认: {e}")

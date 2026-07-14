@@ -108,20 +108,20 @@ async def _wait_event(flag: threading.Event):
 
 
 def _monitor_escape(cancel_flag: threading.Event):
-    """后台线程：监听双击 ESC 取消当前任务"""
+    """后台线程：监听双击 ESC 取消当前任务（不消费非 ESC 按键）"""
     last_esc = 0.0
     try:
         if sys.platform == "win32":
-            import msvcrt
+            import ctypes
+            VK_ESCAPE = 0x1B
+            user32 = ctypes.windll.user32
             while not cancel_flag.is_set():
-                if msvcrt.kbhit():
-                    ch = msvcrt.getch()
-                    if ch == b'\x1b':
-                        now = time.time()
-                        if now - last_esc < 1.0:
-                            cancel_flag.set()
-                            break
-                        last_esc = now
+                if user32.GetAsyncKeyState(VK_ESCAPE) & 1:
+                    now = time.time()
+                    if now - last_esc < 1.0:
+                        cancel_flag.set()
+                        break
+                    last_esc = now
                 time.sleep(0.05)
         else:
             import termios, tty, select
@@ -381,6 +381,12 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             _write(f"  {_BOLD}{_CYAN}{stage}{_RESET}  {_GRAY}({info}){_RESET}")
         elif status == "pipeline":
             _write(f"  {_DIM}pipeline: {', '.join(info)}{_RESET}")
+        elif status == "feedback":
+            _clear_line()
+            _write(f"  {_DIM}{'─' * 40}{_RESET}")
+            _write(f"  {_BOLD}{_YELLOW}↻{_RESET} 开发↔测试反馈循环 {_GRAY}{info}{_RESET}")
+            if extra:
+                _write(f"  {_DIM}  · 失败详情: {_GRAY}{extra[:120]}{_RESET}")
         elif status == "stage_timeout":
             _clear_line()
             _write(f"  {_DIM}  {_YELLOW}⚠{_RESET} {_GRAY}timeout{_RESET}")
@@ -408,12 +414,19 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             brief = _truncate(extra or "", 45)
             if brief:
                 if brief.startswith('{"success": false') or "错误" in brief or "失败" in brief:
+                    _clear_line()
                     _write(f"  {_DIM}  · {_RED}✗{_RESET} {_DIM}{brief[:60]}{_RESET}")
+        if status == "_max_iter":
+            if isinstance(info, dict):
+                _STATE["stage_max_iter"] = info.get("max_iter", 0)
         if status == "_ctx":
             _STATE["ctx_tokens"] = (info or {}).get("tokens", 0) if isinstance(info, dict) else 0
+            _STATE["iter"] = (info or {}).get("iter", 0) if isinstance(info, dict) else 0
         if status == "start":
             _STATE["current_stage"] = stage
             _STATE["agent_name"] = info
+            _STATE["iter"] = 0
+            _STATE["stage_max_iter"] = extra if isinstance(extra, (int, float)) else 0
 
     async def _spinner():
         chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -441,6 +454,12 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             ctx_val = _STATE.get("ctx_tokens", 0)
             if ctx_val:
                 parts.append(f"{_DIM}ctx {ctx_val:,}{_RESET}")
+            stage_iter = _STATE.get("iter", 0)
+            stage_max = _STATE.get("stage_max_iter", 0)
+            if stage_max and stage_iter:
+                parts.append(f"{_DIM}{stage_iter}/{stage_max}{_RESET}")
+            elif stage_iter:
+                parts.append(f"{_DIM}{stage_iter}{_RESET}")
             info = f"  {_DIM}·{_RESET} ".join(parts)
             _write(f"\r  {_DIM}{ch}{_RESET}  {info}", end="")
             await asyncio.sleep(0.2)
@@ -459,6 +478,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         spinner_task = asyncio.create_task(_spinner())
         cancel_flag.clear()
         loop = asyncio.get_running_loop()
+        esc_monitor = threading.Thread(target=_monitor_escape, args=(cancel_flag,), daemon=True)
+        esc_monitor.start()
 
         async def _run():
             if target_agent and agent.subagent_manager:

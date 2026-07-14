@@ -268,6 +268,7 @@ class SubagentManager:
         member_name: str,
         client=None,
         parent_agent=None,
+        max_iterations: int = 0,
     ) -> "Agent":
         """
         创建团队成员的子代理实例（不使用 templates 注册）。
@@ -303,6 +304,8 @@ class SubagentManager:
             agent.plugin_manager = (parent_agent or self._parent_agent).plugin_manager
 
         await agent.initialize()
+        if max_iterations > 0:
+            agent.max_iterations = max_iterations
 
         # 注入团队共享技能（config/agents/<team>/skills/）
         team_skills_dir = os.path.join(self.base_dir, team_name, "skills")
@@ -347,6 +350,7 @@ class SubagentManager:
         user_id: str = "cli:admin",
         user_name: str = "管理员",
         parent_session_id: str = "",
+        max_iterations: int = 0,
     ) -> str:
         """
         运行团队中的某个成员 agent。
@@ -375,6 +379,7 @@ class SubagentManager:
                 team_name, member_name,
                 client=client,
                 parent_agent=parent_agent,
+                max_iterations=max_iterations,
             )
 
             # 注册工具调用回调
@@ -384,12 +389,12 @@ class SubagentManager:
                     "tool_start", ctx.tool_name, ctx.arguments or {}, None))
                 agent.hooks.register(HookEvent.TOOL_RESULT, lambda ctx: tool_callback(
                     "tool_result", ctx.tool_name, {}, str(ctx.result or "")))
-                # 每轮 LLM 思考后上报上下文大小
+                # 每轮 LLM 思考后上报上下文大小和当前轮次
                 agent.hooks.register(HookEvent.ROUND_START, lambda _ctx: tool_callback(
                     "_ctx", "_ctx", {"tokens": (
                         agent.tracer.get_context_stats().get("final", 0) or
                         agent.tracer.get_context_stats().get("peak", 0)
-                    )}, None))
+                    ), "iter": _ctx.metadata.get("iteration", 0)}, None))
                 # LLM 文本回复
                 agent.hooks.register(HookEvent.LLM_RESPONSE, lambda _ctx: tool_callback(
                     "llm", "llm", _ctx.content or "", None))
@@ -403,6 +408,8 @@ class SubagentManager:
                 )
                 if agent_result.status == "failed":
                     return f"ERROR: 团队子代理 {member_name} 执行失败: {agent_result.result}"
+                if agent_result.status == "max_iterations":
+                    return f"MAXITER: 达到最大迭代次数|{agent_result.result}"
                 # 上报上下文大小
                 try:
                     _cs = agent.tracer.get_context_stats()
