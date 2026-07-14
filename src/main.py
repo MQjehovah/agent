@@ -185,7 +185,7 @@ class TerminalUI:
         """显示输入提示"""
         prefix = f"{_GREEN}❯{_RESET}" if sys.stdout.isatty() else ">"
         ctx = f" {_DIM}{context}{_RESET}" if context else ""
-        _write(f"\n{prefix}{ctx} ", end="")
+        _write(f"  {prefix}{ctx} ", end="\n")
 
     def prompt_continue(self):
         """多行继续提示"""
@@ -386,12 +386,14 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             parts = stage.split("|", 1)
             name = parts[0]
             _STATE["current_stage"] = ""
+            _clear_line()
             brief = info or ""
+            _write(f"  {_DIM}  └─ {_GREEN}✓{_RESET} {name}  {_DIM}阶段完成{_RESET}")
             if brief:
-                lines = [l.strip() for l in brief.split("\n") if l.strip()]
-                preview = " | ".join(lines[:2])
-                preview = _truncate(preview, 140)
-                _write(f"  {_DIM}  └─ {_GREEN}✓{_RESET} {name}  {_GRAY}{preview}{_RESET}")
+                for line in brief.split("\n")[:5]:
+                    t = _truncate(line.strip(), 160)
+                    if t:
+                        _write(f"  {_DIM}     {t}{_RESET}")
         elif status == "tool_start":
             _clear_line()
             tname = stage.split("|", 1)[0] if "|" in stage else stage
@@ -410,6 +412,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             _STATE["ctx_tokens"] = (info or {}).get("tokens", 0) if isinstance(info, dict) else 0
         if status == "start":
             _STATE["current_stage"] = stage
+            _STATE["agent_name"] = info  # info = role name (产品经理/代码工程师/etc)
 
     async def _spinner():
         chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -525,9 +528,13 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                         await asyncio.sleep(0.05)
                         continue
                     ch = await loop.run_in_executor(None, msvcrt.getwch)
-                    if ch == '\x1b' and not _STATE["task_done"]:
+                    if ch == '\x00' or ch == '\xe0':
+                        # 箭头/功能键，消费扫描码后丢弃
+                        await loop.run_in_executor(None, msvcrt.getwch)
+                        continue
+                    if ch == '\x1b':
                         now = time.time()
-                        if now - _esc_last < 1.0 and _esc_last > 0:
+                        if not _STATE["task_done"] and now - _esc_last < 1.0 and _esc_last > 0:
                             cancel_flag.set()
                             _esc_last = 0
                             sys.stdout.write("\n")

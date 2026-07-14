@@ -314,6 +314,8 @@ class SubagentManager:
                     _sk = _tsm.get_skill(_sn)
                     if _sk:
                         agent.skill_manager.skills[_sn] = _sk
+            # 重建 execute_skill 工具定义，使 LLM 能看到新注入的技能
+            agent.skill_manager._build_builtin_tools()
 
         # 注入事件回调（用于 Web UI 展示团队工具调用和流式输出）
         self._forward_hooks(agent, template_name=f"{team_name}/{member_name}", agent_type="team")
@@ -367,6 +369,13 @@ class SubagentManager:
                     "tool_start", ctx.tool_name, ctx.arguments or {}, None))
                 agent.hooks.register(HookEvent.TOOL_RESULT, lambda ctx: tool_callback(
                     "tool_result", ctx.tool_name, {}, str(ctx.result or "")))
+                # 每轮 LLM 思考后上报上下文大小
+                agent.hooks.register(HookEvent.ROUND_START, lambda _ctx: tool_callback(
+                    "_ctx", "_ctx", {"tokens": (
+                        agent.tracer.get_context_stats().get("final", 0) or
+                        agent.tracer.get_context_stats().get("peak", 0)
+                    )}, None))
+
 
             try:
                 sub_session_id = f"{parent_session_id}:{member_name}" if parent_session_id else ""
