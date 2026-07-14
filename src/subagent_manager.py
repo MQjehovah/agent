@@ -43,6 +43,7 @@ class SubagentManager:
         self._active_subagents: dict[str, SubagentInstance] = {}  # session_id -> SubagentInstance
         self._name_to_session: dict[str, str] = {}  # template/name -> session_id
         self._team_member_cache: dict[str, dict[str, Any]] = {}
+        self._team_agent_cache: dict[str, Any] = {}
         self._team_configs: dict[str, dict[str, Any]] = {}
         self._team_members: dict[str, dict[str, dict[str, Any]]] = {}
         self._client = None
@@ -380,15 +381,21 @@ class SubagentManager:
         Returns:
             执行结果字符串，失败时以 "ERROR:" 开头
         """
-        try:
+        cache_key = f"{team_name}/{member_name}"
+        if cache_key in self._team_agent_cache:
+            agent = self._team_agent_cache[cache_key]
+            logger.info(f"复用缓存的子代理: {cache_key}")
+        else:
             agent = await self._create_team_subagent(
                 team_name, member_name,
                 client=client,
                 parent_agent=parent_agent,
                 max_iterations=max_iterations,
             )
+            self._team_agent_cache[cache_key] = agent
 
-            # 注册工具调用回调
+        # 注册工具调用回调（每次都重新注册钩子）
+        try:
             if tool_callback:
                 from hooks import HookEvent
                 agent.hooks.register(HookEvent.TOOL_START, lambda ctx: tool_callback(
@@ -424,9 +431,27 @@ class SubagentManager:
                         tool_callback("_ctx", "_ctx", {"tokens": _ctx_val}, None)
                 except Exception:
                     pass
-                return agent_result.result
-            finally:
+                # 归并子 agent token 用量到父 agent
+                try:
+                    parent = parent_agent or self._parent_agent
+                    if parent and hasattr(parent, 'client') and parent.client:
+                        child_usage = agent.client.usage_tracker
+                        for r in child_usage.records:
+                            parent.client.usage_tracker.records.append(r)
+                except Exception:
+                    pass
+                # 成功时清理并移除缓存
+                del self._team_agent_cache[cache_key]
                 await agent.cleanup()
+                return agent_result.result
+            except asyncio.CancelledError:
+                # 超时/取消时保留 agent 缓存，重试可恢复上下文
+                logger.info(f"子代理 {cache_key} 被取消，保留上下文待重试")
+                raise
+            except Exception:
+                del self._team_agent_cache[cache_key]
+                await agent.cleanup()
+                raise
         except ValueError as e:
             return f"ERROR: {e}"
         except Exception as e:
