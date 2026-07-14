@@ -397,6 +397,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             if text:
                 first = text.split("\n")[0].strip()[:120]
                 if first:
+                    _clear_line()
                     _write(f"  {_DIM}  · {_GRAY}{first}{_RESET}")
         elif status == "tool_start":
             _clear_line()

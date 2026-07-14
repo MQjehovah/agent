@@ -84,6 +84,10 @@ class TeamOrchestrator:
         if self.progress_callback:
             self.progress_callback("pipeline", "start", stage_names)
 
+        # Leader 审核流水线配置，决定各阶段产出方式
+        if self.leader and self.leader in self.members:
+            self.pipeline_stages = await self._leader_review_pipeline()
+
         # 使用 DAG 引擎执行
         await self._execute_with_dag()
 
@@ -305,7 +309,9 @@ class TeamOrchestrator:
         stage_context = self.context.get_context_for_member(role)
 
         full_task = stage_context
-        full_task += f"\n\n## 你的任务\n根据你的角色职责完成「{stage}」阶段的工作。"
+        full_task += "\n\n## 你的任务"
+        full_task += f"\n\n用户的问题是：{self.context.original_task}"
+        full_task += f"\n\n请根据用户的上述问题完成「{stage}」阶段的工作，直接回应用户的需求。"
         full_task += f"\n工作目录: {self.workspace}"
 
         # 可用技能列表
@@ -314,13 +320,14 @@ class TeamOrchestrator:
             if _pa and _pa.skill_manager:
                 _sk = _pa.skill_manager.list_skills()
                 if _sk:
-                    full_task += "\n\n## 可用技能（通过 execute_skill 调用）\n" + "\n".join(f"- {s}" for s in _sk)
+                    full_task += "\n\n## 可用技能\n" + "\n".join(f"- {s}" for s in _sk)
         except Exception:
             pass
 
-        full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令"
         if output_file:
-            full_task += f"\n将输出写入 `{output_file}`。"
+            full_task += f"\n\n## 输出说明\n如果本次产出内容量大且结构化，请写入 `{output_file}` 供后续查阅；如果只是简单结论，直接回复即可。"
+
+        full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令"
 
         if stage in ("implementation", "fix", "bug_fix"):
             full_task += (
@@ -405,6 +412,44 @@ class TeamOrchestrator:
         except Exception:
             return ""
 
+    async def _leader_review_pipeline(self) -> list[dict]:
+        """Leader 审核流水线配置，决定各阶段产出方式"""
+        leader_prompt = self.config.get("leader_prompt", "")
+        stages_json = json.dumps(self.pipeline_stages, ensure_ascii=False, indent=2)
+        prompt = f"""你是团队 "{self.team_name}" 的 Leader ({self.leader})。
+{leader_prompt}
+
+## 原始任务
+{self.context.original_task}
+
+## 当前流水线
+{stages_json}
+
+请审核每个阶段的 `output` 字段，按以下规则决定是否需要产出文档：
+- **简单任务** → 每个阶段只需直接回复用户或传递结论，将 output 设为 null
+- **复杂/大型任务** → 阶段产出大量结构化内容时，保留 output 供下游查阅或项目存档
+- 产出物应最小化：能不落文件就不落文件
+
+只返回调整后的完整流水线 JSON 数组（与输入格式一致）。"""
+
+        try:
+            resp = await self.llm.chat([{"role": "user", "content": prompt}])
+            content = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            adjusted = json.loads(content)
+            if isinstance(adjusted, list):
+                for s in adjusted:
+                    s.setdefault("deps", [])
+                    s.setdefault("feedback_to", None)
+                    s.setdefault("max_loops", 3)
+                logger.info(f"Leader 调整流水线: {len(adjusted)} 个阶段")
+                return adjusted
+        except Exception as e:
+            logger.warning(f"Leader 流水线审核失败，使用原配置: {e}")
+        return self.pipeline_stages
+
     async def _leader_review(self) -> tuple[bool, str]:
         if not self.leader or self.leader not in self.members:
             return True, ""
@@ -476,14 +521,14 @@ class TeamOrchestrator:
             self.context.get_stage_summary(),
         ]
 
+        if self.context.node_results:
+            parts.append("## 阶段产出")
+            for node_id, result in self.context.node_results.items():
+                truncated = result[:2000] if result else "(无输出)"
+                parts.append(f"### {node_id}\n{truncated}")
+
         if self.context.feedback_loop.iteration > 0:
             parts.append("## 开发↔测试循环")
             parts.append(self.context.feedback_loop.to_context_string())
-
-        parts.append(f"\n## 产出物\n{self.workspace}/")
-        if os.path.exists(self.workspace):
-            for f in os.listdir(self.workspace):
-                if os.path.isfile(os.path.join(self.workspace, f)):
-                    parts.append(f"  - {f}")
 
         return "\n\n".join(parts)
