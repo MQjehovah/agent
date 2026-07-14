@@ -71,9 +71,10 @@ class TeamOrchestrator:
             f" (mode={self.pipeline_mode})")
 
         if not self.pipeline_stages:
-            # 简单对话/问答，不需要流水线 → 让产品经理直接回复
+            # 简单对话/问答，不需要流水线 → 让 Leader 直接回复
             if self.progress_callback:
-                self.progress_callback("chat", "start", "产品经理", None)
+                chat_role = self.leader if self.leader and self.leader in self.members else next(iter(self.members.keys()))
+                self.progress_callback("chat", "start", chat_role, None)
             result = await self._run_direct_chat(self.context.original_task)
             if self.progress_callback:
                 summary = (result or "")[:200].strip()
@@ -361,27 +362,20 @@ class TeamOrchestrator:
             return f"ERROR: {e}"
 
     async def _run_direct_chat(self, task: str) -> str:
-        """直接对话模式：简单问答不走流水线"""
-        role = "产品经理"
-        if role not in self.members:
-            # fallback: 用第一个可用成员
-            role = next(iter(self.members.keys()))
-        prompt = f"""你是 AI 开发团队的 {role}，以下是用户的问题：
-
-{task}
-
-请直接回复用户。不需要文档、不需要架构设计、不需要代码。"""
+        """直接对话模式：简单问答不走流水线，用团队自身的 Leader prompt"""
+        system_prompt = self.config.get("leader_prompt", "")
+        if not system_prompt:
+            return f"[{self.team_name}] 已收到您的消息。"
         try:
-            result = await self.subagent_manager.run_team_agent(
-                team_name=self.team_name,
-                member_name=role,
-                task=prompt,
-                parent_session_id=self.parent_session_id,
-            )
-            return result or "已收到"
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": task},
+            ]
+            resp = await self.llm.chat(messages)
+            return resp.choices[0].message.content or ""
         except Exception as e:
             logger.warning(f"对话模式异常: {e}")
-            return f"已收到您的消息。"
+            return "已收到您的消息。"
 
     # ── 辅助方法 ──────────────────────────────────────────
 
