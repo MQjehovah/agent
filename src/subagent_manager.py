@@ -303,6 +303,18 @@ class SubagentManager:
             agent.plugin_manager = (parent_agent or self._parent_agent).plugin_manager
 
         await agent.initialize()
+
+        # 注入团队共享技能（config/agents/<team>/skills/）
+        team_skills_dir = os.path.join(self.base_dir, team_name, "skills")
+        if os.path.exists(team_skills_dir) and agent.skill_manager:
+            from skills import SkillManager
+            _tsm = SkillManager(team_skills_dir)
+            for _sn in _tsm.list_skills():
+                if _sn not in agent.skill_manager.skills:
+                    _sk = _tsm.get_skill(_sn)
+                    if _sk:
+                        agent.skill_manager.skills[_sn] = _sk
+
         # 注入事件回调（用于 Web UI 展示团队工具调用和流式输出）
         self._forward_hooks(agent, template_name=f"{team_name}/{member_name}", agent_type="team")
         return agent
@@ -315,6 +327,9 @@ class SubagentManager:
         client=None,
         parent_agent=None,
         tool_callback=None,
+        user_id: str = "cli:admin",
+        user_name: str = "管理员",
+        parent_session_id: str = "",
     ) -> str:
         """
         运行团队中的某个成员 agent。
@@ -331,6 +346,9 @@ class SubagentManager:
             client: LLM客户端
             parent_agent: 父代理
             tool_callback: 工具调用回调 (event, tool_name, args, result) -> None
+            user_id: 用户ID（默认 cli:admin）
+            user_name: 用户名
+            parent_session_id: 父会话ID，用于关联子代理消息
 
         Returns:
             执行结果字符串，失败时以 "ERROR:" 开头
@@ -351,7 +369,11 @@ class SubagentManager:
                     "tool_result", ctx.tool_name, {}, str(ctx.result or "")))
 
             try:
-                agent_result = await agent.run(task)
+                sub_session_id = f"{parent_session_id}:{member_name}" if parent_session_id else ""
+                agent_result = await agent.run(
+                    task, session_id=sub_session_id,
+                    user_id=user_id, user_name=user_name,
+                )
                 if agent_result.status == "failed":
                     return f"ERROR: 团队子代理 {member_name} 执行失败: {agent_result.result}"
                 return agent_result.result
@@ -634,7 +656,7 @@ class SubagentManager:
 
         # 团队路由：如果是团队，使用 TeamOrchestrator
         if self.is_team(template_name):
-            return await self._run_team_orchestrator(task, template_name, progress_callback)
+            return await self._run_team_orchestrator(task, template_name, progress_callback, parent_session_id=session_id)
 
         # 个人子代理：原有逻辑
         try:
@@ -677,7 +699,8 @@ class SubagentManager:
             )
 
     async def _run_team_orchestrator(self, task: str, team_name: str,
-                                     progress_callback=None) -> "AgentResult":
+                                     progress_callback=None,
+                                     parent_session_id: str = "") -> "AgentResult":
         """通过 TeamOrchestrator 运行团队"""
         from agent import AgentResult
         from team.orchestrator import TeamOrchestrator
@@ -703,6 +726,7 @@ class SubagentManager:
             memory_manager=getattr(self._parent_agent, "memory", None) if self._parent_agent else None,
             pipeline_mode=config.get("pipeline_mode", "feedback"),
             progress_callback=progress_callback,
+            parent_session_id=parent_session_id,
         )
         try:
             result = await orchestrator.run(task)

@@ -124,7 +124,7 @@ async def generate_pipeline_async(task: str, members: dict, llm_client) -> list[
     """异步版本的 LLM 动态流水线生成"""
     member_list = "\n".join(f"- {name}: {m.get('description', '')}" for name, m in members.items())
 
-    prompt = f"""你是一个软件开发流程编排器。根据需求和可用的团队成员，设计最优的执行流水线。
+    prompt = f"""你是一个软件开发流程编排器。判断需求类型并设计执行流水线。
 
 ## 需求
 {task}
@@ -147,11 +147,12 @@ async def generate_pipeline_async(task: str, members: dict, llm_client) -> list[
 ]
 ```
 
-设计原则：
-1. 根据需求复杂度决定阶段数量
-2. 开发任务的测试阶段应设置 feedback_to 指向开发阶段
-3. 独立阶段可以并行
-4. 只使用列出的团队成员
+## 判断规则
+- **简单对话/问答/问候** → 返回空数组 []，不需要流水线
+- **需要分析的简单任务** → 只用1个阶段（如 "analysis" 或 "research"）
+- **开发任务** → 根据复杂度决定阶段数量（如 bug 修复可能只需 implementation + testing）
+- 只使用列出的团队成员
+- 开发任务中测试阶段应设置 feedback_to 指向实现阶段
 
 只返回 JSON 数组。"""
 

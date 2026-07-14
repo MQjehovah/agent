@@ -365,23 +365,39 @@ class CommandHandler:
             console.print("[yellow]Session Manager 未初始化[/yellow]")
 
     async def _show_messages(self):
-        """显示当前会话消息"""
-        session = None
+        """显示当前会话消息（含子代理消息）"""
+        from storage import get_storage
+        storage = get_storage()
+        all_msgs = []
+        # 从 memory 收集当前会话消息
         if self.agent.session_manager:
-            session = await self.agent.session_manager.get_session(self.session_id)
-        messages = session.messages if session else []
-        table = Table(title=f"当前会话消息 (共 {len(messages)} 条)",
-                      show_header=True, header_style="bold magenta", box=box.ROUNDED)
-        table.add_column("#", style="dim", width=3)
-        table.add_column("角色", style="cyan", width=10)
-        table.add_column("内容", style="green")
-        for i, msg in enumerate(messages, 1):
-            role = str(msg.get("role", "未知"))
-            content = str(msg.get("content", "") or "")
-            if len(content) > 100:
-                content = content[:100] + "..."
-            table.add_row(str(i), role, content)
-        console.print(table)
+            sess = await self.agent.session_manager.get_session(self.session_id)
+            if sess and sess.messages:
+                for m in sess.messages:
+                    if m.get("role") != "system":
+                        all_msgs.append(("", m))
+        # 从 storage 收集子会话消息
+        if storage and self.agent.subagent_manager:
+            try:
+                recent = storage.list_recent_sessions(limit=100)
+                prefix = f"{self.session_id}:"
+                for s in recent:
+                    sid = s.get("session_id", "")
+                    if sid.startswith(prefix):
+                        label = sid.split(":", 1)[1] if ":" in sid else sid[:8]
+                        msgs = storage.get_messages(sid) or []
+                        for m in msgs:
+                            if m.get("role") != "system":
+                                all_msgs.append((label, m))
+            except Exception:
+                pass
+        print(f"\n  [消息] 共 {len(all_msgs)} 条")
+        if all_msgs:
+            for i, (label, m) in enumerate(all_msgs[-30:], 1):
+                role = str(m.get("role", "?"))
+                content = str(m.get("content", "") or "")[:150]
+                prefix = f"[{label}] " if label else ""
+                print(f"  {i:>3}. {prefix}{role}: {content}")
 
     def _show_usage(self):
         """显示 LLM 用量统计"""

@@ -576,6 +576,10 @@ class Agent:
             resolved_user_id = info["user_id"]
             resolved_user_name = info["user_name"] or user_name
             resolved_role = info["role"]
+        elif self.parent_agent and user_id:
+            # 子代理被显式传入 user_id → 继承父级权限（如 cli:admin）
+            resolved_role = "admin"
+            resolved_user_id = None
         elif self.parent_agent and inherited.session:
             ps = inherited.session
             resolved_user_id = ps.user_id

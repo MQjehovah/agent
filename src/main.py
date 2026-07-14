@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -97,7 +98,51 @@ def _clear_line():
 
 
 # ── Terminal UI ─────────────────────────────────────────────────────
-_STATE = {"task_done": False, "task_start_ts": 0.0, "tool_count": 0, "round": 0, "subagent_depth": 0}
+_STATE = {"task_done": False, "task_start_ts": 0.0, "tool_count": 0, "round": 0, "subagent_depth": 0, "current_stage": ""}
+
+
+async def _wait_event(flag: threading.Event):
+    """等待 threading.Event 被设置（用于 asyncio.wait 配对）"""
+    while not flag.is_set():
+        await asyncio.sleep(0.05)
+
+
+def _monitor_escape(cancel_flag: threading.Event):
+    """后台线程：监听双击 ESC 取消当前任务"""
+    last_esc = 0.0
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            while not cancel_flag.is_set():
+                if msvcrt.kbhit():
+                    ch = msvcrt.getch()
+                    if ch == b'\x1b':
+                        now = time.time()
+                        if now - last_esc < 1.0:
+                            cancel_flag.set()
+                            break
+                        last_esc = now
+                time.sleep(0.05)
+        else:
+            import termios, tty, select
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while not cancel_flag.is_set():
+                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if r:
+                        ch = sys.stdin.read(1)
+                        if ch == '\x1b':
+                            now = time.time()
+                            if now - last_esc < 1.0:
+                                cancel_flag.set()
+                                break
+                            last_esc = now
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except Exception:
+        pass
 
 
 def _elapsed() -> str:
@@ -216,25 +261,31 @@ class TerminalUI:
         if not text:
             return
         elapsed = _elapsed()
-        _write(f"  {_DIM}{'─' * 60}{_RESET}")
+        _write(f"  {_DIM}{'━' * 64}{_RESET}")
         in_code = False
+        code_lang = ""
         for line in text.strip().split("\n"):
             if line.startswith("```"):
                 if in_code:
-                    _write(f"  {_DIM}```{_RESET}")
+                    _write(f"  {_DIM}└{'─' * 30}{_RESET}")
                 else:
-                    lang = line[3:].strip()
-                    _write(f"  {_DIM}```{lang}{_RESET}")
+                    code_lang = line[3:].strip()
+                    _write(f"  {_DIM}┌{'─' * 30} {code_lang}{_RESET}")
                 in_code = not in_code
                 continue
             if in_code:
-                _write(f"  {_GRAY}{line}{_RESET}")
+                _write(f"  {_GRAY}│{_RESET} {line}")
+            elif line.strip().startswith("# ") or line.strip().startswith("## "):
+                # 标题行 — 加粗显示
+                _write(f"  {_BOLD}{line}{_RESET}")
+            elif line.strip().startswith("- ") or line.strip().startswith("* "):
+                _write(f"  {_DIM}•{_RESET} {line.strip()[2:]}")
             elif line.strip():
                 _write(f"  {line}")
             else:
                 _write("")
-        _write(f"  {_DIM}{'─' * 60}{_RESET}")
-        _write(f"  {_DIM}completed in {elapsed}{_RESET}")
+        _write(f"  {_DIM}{'━' * 64}{_RESET}")
+        _write(f"  {_GREEN}completed{_RESET} {_DIM}in {elapsed}{_RESET}")
 
     def thinking(self, content: str):
         """显示推理过程（可选）"""
@@ -247,16 +298,18 @@ class TerminalUI:
                 _write(f"  {_DIM}┊ {t}{_RESET}")
 
 
-async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
-    """交互模式"""
+async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_agent: str = ""):
+    """交互模式 — target_agent 不为空时直接路由到子代理"""
     session_id = str(uuid.uuid4())
     current_task: asyncio.Task | None = None
     task_counter = 0
     input_queue: asyncio.Queue[str] = asyncio.Queue()
     input_task: asyncio.Task | None = None
     ui = TerminalUI()
+    progress_shown = False
+    cancel_flag = threading.Event()
 
-    # 获取工作目录上下文
+    # 工作目录上下文
     ws_context = os.path.basename(os.path.normpath(agent.workspace))
     branch = ""
     try:
@@ -265,34 +318,34 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                                    cwd=agent.workspace, stderr=_sp.DEVNULL, timeout=3).decode().strip()
     except Exception:
         pass
-    ctx_str = f"{ws_context}" + (f" {_DIM}({branch}){_RESET}" if branch else "")
+    ctx_prefix = f"{_DIM}{ws_context}{_RESET}" + (f" {_DIM}({branch}){_RESET}" if branch else "")
+    if target_agent:
+        ctx_prefix += f" {_GREEN}→ {target_agent}{_RESET}"
 
     # 注册钩子
     def on_tool_start(ctx):
-        ui.tool_call(ctx.tool_name, ctx.arguments or {})
+        if not target_agent:
+            ui.tool_call(ctx.tool_name, ctx.arguments or {})
     def on_tool_result(ctx):
-        ui.tool_result(ctx.tool_name, str(ctx.result or ""))
+        if not target_agent:
+            ui.tool_result(ctx.tool_name, str(ctx.result or ""))
     def on_round_start(ctx):
         it = (ctx.metadata or {}).get("iteration", 0)
         ui.round_start(it)
     def on_subagent_result(ctx):
         meta = ctx.metadata or {}
         ui.subagent_result(meta.get("name", "?"), meta.get("status", "?"))
-    def on_reasoning(ctx):
-        if hasattr(ctx, "token") and ctx.token:
-            pass  # streaming tokens — could show thinking
-
     agent.hooks.register(HookEvent.TOOL_START, on_tool_start)
     agent.hooks.register(HookEvent.TOOL_RESULT, on_tool_result)
     agent.hooks.register(HookEvent.ROUND_START, on_round_start)
     agent.hooks.register(HookEvent.SUBAGENT_RESULT, on_subagent_result)
 
-    # 设置 ask_user 输入处理器（避免与 input_reader 冲突）
+    # ask_user 处理器
     ask_tool = agent.tool_registry.get_tool("ask_user") if agent.tool_registry else None
     if ask_tool and hasattr(ask_tool, "set_input_handler"):
         async def _on_ask_user(question: str, options: list, default: str) -> str:
-            _STATE["task_done"] = True  # 暂停 spinner
-            _input_paused.set()         # 暂停背景输入读取
+            _STATE["task_done"] = True
+            _input_paused.set()
             _clear_line()
             if options:
                 _write(f"  {_BOLD}{question}{_RESET}")
@@ -311,36 +364,125 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                     return options[int(raw) - 1]
                 return raw
             finally:
-                _input_paused.clear()   # 恢复背景输入读取
+                _input_paused.clear()
         ask_tool.set_input_handler(_on_ask_user)
 
     cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set)
 
+    # ── 进度回调（用于 team agent 模式） ──
+    def _team_progress(stage, status, info, extra=None):
+        nonlocal progress_shown
+        progress_shown = True
+        if status == "start":
+            _clear_line()
+            ui.dim(f"  {_CYAN}▶{_RESET} {stage}  ({info})")
+        elif status == "pipeline":
+            stages_str = ", ".join(info)
+            ui.dim(f"  流水线: {_DIM}{stages_str}{_RESET}")
+        elif status == "stage_timeout":
+            name, _ = stage.split("|", 1)
+            _write(f"  {_DIM}  └─ {_YELLOW}⚠{_RESET} {name}  超时跳过")
+        elif status == "stage_done":
+            parts = stage.split("|", 1)
+            name = parts[0]
+            _STATE["current_stage"] = ""
+            brief = info or ""
+            if brief:
+                lines = [l.strip() for l in brief.split("\n") if l.strip()]
+                preview = " | ".join(lines[:2])
+                preview = _truncate(preview, 140)
+                _write(f"  {_DIM}  └─ {_GREEN}✓{_RESET} {name}  {_GRAY}{preview}{_RESET}")
+        elif status == "tool_start":
+            _clear_line()
+            tname = stage.split("|", 1)[0] if "|" in stage else stage
+            brief = _fmt_args(info) if info else ""
+            _write(f"  {_DIM}  ┊  {_CYAN}▶{_RESET} {tname} {_GRAY}{brief}{_RESET}")
+        elif status == "tool_result":
+            _clear_line()
+            tname = stage.split("|", 1)[0] if "|" in stage else stage
+            brief = _truncate(extra or "", 55)
+            if brief:
+                if brief.startswith('{"success": false') or "错误" in brief or "失败" in brief:
+                    _write(f"  {_DIM}  ┊  {_RED}✗{_RESET} {_DIM}{brief}{_RESET}")
+                elif not brief.startswith('{"success": true'):
+                    _write(f"  {_DIM}  ┊  {_GREEN}✔{_RESET} {_DIM}{brief}{_RESET}")
+        if status == "start":
+            _STATE["current_stage"] = stage
+
     async def _spinner():
+        chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         while not shutdown_event.is_set() and not _STATE["task_done"]:
-            ui.tick()
-            await asyncio.sleep(0.12)
+            now = time.time()
+            ch = chars[int(now * 10) % 10]
+            elapsed = now - _STATE["task_start_ts"]
+            stage = _STATE.get("current_stage", "")
+            model = _STATE.get("model_name", "")
+            tag = f" {_GRAY}┆ {stage}{_RESET}" if stage else ""
+            mod = f" {_GRAY}[{model}]{_RESET}" if model else ""
+            try:
+                u = agent.client.usage_tracker.get_summary() if hasattr(agent.client, 'usage_tracker') else {}
+                total = u.get("total_prompt_tokens", 0) + u.get("total_completion_tokens", 0)
+                apis = f"  {_DIM}API {total:,}{_RESET}" if total else ""
+            except Exception:
+                apis = ""
+            _write(f"\r  {_DIM}{ch}  {elapsed:.0f}s{tag}{mod}{apis}", end="")
+            await asyncio.sleep(0.2)
         _clear_line()
 
     async def run_task(task_id: int, question: str):
-        nonlocal current_task
+        nonlocal current_task, progress_shown
         cmd_handler.set_current_task_id(task_id)
-        ui.task_start()
+        progress_shown = False
+        _STATE["task_done"] = False
+        _STATE["task_start_ts"] = time.time()
+        _STATE["current_stage"] = ""
+        _STATE["model_name"] = getattr(agent.client, "model", "")
         spinner_task = asyncio.create_task(_spinner())
+        cancel_flag.clear()
+        loop = asyncio.get_running_loop()
+
+        async def _run():
+            if target_agent and agent.subagent_manager:
+                return await agent.subagent_manager.run_subagent(
+                    task=question, name=target_agent, session_id=session_id,
+                    client=agent.client, parent_agent=agent,
+                    progress_callback=_team_progress,
+                )
+            return await agent.run(question, session_id=session_id,
+                                   user_id="cli:admin", user_name="管理员")
 
         try:
-            result = await agent.run(question, session_id=session_id,
-                                     user_id="cli:admin", user_name="管理员")
-            ui.task_done()
+            run_task = asyncio.create_task(_run())
+            cancel_task = asyncio.create_task(_wait_event(cancel_flag))
+            done, _ = await asyncio.wait(
+                [run_task, cancel_task], return_when=asyncio.FIRST_COMPLETED)
+            if cancel_flag.is_set():
+                run_task.cancel()
+                try: await run_task
+                except: pass
+                _STATE["task_done"] = True
+                await spinner_task
+                ui.warn("已取消 (双击 ESC)")
+                return
+            cancel_task.cancel()
+            result = run_task.result()
+            _STATE["task_done"] = True
             await spinner_task
-            ui.result_text(result.result)
+            if target_agent and progress_shown:
+                _write(f"  {_DIM}{'━' * 64}{_RESET}")
+            text = result.result if hasattr(result, "result") else str(result)
+            ui.result_text(text)
         except asyncio.CancelledError:
-            ui.task_done()
+            _STATE["task_done"] = True
             await spinner_task
-            ui.warn("cancelled")
-
-        cmd_handler.set_current_task_id(None)
-        current_task = None
+            ui.warn("已取消")
+        except Exception as e:
+            _STATE["task_done"] = True
+            await spinner_task
+            ui.err(f"错误: {e}")
+        finally:
+            cmd_handler.set_current_task_id(None)
+            current_task = None
 
     _stdin_transport = None
 
@@ -352,16 +494,28 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         nonlocal _stdin_transport
         loop = asyncio.get_event_loop()
 
+        _esc_last = 0.0
+
         if sys.platform == "win32":
             import msvcrt
 
             async def _readline():
+                nonlocal _esc_last
                 line = []
                 while not shutdown_event.is_set():
                     if _input_paused.is_set():
                         await asyncio.sleep(0.05)
                         continue
                     ch = await loop.run_in_executor(None, msvcrt.getwch)
+                    if ch == '\x1b' and not _STATE["task_done"]:
+                        now = time.time()
+                        if now - _esc_last < 1.0 and _esc_last > 0:
+                            cancel_flag.set()
+                            _esc_last = 0
+                            sys.stdout.write("\n")
+                            return ""
+                        _esc_last = now
+                        continue
                     if ch in ("\r", "\n"):
                         sys.stdout.write("\n")
                         break
@@ -399,7 +553,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
 
         while not shutdown_event.is_set():
             try:
-                ui.prompt(ctx_str)
+                ui.prompt(ctx_prefix)
                 first = await _readline()
                 if not first:
                     continue
@@ -685,55 +839,7 @@ async def main():
     agent = Agent(workspace=workspace, config_dir=config_dir, client=client)
     await agent.initialize()
 
-    async def _agent_spinner(ui):
-        while not _STATE["task_done"]:
-            ui.tick()
-            await asyncio.sleep(0.12)
-        _clear_line()
-
-    if args.agent:
-        agent_name = args.agent
-        task = " ".join(args.task) if args.task else ""
-        if not task:
-            task = input("请输入任务内容: ")
-
-        ui = TerminalUI()
-        ui.say(f"{_BOLD}{agent_name}{_RESET} 正在执行...")
-
-        def _on_progress(stage, status, info, extra=None):
-            if status == "start":
-                _clear_line()
-                ui.dim(f"  {_CYAN}▶{_RESET} {stage}  ({info})")
-            elif status == "pipeline":
-                stages_str = ", ".join(info)
-                ui.dim(f"  流水线: {_DIM}{stages_str}{_RESET}")
-            elif status.startswith("tool_"):
-                evt = status
-                _, name, _stage = stage.split("|", 2)
-                if evt == "tool_start":
-                    brief = _fmt_args(info) if info else ""
-                    _write(f"  {_DIM}  ┊  {_DIM}▶{_RESET} {name} {brief}")
-                elif evt == "tool_result":
-                    brief = _truncate(extra or "", 50)
-                    if brief and not brief.startswith('{"success": true'):
-                        _write(f"  {_DIM}  ┊  {_GREEN}✔{_RESET} {_DIM}{brief}{_RESET}")
-
-        if agent.subagent_manager:
-            ui.task_start()
-            spinner = asyncio.create_task(_agent_spinner(ui))
-
-            result = await agent.subagent_manager.run_subagent(
-                task=task, name=agent_name,
-                client=agent.client, parent_agent=agent,
-                progress_callback=_on_progress,
-            )
-            ui.task_done()
-            await spinner
-            ui.rule()
-            ui.result_text(result.result if hasattr(result, "result") else str(result))
-        else:
-            ui.err("子代理管理器未初始化")
-        return
+    target_agent = args.agent or ""
 
     web_server = None
     plugin_manager = None
@@ -786,10 +892,21 @@ async def main():
                 web_server.set_kanban(kanban_board)
             web_server.start()
 
+        if target_agent:
+            _team_skills_dir = os.path.join(config_dir, "agents", target_agent, "skills")
+            if os.path.exists(_team_skills_dir) and agent.skill_manager:
+                from skills import SkillManager
+                _tsm = SkillManager(_team_skills_dir)
+                for _sn in _tsm.list_skills():
+                    if _sn not in agent.skill_manager.skills:
+                        _sk = _tsm.get_skill(_sn)
+                        if _sk:
+                            agent.skill_manager.skills[_sn] = _sk
+
         if args.mode == "autonomous":
             await autonomous_mode(agent, shutdown_event, args)
         else:
-            await interactive_mode(agent, shutdown_event)
+            await interactive_mode(agent, shutdown_event, target_agent)
     except asyncio.CancelledError:
         logger.info("任务取消")
     except Exception as e:

@@ -30,6 +30,7 @@ class TeamOrchestrator:
         memory_manager=None,
         pipeline_mode: str = "feedback",
         progress_callback=None,
+        parent_session_id: str = "",
     ):
         self.team_name = team_name
         self.config = team_config
@@ -40,6 +41,7 @@ class TeamOrchestrator:
         self.memory = memory_manager
         self.pipeline_mode = pipeline_mode
         self.progress_callback = progress_callback
+        self.parent_session_id = parent_session_id
         self.context: TeamContext | None = None
         self.dag: ExecutionDAG | None = None
         self.workspace: str = ""
@@ -67,6 +69,17 @@ class TeamOrchestrator:
         logger.info(
             f"团队 [{self.team_name}] 流水线: {stage_names}"
             f" (mode={self.pipeline_mode})")
+
+        if not self.pipeline_stages:
+            # 简单对话/问答，不需要流水线 → 让产品经理直接回复
+            if self.progress_callback:
+                self.progress_callback("chat", "start", "产品经理", None)
+            result = await self._run_direct_chat(self.context.original_task)
+            if self.progress_callback:
+                summary = (result or "")[:200].strip()
+                self.progress_callback("chat", "stage_done", summary, None)
+            return result
+
         if self.progress_callback:
             self.progress_callback("pipeline", "start", stage_names)
 
@@ -298,22 +311,64 @@ class TeamOrchestrator:
             full_task += f"\n将输出写入 `{output_file}`。"
         full_task += f"\n工作目录: {self.workspace}"
 
+        # 实现阶段明确要求修改代码
+        if stage in ("implementation", "fix", "bug_fix"):
+            full_task += "\n\n## 关键要求\n- 必须使用 edit 或 file_operation 工具修改源文件来修复问题"
+            full_task += "\n- 不允许只读不写 —— 读文件了解后必须执行实际的代码修改"
+            full_task += "\n- 修改后必须验证（运行测试或编译）"
+            full_task += "\n- 如果测试失败，分析失败原因并继续修复直到通过"
+
         _stage = stage
         _cb = self.progress_callback
+        try:
+            result = await asyncio.wait_for(
+                self.subagent_manager.run_team_agent(
+                    team_name=self.team_name,
+                    member_name=role,
+                    task=full_task,
+                    tool_callback=lambda evt, name, args, res: (
+                        _cb(f"{name}|{_stage}", evt, args, res)
+                    ) if _cb else None,
+                    parent_session_id=self.parent_session_id,
+                ),
+                timeout=300,
+            )
+            if _cb:
+                summary = (result or "")[:300].strip()
+                _cb(f"{role}|{_stage}", "stage_done", summary, None)
+            self.context.add_node_result(_stage, role, result)
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"阶段 [{stage}] 超时")
+            if _cb:
+                _cb(f"{role}|{_stage}", "stage_timeout", None, None)
+            return "ERROR: 阶段超时"
+        except Exception as e:
+            logger.error(f"阶段 [{stage}] 异常: {e}")
+            return f"ERROR: {e}"
+
+    async def _run_direct_chat(self, task: str) -> str:
+        """直接对话模式：简单问答不走流水线"""
+        role = "产品经理"
+        if role not in self.members:
+            # fallback: 用第一个可用成员
+            role = next(iter(self.members.keys()))
+        prompt = f"""你是 AI 开发团队的 {role}，以下是用户的问题：
+
+{task}
+
+请直接回复用户。不需要文档、不需要架构设计、不需要代码。"""
         try:
             result = await self.subagent_manager.run_team_agent(
                 team_name=self.team_name,
                 member_name=role,
-                task=full_task,
-                tool_callback=lambda evt, name, args, res: (
-                    _cb(f"tool_{evt}", f"{name}|{_stage}", args, res)
-                ) if _cb else None,
+                task=prompt,
+                parent_session_id=self.parent_session_id,
             )
-            self.context.add_node_result(_stage, role, result)
-            return result
+            return result or "已收到"
         except Exception as e:
-            logger.error(f"阶段 [{stage}] 异常: {e}")
-            return f"ERROR: {e}"
+            logger.warning(f"对话模式异常: {e}")
+            return f"已收到您的消息。"
 
     # ── 辅助方法 ──────────────────────────────────────────
 
