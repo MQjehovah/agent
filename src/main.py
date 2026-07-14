@@ -1,17 +1,20 @@
 import asyncio
 import gc
+import json
 import logging
 import os
 import signal
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.logging import RichHandler
 from rich.panel import Panel
+
+console = Console()
 
 # 加载环境配置
 _project_root = Path(__file__).parent.parent
@@ -29,98 +32,323 @@ from agent import Agent
 from agent_session import AgentSessionManager
 from cmd_handler import CommandHandler
 from config import Config, validate_config
+from hooks import HookEvent
 from llm import LLMClient
 from plugins import PluginManager
 from settings import get_settings, init_settings
 
-console = Console()
+# ── 文件日志（不输出到终端） ──────────────────────────────────────────
+LOG_DIR = os.path.join(_project_root, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
 
+_log_file = os.path.join(LOG_DIR, f"agent_{datetime.now().strftime('%Y%m%d')}.log")
+file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
 
-class AlignedRichHandler(RichHandler):
-    def __init__(self, name_width=20, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.name_width = name_width
+logging.basicConfig(level=logging.INFO, handlers=[file_handler])
 
-    def emit(self, record: logging.LogRecord) -> None:
-        original_name = record.name
-        if self.name_width:
-            record.name = original_name.ljust(self.name_width)
-        try:
-            super().emit(record)
-        finally:
-            record.name = original_name
-
-    def handleError(self, record: logging.LogRecord) -> None:
-        # Silently swallow BlockingIOError from Rich console
-        # (WSL/terminal buffer full — no need to spam stderr)
-        import traceback
-        try:
-            # Check if it's a BlockingIOError before printing anything
-            etype, evalue, _ = sys.exc_info()
-            if etype is not None and issubclass(etype, (BlockingIOError, OSError)):
-                return
-        except Exception:
-            pass
-        # For other errors, fall back to plain stderr
-        try:
-            msg = self.format(record) + "\n"
-            try:
-                etype, evalue, etb = sys.exc_info()
-                tb = traceback.format_exception(etype, evalue, etb)
-                msg += "".join(tb)
-            except Exception:
-                pass
-            os.write(2, msg.encode(sys.stderr.encoding or "utf-8", errors="replace"))
-        except Exception:
-            pass
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] - %(message)s",
-    datefmt="[%X]",
-    handlers=[AlignedRichHandler(name_width=25, console=console, rich_tracebacks=True,
-                                 show_time=True, show_path=False)]
-)
-
-# 抑制 MCP SDK 内部日志噪音
-logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
-
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
+# 抑制第三方库日志噪音
+for noisy in ("mcp.server.lowlevel.server", "httpx", "apscheduler.scheduler"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 logger = logging.getLogger("agent.main")
+
+# ── ANSI ────────────────────────────────────────────────────────────
+_SGR = lambda c: f"\033[{c}m" if sys.stdout.isatty() else ""
+_DIM = _SGR("2")
+_GREEN = _SGR("32")
+_YELLOW = _SGR("33")
+_CYAN = _SGR("36")
+_RED = _SGR("31")
+_RESET = _SGR("0")
+_BOLD = _SGR("1")
+_GRAY = _SGR("90")
+
+
+def _truncate(text: str, w: int = 60) -> str:
+    if not text:
+        return ""
+    line = text.split("\n")[0].strip()
+    if len(line) > w:
+        return line[: w - 3] + "..."
+    return line
+
+
+def _fmt_args(args: dict) -> str:
+    """从工具参数中提取人类可读的摘要"""
+    if not args:
+        return ""
+    for key in ("path", "file_path", "pattern", "name", "command"):
+        val = args.get(key)
+        if val:
+            return str(val)[:60]
+    return _truncate(json.dumps(args, ensure_ascii=False), 60)
+
+
+def _write(text: str = "", end: str = "\n"):
+    sys.stdout.write(text + end)
+    sys.stdout.flush()
+
+
+def _clear_line():
+    _write("\r\033[K", end="")
+
+
+# ── Terminal UI ─────────────────────────────────────────────────────
+_STATE = {"task_done": False, "task_start_ts": 0.0, "tool_count": 0, "round": 0, "subagent_depth": 0}
+
+
+def _elapsed() -> str:
+    t = time.time() - _STATE["task_start_ts"]
+    if t < 60:
+        return f"{t:.0f}s"
+    return f"{t//60:.0f}m{t%60:.0f}s"
+
+
+class TerminalUI:
+
+    def __init__(self):
+        self._spinner_idx = 0
+        self._chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        self._active = False
+
+    # ── prompts ──
+
+    def say(self, text: str):
+        """普通信息行"""
+        _write(f"  {text}")
+
+    def dim(self, text: str):
+        _write(f"  {_DIM}{text}{_RESET}")
+
+    def ok(self, text: str):
+        _write(f"  {_GREEN}{text}{_RESET}")
+
+    def warn(self, text: str):
+        _write(f"  {_YELLOW}{text}{_RESET}")
+
+    def err(self, text: str):
+        _write(f"  {_RED}{text}{_RESET}")
+
+    def rule(self):
+        """分隔线"""
+        _write(f"  {_DIM}{'─' * 60}{_RESET}")
+
+    def prompt(self, context: str = ""):
+        """显示输入提示"""
+        prefix = f"{_GREEN}❯{_RESET}" if sys.stdout.isatty() else ">"
+        ctx = f" {_DIM}{context}{_RESET}" if context else ""
+        _write(f"\n{prefix}{ctx} ", end="")
+
+    def prompt_continue(self):
+        """多行继续提示"""
+        _write(f"  {_DIM}...{_RESET} ", end="")
+
+    # ── task lifecycle ──
+
+    def task_start(self):
+        _STATE["task_done"] = False
+        _STATE["task_start_ts"] = time.time()
+        _STATE["tool_count"] = 0
+        _STATE["round"] = 0
+        _STATE["subagent_depth"] = 0
+        self._active = True
+        self._spinner_idx = 0
+
+    def task_done(self):
+        self._active = False
+        _STATE["task_done"] = True
+
+    def round_start(self, iteration: int):
+        _STATE["round"] = iteration
+        if iteration > 1:
+            _clear_line()
+
+    def tick(self):
+        if not self._active:
+            return
+        ch = self._chars[self._spinner_idx % len(self._chars)]
+        self._spinner_idx += 1
+        elapsed = _elapsed()
+        r = _STATE["round"]
+        t = _STATE["tool_count"]
+        status = f"thinking" if r == 0 else f"round {r}"
+        extra = f" · {t} tools" if t else ""
+        _write(f"\r  {_DIM}{ch} {status}{extra}  {elapsed}{_RESET}", end="")
+
+    # ── tool calls ──
+
+    def tool_call(self, name: str, args: dict):
+        brief = _fmt_args(args)
+        _STATE["tool_count"] += 1
+        _clear_line()
+        icon = "▶"
+        if name in ("read", "file_operation"):
+            icon = "📖" if sys.stdout.isatty() else "·"
+        elif name in ("edit", "write"):
+            icon = "✏️" if sys.stdout.isatty() else "·"
+        elif name == "shell":
+            icon = "⚡" if sys.stdout.isatty() else "·"
+        elif name == "subagent":
+            _STATE["subagent_depth"] += 1
+            icon = "⊕" if sys.stdout.isatty() else "+"
+        _write(f"  {_DIM}{icon} {name}{_RESET} {_GRAY}{brief}{_RESET}")
+
+    def tool_result(self, name: str, result: str):
+        brief = _truncate(result, 60)
+        if not brief or brief == "{}" or brief.startswith('{"success": true'):
+            return
+        if brief.startswith('{"success": false'):
+            _write(f"  {_RED}✗ {name} → {brief[:80]}{_RESET}")
+            return
+        _write(f"  {_GREEN}✔{_RESET} {_DIM}{brief}{_RESET}")
+
+    def subagent_result(self, name: str, status: str):
+        _STATE["subagent_depth"] -= 1
+        s = f"{_GREEN}done{_RESET}" if status == "completed" else f"{_RED}{status}{_RESET}"
+        _write(f"  {_DIM}└─ {name} [{s}]{_RESET}")
+
+    # ── output ──
+
+    def result_text(self, text: str):
+        if not text:
+            return
+        elapsed = _elapsed()
+        _write(f"  {_DIM}{'─' * 60}{_RESET}")
+        in_code = False
+        for line in text.strip().split("\n"):
+            if line.startswith("```"):
+                if in_code:
+                    _write(f"  {_DIM}```{_RESET}")
+                else:
+                    lang = line[3:].strip()
+                    _write(f"  {_DIM}```{lang}{_RESET}")
+                in_code = not in_code
+                continue
+            if in_code:
+                _write(f"  {_GRAY}{line}{_RESET}")
+            elif line.strip():
+                _write(f"  {line}")
+            else:
+                _write("")
+        _write(f"  {_DIM}{'─' * 60}{_RESET}")
+        _write(f"  {_DIM}completed in {elapsed}{_RESET}")
+
+    def thinking(self, content: str):
+        """显示推理过程（可选）"""
+        if not content:
+            return
+        _clear_line()
+        for line in content.strip().split("\n")[-3:]:
+            t = _truncate(line, 80)
+            if t:
+                _write(f"  {_DIM}┊ {t}{_RESET}")
 
 
 async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
-    """交互模式 - 任务后台执行"""
+    """交互模式"""
     session_id = str(uuid.uuid4())
     current_task: asyncio.Task | None = None
     task_counter = 0
     input_queue: asyncio.Queue[str] = asyncio.Queue()
     input_task: asyncio.Task | None = None
+    ui = TerminalUI()
+
+    # 获取工作目录上下文
+    ws_context = os.path.basename(os.path.normpath(agent.workspace))
+    branch = ""
+    try:
+        import subprocess as _sp
+        branch = _sp.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                                   cwd=agent.workspace, stderr=_sp.DEVNULL, timeout=3).decode().strip()
+    except Exception:
+        pass
+    ctx_str = f"{ws_context}" + (f" {_DIM}({branch}){_RESET}" if branch else "")
+
+    # 注册钩子
+    def on_tool_start(ctx):
+        ui.tool_call(ctx.tool_name, ctx.arguments or {})
+    def on_tool_result(ctx):
+        ui.tool_result(ctx.tool_name, str(ctx.result or ""))
+    def on_round_start(ctx):
+        it = (ctx.metadata or {}).get("iteration", 0)
+        ui.round_start(it)
+    def on_subagent_result(ctx):
+        meta = ctx.metadata or {}
+        ui.subagent_result(meta.get("name", "?"), meta.get("status", "?"))
+    def on_reasoning(ctx):
+        if hasattr(ctx, "token") and ctx.token:
+            pass  # streaming tokens — could show thinking
+
+    agent.hooks.register(HookEvent.TOOL_START, on_tool_start)
+    agent.hooks.register(HookEvent.TOOL_RESULT, on_tool_result)
+    agent.hooks.register(HookEvent.ROUND_START, on_round_start)
+    agent.hooks.register(HookEvent.SUBAGENT_RESULT, on_subagent_result)
+
+    # 设置 ask_user 输入处理器（避免与 input_reader 冲突）
+    ask_tool = agent.tool_registry.get_tool("ask_user") if agent.tool_registry else None
+    if ask_tool and hasattr(ask_tool, "set_input_handler"):
+        async def _on_ask_user(question: str, options: list, default: str) -> str:
+            _STATE["task_done"] = True  # 暂停 spinner
+            _input_paused.set()         # 暂停背景输入读取
+            _clear_line()
+            if options:
+                _write(f"  {_BOLD}{question}{_RESET}")
+                for i, opt in enumerate(options, 1):
+                    _write(f"  {_DIM}{i}.{_RESET} {opt}")
+                prompt = f"  {_GREEN}❯{_RESET} " + (f"({default}) " if default else "")
+            else:
+                _write(f"  {_BOLD}{question}{_RESET}")
+                prompt = f"  {_GREEN}❯{_RESET} " + (f"({default}) " if default else "")
+            try:
+                loop = asyncio.get_running_loop()
+                raw = await loop.run_in_executor(None, lambda: input(prompt))
+                if not raw:
+                    return default or ""
+                if options and raw.isdigit() and 1 <= int(raw) <= len(options):
+                    return options[int(raw) - 1]
+                return raw
+            finally:
+                _input_paused.clear()   # 恢复背景输入读取
+        ask_tool.set_input_handler(_on_ask_user)
 
     cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set)
 
+    async def _spinner():
+        while not shutdown_event.is_set() and not _STATE["task_done"]:
+            ui.tick()
+            await asyncio.sleep(0.12)
+        _clear_line()
+
     async def run_task(task_id: int, question: str):
-        """执行单个任务"""
         nonlocal current_task
-        console.print(f"[dim cyan]▶ 任务 #{task_id}[/dim cyan]")
         cmd_handler.set_current_task_id(task_id)
+        ui.task_start()
+        spinner_task = asyncio.create_task(_spinner())
 
         try:
-            result = await agent.run(question, session_id=session_id, user_id="cli:admin", user_name="管理员")
-            console.print(Panel.fit(f"[green]任务 #{task_id} 完成:[/green]\n{result.result}",
-                                     border_style="green"))
+            result = await agent.run(question, session_id=session_id,
+                                     user_id="cli:admin", user_name="管理员")
+            ui.task_done()
+            await spinner_task
+            ui.result_text(result.result)
         except asyncio.CancelledError:
-            console.print(f"[yellow]任务 #{task_id} 已取消[/yellow]")
+            ui.task_done()
+            await spinner_task
+            ui.warn("cancelled")
 
         cmd_handler.set_current_task_id(None)
         current_task = None
 
     _stdin_transport = None
 
+    # 用于暂停输入读取（ask_user 期间暂停背景读 stdin）
+    _input_paused = asyncio.Event()
+
     async def input_reader():
-        """后台读取用户输入 — Windows 使用 msvcrt 字符级读取，Unix 用 StreamReader"""
+        """后台读取用户输入 — Windows 用 msvcrt 字符级读取，Unix 用 StreamReader"""
         nonlocal _stdin_transport
         loop = asyncio.get_event_loop()
 
@@ -130,6 +358,9 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
             async def _readline():
                 line = []
                 while not shutdown_event.is_set():
+                    if _input_paused.is_set():
+                        await asyncio.sleep(0.05)
+                        continue
                     ch = await loop.run_in_executor(None, msvcrt.getwch)
                     if ch in ("\r", "\n"):
                         sys.stdout.write("\n")
@@ -137,7 +368,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
                     elif ch in ("\x08", "\x7f"):  # backspace
                         if line:
                             removed = line.pop()
-                            if '\u1100' <= removed <= '\u9fff' or '\uac00' <= removed <= '\ud7af' or '\uf900' <= removed <= '\uffff' or ord(removed) > 0x20000:
+                            if ord(removed) > 0x2000:
                                 sys.stdout.write("\b\b  \b\b")
                             else:
                                 sys.stdout.write("\b \b")
@@ -153,19 +384,48 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
         else:
             _stdin_reader = asyncio.StreamReader()
             _stdin_protocol = asyncio.StreamReaderProtocol(_stdin_reader)
-            _stdin_transport, _ = await loop.connect_read_pipe(lambda: _stdin_protocol, sys.stdin)
+            _stdin_transport, _ = await loop.connect_read_pipe(
+                lambda: _stdin_protocol, sys.stdin
+            )
 
             async def _readline():
-                line = await _stdin_reader.readline()
-                return line.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
+                while not shutdown_event.is_set():
+                    if _input_paused.is_set():
+                        await asyncio.sleep(0.05)
+                        continue
+                    line = await _stdin_reader.readline()
+                    return line.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
+                return ""
 
         while not shutdown_event.is_set():
             try:
-                sys.stdout.write("\n? 任务: ")
-                sys.stdout.flush()
-                question = await _readline()
-                if not question:
+                ui.prompt(ctx_str)
+                first = await _readline()
+                if not first:
                     continue
+
+                # 检测多行粘贴：连续两行缩进或 """ 开头
+                lines = [first]
+                stripped = first.strip()
+                if stripped.startswith('"""') or stripped.startswith("'''"):
+                    closing = stripped[0:3]
+                    if closing not in stripped[3:]:
+                        while not shutdown_event.is_set():
+                            ui.prompt_continue()
+                            nxt = await _readline()
+                            if nxt is None:
+                                break
+                            lines.append(nxt)
+                            if closing in nxt:
+                                break
+                elif first.startswith(" ") or first.startswith("\t"):
+                    while not shutdown_event.is_set():
+                        chk = await _readline()
+                        if chk is None or chk.strip() == "":
+                            break
+                        lines.append(chk)
+
+                question = "\n".join(lines)
                 await input_queue.put(question.strip())
             except (KeyboardInterrupt, EOFError):
                 shutdown_event.set()
@@ -205,7 +465,6 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event):
 
             task_counter += 1
             current_task = asyncio.create_task(run_task(task_counter, question))
-            console.print(f"[dim]任务 #{task_counter} 已提交[/dim]")
 
     finally:
         if _stdin_transport is not None:
@@ -426,19 +685,54 @@ async def main():
     agent = Agent(workspace=workspace, config_dir=config_dir, client=client)
     await agent.initialize()
 
+    async def _agent_spinner(ui):
+        while not _STATE["task_done"]:
+            ui.tick()
+            await asyncio.sleep(0.12)
+        _clear_line()
+
     if args.agent:
         agent_name = args.agent
         task = " ".join(args.task) if args.task else ""
         if not task:
             task = input("请输入任务内容: ")
 
-        console.print(f"\n[bold cyan]子代理模式[/bold cyan]: {agent_name}")
-        console.print(f"任务: {task}\n")
+        ui = TerminalUI()
+        ui.say(f"{_BOLD}{agent_name}{_RESET} 正在执行...")
 
-        result = await agent.run(
-            f"请使用 subagent 工具将以下任务交给「{agent_name}」:\n{task}"
-        )
-        console.print(result.result if hasattr(result, "result") else result)
+        def _on_progress(stage, status, info, extra=None):
+            if status == "start":
+                _clear_line()
+                ui.dim(f"  {_CYAN}▶{_RESET} {stage}  ({info})")
+            elif status == "pipeline":
+                stages_str = ", ".join(info)
+                ui.dim(f"  流水线: {_DIM}{stages_str}{_RESET}")
+            elif status.startswith("tool_"):
+                evt = status
+                _, name, _stage = stage.split("|", 2)
+                if evt == "tool_start":
+                    brief = _fmt_args(info) if info else ""
+                    _write(f"  {_DIM}  ┊  {_DIM}▶{_RESET} {name} {brief}")
+                elif evt == "tool_result":
+                    brief = _truncate(extra or "", 50)
+                    if brief and not brief.startswith('{"success": true'):
+                        _write(f"  {_DIM}  ┊  {_GREEN}✔{_RESET} {_DIM}{brief}{_RESET}")
+
+        if agent.subagent_manager:
+            ui.task_start()
+            spinner = asyncio.create_task(_agent_spinner(ui))
+
+            result = await agent.subagent_manager.run_subagent(
+                task=task, name=agent_name,
+                client=agent.client, parent_agent=agent,
+                progress_callback=_on_progress,
+            )
+            ui.task_done()
+            await spinner
+            ui.rule()
+            ui.result_text(result.result if hasattr(result, "result") else str(result))
+        else:
+            ui.err("子代理管理器未初始化")
         return
 
     web_server = None
@@ -462,8 +756,13 @@ async def main():
             webhook_plugin = plugin_manager.get_plugin("webhook")
             if webhook_plugin:
                 async def _webhook_exec(sid, c, uid="webhook:admin", uname="Webhook"):
-                    r = await agent.run(c, session_id=sid, user_id=uid, user_name=uname)
-                    return r.result if hasattr(r, 'result') else str(r)
+                    from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+                    token = set_ask_user_mode("auto")
+                    try:
+                        r = await agent.run(c, session_id=sid, user_id=uid, user_name=uname)
+                        return r.result if hasattr(r, 'result') else str(r)
+                    finally:
+                        reset_ask_user_mode(token)
 
                 webhook_plugin.agent_executor = _webhook_exec
 

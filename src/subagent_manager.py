@@ -314,6 +314,7 @@ class SubagentManager:
         task: str,
         client=None,
         parent_agent=None,
+        tool_callback=None,
     ) -> str:
         """
         运行团队中的某个成员 agent。
@@ -329,6 +330,7 @@ class SubagentManager:
             task: 任务内容
             client: LLM客户端
             parent_agent: 父代理
+            tool_callback: 工具调用回调 (event, tool_name, args, result) -> None
 
         Returns:
             执行结果字符串，失败时以 "ERROR:" 开头
@@ -339,6 +341,15 @@ class SubagentManager:
                 client=client,
                 parent_agent=parent_agent,
             )
+
+            # 注册工具调用回调
+            if tool_callback:
+                from hooks import HookEvent
+                agent.hooks.register(HookEvent.TOOL_START, lambda ctx: tool_callback(
+                    "tool_start", ctx.tool_name, ctx.arguments or {}, None))
+                agent.hooks.register(HookEvent.TOOL_RESULT, lambda ctx: tool_callback(
+                    "tool_result", ctx.tool_name, {}, str(ctx.result or "")))
+
             try:
                 agent_result = await agent.run(task)
                 if agent_result.status == "failed":
@@ -589,7 +600,8 @@ class SubagentManager:
         mcp_servers: list[str, Any] | None = None,
         client=None,
         parent_agent: "Agent" = None,
-        keep_alive: bool = True
+        keep_alive: bool = True,
+        progress_callback=None,
     ) -> "AgentResult":
         """
         运行子代理（统一入口：个人子代理和团队均通过此方法调用）
@@ -605,6 +617,7 @@ class SubagentManager:
             client: LLM客户端
             parent_agent: 父代理
             keep_alive: 是否保持子代理存活（默认True）
+            progress_callback: 进度回调 (stage, status, role) -> None
 
         Returns:
             AgentResult
@@ -621,7 +634,7 @@ class SubagentManager:
 
         # 团队路由：如果是团队，使用 TeamOrchestrator
         if self.is_team(template_name):
-            return await self._run_team_orchestrator(task, template_name)
+            return await self._run_team_orchestrator(task, template_name, progress_callback)
 
         # 个人子代理：原有逻辑
         try:
@@ -663,7 +676,8 @@ class SubagentManager:
                 result=f"子代理错误: {e}"
             )
 
-    async def _run_team_orchestrator(self, task: str, team_name: str) -> "AgentResult":
+    async def _run_team_orchestrator(self, task: str, team_name: str,
+                                     progress_callback=None) -> "AgentResult":
         """通过 TeamOrchestrator 运行团队"""
         from agent import AgentResult
         from team.orchestrator import TeamOrchestrator
@@ -688,6 +702,7 @@ class SubagentManager:
             llm_client=self._client,
             memory_manager=getattr(self._parent_agent, "memory", None) if self._parent_agent else None,
             pipeline_mode=config.get("pipeline_mode", "feedback"),
+            progress_callback=progress_callback,
         )
         try:
             result = await orchestrator.run(task)

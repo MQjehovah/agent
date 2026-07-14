@@ -1,12 +1,27 @@
 import json
 import sys
 import asyncio
+import contextvars
 import logging
 from typing import Dict, Any, Callable, Optional
 
 from . import BuiltinTool
 
 logger = logging.getLogger("agent.tools")
+
+# 每个 asyncio Task 独立的 ask_user 模式
+# "interactive" — 调用 _input_handler 或 _console_input 等待用户
+# "auto" — 直接返回默认值（webhook 用）
+_ask_mode: contextvars.ContextVar[str] = contextvars.ContextVar("ask_user_mode", default="interactive")
+
+
+def set_ask_user_mode(mode: str):
+    """设置当前 Task 的 ask_user 模式，返回 reset token"""
+    return _ask_mode.set(mode)
+
+
+def reset_ask_user_mode(token):
+    _ask_mode.reset(token)
 
 
 class AskUserTool(BuiltinTool):
@@ -63,15 +78,16 @@ class AskUserTool(BuiltinTool):
         if not question:
             return json.dumps({"success": False, "error": "问题不能为空"}, ensure_ascii=False)
 
-        if not self._input_handler and not sys.stdin.isatty():
-            logger.warning("ask_user: 非交互式环境，无法获取用户输入，使用默认值")
+        # 按优先级决定如何处理：mode=auto > _input_handler > _console_input
+        mode = _ask_mode.get()
+        if mode == "auto":
             answer = default or ""
+            logger.info(f"ask_user: auto 模式，使用默认值: {answer}")
             return json.dumps({
                 "success": True,
                 "question": question,
                 "answer": answer,
                 "auto": True,
-                "note": "非交互式环境，自动使用默认值"
             }, ensure_ascii=False)
 
         if self._input_handler:

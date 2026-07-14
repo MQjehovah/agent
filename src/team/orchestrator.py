@@ -29,6 +29,7 @@ class TeamOrchestrator:
         llm_client,
         memory_manager=None,
         pipeline_mode: str = "feedback",
+        progress_callback=None,
     ):
         self.team_name = team_name
         self.config = team_config
@@ -38,6 +39,7 @@ class TeamOrchestrator:
         self.llm = llm_client
         self.memory = memory_manager
         self.pipeline_mode = pipeline_mode
+        self.progress_callback = progress_callback
         self.context: TeamContext | None = None
         self.dag: ExecutionDAG | None = None
         self.workspace: str = ""
@@ -65,6 +67,8 @@ class TeamOrchestrator:
         logger.info(
             f"团队 [{self.team_name}] 流水线: {stage_names}"
             f" (mode={self.pipeline_mode})")
+        if self.progress_callback:
+            self.progress_callback("pipeline", "start", stage_names)
 
         # 使用 DAG 引擎执行
         await self._execute_with_dag()
@@ -149,6 +153,8 @@ class TeamOrchestrator:
         output_file = stage_config.get("output")
 
         logger.info(f"团队 [{self.team_name}] 阶段 [{node.id}] -> {role}")
+        if self.progress_callback:
+            self.progress_callback(node.id, "start", role)
 
         result = await self._run_stage(role, node.id, output_file)
         if result is None:
@@ -292,13 +298,18 @@ class TeamOrchestrator:
             full_task += f"\n将输出写入 `{output_file}`。"
         full_task += f"\n工作目录: {self.workspace}"
 
+        _stage = stage
+        _cb = self.progress_callback
         try:
             result = await self.subagent_manager.run_team_agent(
                 team_name=self.team_name,
                 member_name=role,
                 task=full_task,
+                tool_callback=lambda evt, name, args, res: (
+                    _cb(f"tool_{evt}", f"{name}|{_stage}", args, res)
+                ) if _cb else None,
             )
-            self.context.add_node_result(stage, role, result)
+            self.context.add_node_result(_stage, role, result)
             return result
         except Exception as e:
             logger.error(f"阶段 [{stage}] 异常: {e}")
@@ -405,7 +416,7 @@ class TeamOrchestrator:
 
         if self.context.feedback_loop.iteration > 0:
             parts.append("## 开发↔测试循环")
-            parts.append(self.feedback_loop.to_context_string())
+            parts.append(self.context.feedback_loop.to_context_string())
 
         parts.append(f"\n## 产出物\n{self.workspace}/")
         if os.path.exists(self.workspace):

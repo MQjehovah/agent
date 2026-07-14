@@ -406,10 +406,15 @@ class WebServer:
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
 
-            # 非流式：后台执行，立即返回 session_id
-            asyncio.create_task(
-                self.agent.run(message, session_id=session_id)
-            )
+            # 非流式：后台执行，立即返回 session_id（web 请求禁用 ask_user）
+            async def _web_auto_run():
+                from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+                token = set_ask_user_mode("auto")
+                try:
+                    await self.agent.run(message, session_id=session_id)
+                finally:
+                    reset_ask_user_mode(token)
+            asyncio.create_task(_web_auto_run())
             return {"session_id": session_id, "status": "processing"}
 
         @self._app.post("/api/chat/stream")
