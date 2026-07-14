@@ -103,3 +103,26 @@ description: |
 - **需要确认的**用 AskUserQuestion
 - **不要因为风格主观意见阻塞** — 只报会导致生产问题的
 - 读计划文件（如果有），对照检查：完成度 DONE/PARTIAL/NOT DONE/CHANGED
+
+---
+
+### Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "代码能跑就行" | 能跑的代码可能明天就炸。审查是在生产事故前找到漏洞的最后防线。 |
+| "AI 生成的代码大概率没问题" | AI 代码需要更多审查，不是更少。看起来自信的代码可能隐藏逻辑错误。 |
+| "这只是个小改动，不用审" | 小改动引入大问题。所有变更必须经过审查。 |
+
+### Red Flags
+
+- 发现不报 confidence 分数
+- 只报了风格问题没报结构性问题
+- 没有读计划文件来检查完成度
+
+### Verification
+
+- [ ] 每个发现都有 confidence 分数 (1-10)
+- [ ] P0/P1 问题已标记严重度和位置
+- [ ] 已经对照计划文件检查完成度
+- [ ] 已给出明确的 APPROVED / NEEDS_FIX / BLOCKED 结论

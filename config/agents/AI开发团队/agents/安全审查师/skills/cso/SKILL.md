@@ -89,3 +89,27 @@ STRIDE: M/6 threats modeled
 
 ### Verdict: CLEAN / NEEDS_FIX (N items) / BLOCKED
 ```
+
+---
+
+### Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "这只是内部工具" | 内部工具是最常见的攻击入口。没有外部暴露面不等于没有风险。 |
+| "用户输入已经在前端校验过了" | 前端校验只是 UX 优化，不是安全控制。后端必须独立校验。 |
+| "这个漏洞不太可能被利用" | "可能"就是对生产来说不够安全。没有利用场景就不该报告。 |
+
+### Red Flags
+
+- 报出了置信度 < 8/10 的发现（噪音）
+- 没有包含具体的利用场景
+- 发现 Critical 漏洞但没有阻塞发布
+
+### Verification
+
+- [ ] OWASP Top 10 全部检查完毕
+- [ ] STRIDE 威胁模型完成
+- [ ] 所有发现置信度 ≥ 8/10
+- [ ] 每个发现包含具体利用场景
+- [ ] 已给出 CLEAN / NEEDS_FIX / BLOCKED 结论

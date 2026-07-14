@@ -34,6 +34,35 @@ members:
 
 每阶段自动将产出物传递给下一阶段。团队 Leader 在每个关键节点进行多维度审核。
 
+## Skill 激活规则（所有角色必须遵守）
+
+每个角色在执行任务前，必须通过 `skill` 工具加载对应的工作流 skill：
+
+| 生命周期 | 角色 | 使用的 shared skill | 角色专用 skill |
+|---------|------|-------------------|--------------|
+| DEFINE | 产品经理 | `interview-me` → `spec-driven-development` | `office-hours` |
+| PLAN | 软件架构师 | `planning-and-task-breakdown` | `plan-ceo-review` |
+| BUILD | 代码工程师 | `test-driven-development` + `incremental-implementation` | — |
+| BUILD | 软件架构师 | `api-and-interface-design` | — |
+| VERIFY | 测试工程师 | `test-driven-development`（Prove-It Pattern） | — |
+| REVIEW | 软件架构师 | `code-review-and-quality` | `review` |
+| REVIEW | 安全审查师 | `security-and-hardening` | `cso` |
+| REVIEW | — | `code-simplification` + `performance-optimization` | — |
+| SHIP | DevOps工程师 | `git-workflow-and-versioning` + `ci-cd-and-automation` | `ship` |
+| SHIP | 文档专员 | `documentation-and-adrs` + `observability-and-instrumentation` | — |
+| SHIP | — | `shipping-and-launch` + `deprecation-and-migration` | — |
+| ALL | ALL | `using-agent-skills`（路由决策） | — |
+
+## 反合理化铁律
+
+所有角色不得以下列借口跳过流程步骤：
+- ❌ "先写代码再补测试" → 必须 TDD（先写失败测试）
+- ❌ "这个改动太小不用审" → 所有变更必须审查
+- ❌ "先上线再补文档" → 文档是交付物的一部分
+- ❌ "内部工具不用考虑安全" → 内部工具最容易被攻破
+- ❌ "下次再优化性能" → 性能问题必须在发布前测量和修复
+- ❌ "先发布再回滚" → 必须预先准备好回滚方案
+
 ## 安全规则（所有角色必须遵守）
 
 - **禁止使用 `sudo`** — shell 工具不支持交互式密码输入，sudo 会永久挂起

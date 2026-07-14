@@ -72,3 +72,27 @@ description: |
 - **产出导向** — 每个技术选择绑定到用户结果
 - **直接谈质量** — Bug 就是 Bug。边缘案例就是边缘案例。
 - **禁用词** — 不写：crucial、robust、comprehensive、nuanced、multifaceted、furthermore、moreover、additionally、pivotal、landscape、tapestry、underscore、foster、showcase
+
+---
+
+### Common Rationalizations
+
+| Rationalization | Reality |
+|---|---|
+| "用户说这就是他们要的" | 用户说的是解决方案，不是问题。追问真实需求。 |
+| "先做完整版再砍" | 完整版永远不会被砍。从最小版本开始。 |
+| "这个边缘案例不会发生" | 边缘案例一定会发生——在周五晚上。 |
+
+### Red Flags
+
+- 没有先问用户选择哪种审查模式
+- 评分维度遗漏
+- 没有给出明确的 APPROVED / NEEDS_FIX / BLOCKED
+
+### Verification
+
+- [ ] 已确认审查模式（四种之一）
+- [ ] 8个维度全部评分
+- [ ] Critical 问题已列出（含位置）
+- [ ] 已给出明确 verdict
+- [ ] 有具体的 next_action

@@ -68,7 +68,10 @@ config/
 │   ├── 数字中台/
 │   ├── 售后客服/
 │   ├── 代码审查/
-│   └── IT运维/
+│   ├── IT运维/
+│   └── AI开发团队/        # Team agent with skills + references + sub-agents
+│       ├── skills/        # 23 shared lifecycle skills (each may have references/)
+│       └── agents/        # 7 sub-agent personas
 ├── skills/                # Skill definitions (each has SKILL.md)
 │   └── report-writer/
 ├── memory/                # Auto-managed (gitignored)
@@ -98,6 +101,47 @@ workspace/                # Auto-created, gitignored
 - **Logging**: Uses `rich.logging.RichHandler` with aligned logger names; API calls logged to `logs/api_YYYYMMDD.log`
 - **Sandbox**: Optional sandbox via `config/sandbox.json` (process or Docker mode). Intercepted at `Agent._sandbox_intercept()` — tools remain unaware of sandboxing
 - **Team pipeline**: `TeamOrchestrator` supports `default`/`feedback`/`auto` modes. `feedback` mode enables dev↔test feedback loops with automatic retry. `auto` mode uses LLM to dynamically generate pipeline stages
+
+## Skill Lifecycle — Automatic Routing
+
+The agent uses the `skill` tool to load structured workflows. Skills follow the lifecycle: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP**. Before ANY action, check skill applicability:
+
+### Intent-to-Skill Routing (always check first)
+
+| User says / Task type | Load this skill first | Followed by |
+|---|---|---|
+| "build a feature", new project, new feature | `spec-driven-development` | plan → build → test → review |
+| vague idea, unclear requirements | `interview-me` | spec-driven-development |
+| "plan this", "break this down" | `planning-and-task-breakdown` | — |
+| implement, code, write code | `incremental-implementation` + `test-driven-development` | review |
+| fix a bug, debug, something broke | `debugging-and-error-recovery` | tdd (regression test) |
+| review this, code review, check my code | `code-review-and-quality` | — |
+| security, audit, is this secure | `security-and-hardening` | — |
+| performance, slow, optimize | `performance-optimization` | — |
+| deploy, release, ship, publish | `shipping-and-launch` | — |
+| git, commit, push, branch | `git-workflow-and-versioning` | — |
+| design API, interface, module boundary | `api-and-interface-design` | — |
+| document, ADR, changelog | `documentation-and-adrs` | — |
+| CI/CD, pipeline, build, deploy pipeline | `ci-cd-and-automation` | — |
+
+### Skill Activation Rules
+
+1. **Always check** if a skill applies before acting. The `using-agent-skills` meta-skill can help route.
+2. **If a skill applies, use it.** Don't skip required workflows (spec, plan, test, review).
+3. **Follow the skill's process exactly** — steps, rationalizations table, red flags, verification checklist.
+4. **Verification is non-negotiable.** Every skill ends with evidence requirements. "Seems right" is never sufficient.
+5. **Anti-rationalization.** If you think "I can skip this step", read the Common Rationalizations table in the skill first.
+6. Red flags in a skill mean you're violating it. Stop and correct course.
+
+### Reference Checklists
+
+Quick-reference materials are in individual skill directories under `skills/<skill>/references/`:
+- `code-review-and-quality/references/definition-of-done.md` — Project-wide standing bar
+- `test-driven-development/references/testing-patterns.md` — Test structure, naming, mocking
+- `security-and-hardening/references/security-checklist.md` — Pre-commit security checks
+- `performance-optimization/references/performance-checklist.md` — Core Web Vitals targets
+- `frontend-ui-engineering/references/accessibility-checklist.md` — WCAG 2.1 AA checks
+- `observability-and-instrumentation/references/observability-checklist.md` — RED metrics, logging, alerting
 
 ## Docker
 
