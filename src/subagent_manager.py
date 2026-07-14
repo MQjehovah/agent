@@ -376,6 +376,14 @@ class SubagentManager:
                 )
                 if agent_result.status == "failed":
                     return f"ERROR: 团队子代理 {member_name} 执行失败: {agent_result.result}"
+                # 上报上下文大小
+                try:
+                    _cs = agent.tracer.get_context_stats()
+                    _ctx_val = _cs.get("final", 0) or _cs.get("peak", 0)
+                    if _ctx_val and tool_callback:
+                        tool_callback("_ctx", "_ctx", {"tokens": _ctx_val}, None)
+                except Exception:
+                    pass
                 return agent_result.result
             finally:
                 await agent.cleanup()
@@ -656,6 +664,14 @@ class SubagentManager:
 
         # 团队路由：如果是团队，使用 TeamOrchestrator
         if self.is_team(template_name):
+            # 记录用户输入到 session（使 /messages 能看到 prompt）
+            if session_id and self._parent_agent and self._parent_agent.session_manager:
+                sess = await self._parent_agent.session_manager.get_session(session_id)
+                if not sess:
+                    sess = await self._parent_agent.session_manager.create_session(
+                        agent_id=f"team:{template_name}", session_id=session_id)
+                if sess:
+                    sess.add_message("user", task)
             return await self._run_team_orchestrator(task, template_name, progress_callback, parent_session_id=session_id)
 
         # 个人子代理：原有逻辑

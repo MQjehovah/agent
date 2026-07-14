@@ -387,8 +387,13 @@ class CommandHandler:
                         label = sid.split(":", 1)[1] if ":" in sid else sid[:8]
                         msgs = storage.get_messages(sid) or []
                         for m in msgs:
-                            if m.get("role") != "system":
-                                all_msgs.append((label, m))
+                            role = m.get("role", "")
+                            if role == "system":
+                                continue
+                            # 子 session 的 user 消息是 orchestrator 内部指令，不显示
+                            if label and role == "user":
+                                continue
+                            all_msgs.append((label, m))
             except Exception:
                 pass
         print(f"\n  [消息] 共 {len(all_msgs)} 条")

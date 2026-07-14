@@ -305,18 +305,31 @@ class TeamOrchestrator:
 
         full_task = stage_context
         full_task += f"\n\n## 你的任务\n根据你的角色职责完成「{stage}」阶段的工作。"
-        full_task += "\n\n## 角色技能\n你拥有本角色专属技能，可通过 execute_skill 工具调用。"
+        full_task += f"\n工作目录: {self.workspace}"
+
+        # 可用技能列表
+        try:
+            _pa = getattr(self.subagent_manager, '_parent_agent', None)
+            if _pa and _pa.skill_manager:
+                _sk = _pa.skill_manager.list_skills()
+                if _sk:
+                    full_task += "\n\n## 可用技能（通过 execute_skill 调用）\n" + "\n".join(f"- {s}" for s in _sk)
+        except Exception:
+            pass
+
         full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令"
         if output_file:
             full_task += f"\n将输出写入 `{output_file}`。"
-        full_task += f"\n工作目录: {self.workspace}"
 
-        # 实现阶段明确要求修改代码
         if stage in ("implementation", "fix", "bug_fix"):
-            full_task += "\n\n## 关键要求\n- 必须使用 edit 或 file_operation 工具修改源文件来修复问题"
-            full_task += "\n- 不允许只读不写 —— 读文件了解后必须执行实际的代码修改"
-            full_task += "\n- 修改后必须验证（运行测试或编译）"
-            full_task += "\n- 如果测试失败，分析失败原因并继续修复直到通过"
+            full_task += (
+                "\n\n## 铁律\n"
+                "- 读完文件后必须立即动手修改代码，禁止反复读取同一文件\n"
+                "- 每个文件最多读 2 次，第 3 次读到同一文件视为分析瘫痪，直接报错\n"
+                "- 必须使用 edit 或 file_operation(write) 工具修改源文件\n"
+                "- 只读不改 = 任务失败\n"
+                "- 修改后运行测试/编译验证，失败则继续修"
+            )
 
         _stage = stage
         _cb = self.progress_callback

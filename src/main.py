@@ -406,6 +406,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                     _write(f"  {_DIM}  ┊  {_RED}✗{_RESET} {_DIM}{brief}{_RESET}")
                 elif not brief.startswith('{"success": true'):
                     _write(f"  {_DIM}  ┊  {_GREEN}✔{_RESET} {_DIM}{brief}{_RESET}")
+        if status == "_ctx":
+            _STATE["ctx_tokens"] = (info or {}).get("tokens", 0) if isinstance(info, dict) else 0
         if status == "start":
             _STATE["current_stage"] = stage
 
@@ -417,15 +419,29 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             elapsed = now - _STATE["task_start_ts"]
             stage = _STATE.get("current_stage", "")
             model = _STATE.get("model_name", "")
+            agent_name = _STATE.get("agent_name", agent.name or "")
             tag = f" {_GRAY}┆ {stage}{_RESET}" if stage else ""
+            an = f" {_CYAN}{agent_name}{_RESET}" if agent_name else ""
             mod = f" {_GRAY}[{model}]{_RESET}" if model else ""
             try:
                 u = agent.client.usage_tracker.get_summary() if hasattr(agent.client, 'usage_tracker') else {}
                 total = u.get("total_prompt_tokens", 0) + u.get("total_completion_tokens", 0)
-                apis = f"  {_DIM}API {total:,}{_RESET}" if total else ""
+                apis = f"  {_DIM}∑{total:,}{_RESET}" if total else ""
             except Exception:
                 apis = ""
-            _write(f"\r  {_DIM}{ch}  {elapsed:.0f}s{tag}{mod}{apis}", end="")
+            ctxs = ""
+            _ctx_val = _STATE.get("ctx_tokens", 0)
+            if _ctx_val:
+                ctxs = f"  {_GRAY}ctx {_ctx_val:,}{_RESET}"
+            elif hasattr(agent, 'tracer'):
+                try:
+                    _cs = agent.tracer.get_context_stats()
+                    _ctx_v = _cs.get("final", 0) or _cs.get("peak", 0)
+                    if _ctx_v:
+                        ctxs = f"  {_GRAY}ctx {_ctx_v:,}{_RESET}"
+                except Exception:
+                    pass
+            _write(f"\r  {_DIM}{ch}{an}  {elapsed:.0f}s{tag}{mod}{ctxs}{apis}", end="")
             await asyncio.sleep(0.2)
         _clear_line()
 
@@ -437,6 +453,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         _STATE["task_start_ts"] = time.time()
         _STATE["current_stage"] = ""
         _STATE["model_name"] = getattr(agent.client, "model", "")
+        _STATE["ctx_tokens"] = 0
+        _STATE["agent_name"] = target_agent or agent.name or ""
         spinner_task = asyncio.create_task(_spinner())
         cancel_flag.clear()
         loop = asyncio.get_running_loop()
@@ -841,6 +859,44 @@ async def main():
 
     target_agent = args.agent or ""
 
+    if target_agent:
+        _team_dir = os.path.join(config_dir, "agents", target_agent)
+        _team_skills_dir = os.path.join(_team_dir, "skills")
+        # 加载团队共享技能
+        if os.path.exists(_team_skills_dir) and agent.skill_manager:
+            from skills import SkillManager
+            _tsm = SkillManager(_team_skills_dir)
+            for _sn in _tsm.list_skills():
+                if _sn not in agent.skill_manager.skills:
+                    _sk = _tsm.get_skill(_sn)
+                    if _sk:
+                        agent.skill_manager.skills[_sn] = _sk
+        # 替换为团队自身的 system prompt（config/agents/团队名/PROMPT.md）
+        _team_prompt = os.path.join(_team_dir, "PROMPT.md")
+        if os.path.exists(_team_prompt):
+            from utils.frontmatter import extract_frontmatter
+            with open(_team_prompt, encoding="utf-8") as _f:
+                _content = _f.read()
+            _fm, _body = extract_frontmatter(_content)
+            if _body:
+                agent.name = _fm.get("name", target_agent) if isinstance(_fm, dict) else target_agent
+                agent.description = _fm.get("description", "") if isinstance(_fm, dict) else ""
+                agent.system_prompt = agent.system_prompt_raw = _body
+                # 用团队成员替换子代理列表
+                if agent.subagent_manager:
+                    _members = agent.subagent_manager._team_members.get(target_agent, {})
+                    if _members:
+                        _orig_prompt = agent.subagent_manager.get_subagent_prompt
+                        _lines = ["\n\n## 【团队成员】\n"]
+                        for _mname, _minfo in _members.items():
+                            _lines.append(f"名称：{_mname}\n")
+                            _lines.append(f"角色：{_minfo.get('description', '')}\n")
+                        _lines.append("\n团队 Leader 可根据需要将任务委派给对应成员。")
+                        _team_prompt_text = "\n".join(_lines)
+                        # 注入到 prompt builder 中
+                        agent.subagent_manager.get_subagent_prompt = lambda: _team_prompt_text
+                agent._build_prompt()
+
     web_server = None
     plugin_manager = None
 
@@ -891,17 +947,6 @@ async def main():
             if kanban_board:
                 web_server.set_kanban(kanban_board)
             web_server.start()
-
-        if target_agent:
-            _team_skills_dir = os.path.join(config_dir, "agents", target_agent, "skills")
-            if os.path.exists(_team_skills_dir) and agent.skill_manager:
-                from skills import SkillManager
-                _tsm = SkillManager(_team_skills_dir)
-                for _sn in _tsm.list_skills():
-                    if _sn not in agent.skill_manager.skills:
-                        _sk = _tsm.get_skill(_sn)
-                        if _sk:
-                            agent.skill_manager.skills[_sn] = _sk
 
         if args.mode == "autonomous":
             await autonomous_mode(agent, shutdown_event, args)
