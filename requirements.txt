@@ -1,3 +1,4 @@
+prompt_toolkit>=3.0.0
 apscheduler>=3.10.0
 pymysql>=1.1.0
 mcp>=1.0.0

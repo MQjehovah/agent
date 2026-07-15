@@ -1,27 +1,29 @@
-from settings import get_settings, init_settings
-from plugins import PluginManager
-from llm import LLMClient
-from hooks import HookEvent
-from config import Config, validate_config
-from cmd_handler import CommandHandler
-from agent_session import AgentSessionManager
-from agent import Agent
-from rich.panel import Panel
-from rich.console import Console
 import asyncio
+import contextlib
 import gc
-import json
 import logging
 import os
 import signal
 import sys
-import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.panel import Panel
+
+from agent import Agent
+from agent_session import AgentSessionManager
+from cmd_handler import CommandHandler
+from config import Config, validate_config
+from llm import LLMClient
+from plugins import PluginManager
+from settings import get_settings, init_settings
+from tui import TUIApp
+from tui.display import _fmt_args, _truncate, _write
+from tui.styles import BOLD, CYAN, DIM, GRAY, GREEN, RED, RESET, YELLOW
 
 # 日志目录必须在模块导入前设置（llm.py 在导入时读取 AGENT_LOG_DIR）
 _LOCAL_LOG = os.path.join(Path(__file__).parent.parent, "logs")
@@ -75,256 +77,6 @@ def _init_logging(log_dir: str):
     logger.info("日志系统初始化完成，目录: %s", log_dir)
 
 
-# ── ANSI ────────────────────────────────────────────────────────────
-def _SGR(c): return f"\033[{c}m" if sys.stdout.isatty() else ""
-
-
-_DIM = _SGR("2")
-_GREEN = _SGR("32")
-_YELLOW = _SGR("33")
-_CYAN = _SGR("36")
-_RED = _SGR("31")
-_RESET = _SGR("0")
-_BOLD = _SGR("1")
-_GRAY = _SGR("90")
-
-
-def _truncate(text: str, w: int = 60) -> str:
-    if not text:
-        return ""
-    line = text.split("\n")[0].strip()
-    if len(line) > w:
-        return line[: w - 3] + "..."
-    return line
-
-
-def _fmt_args(args: dict) -> str:
-    """从工具参数中提取人类可读的摘要"""
-    if not args:
-        return ""
-    for key in ("path", "file_path", "pattern", "name", "command"):
-        val = args.get(key)
-        if val:
-            return str(val)[:60]
-    return _truncate(json.dumps(args, ensure_ascii=False), 60)
-
-
-def _write(text: str = "", end: str = "\n"):
-    sys.stdout.write(text + end)
-    sys.stdout.flush()
-
-
-def _clear_line():
-    _write("\r\033[K", end="")
-
-
-# ── Terminal UI ─────────────────────────────────────────────────────
-_STATE = {"task_done": False, "task_start_ts": 0.0, "tool_count": 0,
-          "round": 0, "subagent_depth": 0, "current_stage": ""}
-
-
-async def _wait_event(flag: threading.Event):
-    """等待 threading.Event 被设置（用于 asyncio.wait 配对）"""
-    while not flag.is_set():
-        await asyncio.sleep(0.05)
-
-
-def _monitor_escape(cancel_flag: threading.Event):
-    """后台线程：监听双击 ESC 取消当前任务（不消费非 ESC 按键）"""
-    last_esc = 0.0
-    try:
-        if sys.platform == "win32":
-            import ctypes
-            VK_ESCAPE = 0x1B
-            user32 = ctypes.windll.user32
-            while not cancel_flag.is_set():
-                if user32.GetAsyncKeyState(VK_ESCAPE) & 1:
-                    now = time.time()
-                    if now - last_esc < 1.0:
-                        cancel_flag.set()
-                        break
-                    last_esc = now
-                time.sleep(0.05)
-        else:
-            import termios
-            import tty
-            import select
-            fd = sys.stdin.fileno()
-            old = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)
-                while not cancel_flag.is_set():
-                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
-                    if r:
-                        ch = sys.stdin.read(1)
-                        if ch == '\x1b':
-                            now = time.time()
-                            if now - last_esc < 1.0:
-                                cancel_flag.set()
-                                break
-                            last_esc = now
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    except Exception as e:
-        logger.debug(f"ESC 监听线程异常: {e}")
-
-
-def _elapsed() -> str:
-    t = time.time() - _STATE["task_start_ts"]
-    if t < 60:
-        return f"{t:.0f}s"
-    return f"{t//60:.0f}m{t % 60:.0f}s"
-
-
-class TerminalUI:
-
-    def __init__(self):
-        self._spinner_idx = 0
-        self._chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        self._active = False
-
-    # ── prompts ──
-
-    def say(self, text: str):
-        """普通信息行"""
-        _write(f"  {text}")
-
-    def dim(self, text: str):
-        _write(f"  {_DIM}{text}{_RESET}")
-
-    def ok(self, text: str):
-        _write(f"  {_GREEN}{text}{_RESET}")
-
-    def warn(self, text: str):
-        _write(f"  {_YELLOW}{text}{_RESET}")
-
-    def err(self, text: str):
-        _write(f"  {_RED}{text}{_RESET}")
-
-    def rule(self):
-        """分隔线"""
-        _write(f"  {_DIM}{'─' * 60}{_RESET}")
-
-    def prompt(self, context: str = ""):
-        """显示输入提示"""
-        prefix = f"{_GREEN}❯{_RESET}" if sys.stdout.isatty() else ">"
-        ctx = f" {_DIM}{context}{_RESET}" if context else ""
-        _write(f"  {prefix}{ctx} ", end="\n")
-
-    def prompt_continue(self):
-        """多行继续提示"""
-        _write(f"  {_DIM}...{_RESET} ", end="")
-
-    # ── task lifecycle ──
-
-    def task_start(self):
-        _STATE["task_done"] = False
-        _STATE["task_start_ts"] = time.time()
-        _STATE["tool_count"] = 0
-        _STATE["round"] = 0
-        _STATE["subagent_depth"] = 0
-        self._active = True
-        self._spinner_idx = 0
-
-    def task_done(self):
-        self._active = False
-        _STATE["task_done"] = True
-
-    def round_start(self, iteration: int):
-        _STATE["round"] = iteration
-        if iteration > 1:
-            _clear_line()
-
-    def tick(self):
-        if not self._active:
-            return
-        ch = self._chars[self._spinner_idx % len(self._chars)]
-        self._spinner_idx += 1
-        elapsed = _elapsed()
-        r = _STATE["round"]
-        t = _STATE["tool_count"]
-        status = f"thinking" if r == 0 else f"round {r}"
-        extra = f" · {t} tools" if t else ""
-        _write(f"\r  {_DIM}{ch} {status}{extra}  {elapsed}{_RESET}", end="")
-
-    # ── tool calls ──
-
-    def tool_call(self, name: str, args: dict):
-        brief = _fmt_args(args)
-        _STATE["tool_count"] += 1
-        _clear_line()
-        icon = "▶"
-        if name in ("read", "file_operation"):
-            icon = "📖" if sys.stdout.isatty() else "·"
-        elif name in ("edit", "write"):
-            icon = "✏️" if sys.stdout.isatty() else "·"
-        elif name == "shell":
-            icon = "⚡" if sys.stdout.isatty() else "·"
-        elif name == "subagent":
-            _STATE["subagent_depth"] += 1
-            icon = "⊕" if sys.stdout.isatty() else "+"
-        _write(f"  {_DIM}{icon} {name}{_RESET} {_GRAY}{brief}{_RESET}")
-
-    def tool_result(self, name: str, result: str):
-        brief = _truncate(result, 60)
-        if not brief or brief == "{}" or brief.startswith('{"success": true'):
-            return
-        if brief.startswith('{"success": false'):
-            _write(f"  {_RED}✗ {name} → {brief[:80]}{_RESET}")
-            return
-        _write(f"  {_GREEN}✔{_RESET} {_DIM}{brief}{_RESET}")
-
-    def subagent_result(self, name: str, status: str, preview: str = ""):
-        _STATE["subagent_depth"] -= 1
-        s = f"{_GREEN}done{_RESET}" if status == "completed" else f"{_RED}{status}{_RESET}"
-        line = f"  {_DIM}└─ {name} [{s}]{_RESET}"
-        if preview:
-            line += f"  {_DIM}{preview}{_RESET}"
-        _write(line)
-
-    # ── output ──
-
-    def result_text(self, text: str):
-        if not text:
-            return
-        elapsed = _elapsed()
-        _write(f"  {_DIM}{'━' * 64}{_RESET}")
-        in_code = False
-        code_lang = ""
-        for line in text.strip().split("\n"):
-            if line.startswith("```"):
-                if in_code:
-                    _write(f"  {_DIM}└{'─' * 30}{_RESET}")
-                else:
-                    code_lang = line[3:].strip()
-                    _write(f"  {_DIM}┌{'─' * 30} {code_lang}{_RESET}")
-                in_code = not in_code
-                continue
-            if in_code:
-                _write(f"  {_GRAY}│{_RESET} {line}")
-            elif line.strip().startswith("# ") or line.strip().startswith("## "):
-                # 标题行 — 加粗显示
-                _write(f"  {_BOLD}{line}{_RESET}")
-            elif line.strip().startswith("- ") or line.strip().startswith("* "):
-                _write(f"  {_DIM}•{_RESET} {line.strip()[2:]}")
-            elif line.strip():
-                _write(f"  {line}")
-            else:
-                _write("")
-        _write(f"  {_DIM}{'━' * 64}{_RESET}")
-        _write(f"  {_GREEN}completed{_RESET} {_DIM}in {elapsed}{_RESET}")
-
-    def thinking(self, content: str):
-        """显示推理过程（可选）"""
-        if not content:
-            return
-        _clear_line()
-        for line in content.strip().split("\n")[-3:]:
-            t = _truncate(line, 80)
-            if t:
-                _write(f"  {_DIM}┊ {t}{_RESET}")
-
-
 # 绑定到 CLI 会话的插件会话（如 feishu 绑定后共享上下文）
 BOUND_PLUGIN_SESSION: str = ""
 
@@ -334,14 +86,6 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
     from channels import MessageRouter
     router = MessageRouter(agent)
     session_id = router.format_session_id("cli", uuid.uuid4().hex[:12])
-    current_task: asyncio.Task | None = None
-    task_counter = 0
-    input_queue: asyncio.Queue[str] = asyncio.Queue()
-    input_task: asyncio.Task | None = None
-    ui = TerminalUI()
-    progress_shown = False
-    cancel_flag = threading.Event()
-    _task_pending = 0
 
     # 工作目录上下文
     ws_context = os.path.basename(os.path.normpath(agent.workspace))
@@ -351,424 +95,79 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         branch = _sp.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                   cwd=agent.workspace, stderr=_sp.DEVNULL, timeout=3).decode().strip()
     except Exception:
-        pass  # git 不可用时忽略分支名
-    ctx_prefix = f"{_DIM}{ws_context}{_RESET}" + \
-        (f" {_DIM}({branch}){_RESET}" if branch else "")
+        pass
     if target_agent:
-        ctx_prefix += f" {_GREEN}→ {target_agent}{_RESET}"
+        ws_context += f" → {target_agent}"
 
-    # 注册钩子
-    def on_tool_start(ctx):
-        if not target_agent:
-            ui.tool_call(ctx.tool_name, ctx.arguments or {})
+    # ── TUI ───────────────────────────────────────────────────
+    tui = TUIApp(agent)
+    tui.setup(ws_context, branch, target_agent, session_id)
+    tui.register_hooks(agent)
 
-    def on_tool_result(ctx):
-        if not target_agent:
-            ui.tool_result(ctx.tool_name, str(ctx.result or ""))
-
-    def on_round_start(ctx):
-        it = (ctx.metadata or {}).get("iteration", 0)
-        ui.round_start(it)
-
-    def on_subagent_result(ctx):
-        meta = ctx.metadata or {}
-        # 恢复 spinner 显示主 agent 名称
-        _STATE["agent_name"] = target_agent or agent.name or ""
-        preview = meta.get("result", "")
-        if preview and len(preview) > 300:
-            preview = preview[:300] + "..."
-        ui.subagent_result(meta.get("name", "?"), meta.get("status", "?"), preview)
-
-    def on_subagent_start(ctx):
-        meta = ctx.metadata or {}
-        _STATE["agent_name"] = meta.get("name", "?")
-        _clear_line()
-
-    def on_subagent_tool_start(ctx):
-        if not target_agent:
-            ui.tool_call(f"├─ {ctx.tool_name}", ctx.arguments or {})
-
-    def on_subagent_tool_result(ctx):
-        if not target_agent:
-            brief = _truncate(str(ctx.result or ""), 60)
-            if brief and not brief.startswith('{"success": true') and brief != "{}":
-                icon = _GREEN + "✔" + _RESET if not brief.startswith('{"success": false') else _RED + "✗" + _RESET
-                _write(f"  {_DIM}│{_RESET} {icon} {_DIM}{brief}{_RESET}")
-
-    agent.hooks.register(HookEvent.TOOL_START, on_tool_start)
-    agent.hooks.register(HookEvent.TOOL_RESULT, on_tool_result)
-    agent.hooks.register(HookEvent.ROUND_START, on_round_start)
-    agent.hooks.register(HookEvent.SUBAGENT_START, on_subagent_start)
-    agent.hooks.register(HookEvent.SUBAGENT_RESULT, on_subagent_result)
-    agent.hooks.register(HookEvent.SUBAGENT_TOOL_START, on_subagent_tool_start)
-    agent.hooks.register(HookEvent.SUBAGENT_TOOL_RESULT, on_subagent_tool_result)
-
-    def on_subagent_progress(ctx):
-        meta = ctx.metadata or {}
-        stage = meta.get("stage", "")
-        status = meta.get("status", "")
-        info = meta.get("info")
-        extra = meta.get("extra")
-        if status == "_ctx" and isinstance(info, dict):
-            _STATE["ctx_tokens"] = info.get("tokens", 0)
-            _STATE["iter"] = info.get("iter", 0)
-        elif status == "start" and info:
-            _STATE["current_stage"] = stage
-            _STATE["agent_name"] = info
-            _STATE["iter"] = 0
-            _STATE["stage_max_iter"] = extra if isinstance(extra, (int, float)) else 0
-    agent.hooks.register(HookEvent.SUBAGENT_PROGRESS, on_subagent_progress)
-
-    # ask_user 处理器
     ask_tool = agent.tool_registry.get_tool(
         "ask_user") if agent.tool_registry else None
-    if ask_tool and hasattr(ask_tool, "set_input_handler"):
-        async def _on_ask_user(question: str, options: list, default: str) -> str:
-            _STATE["task_done"] = True
-            _input_paused.set()
-            _clear_line()
-            if options:
-                _write(f"  {_BOLD}{question}{_RESET}")
-                for i, opt in enumerate(options, 1):
-                    _write(f"  {_DIM}{i}.{_RESET} {opt}")
-                prompt = f"  {_GREEN}❯{_RESET} " + \
-                    (f"({default}) " if default else "")
-            else:
-                _write(f"  {_BOLD}{question}{_RESET}")
-                prompt = f"  {_GREEN}❯{_RESET} " + \
-                    (f"({default}) " if default else "")
-            try:
-                loop = asyncio.get_running_loop()
-                raw = await loop.run_in_executor(None, lambda: input(prompt))
-                if not raw:
-                    return default or ""
-                if options and raw.isdigit() and 1 <= int(raw) <= len(options):
-                    return options[int(raw) - 1]
-                return raw
-            finally:
-                _input_paused.clear()
-        ask_tool.set_input_handler(_on_ask_user)
+    tui.setup_ask_handler(ask_tool)
 
     cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set)
+    current_task: asyncio.Task | None = None
+
+    # 启动 TUI（清屏 + 全屏 Application）
+    await tui.start()
 
     # ── 进度回调（用于 team agent 模式） ──
     def _team_progress(stage, status, info, extra=None):
-        nonlocal progress_shown
-        progress_shown = True
         now = time.time()
         if status == "start":
-            _STATE["stage_ts"] = now
-            _clear_line()
-            _write(f"  {_DIM}{'─' * 40}{_RESET}")
-            _write(f"  {_BOLD}{_CYAN}{stage}{_RESET}  {_GRAY}({info}){_RESET}")
+            tui.state.current_stage = stage
+            tui.state.agent_name = info
+            _write(f"  {DIM}{'─' * 40}{RESET}")
+            _write(f"  {BOLD}{CYAN}{stage}{RESET}  {GRAY}({info}){RESET}")
         elif status == "pipeline":
-            _write(f"  {_DIM}pipeline: {', '.join(info)}{_RESET}")
+            _write(f"  {DIM}pipeline: {', '.join(info)}{RESET}")
         elif status == "feedback":
-            _clear_line()
-            _write(f"  {_DIM}{'─' * 40}{_RESET}")
-            _write(f"  {_BOLD}{_YELLOW}↻{_RESET} 开发↔测试反馈循环 {_GRAY}{info}{_RESET}")
+            _write(f"  {DIM}{'─' * 40}{RESET}")
+            _write(f"  {BOLD}{YELLOW}↻{RESET} 开发↔测试反馈循环 {GRAY}{info}{RESET}")
             if extra:
-                _write(f"  {_DIM}  · 失败详情: {_GRAY}{extra[:120]}{_RESET}")
+                _write(f"  {DIM}  · 失败详情: {GRAY}{extra[:120]}{RESET}")
         elif status == "stage_timeout":
-            _clear_line()
-            _write(f"  {_DIM}  {_YELLOW}⚠{_RESET} {_GRAY}timeout{_RESET}")
+            _write(f"  {DIM}  {YELLOW}⚠{RESET} {GRAY}timeout{RESET}")
         elif status == "stage_done":
             parts = stage.split("|", 1)
             name = parts[0]
-            _STATE["current_stage"] = ""
-            elapsed = now - _STATE.get("stage_ts", now)
-            _clear_line()
-            _write(
-                f"  {_DIM}  {_GREEN}✔{_RESET} {name}  {_GRAY}{elapsed:.0f}s{_RESET}")
+            tui.state.current_stage = ""
+            _write(f"  {DIM}  {GREEN}✔{RESET} {name}  {GRAY}{now - tui.state.task_start_ts:.0f}s{RESET}")
         elif status == "llm":
-            # 显示 LLM 推理摘要首句
             text = str(info or "").strip()
             if text:
                 first = text.split("\n")[0].strip()[:120]
                 if first:
-                    _clear_line()
-                    _write(f"  {_DIM}  · {_GRAY}{first}{_RESET}")
+                    _write(f"  {DIM}  · {GRAY}{first}{RESET}")
         elif status == "tool_start":
-            _clear_line()
             tname = stage.split("|", 1)[0] if "|" in stage else stage
             brief = _fmt_args(info) if info else ""
-            _write(f"  {_DIM}  · {tname} {_GRAY}{brief}{_RESET}")
+            _write(f"  {DIM}  · {tname} {GRAY}{brief}{RESET}")
         elif status == "tool_result":
             brief = _truncate(extra or "", 45)
-            if brief:
-                if brief.startswith('{"success": false') or "错误" in brief or "失败" in brief:
-                    _clear_line()
-                    _write(
-                        f"  {_DIM}  · {_RED}✗{_RESET} {_DIM}{brief[:60]}{_RESET}")
-        if status == "_max_iter":
-            if isinstance(info, dict):
-                _STATE["stage_max_iter"] = info.get("max_iter", 0)
-        if status == "_ctx":
-            _STATE["ctx_tokens"] = (info or {}).get(
-                "tokens", 0) if isinstance(info, dict) else 0
-            _STATE["iter"] = (info or {}).get(
-                "iter", 0) if isinstance(info, dict) else 0
-        if status == "start":
-            _STATE["current_stage"] = stage
-            _STATE["agent_name"] = info
-            _STATE["iter"] = 0
-            _STATE["stage_max_iter"] = extra if isinstance(
-                extra, (int, float)) else 0
+            if brief and (brief.startswith('{"success": false') or "错误" in brief or "失败" in brief):
+                _write(f"  {DIM}  · {RED}✗{RESET} {DIM}{brief[:60]}{RESET}")
 
-    async def _spinner():
-        chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        while not shutdown_event.is_set() and not _STATE["task_done"]:
-            now = time.time()
-            ch = chars[int(now * 10) % 10]
-            elapsed = now - _STATE["task_start_ts"]
-            stage = _STATE.get("current_stage", "")
-            model = _STATE.get("model_name", "")
-            agent_name = _STATE.get("agent_name", agent.name or "")
-            parts = []
-            parts.append(f"{_BOLD}{ch}{elapsed:.0f}s{_RESET}")
-            if stage:
-                parts.append(f"{_CYAN}{stage}{_RESET}")
-            if agent_name and agent_name != stage:
-                parts.append(f"{_DIM}{agent_name}{_RESET}")
-            if model:
-                parts.append(f"{_GRAY}[{model}]{_RESET}")
-            try:
-                u = agent.client.usage_tracker.get_summary() if hasattr(
-                    agent.client, 'usage_tracker') else {}
-                total = u.get("total_prompt_tokens", 0) + \
-                    u.get("total_completion_tokens", 0)
-                if total:
-                    parts.append(f"{_GRAY}∑{total:,}{_RESET}")
-            except Exception:
-                pass  # usage_tracker 读取失败不影响 spinner
-            ctx_val = _STATE.get("ctx_tokens", 0)
-            if ctx_val:
-                parts.append(f"{_GRAY}ctx {ctx_val:,}{_RESET}")
-            stage_iter = _STATE.get("iter", 0)
-            stage_max = _STATE.get("stage_max_iter", 0)
-            if stage_max and stage_iter:
-                parts.append(f"{_GRAY}{stage_iter}/{stage_max}{_RESET}")
-            elif stage_iter:
-                parts.append(f"{_GRAY}r{stage_iter}{_RESET}")
-            info = f" {_GRAY}·{_RESET} ".join(parts)
-            sys.stdout.write(f"\r\033[K  {info}")
-            sys.stdout.flush()
-            await asyncio.sleep(0.15)
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
-
-    async def run_task(task_id: int, question: str):
-        nonlocal current_task, progress_shown, _task_pending
-        cmd_handler.set_current_task_id(task_id)
-        progress_shown = False
-        _STATE["task_done"] = False
-        _STATE["task_start_ts"] = time.time()
-        _STATE["current_stage"] = ""
-        _STATE["model_name"] = getattr(agent.client, "model", "")
-        _STATE["ctx_tokens"] = 0
-        _STATE["agent_name"] = target_agent or agent.name or ""
-        spinner_task = asyncio.create_task(_spinner())
-        cancel_flag.clear()
-        esc_monitor = threading.Thread(
-            target=_monitor_escape, args=(cancel_flag,), daemon=True)
-        esc_monitor.start()
-
-        async def _run():
-            if target_agent and agent.subagent_manager:
-                if target_agent in agent.subagent_manager._team_configs:
-                    team_dir = os.path.join(
-                        agent.config_dir, "agents", target_agent)
-                    team_agent = Agent(
-                        workspace=agent.workspace, config_dir=team_dir,
-                        client=agent.client, parent_agent=agent,
-                        permission_mode=getattr(agent, '_permission_config', None) and
-                        agent._permission_config.mode.value or "auto",
-                    )
-                    team_agent.subagent_manager = agent.subagent_manager
-                    team_agent._progress_callback = _team_progress
-                    await team_agent.initialize()
-                    result = await team_agent.run(
-                        question, session_id=session_id,
-                        user_id="cli:admin", user_name="管理员",
-                    )
-                    return result
-                instance, _ = await agent.subagent_manager.get_or_create_subagent(
-                    name=target_agent, session_id=session_id,
-                    client=agent.client, parent_agent=agent,
-                )
-                result = await instance.agent.run(question)
-                return result
-            return await agent.run(question, session_id=session_id,
-                                   user_id="cli:admin", user_name="管理员")
-
-        try:
-            task = asyncio.create_task(_run())
-            cancel_waiter = asyncio.create_task(_wait_event(cancel_flag))
-            done, _ = await asyncio.wait(
-                [task, cancel_waiter], return_when=asyncio.FIRST_COMPLETED)
-            if cancel_flag.is_set():
-                task.cancel()
-                try:
-                    await task
-                except:
-                    pass
-                _STATE["task_done"] = True
-                await spinner_task
-                ui.warn("已取消 (双击 ESC)")
-                return
-            cancel_waiter.cancel()
-            result = task.result()
-            _STATE["task_done"] = True
-            await spinner_task
-            if target_agent and progress_shown:
-                _write(f"  {_DIM}{'━' * 64}{_RESET}")
-            text = result.result if hasattr(result, "result") else str(result)
-            ui.result_text(text)
-        except asyncio.CancelledError:
-            _STATE["task_done"] = True
-            await spinner_task
-            ui.warn("已取消")
-        except Exception as e:
-            _STATE["task_done"] = True
-            await spinner_task
-            ui.err(f"错误: {e}")
-        finally:
-            _task_pending -= 1
-            cmd_handler.set_current_task_id(None)
-            current_task = None
-
-    _stdin_transport = None
-
-    # 用于暂停输入读取（ask_user 期间暂停背景读 stdin）
-    _input_paused = asyncio.Event()
-
-    async def input_reader():
-        """后台读取用户输入 — Windows 用 msvcrt 字符级读取，Unix 用 StreamReader"""
-        nonlocal _stdin_transport, _task_pending
-        loop = asyncio.get_event_loop()
-
-        _esc_last = 0.0
-
-        if sys.platform == "win32":
-            import msvcrt
-
-            async def _readline():
-                nonlocal _esc_last
-                line = []
-                while not shutdown_event.is_set():
-                    if _input_paused.is_set():
-                        await asyncio.sleep(0.05)
-                        continue
-                    ch = await loop.run_in_executor(None, msvcrt.getwch)
-                    if ch == '\x00' or ch == '\xe0':
-                        # 箭头/功能键，消费扫描码后丢弃
-                        await loop.run_in_executor(None, msvcrt.getwch)
-                        continue
-                    if ch == '\x1b':
-                        now = time.time()
-                        if not _STATE["task_done"] and now - _esc_last < 1.0 and _esc_last > 0:
-                            cancel_flag.set()
-                            _esc_last = 0
-                            sys.stdout.write("\n")
-                            return ""
-                        _esc_last = now
-                        continue
-                    if ch in ("\r", "\n"):
-                        sys.stdout.write("\n")
-                        break
-                    elif ch in ("\x08", "\x7f"):  # backspace
-                        if line:
-                            removed = line.pop()
-                            if ord(removed) > 0x2000:
-                                sys.stdout.write("\b\b  \b\b")
-                            else:
-                                sys.stdout.write("\b \b")
-                    elif ch == "\x03":
-                        raise KeyboardInterrupt
-                    elif ch == "\x1a":
-                        raise EOFError
-                    elif ch.isprintable():
-                        line.append(ch)
-                        sys.stdout.write(ch)
-                    sys.stdout.flush()
-                return "".join(line)
-        else:
-            _stdin_reader = asyncio.StreamReader()
-            _stdin_protocol = asyncio.StreamReaderProtocol(_stdin_reader)
-            _stdin_transport, _ = await loop.connect_read_pipe(
-                lambda: _stdin_protocol, sys.stdin
-            )
-
-            async def _readline():
-                while not shutdown_event.is_set():
-                    if _input_paused.is_set():
-                        await asyncio.sleep(0.05)
-                        continue
-                    line = await _stdin_reader.readline()
-                    return line.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
-                return ""
-
-        while not shutdown_event.is_set():
-            try:
-                if _task_pending == 0:
-                    ui.prompt(ctx_prefix)
-                first = await _readline()
-                if not first:
-                    continue
-
-                # 检测多行粘贴：连续两行缩进或 """ 开头
-                lines = [first]
-                stripped = first.strip()
-                if stripped.startswith('"""') or stripped.startswith("'''"):
-                    closing = stripped[0:3]
-                    if closing not in stripped[3:]:
-                        while not shutdown_event.is_set():
-                            ui.prompt_continue()
-                            nxt = await _readline()
-                            if nxt is None:
-                                break
-                            lines.append(nxt)
-                            if closing in nxt:
-                                break
-                elif first.startswith(" ") or first.startswith("\t"):
-                    while not shutdown_event.is_set():
-                        chk = await _readline()
-                        if chk is None or chk.strip() == "":
-                            break
-                        lines.append(chk)
-
-                question = "\n".join(lines)
-                _task_pending += 1  # 标记任务排队，防止 prompt 重复显示
-                await input_queue.put(question.strip())
-            except (KeyboardInterrupt, EOFError):
-                shutdown_event.set()
-                break
-            except Exception as e:
-                if shutdown_event.is_set():
-                    break
-                logger.debug(f"input_reader 异常: {e}")
-
+    # ── 信号处理 ──────────────────────────────────────────────
     def handle_signal():
         shutdown_event.set()
+        tui.shutdown()
         if current_task and not current_task.done():
             current_task.cancel()
-        if input_task and not input_task.done():
-            input_task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with contextlib.suppress(NotImplementedError):
             asyncio.get_running_loop().add_signal_handler(sig, handle_signal)
-        except NotImplementedError:
-            pass
 
-    input_task = asyncio.create_task(input_reader())
-
+    # ── 主循环 ────────────────────────────────────────────────
     try:
-        while not shutdown_event.is_set():
-            try:
-                question = await asyncio.wait_for(input_queue.get(), timeout=0.5)
-            except asyncio.TimeoutError:
-                continue
+        while not shutdown_event.is_set() and not tui.is_shutdown:
+            question = await tui.get_input()
+            if question is None:
+                break
 
             if not question.strip():
                 continue
@@ -777,25 +176,82 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                 await cmd_handler.handle(question)
                 continue
 
+            task_counter = 0 if not hasattr(interactive_mode, '_counter') else interactive_mode._counter
             task_counter += 1
+            interactive_mode._counter = task_counter
+
+            async def _run_task(task_id: int, question: str):
+                nonlocal current_task
+                cmd_handler.set_current_task_id(task_id)
+                tui.start_task()
+                tui.start_spinner()
+
+                try:
+                    target = target_agent
+                    if target and agent.subagent_manager:
+                        if target in agent.subagent_manager._team_configs:
+                            team_dir = os.path.join(
+                                agent.config_dir, "agents", target)
+                            team_agent = Agent(
+                                workspace=agent.workspace, config_dir=team_dir,
+                                client=agent.client, parent_agent=agent,
+                                permission_mode=getattr(agent, '_permission_config', None) and
+                                agent._permission_config.mode.value or "auto",
+                            )
+                            team_agent.subagent_manager = agent.subagent_manager
+                            team_agent._progress_callback = _team_progress
+                            await team_agent.initialize()
+                            result = await team_agent.run(
+                                question, session_id=session_id,
+                                user_id="cli:admin", user_name="管理员",
+                            )
+                        else:
+                            instance, _ = await agent.subagent_manager.get_or_create_subagent(
+                                name=target, session_id=session_id,
+                                client=agent.client, parent_agent=agent,
+                            )
+                            result = await instance.agent.run(question)
+                    else:
+                        result = await agent.run(question, session_id=session_id,
+                                                  user_id="cli:admin", user_name="管理员")
+                    await tui.stop_spinner()
+                    text = result.result if hasattr(result, "result") else str(result)
+                    tui.after_task(text)
+                except asyncio.CancelledError:
+                    await tui.stop_spinner()
+                    tui.cancel_notice()
+                except Exception as e:
+                    await tui.stop_spinner()
+                    tui.error_notice(str(e))
+                finally:
+                    cmd_handler.set_current_task_id(None)
+
             current_task = asyncio.create_task(
-                run_task(task_counter, question))
+                _run_task(task_counter, question))
+
+            # 等待任务完成，期间检查取消信号
+            while not current_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(current_task), timeout=0.3)
+                    break
+                except asyncio.TimeoutError:
+                    if tui.cancel_flag.is_set() and not current_task.done():
+                        current_task.cancel()
+                        break
+                    if shutdown_event.is_set():
+                        if not current_task.done():
+                            current_task.cancel()
+                        break
+                    continue
+
+            current_task = None
 
     finally:
-        if _stdin_transport is not None:
-            _stdin_transport.close()
-        if input_task and not input_task.done():
-            input_task.cancel()
-            try:
-                await input_task
-            except asyncio.CancelledError:
-                pass
+        tui.shutdown()
         if current_task and not current_task.done():
             current_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await current_task
-            except asyncio.CancelledError:
-                pass
 
 
 async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
@@ -808,7 +264,6 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     from autonomous.planner import Planner
     from autonomous.reporter import DingTalkReporter, Reporter
     from autonomous.verifier import Verifier
-
     from storage import get_storage
     storage = get_storage()
 
@@ -875,10 +330,8 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     )
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with contextlib.suppress(NotImplementedError):
             asyncio.get_running_loop().add_signal_handler(sig, shutdown_event.set)
-        except NotImplementedError:
-            pass
 
     board_info = ""
     if kanban_board:
@@ -915,13 +368,10 @@ async def cleanup(plugin_manager, agent):
     if tasks:
         for t in tasks:
             t.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*tasks, return_exceptions=True)
-        except asyncio.CancelledError:
-            pass
 
     # 关闭事件循环前执行一次 GC，让 subprocess transport 在循环还活着时被回收
-    import gc
     gc.collect()
 
 
