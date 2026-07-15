@@ -501,55 +501,51 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         _STATE["agent_name"] = target_agent or agent.name or ""
         spinner_task = asyncio.create_task(_spinner())
         cancel_flag.clear()
-        loop = asyncio.get_running_loop()
         esc_monitor = threading.Thread(target=_monitor_escape, args=(cancel_flag,), daemon=True)
         esc_monitor.start()
 
-    async def _run():
-        if target_agent and agent.subagent_manager:
-            # 判断是团队还是个人子代理
-            if target_agent in agent.subagent_manager._team_configs:
-                # 创建团队 Agent，其 config_dir 指向团队目录（含 TEAM.md）
-                team_dir = os.path.join(config_dir, "agents", target_agent)
-                team_agent = Agent(
-                    workspace=workspace, config_dir=team_dir,
+        async def _run():
+            if target_agent and agent.subagent_manager:
+                if target_agent in agent.subagent_manager._team_configs:
+                    team_dir = os.path.join(agent.config_dir, "agents", target_agent)
+                    team_agent = Agent(
+                        workspace=agent.workspace, config_dir=team_dir,
+                        client=agent.client, parent_agent=agent,
+                        permission_mode=getattr(agent, '_permission_config', None) and \
+                            agent._permission_config.mode.value or "auto",
+                    )
+                    team_agent.subagent_manager = agent.subagent_manager
+                    team_agent._progress_callback = _team_progress
+                    await team_agent.initialize()
+                    result = await team_agent.run(
+                        question, session_id=session_id,
+                        user_id="cli:admin", user_name="管理员",
+                    )
+                    return result
+                instance, _ = await agent.subagent_manager.get_or_create_subagent(
+                    name=target_agent, session_id=session_id,
                     client=agent.client, parent_agent=agent,
-                    permission_mode=getattr(agent, '_permission_config', None) and \
-                        agent._permission_config.mode.value or "auto",
                 )
-                team_agent.subagent_manager = agent.subagent_manager
-                team_agent._progress_callback = _team_progress
-                await team_agent.initialize()
-                result = await team_agent.run(
-                    question, session_id=session_id,
-                    user_id="cli:admin", user_name="管理员",
-                )
+                result = await instance.agent.run(question)
                 return result
-            # 个人子代理：直连 agent.run()
-            instance, _ = await agent.subagent_manager.get_or_create_subagent(
-                name=target_agent, session_id=session_id,
-                client=agent.client, parent_agent=agent,
-            )
-            result = await instance.agent.run(question)
-            return result
-        return await agent.run(question, session_id=session_id,
-                               user_id="cli:admin", user_name="管理员")
+            return await agent.run(question, session_id=session_id,
+                                   user_id="cli:admin", user_name="管理员")
 
         try:
-            run_task = asyncio.create_task(_run())
-            cancel_task = asyncio.create_task(_wait_event(cancel_flag))
+            task = asyncio.create_task(_run())
+            cancel_waiter = asyncio.create_task(_wait_event(cancel_flag))
             done, _ = await asyncio.wait(
-                [run_task, cancel_task], return_when=asyncio.FIRST_COMPLETED)
+                [task, cancel_waiter], return_when=asyncio.FIRST_COMPLETED)
             if cancel_flag.is_set():
-                run_task.cancel()
-                try: await run_task
+                task.cancel()
+                try: await task
                 except: pass
                 _STATE["task_done"] = True
                 await spinner_task
                 ui.warn("已取消 (双击 ESC)")
                 return
-            cancel_task.cancel()
-            result = run_task.result()
+            cancel_waiter.cancel()
+            result = task.result()
             _STATE["task_done"] = True
             await spinner_task
             if target_agent and progress_shown:
