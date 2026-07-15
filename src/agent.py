@@ -293,6 +293,10 @@ class Agent:
                 f"Agent [{self.name}] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
     async def _load_mcp_servers(self):
+        # 子 agent 不加载全局 MCP servers（避免 cleanup 时阻塞）
+        if self.parent_agent:
+            self.mcp_configs = []
+            return
         mcp_file = os.path.join(self.config_dir, "mcp_servers.json")
         self.mcp_configs = []
 
@@ -1255,8 +1259,7 @@ class Agent:
     async def cleanup(self):
         for task in list(self._background_tasks):
             task.cancel()
-        if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
 
         if self.session_manager:
             self.session_manager.stop_cleanup_task()

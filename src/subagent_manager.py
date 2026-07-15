@@ -381,20 +381,14 @@ class SubagentManager:
         Returns:
             执行结果字符串，失败时以 "ERROR:" 开头
         """
-        cache_key = f"{team_name}/{member_name}"
-        if cache_key in self._team_agent_cache:
-            agent = self._team_agent_cache[cache_key]
-            logger.info(f"复用缓存的子代理: {cache_key}")
-        else:
-            agent = await self._create_team_subagent(
-                team_name, member_name,
-                client=client,
-                parent_agent=parent_agent,
-                max_iterations=max_iterations,
-            )
-            self._team_agent_cache[cache_key] = agent
+        agent = await self._create_team_subagent(
+            team_name, member_name,
+            client=client,
+            parent_agent=parent_agent,
+            max_iterations=max_iterations,
+        )
 
-        # 注册工具调用回调（每次都重新注册钩子）
+        # 注册工具调用回调
         try:
             if tool_callback:
                 from hooks import HookEvent
@@ -436,27 +430,21 @@ class SubagentManager:
                     parent = parent_agent or self._parent_agent
                     if parent and hasattr(parent, 'client') and parent.client:
                         child_usage = agent.client.usage_tracker
-                        for r in child_usage.records:
-                            parent.client.usage_tracker.records.append(r)
+                        parent_usage = parent.client.usage_tracker
+                        if child_usage is not parent_usage:
+                            parent_usage.records.extend(child_usage.records)
                 except Exception:
                     pass
-                # 成功时清理并移除缓存
-                del self._team_agent_cache[cache_key]
-                await agent.cleanup()
                 return agent_result.result
             except asyncio.CancelledError:
-                # 超时/取消时保留 agent 缓存，重试可恢复上下文
-                logger.info(f"子代理 {cache_key} 被取消，保留上下文待重试")
-                raise
-            except Exception:
-                del self._team_agent_cache[cache_key]
-                await agent.cleanup()
                 raise
         except ValueError as e:
             return f"ERROR: {e}"
         except Exception as e:
             logger.error(f"团队子代理 {member_name} 执行异常: {e}")
             return f"ERROR: 团队子代理 {member_name} 执行异常: {e}"
+        finally:
+            await agent.cleanup()
 
     def get_subagent_prompt(self) -> str:
         """生成子代理列表提示词（包含个人和团队）"""
