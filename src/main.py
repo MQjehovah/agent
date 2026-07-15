@@ -1,3 +1,13 @@
+from settings import get_settings, init_settings
+from plugins import PluginManager
+from llm import LLMClient
+from hooks import HookEvent
+from config import Config, validate_config
+from cmd_handler import CommandHandler
+from agent_session import AgentSessionManager
+from agent import Agent
+from rich.panel import Panel
+from rich.console import Console
 import asyncio
 import gc
 import json
@@ -17,8 +27,6 @@ from dotenv import load_dotenv
 _AGENT_HOME = os.path.join(os.path.expanduser("~"), "agent")
 os.environ.setdefault("AGENT_LOG_DIR", os.path.join(_AGENT_HOME, "logs"))
 
-from rich.console import Console
-from rich.panel import Panel
 
 console = Console()
 
@@ -34,18 +42,11 @@ else:
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
-from agent import Agent
-from agent_session import AgentSessionManager
-from cmd_handler import CommandHandler
-from config import Config, validate_config
-from hooks import HookEvent
-from llm import LLMClient
-from plugins import PluginManager
-from settings import get_settings, init_settings
 
 # ── 文件日志（不输出到终端，路径在 main 中解析后初始化） ─────────
 _LOGGER_INITIALIZED = False
 logger: logging.Logger = None
+
 
 def _init_logging(log_dir: str):
     """初始化文件日志（在路径解析后调用）"""
@@ -54,7 +55,8 @@ def _init_logging(log_dir: str):
         return
     _LOGGER_INITIALIZED = True
     os.makedirs(log_dir, exist_ok=True)
-    _log_file = os.path.join(log_dir, f"agent_{datetime.now().strftime('%Y%m%d')}.log")
+    _log_file = os.path.join(
+        log_dir, f"agent_{datetime.now().strftime('%Y%m%d')}.log")
     root = logging.getLogger()
     if root.hasHandlers():
         root.handlers.clear()
@@ -71,8 +73,11 @@ def _init_logging(log_dir: str):
     logger = logging.getLogger("agent.main")
     logger.info("日志系统初始化完成，目录: %s", log_dir)
 
+
 # ── ANSI ────────────────────────────────────────────────────────────
-_SGR = lambda c: f"\033[{c}m" if sys.stdout.isatty() else ""
+def _SGR(c): return f"\033[{c}m" if sys.stdout.isatty() else ""
+
+
 _DIM = _SGR("2")
 _GREEN = _SGR("32")
 _YELLOW = _SGR("33")
@@ -113,7 +118,8 @@ def _clear_line():
 
 
 # ── Terminal UI ─────────────────────────────────────────────────────
-_STATE = {"task_done": False, "task_start_ts": 0.0, "tool_count": 0, "round": 0, "subagent_depth": 0, "current_stage": ""}
+_STATE = {"task_done": False, "task_start_ts": 0.0, "tool_count": 0,
+          "round": 0, "subagent_depth": 0, "current_stage": ""}
 
 
 async def _wait_event(flag: threading.Event):
@@ -139,7 +145,9 @@ def _monitor_escape(cancel_flag: threading.Event):
                     last_esc = now
                 time.sleep(0.05)
         else:
-            import termios, tty, select
+            import termios
+            import tty
+            import select
             fd = sys.stdin.fileno()
             old = termios.tcgetattr(fd)
             try:
@@ -164,7 +172,7 @@ def _elapsed() -> str:
     t = time.time() - _STATE["task_start_ts"]
     if t < 60:
         return f"{t:.0f}s"
-    return f"{t//60:.0f}m{t%60:.0f}s"
+    return f"{t//60:.0f}m{t % 60:.0f}s"
 
 
 class TerminalUI:
@@ -316,6 +324,7 @@ class TerminalUI:
 # 绑定到 CLI 会话的插件会话（如 feishu 绑定后共享上下文）
 BOUND_PLUGIN_SESSION: str = ""
 
+
 async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_agent: str = ""):
     """交互模式 — target_agent 不为空时直接路由到子代理"""
     from channels import MessageRouter
@@ -336,10 +345,11 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
     try:
         import subprocess as _sp
         branch = _sp.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                                   cwd=agent.workspace, stderr=_sp.DEVNULL, timeout=3).decode().strip()
+                                  cwd=agent.workspace, stderr=_sp.DEVNULL, timeout=3).decode().strip()
     except Exception:
         pass  # git 不可用时忽略分支名
-    ctx_prefix = f"{_DIM}{ws_context}{_RESET}" + (f" {_DIM}({branch}){_RESET}" if branch else "")
+    ctx_prefix = f"{_DIM}{ws_context}{_RESET}" + \
+        (f" {_DIM}({branch}){_RESET}" if branch else "")
     if target_agent:
         ctx_prefix += f" {_GREEN}→ {target_agent}{_RESET}"
 
@@ -347,12 +357,15 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
     def on_tool_start(ctx):
         if not target_agent:
             ui.tool_call(ctx.tool_name, ctx.arguments or {})
+
     def on_tool_result(ctx):
         if not target_agent:
             ui.tool_result(ctx.tool_name, str(ctx.result or ""))
+
     def on_round_start(ctx):
         it = (ctx.metadata or {}).get("iteration", 0)
         ui.round_start(it)
+
     def on_subagent_result(ctx):
         meta = ctx.metadata or {}
         ui.subagent_result(meta.get("name", "?"), meta.get("status", "?"))
@@ -362,7 +375,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
     agent.hooks.register(HookEvent.SUBAGENT_RESULT, on_subagent_result)
 
     # ask_user 处理器
-    ask_tool = agent.tool_registry.get_tool("ask_user") if agent.tool_registry else None
+    ask_tool = agent.tool_registry.get_tool(
+        "ask_user") if agent.tool_registry else None
     if ask_tool and hasattr(ask_tool, "set_input_handler"):
         async def _on_ask_user(question: str, options: list, default: str) -> str:
             _STATE["task_done"] = True
@@ -372,10 +386,12 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                 _write(f"  {_BOLD}{question}{_RESET}")
                 for i, opt in enumerate(options, 1):
                     _write(f"  {_DIM}{i}.{_RESET} {opt}")
-                prompt = f"  {_GREEN}❯{_RESET} " + (f"({default}) " if default else "")
+                prompt = f"  {_GREEN}❯{_RESET} " + \
+                    (f"({default}) " if default else "")
             else:
                 _write(f"  {_BOLD}{question}{_RESET}")
-                prompt = f"  {_GREEN}❯{_RESET} " + (f"({default}) " if default else "")
+                prompt = f"  {_GREEN}❯{_RESET} " + \
+                    (f"({default}) " if default else "")
             try:
                 loop = asyncio.get_running_loop()
                 raw = await loop.run_in_executor(None, lambda: input(prompt))
@@ -417,7 +433,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             _STATE["current_stage"] = ""
             elapsed = now - _STATE.get("stage_ts", now)
             _clear_line()
-            _write(f"  {_DIM}  {_GREEN}✔{_RESET} {name}  {_GRAY}{elapsed:.0f}s{_RESET}")
+            _write(
+                f"  {_DIM}  {_GREEN}✔{_RESET} {name}  {_GRAY}{elapsed:.0f}s{_RESET}")
         elif status == "llm":
             # 显示 LLM 推理摘要首句
             text = str(info or "").strip()
@@ -436,18 +453,22 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             if brief:
                 if brief.startswith('{"success": false') or "错误" in brief or "失败" in brief:
                     _clear_line()
-                    _write(f"  {_DIM}  · {_RED}✗{_RESET} {_DIM}{brief[:60]}{_RESET}")
+                    _write(
+                        f"  {_DIM}  · {_RED}✗{_RESET} {_DIM}{brief[:60]}{_RESET}")
         if status == "_max_iter":
             if isinstance(info, dict):
                 _STATE["stage_max_iter"] = info.get("max_iter", 0)
         if status == "_ctx":
-            _STATE["ctx_tokens"] = (info or {}).get("tokens", 0) if isinstance(info, dict) else 0
-            _STATE["iter"] = (info or {}).get("iter", 0) if isinstance(info, dict) else 0
+            _STATE["ctx_tokens"] = (info or {}).get(
+                "tokens", 0) if isinstance(info, dict) else 0
+            _STATE["iter"] = (info or {}).get(
+                "iter", 0) if isinstance(info, dict) else 0
         if status == "start":
             _STATE["current_stage"] = stage
             _STATE["agent_name"] = info
             _STATE["iter"] = 0
-            _STATE["stage_max_iter"] = extra if isinstance(extra, (int, float)) else 0
+            _STATE["stage_max_iter"] = extra if isinstance(
+                extra, (int, float)) else 0
 
     async def _spinner():
         chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -467,8 +488,10 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             if model:
                 parts.append(f"{_GRAY}[{model}]{_RESET}")
             try:
-                u = agent.client.usage_tracker.get_summary() if hasattr(agent.client, 'usage_tracker') else {}
-                total = u.get("total_prompt_tokens", 0) + u.get("total_completion_tokens", 0)
+                u = agent.client.usage_tracker.get_summary() if hasattr(
+                    agent.client, 'usage_tracker') else {}
+                total = u.get("total_prompt_tokens", 0) + \
+                    u.get("total_completion_tokens", 0)
                 if total:
                     parts.append(f"{_GRAY}∑{total:,}{_RESET}")
             except Exception:
@@ -501,18 +524,20 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         _STATE["agent_name"] = target_agent or agent.name or ""
         spinner_task = asyncio.create_task(_spinner())
         cancel_flag.clear()
-        esc_monitor = threading.Thread(target=_monitor_escape, args=(cancel_flag,), daemon=True)
+        esc_monitor = threading.Thread(
+            target=_monitor_escape, args=(cancel_flag,), daemon=True)
         esc_monitor.start()
 
         async def _run():
             if target_agent and agent.subagent_manager:
                 if target_agent in agent.subagent_manager._team_configs:
-                    team_dir = os.path.join(agent.config_dir, "agents", target_agent)
+                    team_dir = os.path.join(
+                        agent.config_dir, "agents", target_agent)
                     team_agent = Agent(
                         workspace=agent.workspace, config_dir=team_dir,
                         client=agent.client, parent_agent=agent,
-                        permission_mode=getattr(agent, '_permission_config', None) and \
-                            agent._permission_config.mode.value or "auto",
+                        permission_mode=getattr(agent, '_permission_config', None) and
+                        agent._permission_config.mode.value or "auto",
                     )
                     team_agent.subagent_manager = agent.subagent_manager
                     team_agent._progress_callback = _team_progress
@@ -538,8 +563,10 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                 [task, cancel_waiter], return_when=asyncio.FIRST_COMPLETED)
             if cancel_flag.is_set():
                 task.cancel()
-                try: await task
-                except: pass
+                try:
+                    await task
+                except:
+                    pass
                 _STATE["task_done"] = True
                 await spinner_task
                 ui.warn("已取消 (双击 ESC)")
@@ -706,7 +733,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                 continue
 
             task_counter += 1
-            current_task = asyncio.create_task(run_task(task_counter, question))
+            current_task = asyncio.create_task(
+                run_task(task_counter, question))
 
     finally:
         if _stdin_transport is not None:
@@ -857,10 +885,10 @@ async def main():
 
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workspace", "-w", default=".",
-                        help="工作目录，agent 在此目录下读写文件 (默认: 当前目录)")
     parser.add_argument("--config", "-c", default="config",
                         help="配置目录，包含PROMPT.md、agents/、skills/等 (默认: ./config)")
+    parser.add_argument("--workspace", "-w", default=".",
+                        help="工作目录，agent 在此目录下读写文件 (默认: 当前目录)")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--no-plugins", action="store_true")
     parser.add_argument("--skip-config-check", action="store_true")
@@ -916,7 +944,8 @@ async def main():
         if _meipass:
             _src = os.path.join(_meipass, name)  # 打包：config/ 在 _MEIPASS 下
         else:
-            _src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), name)
+            _src = os.path.join(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))), name)
         if os.path.exists(_src):
             import shutil
             for item in os.listdir(_src):
@@ -942,7 +971,8 @@ async def main():
 
     # 应用日志等级（Settings 已加载，覆盖 basicConfig 的默认 INFO）
     logging.getLogger().setLevel(getattr(logging, Config.LOG_LEVEL, logging.INFO))
-    logging.getLogger("agent").setLevel(getattr(logging, Config.LOG_LEVEL, logging.INFO))
+    logging.getLogger("agent").setLevel(
+        getattr(logging, Config.LOG_LEVEL, logging.INFO))
 
     if not args.skip_config_check and not validate_config():
         console.print("[red]配置验证失败[/red]")
@@ -973,8 +1003,10 @@ async def main():
                 _content = _f.read()
             _fm, _body = extract_frontmatter(_content)
             if _body:
-                agent.name = _fm.get("name", target_agent) if isinstance(_fm, dict) else target_agent
-                agent.description = _fm.get("description", "") if isinstance(_fm, dict) else ""
+                agent.name = _fm.get("name", target_agent) if isinstance(
+                    _fm, dict) else target_agent
+                agent.description = _fm.get(
+                    "description", "") if isinstance(_fm, dict) else ""
                 agent.system_prompt = agent.system_prompt_raw = _body
                 # 确保根 agent 有团队技能
                 _team_skills_dir = os.path.join(_team_dir, "skills")
@@ -1002,13 +1034,15 @@ async def main():
                         agent.system_prompt_raw += _skill_guide
                 # 用团队成员替换子代理列表
                 if agent.subagent_manager:
-                    _members = agent.subagent_manager._team_members.get(target_agent, {})
+                    _members = agent.subagent_manager._team_members.get(
+                        target_agent, {})
                     if _members:
                         _orig_prompt = agent.subagent_manager.get_subagent_prompt
                         _lines = ["\n\n## 【团队成员】\n"]
                         for _mname, _minfo in _members.items():
                             _lines.append(f"名称：{_mname}\n")
-                            _lines.append(f"角色：{_minfo.get('description', '')}\n")
+                            _lines.append(
+                                f"角色：{_minfo.get('description', '')}\n")
                         _lines.append("\n团队 Leader 可根据需要将任务委派给对应成员。")
                         _team_prompt_text = "\n".join(_lines)
                         # 注入到 prompt builder 中
@@ -1025,9 +1059,11 @@ async def main():
         start_web = args.web or (args.mode == "autonomous" and not args.no_web)
 
         if not args.no_plugins:
-            plugin_manager = PluginManager(os.path.join(src_dir, "plugins"), config_dir=config_dir)
+            plugin_manager = PluginManager(os.path.join(
+                src_dir, "plugins"), config_dir=config_dir)
             plugin_manager.load_all()
             plugin_manager.router = router
+
             async def _plugin_exec(sid, c, uid="", uname=""):
                 if BOUND_PLUGIN_SESSION:
                     bsid = BOUND_PLUGIN_SESSION
@@ -1066,7 +1102,8 @@ async def main():
 
         if start_web:
             from web import WebServer
-            web_server = WebServer(port=args.web_port, loop=asyncio.get_running_loop())
+            web_server = WebServer(
+                port=args.web_port, loop=asyncio.get_running_loop())
             web_server.set_agent(agent)
             if kanban_board:
                 web_server.set_kanban(kanban_board)
