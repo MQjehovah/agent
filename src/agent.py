@@ -1105,9 +1105,13 @@ class Agent:
                 tool_name=name, result=result_preview,
             )
 
-            # 全局工具输出截断保护
+            # 工具结果智能压缩（按工具类型提取关键信息）
+            from tool_result_compressor import compress_tool_result
             if len(result) > MAX_TOOL_OUTPUT_CHARS:
-                result = result[:MAX_TOOL_OUTPUT_CHARS] + f"\n... [工具输出已截断，原始长度 {len(result)} 字符]"
+                original_len = len(result)
+                result = compress_tool_result(name, result, MAX_TOOL_OUTPUT_CHARS)
+                if len(result) < original_len:
+                    logger.debug(f"工具 {name} 结果压缩: {original_len} → {len(result)} 字符")
 
             self.tracer.end_span(status="ok")
             # PostToolUse 钩子

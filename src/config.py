@@ -46,8 +46,10 @@ class Config:
     AUTONOMOUS_DISCOVERY_INTERVAL: int = 1800
 
     # 上下文滑动窗口配置
-    SLIDING_WINDOW_SIZE: int = 40
+    SLIDING_WINDOW_SIZE: int = 10
     SLIDING_WINDOW_SUMMARY_MAX: int = 6000
+    KEEP_RECENT_TOOL_RESULTS: int = 5
+    TOOL_RESULT_COLLAPSE_CHARS: int = 150
 
     # SearXNG 搜索配置
     SEARXNG_URL: str = ""
@@ -74,8 +76,10 @@ class Config:
         cls.LLM_CONNECT_TIMEOUT = float(s.get("llm.connect_timeout", 30))
         cls.LOG_LEVEL = str(s.get("logging.level", "INFO"))
         cls.AUTONOMOUS_DISCOVERY_INTERVAL = int(s.get("autonomous.discovery_interval", 1800))
-        cls.SLIDING_WINDOW_SIZE = int(s.get("context.sliding_window_size", 40))
+        cls.SLIDING_WINDOW_SIZE = int(s.get("context.sliding_window_size", 10))
         cls.SLIDING_WINDOW_SUMMARY_MAX = int(s.get("context.sliding_window_summary_max", 6000))
+        cls.KEEP_RECENT_TOOL_RESULTS = int(s.get("context.tool_result_keep_recent", 5))
+        cls.TOOL_RESULT_COLLAPSE_CHARS = int(s.get("context.tool_result_collapse_chars", 150))
         cls.SEARXNG_URL = s.get("tools.search.searxng_url", "")
         cls.SEARXNG_ENGINES = s.get("tools.search.searxng_engines", "google,bing,duckduckgo")
         cls.SEARXNG_TIMEOUT = int(s.get("tools.search.searxng_timeout", 10))

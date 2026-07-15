@@ -30,8 +30,10 @@
         "discovery_interval": 1800
     },
     "context": {
-        "sliding_window_size": 40,
-        "sliding_window_summary_max": 6000
+        "sliding_window_size": 10,
+        "sliding_window_summary_max": 6000,
+        "tool_result_keep_recent": 5,
+        "tool_result_collapse_chars": 150
     },
     "tools": {
         "search": {
