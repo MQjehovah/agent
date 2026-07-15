@@ -17,6 +17,7 @@ class PluginManager:
         self.plugins: Dict[str, BasePlugin] = {}
         self._plugin_classes: Dict[str, Type[BasePlugin]] = {}
         self._executor: Optional[Callable] = None
+        self.router = None
     
     def discover(self) -> List[str]:
         if not self.plugins_dir or not os.path.exists(self.plugins_dir):

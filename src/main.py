@@ -313,16 +313,14 @@ class TerminalUI:
                 _write(f"  {_DIM}┊ {t}{_RESET}")
 
 
-# 当前 CLI 会话 ID
-CLI_SESSION_ID: str = ""
 # 绑定到 CLI 会话的插件会话（如 feishu 绑定后共享上下文）
 BOUND_PLUGIN_SESSION: str = ""
 
 async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_agent: str = ""):
     """交互模式 — target_agent 不为空时直接路由到子代理"""
-    global CLI_SESSION_ID
-    session_id = str(uuid.uuid4())
-    CLI_SESSION_ID = session_id
+    from channels import MessageRouter
+    router = MessageRouter(agent)
+    session_id = router.format_session_id("cli", uuid.uuid4().hex[:12])
     current_task: asyncio.Task | None = None
     task_counter = 0
     input_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -507,15 +505,35 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         esc_monitor = threading.Thread(target=_monitor_escape, args=(cancel_flag,), daemon=True)
         esc_monitor.start()
 
-        async def _run():
-            if target_agent and agent.subagent_manager:
-                return await agent.subagent_manager.run_subagent(
-                    task=question, name=target_agent, session_id=session_id,
+    async def _run():
+        if target_agent and agent.subagent_manager:
+            # 判断是团队还是个人子代理
+            if target_agent in agent.subagent_manager._team_configs:
+                # 创建团队 Agent，其 config_dir 指向团队目录（含 TEAM.md）
+                team_dir = os.path.join(config_dir, "agents", target_agent)
+                team_agent = Agent(
+                    workspace=workspace, config_dir=team_dir,
                     client=agent.client, parent_agent=agent,
-                    progress_callback=_team_progress,
+                    permission_mode=getattr(agent, '_permission_config', None) and \
+                        agent._permission_config.mode.value or "auto",
                 )
-            return await agent.run(question, session_id=session_id,
-                                   user_id="cli:admin", user_name="管理员")
+                team_agent.subagent_manager = agent.subagent_manager
+                team_agent._progress_callback = _team_progress
+                await team_agent.initialize()
+                result = await team_agent.run(
+                    question, session_id=session_id,
+                    user_id="cli:admin", user_name="管理员",
+                )
+                return result
+            # 个人子代理：直连 agent.run()
+            instance, _ = await agent.subagent_manager.get_or_create_subagent(
+                name=target_agent, session_id=session_id,
+                client=agent.client, parent_agent=agent,
+            )
+            result = await instance.agent.run(question)
+            return result
+        return await agent.run(question, session_id=session_id,
+                               user_id="cli:admin", user_name="管理员")
 
         try:
             run_task = asyncio.create_task(_run())
@@ -1005,25 +1023,24 @@ async def main():
     plugin_manager = None
 
     try:
+        from channels import MessageRouter
+        router = MessageRouter(agent)
+
         start_web = args.web or (args.mode == "autonomous" and not args.no_web)
 
         if not args.no_plugins:
             plugin_manager = PluginManager(os.path.join(src_dir, "plugins"), config_dir=config_dir)
             plugin_manager.load_all()
+            plugin_manager.router = router
             async def _plugin_exec(sid, c, uid="", uname=""):
-                from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
-                token = set_ask_user_mode("auto")
                 if BOUND_PLUGIN_SESSION:
                     bsid = BOUND_PLUGIN_SESSION
                     uid = "cli:admin"
                     uname = "管理员(绑定)"
                 else:
                     bsid = sid
-                try:
-                    r = await agent.run(c, session_id=bsid, user_id=uid, user_name=uname)
-                    return r.result if hasattr(r, 'result') else str(r)
-                finally:
-                    reset_ask_user_mode(token)
+                r = await router.route(c, channel="plugin", session_id=bsid, user_id=uid, user_name=uname)
+                return r.result if hasattr(r, 'result') else str(r)
             plugin_manager.register_executor(_plugin_exec)
             agent.plugin_manager = plugin_manager
 
@@ -1035,20 +1052,13 @@ async def main():
 
             webhook_plugin = plugin_manager.get_plugin("webhook")
             if webhook_plugin:
-                async def _webhook_exec(sid, c, uid="webhook:admin", uname="Webhook"):
-                    from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
-                    token = set_ask_user_mode("auto")
-                    try:
-                        r = await agent.run(c, session_id=sid, user_id=uid, user_name=uname)
-                        return r.result if hasattr(r, 'result') else str(r)
-                    finally:
-                        reset_ask_user_mode(token)
-
-                webhook_plugin.agent_executor = _webhook_exec
+                pass  # webhook 现在直接使用 plugin_manager.router
 
             scheduler_plugin = plugin_manager.get_plugin("scheduler")
             if scheduler_plugin:
-                scheduler_plugin._agent_executor = agent.run
+                scheduler_plugin._agent_executor = lambda task: router.route(
+                    task, channel="scheduler",
+                )
                 if not scheduler_plugin._started:
                     scheduler_plugin.start()
 

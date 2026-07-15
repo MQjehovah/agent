@@ -158,9 +158,13 @@ class Agent:
 
         from settings import get_settings
         self._learning_per_round = get_settings().get("learning.per_round", False)
+        self._is_team = False
+        self._team_config: dict = {}
+        self._team_members: dict = {}
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
+        await self._load_team_config()  # 必须在 _load_system_prompt 之后
         self._init_sandbox()
         self._init_tools()
         self._init_skills()
@@ -206,6 +210,64 @@ class Agent:
 
         self.system_prompt = self._expand_env_vars(body.strip()) if body else ""
         self.system_prompt_raw = self.system_prompt
+
+    async def _load_team_config(self):
+        """检查 config_dir 下是否有 TEAM.md，加载团队配置"""
+        team_file = os.path.join(self.config_dir, "TEAM.md")
+        if not os.path.exists(team_file):
+            return
+        from utils.frontmatter import extract_frontmatter
+        with open(team_file, encoding="utf-8") as f:
+            content = f.read()
+        fm, body = extract_frontmatter(content)
+        if not fm:
+            return
+        name = fm.get("name", os.path.basename(self.config_dir))
+        raw_members = fm.get("members", [])
+        team_roles = ""
+        if isinstance(raw_members, list):
+            lines = []
+            for m in raw_members:
+                if isinstance(m, dict):
+                    lines.append(f"- {m.get('name', '')}: {m.get('role', '')}")
+                else:
+                    lines.append(f"- {m}")
+            team_roles = "\n".join(lines)
+        # 构建团队配置（与 SubagentManager._load_team 格式一致）
+        self._team_config = {
+            "name": name,
+            "description": fm.get("description", ""),
+            "leader": fm.get("leader", ""),
+            "pipeline_mode": fm.get("pipeline_mode", "auto"),
+            "workspace": self.workspace,
+            "team_body": body,
+            "team_roles": team_roles,
+            "leader_prompt": self.system_prompt_raw or "",
+            "dir_name": name,
+        }
+        # 加载成员
+        agents_dir = os.path.join(self.config_dir, "agents")
+        members = {}
+        if os.path.exists(agents_dir):
+            from utils.frontmatter import extract_frontmatter as _ef
+            for mname in os.listdir(agents_dir):
+                mp = os.path.join(agents_dir, mname)
+                if not os.path.isdir(mp):
+                    continue
+                pf = os.path.join(mp, "PROMPT.md")
+                if not os.path.exists(pf):
+                    continue
+                with open(pf, encoding="utf-8") as _f:
+                    _fm, _ = _ef(_f.read())
+                members[mname] = {
+                    "name": _fm.get("name", mname) if _fm else mname,
+                    "description": _fm.get("description", "") if _fm else "",
+                    "workspace": self.workspace,
+                    "config_dir": mp,
+                }
+        self._team_members = members
+        self._is_team = True
+        logger.info(f"Agent [{self.name}] 检测到 TEAM.md，加载团队: {name}, 成员: {list(members.keys())}")
 
     def _init_sandbox(self):
         """加载并初始化沙箱中间层"""
@@ -560,12 +622,44 @@ class Agent:
         hook_token = set_run_id(ctx.run_id) if not get_run_id() else None
 
         try:
+            if self._is_team and self._team_config and self._team_members:
+                return await self._team_run_impl(task, session_id, user_id, user_name)
             return await self._run_impl(task, session_id, user_id, user_name, inherited)
         finally:
             if hook_token is not None:
                 reset_run_id(hook_token)
             # 恢复父级上下文：避免子代理的 ctx 泄漏到父级 run 的剩余逻辑
             _current_run.reset(run_token)
+
+    async def _team_run_impl(self, task: str, session_id: str, user_id: str, user_name: str) -> "AgentResult":
+        """团队模式：通过 TeamOrchestrator 编排成员执行"""
+        from team.orchestrator import TeamOrchestrator
+        from agent import AgentResult
+
+        orchestrator = TeamOrchestrator(
+            team_name=self._team_config["name"],
+            team_config=self._team_config,
+            members=self._team_members,
+            subagent_manager=getattr(self, 'subagent_manager', None),
+            llm_client=self.client,
+            memory_manager=getattr(self, 'memory', None),
+            pipeline_mode=self._team_config.get("pipeline_mode", "auto"),
+            progress_callback=getattr(self, '_progress_callback', None),
+            parent_session_id=session_id or "",
+        )
+        try:
+            result = await orchestrator.run(task)
+            status = "completed" if not result.startswith("ERROR:") else "failed"
+        except Exception as e:
+            logger.error(f"团队编排异常: {e}")
+            result = f"团队执行错误: {e}"
+            status = "failed"
+
+        return AgentResult(
+            agent_id=f"team:{self._team_config.get('name', 'unknown')}",
+            status=status,
+            result=result,
+        )
 
     async def _run_impl(self, task: str, session_id: str, user_id: str, user_name: str, inherited: RunContext) -> AgentResult:
         ctx = current_run()
@@ -1220,18 +1314,50 @@ class Agent:
         )
 
         try:
-            result = await self.subagent_manager.run_subagent(
-                task=task,
-                template=args.get("template", ""),
-                name=args.get("name", ""),
-                session_id=args.get("session_id", ""),
-                system_prompt=args.get("system_prompt", ""),
-                tools=args.get("tools"),
-                mcp_servers=args.get("mcp_servers"),
-                client=self.client,
-                parent_agent=self,
-                keep_alive=args.get("keep_alive", True)
-            )
+            if self.subagent_manager and self.subagent_manager.is_team(agent_name):
+                # 团队工具调用：创建 session 后走编排器
+                if args.get("session_id") and self.session_manager:
+                    sess = await self.session_manager.get_session(args["session_id"])
+                    if not sess:
+                        sess = await self.session_manager.create_session(
+                            agent_id=f"team:{agent_name}", session_id=args["session_id"])
+                        if self.storage:
+                            try:
+                                msgs = self.storage.get_messages(args["session_id"])
+                                if msgs:
+                                    sess.messages = msgs
+                            except Exception:
+                                pass
+                    if sess:
+                        sess.add_message("user", task)
+                result = await self.subagent_manager._run_team_orchestrator(
+                    task, agent_name, parent_session_id=args.get("session_id", ""))
+            else:
+                # 个人子代理：直连 agent.run()
+                from subagent_manager import SubagentInstance
+                instance, is_new = await self.subagent_manager.get_or_create_subagent(
+                    template=args.get("template", ""),
+                    name=args.get("name", ""),
+                    session_id=args.get("session_id", ""),
+                    system_prompt=args.get("system_prompt", ""),
+                    tools=args.get("tools"),
+                    mcp_servers=args.get("mcp_servers"),
+                    client=self.client,
+                    parent_agent=self,
+                )
+                try:
+                    result = await instance.agent.run(task)
+                    instance.task_count += 1
+                    instance.last_used = time.time()
+                except Exception as e:
+                    result = AgentResult(
+                        agent_id=instance.agent.agent_id,
+                        status="failed",
+                        result=f"子代理执行错误: {e}",
+                    )
+                    logger.error(f"子代理执行错误: {e}")
+                if not args.get("keep_alive", True):
+                    await self.subagent_manager.cleanup_subagent(instance.session_id)
         except Exception as e:
             logger.error(f"Subagent execution error: {e}")
             await self.hooks.fire(
@@ -1240,7 +1366,7 @@ class Agent:
             )
             return json.dumps({"success": False, "error": f"子代理执行错误: {e}"}, ensure_ascii=False)
 
-        stats = self.subagent_manager.get_stats()
+        stats = self.subagent_manager.get_stats() if self.subagent_manager else {}
 
         result_preview = result.result or ""
         if len(result_preview) > 500:
@@ -1256,7 +1382,7 @@ class Agent:
             "agent_id": result.agent_id,
             "status": result.status,
             "result": result.result,
-            "active_subagents": stats["active_count"]
+            "active_subagents": stats.get("active_count", 0),
         }, ensure_ascii=False)
 
     async def cleanup(self):

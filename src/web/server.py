@@ -401,19 +401,17 @@ class WebServer:
             if not message:
                 return JSONResponse({"error": "Empty message"}, status_code=400)
 
-            session_id = data.get("session_id") or f"web_{uuid.uuid4().hex[:8]}"
+            from channels import MessageRouter
+            router = MessageRouter(self.agent)
+
+            session_id = data.get("session_id") or router.format_session_id("web", uuid.uuid4().hex[:8])
             chat_session = self._get_or_create_session(session_id)
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
 
-            # 非流式：后台执行，立即返回 session_id（web 请求禁用 ask_user）
+            # 非流式：后台执行，立即返回 session_id
             async def _web_auto_run():
-                from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
-                token = set_ask_user_mode("auto")
-                try:
-                    await self.agent.run(message, session_id=session_id)
-                finally:
-                    reset_ask_user_mode(token)
+                await router.route(message, channel="web", session_id=session_id)
             asyncio.create_task(_web_auto_run())
             return {"session_id": session_id, "status": "processing"}
 
@@ -426,7 +424,9 @@ class WebServer:
                 return JSONResponse({"error": "Missing message"}, status_code=400)
 
             message = data["message"].strip()
-            session_id = data.get("session_id") or f"web_{uuid.uuid4().hex[:8]}"
+            from channels import MessageRouter
+            router = MessageRouter(self.agent)
+            session_id = data.get("session_id") or router.format_session_id("web", uuid.uuid4().hex[:8])
             chat_session = self._get_or_create_session(session_id)
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
@@ -482,7 +482,10 @@ class WebServer:
 
                 async def run_agent():
                     try:
-                        result = await agent_ref.run(message, session_id=session_id, run_id=stream_run_id)
+                        result = await router.route(
+                            message, channel="web",
+                            session_id=session_id, run_id=stream_run_id,
+                        )
                         resp_text = result.result if result and hasattr(result, "result") else ""
                         if full_response:
                             resp_text = "".join(full_response)

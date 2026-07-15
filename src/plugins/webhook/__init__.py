@@ -180,10 +180,11 @@ class WebhookPlugin(BasePlugin):
             async with self._task_lock:
                 self.tasks[task_id] = task
 
-            if not self.agent_executor:
+            router = getattr(self.plugin_manager, "router", None) if self.plugin_manager else None
+            if not router and not self.agent_executor:
                 task.status = "failed"
-                task.error = "Agent not registered"
-                return JSONResponse({"error": "Agent not registered", "code": 500}, status_code=500)
+                task.error = "Router not registered"
+                return JSONResponse({"error": "Router not registered", "code": 500}, status_code=500)
 
             if sync:
                 return await self._execute_sync(task)
@@ -243,11 +244,22 @@ class WebhookPlugin(BasePlugin):
             task.status = "running"
 
         try:
-            result = await self.agent_executor(task.session_id, task.content)
+            router = getattr(self.plugin_manager, "router", None) if self.plugin_manager else None
+            if router:
+                result = await router.route(
+                    task.content, channel="webhook",
+                    session_id=task.session_id,
+                )
+                result_str = result.result if hasattr(result, "result") else str(result)
+            elif self.agent_executor:
+                result = await self.agent_executor(task.session_id, task.content)
+                result_str = result.result if hasattr(result, "result") else str(result)
+            else:
+                result_str = "router not registered"
 
             async with self._task_lock:
                 task.status = "completed"
-                task.result = result
+                task.result = result_str
 
             logger.info(f"Task {task.task_id} completed")
             await self._send_callback(task)

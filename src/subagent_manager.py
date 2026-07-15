@@ -244,11 +244,22 @@ class SubagentManager:
         Returns:
             {name, description, workspace} 或 None
         """
-        member_dir = os.path.join(self.base_dir, team_name, "agents", member_name)
-        prompt_file = os.path.join(member_dir, "PROMPT.md")
-        if not os.path.exists(prompt_file):
+        # 支持两种路径结构：
+        # 1) base_dir/team_name/agents/member_name/PROMPT.md （根 Agent 的 SubagentManager）
+        # 2) base_dir/member_name/PROMPT.md （团队 Agent 的 SubagentManager）
+        candidates = [
+            os.path.join(self.base_dir, team_name, "agents", member_name),
+            os.path.join(self.base_dir, member_name),
+        ]
+        member_dir = None
+        for d in candidates:
+            if os.path.exists(os.path.join(d, "PROMPT.md")):
+                member_dir = d
+                break
+        if not member_dir:
             return None
 
+        prompt_file = os.path.join(member_dir, "PROMPT.md")
         with open(prompt_file, encoding="utf-8") as f:
             content = f.read()
 
@@ -345,106 +356,6 @@ class SubagentManager:
         # 注入事件回调（用于 Web UI 展示团队工具调用和流式输出）
         self._forward_hooks(agent, template_name=f"{team_name}/{member_name}", agent_type="team")
         return agent
-
-    async def run_team_agent(
-        self,
-        team_name: str,
-        member_name: str,
-        task: str,
-        client=None,
-        parent_agent=None,
-        tool_callback=None,
-        user_id: str = "cli:admin",
-        user_name: str = "管理员",
-        parent_session_id: str = "",
-        max_iterations: int = 0,
-    ) -> str:
-        """
-        运行团队中的某个成员 agent。
-
-        1. Create/get cached team member template
-        2. Create Agent instance directly (bypassing templates/run_subagent)
-        3. Run the task
-        4. Cleanup and return result
-
-        Args:
-            team_name: 团队目录名
-            member_name: 成员目录名
-            task: 任务内容
-            client: LLM客户端
-            parent_agent: 父代理
-            tool_callback: 工具调用回调 (event, tool_name, args, result) -> None
-            user_id: 用户ID（默认 cli:admin）
-            user_name: 用户名
-            parent_session_id: 父会话ID，用于关联子代理消息
-
-        Returns:
-            执行结果字符串，失败时以 "ERROR:" 开头
-        """
-        agent = await self._create_team_subagent(
-            team_name, member_name,
-            client=client,
-            parent_agent=parent_agent,
-            max_iterations=max_iterations,
-        )
-
-        # 注册工具调用回调
-        try:
-            if tool_callback:
-                from hooks import HookEvent
-                agent.hooks.register(HookEvent.TOOL_START, lambda ctx: tool_callback(
-                    "tool_start", ctx.tool_name, ctx.arguments or {}, None))
-                agent.hooks.register(HookEvent.TOOL_RESULT, lambda ctx: tool_callback(
-                    "tool_result", ctx.tool_name, {}, str(ctx.result or "")))
-                # 每轮 LLM 思考后上报上下文大小和当前轮次
-                agent.hooks.register(HookEvent.ROUND_START, lambda _ctx: tool_callback(
-                    "_ctx", "_ctx", {"tokens": (
-                        agent.tracer.get_context_stats().get("final", 0) or
-                        agent.tracer.get_context_stats().get("peak", 0)
-                    ), "iter": _ctx.metadata.get("iteration", 0)}, None))
-                # LLM 文本回复
-                agent.hooks.register(HookEvent.LLM_RESPONSE, lambda _ctx: tool_callback(
-                    "llm", "llm", _ctx.content or "", None))
-
-
-            try:
-                sub_session_id = f"{parent_session_id}:{member_name}" if parent_session_id else ""
-                agent_result = await agent.run(
-                    task, session_id=sub_session_id,
-                    user_id=user_id, user_name=user_name,
-                )
-                if agent_result.status == "failed":
-                    return f"ERROR: 团队子代理 {member_name} 执行失败: {agent_result.result}"
-                if agent_result.status == "max_iterations":
-                    return f"MAXITER: 达到最大迭代次数|{agent_result.result}"
-                # 上报上下文大小
-                try:
-                    _cs = agent.tracer.get_context_stats()
-                    _ctx_val = _cs.get("final", 0) or _cs.get("peak", 0)
-                    if _ctx_val and tool_callback:
-                        tool_callback("_ctx", "_ctx", {"tokens": _ctx_val}, None)
-                except Exception as e:
-                    logger.warning(f"团队子代理 {member_name} 上报上下文大小失败: {e}")
-                # 归并子 agent token 用量到父 agent
-                try:
-                    parent = parent_agent or self._parent_agent
-                    if parent and hasattr(parent, 'client') and parent.client:
-                        child_usage = agent.client.usage_tracker
-                        parent_usage = parent.client.usage_tracker
-                        if child_usage is not parent_usage:
-                            parent_usage.records.extend(child_usage.records)
-                except Exception as e:
-                    logger.warning(f"团队子代理 {member_name} 归并 token 用量失败: {e}")
-                return agent_result.result
-            except asyncio.CancelledError:
-                raise
-        except ValueError as e:
-            return f"ERROR: {e}"
-        except Exception as e:
-            logger.error(f"团队子代理 {member_name} 执行异常: {e}")
-            return f"ERROR: 团队子代理 {member_name} 执行异常: {e}"
-        finally:
-            await agent.cleanup()
 
     def get_subagent_prompt(self) -> str:
         """生成子代理列表提示词（包含个人和团队）"""
@@ -672,109 +583,7 @@ class SubagentManager:
         logger.info(f"创建新子代理: template={template_name}, session={new_session_id}")
         return instance, True
 
-    async def run_subagent(
-        self,
-        task: str,
-        template: str = "",
-        name: str = "",
-        session_id: str = "",
-        system_prompt: str = "",
-        tools: list[str] | None = None,
-        mcp_servers: list[str, Any] | None = None,
-        client=None,
-        parent_agent: "Agent" = None,
-        keep_alive: bool = True,
-        progress_callback=None,
-    ) -> "AgentResult":
-        """
-        运行子代理（统一入口：个人子代理和团队均通过此方法调用）
 
-        Args:
-            task: 任务内容
-            template: 模板名称
-            name: 子代理名称
-            session_id: 会话ID（用于复用）
-            system_prompt: 系统提示词
-            tools: 工具列表
-            mcp_servers: MCP服务器配置
-            client: LLM客户端
-            parent_agent: 父代理
-            keep_alive: 是否保持子代理存活（默认True）
-            progress_callback: 进度回调 (stage, status, role) -> None
-
-        Returns:
-            AgentResult
-        """
-        from agent import AgentResult
-
-        # 保存引用
-        if client:
-            self._client = client
-        if parent_agent:
-            self._parent_agent = parent_agent
-
-        template_name = template or name
-
-        # 团队路由：如果是团队，使用 TeamOrchestrator
-        if self.is_team(template_name):
-            # 记录用户输入到 session（使 /messages 能看到 prompt）
-            if session_id and self._parent_agent and self._parent_agent.session_manager:
-                sess = await self._parent_agent.session_manager.get_session(session_id)
-                if not sess:
-                    sess = await self._parent_agent.session_manager.create_session(
-                        agent_id=f"team:{template_name}", session_id=session_id)
-                    # 从 storage 恢复历史消息
-                    if self._parent_agent.storage:
-                        try:
-                            msgs = self._parent_agent.storage.get_messages(session_id)
-                            if msgs:
-                                sess.messages = msgs
-                                logger.info(f"团队模式从存储恢复session: {session_id}, {len(msgs)} 条")
-                        except Exception:
-                            pass
-                if sess:
-                    sess.add_message("user", task)
-            return await self._run_team_orchestrator(task, template_name, progress_callback, parent_session_id=session_id)
-
-        # 个人子代理：原有逻辑
-        try:
-            instance, is_new = await self.get_or_create_subagent(
-                template=template,
-                name=name,
-                session_id=session_id,
-                system_prompt=system_prompt,
-                tools=tools,
-                mcp_servers=mcp_servers,
-                client=client,
-                parent_agent=parent_agent
-            )
-
-            # 执行任务
-            try:
-                result = await instance.agent.run(task)
-                instance.task_count += 1
-                instance.last_used = time.time()
-            except Exception as e:
-                result = AgentResult(
-                    agent_id=instance.agent.agent_id,
-                    status="failed",
-                    result=f"子代理执行错误: {e}"
-                )
-                logger.error(f"子代理执行错误: {e}")
-
-            # 如果不需要保持存活，则清理
-            if not keep_alive:
-                await self.cleanup_subagent(instance.session_id)
-
-            return result
-
-        except Exception as e:
-            logger.error(f"子代理创建/执行错误: {e}")
-            return AgentResult(
-                agent_id="",
-                status="failed",
-                result=f"子代理错误: {e}"
-            )
 
     async def _run_team_orchestrator(self, task: str, team_name: str,
                                      progress_callback=None,

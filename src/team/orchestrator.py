@@ -353,65 +353,78 @@ class TeamOrchestrator:
 
         _stage = stage
         _cb = self.progress_callback
-        # 读取 LLM 设定的阶段迭代上限，0 表示用 agent 默认 200
         stage_config = self._get_stage_config(stage)
         stage_max_iter = stage_config.get("max_iterations", 0) if stage_config else 0
         if _cb:
             _cb("_max_iter", "_max_iter", {"max_iter": stage_max_iter or 200}, None)
 
-        try:
-            from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+        from hooks import HookEvent
+        from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+
+        async def _run_with_agent(task_body: str, max_iter: int) -> str:
+            agent = await self.subagent_manager._create_team_subagent(
+                self.team_name, role, client=self.llm,
+                parent_agent=None, max_iterations=max_iter,
+            )
+            if _cb:
+                agent.hooks.register(HookEvent.TOOL_START, lambda _ctx: _cb(
+                    f"{_ctx.tool_name}|{_stage}", "tool_start", _ctx.arguments or {}, None))
+                agent.hooks.register(HookEvent.TOOL_RESULT, lambda _ctx: _cb(
+                    f"{_ctx.tool_name}|{_stage}", "tool_result", {}, str(_ctx.result or "")))
+                agent.hooks.register(HookEvent.ROUND_START, lambda _ctx: _cb(
+                    "_ctx", "_ctx", {"tokens": (
+                        agent.tracer.get_context_stats().get("final", 0) or
+                        agent.tracer.get_context_stats().get("peak", 0)
+                    ), "iter": _ctx.metadata.get("iteration", 0)}, None))
+                agent.hooks.register(HookEvent.LLM_RESPONSE, lambda _ctx: _cb(
+                    "llm", "llm", _ctx.content or "", None))
             _ask_token = set_ask_user_mode("auto")
+            sub_sid = f"{self.parent_session_id}:{role}" if self.parent_session_id else ""
             try:
-                result = await asyncio.wait_for(
-                    self.subagent_manager.run_team_agent(
-                        team_name=self.team_name,
-                        member_name=role,
-                        task=full_task,
-                        tool_callback=lambda evt, name, args, res: (
-                            _cb(f"{name}|{_stage}", evt, args, res)
-                        ) if _cb else None,
-                        parent_session_id=self.parent_session_id,
-                        max_iterations=stage_max_iter,
-                    ),
+                r = await asyncio.wait_for(
+                    agent.run(task_body, session_id=sub_sid,
+                              user_id="cli:admin", user_name="管理员"),
                     timeout=600,
                 )
             finally:
                 reset_ask_user_mode(_ask_token)
+            text = r.result if hasattr(r, 'result') else str(r)
+            st = getattr(r, 'status', 'completed')
+            result_text = text
+            if st == "failed":
+                result_text = f"ERROR: 团队子代理 {role} 执行失败: {text}"
+            elif st == "max_iterations":
+                result_text = f"MAXITER: 达到最大迭代次数|{text}"
+            if _cb:
+                try:
+                    _cs = agent.tracer.get_context_stats()
+                    _ctx_v = _cs.get("final", 0) or _cs.get("peak", 0)
+                    if _ctx_v:
+                        _cb("_ctx", "_ctx", {"tokens": _ctx_v}, None)
+                except Exception:
+                    pass
+            await agent.cleanup()
+            return result_text
 
-            # 达到最大迭代次数时让 Leader 审核部分产出是否可用
+        try:
+            result = await _run_with_agent(full_task, stage_max_iter)
+
+            # MAXITER: Leader 审核部分产出
             if result and result.startswith("MAXITER:"):
                 partial = result.split("|", 1)[1] if "|" in result else ""
                 logger.info(f"阶段 [{stage}] 达到迭代上限，Leader 审核部分产出")
-                if self.progress_callback:
-                    self.progress_callback(stage, "stage_timeout", "迭代上限，Leader 审核中")
+                if _cb:
+                    _cb(stage, "stage_timeout", "迭代上限，Leader 审核中")
                 confirmed, feedback = await self._leader_review_partial(stage, partial)
                 if confirmed:
                     result = partial
                     logger.info(f"Leader 确认阶段 [{stage}] 产出可用")
                 else:
                     logger.info(f"Leader 判定产出不足，追加 50 轮继续: {feedback[:100]}")
-                    if self.progress_callback:
-                        self.progress_callback(stage, "feedback", f"追加迭代: {feedback[:100]}")
-                    stage_max_iter = (stage_max_iter or 200) + 50
+                    if _cb:
+                        _cb(stage, "feedback", f"追加迭代: {feedback[:100]}")
                     continue_task = f"继续完成阶段性工作。Leader 反馈: {feedback[:300]}"
-                    _ask_token2 = set_ask_user_mode("auto")
-                    try:
-                        result = await asyncio.wait_for(
-                            self.subagent_manager.run_team_agent(
-                                team_name=self.team_name,
-                                member_name=role,
-                                task=continue_task,
-                                tool_callback=lambda evt, name, args, res: (
-                                    _cb(f"{name}|{_stage}", evt, args, res)
-                                ) if _cb else None,
-                                parent_session_id=self.parent_session_id,
-                                max_iterations=stage_max_iter,
-                            ),
-                            timeout=600,
-                        )
-                    finally:
-                        reset_ask_user_mode(_ask_token2)
+                    result = await _run_with_agent(continue_task, (stage_max_iter or 200) + 50)
 
             if _cb:
                 summary = (result or "")[:300].strip()

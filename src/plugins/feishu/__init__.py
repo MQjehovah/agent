@@ -42,6 +42,13 @@ class FeishuSession:
         if not self._plugin or not self._plugin.plugin_manager:
             return "PluginManager未就绪"
         try:
+            router = getattr(self._plugin.plugin_manager, "router", None)
+            if router:
+                result = await router.route(
+                    content, channel="feishu",
+                    session_id=self.session_id,
+                )
+                return result.result if hasattr(result, "result") else str(result)
             result = await self._plugin.plugin_manager.execute(
                 self.session_id, content
             )
@@ -444,7 +451,11 @@ class FeishuPlugin(BasePlugin):
     def _get_or_create_session(
         self, chat_id: str, user_id: str, user_name: str
     ) -> FeishuSession:
-        session_id = f"feishu_{chat_id}_{user_id}"
+        router = getattr(self.plugin_manager, "router", None)
+        if router:
+            session_id = router.format_session_id("feishu", chat_id, user_id)
+        else:
+            session_id = f"feishu_{chat_id}_{user_id}"
         if session_id not in self.sessions:
             session = FeishuSession(
                 session_id=session_id,

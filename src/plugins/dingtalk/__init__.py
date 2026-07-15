@@ -288,7 +288,11 @@ class DingTalkPlugin(BasePlugin):
             return f"发送图片失败: {e}"
 
     def get_session(self, conversation_id: str, sender_id: str, sender_nick: str, robot_code: str) -> DingTalkSession:
-        session_id = f"{conversation_id}_{sender_id}"
+        router = getattr(self.plugin_manager, "router", None) if self.plugin_manager else None
+        if router:
+            session_id = router.format_session_id("dingtalk", conversation_id, sender_id)
+        else:
+            session_id = f"{conversation_id}_{sender_id}"
 
         if session_id not in self.sessions:
             session = DingTalkSession(
@@ -377,12 +381,21 @@ class AgentChatbotHandler:
             if not self.plugin.plugin_manager:
                 response = "执行器未注册，请稍后再试"
             else:
-                response = await self.plugin.plugin_manager.execute(
-                    session_id=session.session_id,
-                    content=content,
-                    user_id=user_id,
-                    user_name=sender_nick
-                )
+                router = getattr(self.plugin.plugin_manager, "router", None)
+                if router:
+                    result = await router.route(
+                        content, channel="dingtalk",
+                        session_id=session.session_id,
+                        user_id=user_id, user_name=sender_nick,
+                    )
+                    response = result.result if hasattr(result, "result") else str(result)
+                else:
+                    response = await self.plugin.plugin_manager.execute(
+                        session_id=session.session_id,
+                        content=content,
+                        user_id=user_id,
+                        user_name=sender_nick
+                    )
 
             self.reply_text(response, incoming_message)
 
