@@ -1,0 +1,10 @@
+[
+    {
+        "name": "chrome-devtools",
+        "enabled": true,
+        "command": "npx",
+        "args": ["-y", "chrome-devtools-mcp@latest"],
+        "env": {},
+        "description": "Chrome DevTools MCP - 浏览器调试、DOM检查、Console、Network、截图"
+    }
+]
