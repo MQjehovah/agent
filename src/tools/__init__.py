@@ -31,6 +31,7 @@ class ToolDefinition:
 
 class BuiltinTool(ABC):
     workspace: str = ""
+    temp_dir: str = ""
 
     @property
     @abstractmethod
@@ -60,12 +61,16 @@ class BuiltinTool(ABC):
         return os.path.normpath(os.path.join(self.workspace or os.getcwd(), path))
 
     def is_path_allowed(self, path: str) -> bool:
-        """写操作路径边界检查。workspace 为空时允许所有路径。"""
-        if not self.workspace:
+        """写操作路径边界检查。允许 workspace 和 temp_dir 内的路径。"""
+        allowed = []
+        if self.workspace:
+            allowed.append(os.path.normpath(os.path.abspath(self.workspace)))
+        if self.temp_dir:
+            allowed.append(os.path.normpath(os.path.abspath(self.temp_dir)))
+        if not allowed:
             return True
         resolved = os.path.normpath(os.path.abspath(path))
-        ws = os.path.normpath(os.path.abspath(self.workspace))
-        return resolved == ws or resolved.startswith(ws + os.sep)
+        return any(resolved == a or resolved.startswith(a + os.sep) for a in allowed)
 
     def get_definition(self) -> Dict[str, Any]:
         return {
@@ -82,6 +87,7 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, BuiltinTool] = {}
         self._workspace: str = ""
+        self._temp_dir: str = ""
 
     @property
     def workspace(self) -> str:
@@ -93,10 +99,21 @@ class ToolRegistry:
         for tool in self._tools.values():
             tool.workspace = value
 
+    @property
+    def temp_dir(self) -> str:
+        return self._temp_dir
+
+    @temp_dir.setter
+    def temp_dir(self, value: str):
+        self._temp_dir = value
+        for tool in self._tools.values():
+            tool.temp_dir = value
+
     def register_tool(self, tool: BuiltinTool) -> bool:
         if tool.name in self._tools:
             logger.warning(f"工具 '{tool.name}' 已存在，将被覆盖")
         tool.workspace = self._workspace
+        tool.temp_dir = self._temp_dir
         self._tools[tool.name] = tool
         logger.debug(f"注册内置工具: {tool.name}")
         return True

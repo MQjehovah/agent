@@ -125,6 +125,9 @@ class Agent:
         self.status = "pending"
         self.result: str | None = None
 
+        # 临时工作目录（系统 temp 下，按 session 隔离，cleanup 时自动删除）
+        self.temp_dir: str = "tmp"
+
         # 沙箱系统
         self.sandbox = None
 
@@ -164,9 +167,11 @@ class Agent:
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
-        await self._load_team_config()  # 必须在 _load_system_prompt 之后
+        await self._load_team_config()
         self._init_sandbox()
+        self._create_temp_dir()
         self._init_tools()
+        self.tool_registry.temp_dir = self.temp_dir
         self._init_skills()
         await self._load_mcp_servers()
 
@@ -234,6 +239,20 @@ class Agent:
                     lines.append(f"- {m}")
             team_roles = "\n".join(lines)
         # 构建团队配置（与 SubagentManager._load_team 格式一致）
+        # 加载团队 Leader prompt（从团队目录下的 PROMPT.md 读取）
+        team_prompt_file = os.path.join(self.config_dir, "PROMPT.md")
+        leader_prompt = self.system_prompt_raw or ""
+        if os.path.exists(team_prompt_file):
+            try:
+                with open(team_prompt_file, encoding="utf-8") as _f:
+                    _team_content = _f.read()
+                from utils.frontmatter import extract_frontmatter as _ef
+                _fm, _body = _ef(_team_content)
+                if _body:
+                    leader_prompt = _body
+            except Exception as _e:
+                logger.debug(f"读取团队 PROMPT.md 失败: {_e}")
+
         self._team_config = {
             "name": name,
             "description": fm.get("description", ""),
@@ -242,7 +261,7 @@ class Agent:
             "workspace": self.workspace,
             "team_body": body,
             "team_roles": team_roles,
-            "leader_prompt": self.system_prompt_raw or "",
+            "leader_prompt": leader_prompt,
             "dir_name": name,
         }
         # 加载成员
@@ -295,6 +314,12 @@ class Agent:
         except Exception as e:
             logger.warning(f"Agent [{self.name}] 沙箱初始化失败: {e}")
             self.sandbox = None
+
+    def _create_temp_dir(self):
+        import tempfile
+        suffix = f"_{self.name}" if self.name else ""
+        self.temp_dir = tempfile.mkdtemp(suffix=suffix, prefix="agent_")
+        logger.info(f"Agent [{self.name}] 临时目录: {self.temp_dir}")
 
     @staticmethod
     def _expand_env_vars(text: str) -> str:
@@ -544,6 +569,7 @@ class Agent:
 
         self._env_context_cache = (
             f"工作目录: {cwd}\n"
+            f"临时目录: {self.temp_dir}\n"
             f"Git 仓库: {'是' if is_git else '否'}\n"
             f"当前分支: {branch or 'N/A'}\n"
             f"平台: {platform.system()} {platform.release()}\n"
@@ -1301,6 +1327,9 @@ class Agent:
             return json.dumps({"success": False, "error": "缺少task参数"}, ensure_ascii=False)
 
         agent_name = args.get("name", "") or args.get("template", "")
+        # name 是自由描述（如"截图双屏Bug修复"），template 才是团队/模板名
+        template_name = args.get("template", "") or args.get("name", "")
+        display_name = f"{args['template']} → {args['name']}" if args.get("template") and args.get("name") else agent_name
 
         role = current_run().session.role if current_run().session else ""
         if self.rbac and role and agent_name:
@@ -1310,11 +1339,11 @@ class Agent:
 
         await self.hooks.fire(
             self._hook_event.SUBAGENT_START,
-            metadata={"name": agent_name, "task": task},
+            metadata={"name": display_name, "task": task},
         )
 
         try:
-            if self.subagent_manager and self.subagent_manager.is_team(agent_name):
+            if self.subagent_manager and self.subagent_manager.is_team(template_name):
                 # 团队工具调用：创建 session 后走编排器
                 if args.get("session_id") and self.session_manager:
                     sess = await self.session_manager.get_session(args["session_id"])
@@ -1330,8 +1359,19 @@ class Agent:
                                 pass
                     if sess:
                         sess.add_message("user", task)
+
+                async def _team_progress(stage: str, status: str, info, extra):
+                    await self.hooks.fire(
+                        self._hook_event.SUBAGENT_PROGRESS,
+                        metadata={"stage": stage, "status": status,
+                                  "info": info, "extra": extra,
+                                  "team": display_name},
+                    )
+
                 result = await self.subagent_manager._run_team_orchestrator(
-                    task, agent_name, parent_session_id=args.get("session_id", ""))
+                    task, template_name,
+                    progress_callback=_team_progress,
+                    parent_session_id=args.get("session_id", ""))
             else:
                 # 个人子代理：直连 agent.run()
                 from subagent_manager import SubagentInstance
@@ -1345,6 +1385,8 @@ class Agent:
                     client=self.client,
                     parent_agent=self,
                 )
+                # 注册子代理事件转发钩子
+                self._register_subagent_hooks(instance.agent, display_name)
                 try:
                     result = await instance.agent.run(task)
                     instance.task_count += 1
@@ -1356,13 +1398,15 @@ class Agent:
                         result=f"子代理执行错误: {e}",
                     )
                     logger.error(f"子代理执行错误: {e}")
+                finally:
+                    self._unregister_subagent_hooks(instance.agent)
                 if not args.get("keep_alive", True):
                     await self.subagent_manager.cleanup_subagent(instance.session_id)
         except Exception as e:
             logger.error(f"Subagent execution error: {e}")
             await self.hooks.fire(
                 self._hook_event.SUBAGENT_RESULT,
-                metadata={"name": agent_name, "error": str(e)},
+                metadata={"name": display_name, "error": str(e)},
             )
             return json.dumps({"success": False, "error": f"子代理执行错误: {e}"}, ensure_ascii=False)
 
@@ -1374,7 +1418,7 @@ class Agent:
 
         await self.hooks.fire(
             self._hook_event.SUBAGENT_RESULT,
-            metadata={"name": agent_name, "status": result.status, "result": result_preview},
+            metadata={"name": display_name, "status": result.status, "result": result_preview},
         )
 
         return json.dumps({
@@ -1384,6 +1428,39 @@ class Agent:
             "result": result.result,
             "active_subagents": stats.get("active_count", 0),
         }, ensure_ascii=False)
+
+    def _register_subagent_hooks(self, sub_agent, agent_name: str):
+        """在子代理上注册事件转发钩子，将子代理的中间事件转发到父代理的 SUBAGENT_* 事件。"""
+        mapping = {
+            self._hook_event.TOOL_START: self._hook_event.SUBAGENT_TOOL_START,
+            self._hook_event.TOOL_RESULT: self._hook_event.SUBAGENT_TOOL_RESULT,
+            self._hook_event.ROUND_START: self._hook_event.SUBAGENT_ROUND_START,
+            self._hook_event.CHAT_EVENT: self._hook_event.SUBAGENT_CHAT_EVENT,
+        }
+        self._subagent_hook_unregisters = []
+        for src_evt, dst_evt in mapping.items():
+
+            async def _forward(ctx, _dst=dst_evt, _name=agent_name):
+                ctx.event = _dst
+                ctx.agent_name = _name
+                await self.hooks.fire(_dst, **{
+                    "token": ctx.token,
+                    "content": ctx.content,
+                    "tool_name": ctx.tool_name,
+                    "arguments": ctx.arguments,
+                    "result": ctx.result,
+                    "agent_name": _name,
+                    "agent_type": "subagent",
+                    "metadata": ctx.metadata,
+                })
+            sub_agent.hooks.register(src_evt, _forward)
+            self._subagent_hook_unregisters.append((sub_agent, src_evt, _forward))
+
+    def _unregister_subagent_hooks(self, sub_agent):
+        for sa, evt, cb in getattr(self, "_subagent_hook_unregisters", []):
+            if sa is sub_agent:
+                sa.hooks.unregister(evt, cb)
+        self._subagent_hook_unregisters = []
 
     async def cleanup(self):
         for task in list(self._background_tasks):
@@ -1401,4 +1478,15 @@ class Agent:
             self.learner.stop_daily_task()
         if self.mcp:
             await self.mcp.close()
+
+        self._cleanup_temp_dir()
         logger.info(f"Agent [{self.name}] cleaned up")
+
+    def _cleanup_temp_dir(self):
+        import shutil
+        if self.temp_dir and os.path.isdir(self.temp_dir):
+            try:
+                shutil.rmtree(self.temp_dir, ignore_errors=True)
+                logger.debug(f"临时目录已清理: {self.temp_dir}")
+            except Exception as e:
+                logger.warning(f"临时目录清理失败: {self.temp_dir}: {e}")

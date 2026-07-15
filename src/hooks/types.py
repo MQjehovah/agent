@@ -20,6 +20,7 @@ class HookEvent(Enum):
     SUBAGENT_TOOL_START = "subagent_tool_start"
     SUBAGENT_TOOL_RESULT = "subagent_tool_result"
     SUBAGENT_ROUND_START = "subagent_round_start"
+    SUBAGENT_PROGRESS = "subagent_progress"
     LLM_RESPONSE = "llm_response"
 
 

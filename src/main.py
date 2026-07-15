@@ -24,8 +24,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 日志目录必须在模块导入前设置（llm.py 在导入时读取 AGENT_LOG_DIR）
-_AGENT_HOME = os.path.join(os.path.expanduser("~"), "agent")
-os.environ.setdefault("AGENT_LOG_DIR", os.path.join(_AGENT_HOME, "logs"))
+_LOCAL_LOG = os.path.join(Path(__file__).parent.parent, "logs")
+_AGENT_LOG = os.path.join(os.path.expanduser("~"), "agent", "logs")
+os.environ.setdefault("AGENT_LOG_DIR", _LOCAL_LOG if os.path.isdir(_LOCAL_LOG) else _AGENT_LOG)
 
 
 console = Console()
@@ -273,10 +274,13 @@ class TerminalUI:
             return
         _write(f"  {_GREEN}✔{_RESET} {_DIM}{brief}{_RESET}")
 
-    def subagent_result(self, name: str, status: str):
+    def subagent_result(self, name: str, status: str, preview: str = ""):
         _STATE["subagent_depth"] -= 1
         s = f"{_GREEN}done{_RESET}" if status == "completed" else f"{_RED}{status}{_RESET}"
-        _write(f"  {_DIM}└─ {name} [{s}]{_RESET}")
+        line = f"  {_DIM}└─ {name} [{s}]{_RESET}"
+        if preview:
+            line += f"  {_DIM}{preview}{_RESET}"
+        _write(line)
 
     # ── output ──
 
@@ -368,11 +372,52 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
 
     def on_subagent_result(ctx):
         meta = ctx.metadata or {}
-        ui.subagent_result(meta.get("name", "?"), meta.get("status", "?"))
+        # 恢复 spinner 显示主 agent 名称
+        _STATE["agent_name"] = target_agent or agent.name or ""
+        preview = meta.get("result", "")
+        if preview and len(preview) > 300:
+            preview = preview[:300] + "..."
+        ui.subagent_result(meta.get("name", "?"), meta.get("status", "?"), preview)
+
+    def on_subagent_start(ctx):
+        meta = ctx.metadata or {}
+        _STATE["agent_name"] = meta.get("name", "?")
+        _clear_line()
+
+    def on_subagent_tool_start(ctx):
+        if not target_agent:
+            ui.tool_call(f"├─ {ctx.tool_name}", ctx.arguments or {})
+
+    def on_subagent_tool_result(ctx):
+        if not target_agent:
+            brief = _truncate(str(ctx.result or ""), 60)
+            if brief and not brief.startswith('{"success": true') and brief != "{}":
+                icon = _GREEN + "✔" + _RESET if not brief.startswith('{"success": false') else _RED + "✗" + _RESET
+                _write(f"  {_DIM}│{_RESET} {icon} {_DIM}{brief}{_RESET}")
+
     agent.hooks.register(HookEvent.TOOL_START, on_tool_start)
     agent.hooks.register(HookEvent.TOOL_RESULT, on_tool_result)
     agent.hooks.register(HookEvent.ROUND_START, on_round_start)
+    agent.hooks.register(HookEvent.SUBAGENT_START, on_subagent_start)
     agent.hooks.register(HookEvent.SUBAGENT_RESULT, on_subagent_result)
+    agent.hooks.register(HookEvent.SUBAGENT_TOOL_START, on_subagent_tool_start)
+    agent.hooks.register(HookEvent.SUBAGENT_TOOL_RESULT, on_subagent_tool_result)
+
+    def on_subagent_progress(ctx):
+        meta = ctx.metadata or {}
+        stage = meta.get("stage", "")
+        status = meta.get("status", "")
+        info = meta.get("info")
+        extra = meta.get("extra")
+        if status == "_ctx" and isinstance(info, dict):
+            _STATE["ctx_tokens"] = info.get("tokens", 0)
+            _STATE["iter"] = info.get("iter", 0)
+        elif status == "start" and info:
+            _STATE["current_stage"] = stage
+            _STATE["agent_name"] = info
+            _STATE["iter"] = 0
+            _STATE["stage_max_iter"] = extra if isinstance(extra, (int, float)) else 0
+    agent.hooks.register(HookEvent.SUBAGENT_PROGRESS, on_subagent_progress)
 
     # ask_user 处理器
     ask_tool = agent.tool_registry.get_tool(

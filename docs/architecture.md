@@ -129,26 +129,32 @@ AgentSession (agent_session.py)
 └── agent_manager → AgentSessionManager
 ```
 
-### 4.2 Session 创建/恢复（当前分散在 2 处）
+### 4.2 Session 管理
 
-| 位置                                            | 职责                           | 问题                                   |
-| ----------------------------------------------- | ------------------------------ | -------------------------------------- |
-| `agent.py:_run_impl` (line 625)               | 所有 Agent 的标准 session 管理 | 完整：创建/恢复/持久化                 |
-| `subagent_manager.py:run_subagent` (团队路径) | 团队模式的根 session（已简化） | 仅存储用户输入，`_run_impl` 统一管理 |
-
-### 4.3 Session ID 层级
-
-Session ID 反映的是 **调用栈**，不是 Agent 类型：
+Session 管理完全由 `agent.py:_run_impl` 统一负责，不存在团队模式的特例：
 
 ```
-顶层 session:    uuid4()                             (CLI 启动)
-子 session:      {parent_session_id}:{child_name}    (subagent 调用)
+_agent.run(task, session_id=xxx)
+  └── _run_impl()  ← 所有 Agent 走这里
+       ├─ session_manager.get_or_create(session_id)
+       ├─ session_manager.restore_messages()  ← 从 SQLite 恢复历史
+       │
+       ├─ [如果 team + 复杂任务]
+       │   └── _team_run_impl()
+       │        └── orchestrator.run()
+       │             └── 每个成员 agent.run() → _run_impl()
+       │                  └── 各自管理自己的 session
+       │
+       └─ [简单任务] ReAct Loop
+            └─ session.add_message() → 持久化
 ```
 
-每次 `agent.run(task, session_id=xxx)` 时：
+- 所有 Agent（根、leader、成员）共享同一套 session 机制
+- session_id 由调用方传入，格式为 `{channel}:{unique_id}`（统一格式）
+- 没有"根 session" vs "子 session" 的特殊概念
+- 子代理调用的 session_id 格式为 `{parent_session_id}:{child_name}`，反映调用栈
 
-- 如果 `session_id` 已有消息 → 恢复历史（记忆连续性）
-- 如果没有 → 创建新 session
+### 4.3 Session ID 格式
 
 ### 4.4 持久化
 
@@ -276,45 +282,112 @@ _execute_tool_safe(name, args)
   └─ Plugin on_transform_tool_result
 ```
 
-## 九、待解决的问题
+## 九、当前状态与已知问题
 
-### 9.1 Hook 注册分散在三处
+### 9.1 接入层统一（已完成）
+
+新增 `src/channels/router.py`:
+
+```python
+class MessageRouter:
+    """统一消息路由：所有渠道通过此路由器调用 agent.run()
+    
+    - route(channel, content, ...) — 非 CLI 渠道自动 set_ask_user_mode("auto")
+    - format_session_id(channel, *parts) — 标准化 session ID
+    """
+```
+
+所有 6 个渠道（CLI、Web、DingTalk、Feishu、Webhook、Scheduler）统一通过 `router.route()` 调用 agent。
+
+### 9.2 Session ID 格式统一（已完成）
+
+| 渠道 | 旧格式 | 新格式 |
+|------|--------|--------|
+| CLI | `uuid4()` | `cli:{uuid}` |
+| DingTalk | `{conv_id}_{sender_id}` | `dingtalk:{conv_id}:{sender_id}` |
+| Feishu | `feishu_{chat_id}_{user_id}` | `feishu:{chat_id}:{user_id}` |
+| Webhook | `webhook_{task_id[:8]}` | `webhook:{task_id}` |
+| Web | `web_{uuid.hex[:8]}` | `web:{uuid}` |
+
+### 9.3 main.py Bug 修复
+
+`interactive_mode` 中 `run_task()` 函数的作用域层级错误：
+
+```
+修复前:
+    async def run_task():
+        ...setup spinner...          # 只做设置，返回 None
+    async def _run():
+        return await agent.run()     # 调 agent
+        try: ...                     # 死代码（return 后不可达）
+```
+
+`_run()` 和 `try/except/finally` 在 `interactive_mode` 函数体级别（`run_task` 之外），`try` 在 `_run()` 的 `return` 之后。用户输入后 `run_task` 只启动 spinner 就结束了，agent 实际从未执行。
+
+```
+修复后:
+    async def run_task():
+        ...setup spinner...
+        async def _run():
+            return await agent.run()
+        try:
+            task = asyncio.create_task(_run())
+            ...await asyncio.wait(...)...  # 实际等待 agent 完成
+        ...
+        finally:
+            ...                            # 清理
+```
+
+`_run()` 定义 + 执行/等待/结果展示全在 `run_task()` 内部，流程正确。
+
+### 9.4 ask_user 模式统一（已完成 via MessageRouter）
+
+| 之前 | 现在 |
+|------|------|
+| 4 处独立的 `set_ask_user_mode()` 包裹 | 1 处：`MessageRouter.route()` |
+| CLI: `set_input_handler()` | CLI: `channel="cli"` 直接交互 |
+| 非 CLI: `set_ask_user_mode("auto")` | 非 CLI: 内部自动处理 |
+
+### 9.5 临时目录隔离（已完成）
+
+新增 `agent.temp_dir` 概念：
+
+```
+workspace  = 项目目录（用户交付物，审慎写入）
+temp_dir   = 系统临时目录（中间产物、下载、实验，用完即弃）
+            {system_tmp}/agent_{name}_XXXXXX/
+```
+
+实现：
+
+| 文件 | 改动 |
+|------|------|
+| `agent.py` | `initialize()` 中 `mkdtemp` 创建，`cleanup()` 时 `rmtree` 删除 |
+| `agent.py:_get_env_context()` | prompt 中加入 `临时目录: {temp_dir}` |
+| `tools/shell.py` | 默认 CWD 从 `workspace` 改为 `temp_dir` |
+| `tools/__init__.py` | `is_path_allowed` 同时允许 `workspace` 和 `temp_dir` |
+| `tools/__init__.py` | `ToolRegistry` 新增 `temp_dir` 属性，自动传播到所有工具 |
+
+效果：
+
+- agent 执行 shell 命令默认在临时目录，不会无意识写文件到项目目录
+- 写 `workspace` 需显式指定路径（`file_operation` 的 `path` 参数）
+- 临时目录在 agent `cleanup()` 时自动清理
+- 操作系统临时目录本身也有定期清理策略
+
+### 9.6 Hook 注册分散在三处
 
 | 位置                 | 注册事件                                           | 用途                   |
 | -------------------- | -------------------------------------------------- | ---------------------- |
-| `interactive_mode` | TOOL_START, TOOL_RESULT                            | 终端显示（非团队模式） |
-| `run_team_agent`   | TOOL_START, TOOL_RESULT, ROUND_START, LLM_RESPONSE | 团队进度回调           |
-| `_forward_hooks`   | CHAT_EVENT, TOOL_START, TOOL_RESULT, ROUND_START   | Web UI 流式显示        |
+| `interactive_mode` | TOOL_START, TOOL_RESULT, ROUND_START, SUBAGENT_RESULT | 终端显示             |
+| Web SSE stream     | CHAT_EVENT, TOOL_START, TOOL_RESULT, SUBAGENT_*      | Web UI 流式显示       |
+| `orchestrator.py`  | TOOL_START, TOOL_RESULT (内部)                       | 团队进度回调          |
 
-`_forward_hooks` 和 `interactive_mode` 都注册了 TOOL_START/TOOL_RESULT，但前者只是转发给父 agent，后者才实际显示到终端。
-
-### 9.2 团队执行层过多（已修复）
-
-~~9 层调用链~~ → 现在：
-
-```
-main.py → Agent(config_dir=team_dir) → agent.run() → _team_run_impl() → TeamOrchestrator.run()
-  → DAG → _run_stage → _create_team_subagent() + agent.run() → _run_impl() [ReAct]
-```
-
-已移除 `run_subagent`、`run_team_agent`、`_run_team_orchestrator` 中间层。
-
-### 9.3 工具黑名单（tool_denylist）
-
-### 9.4 工具黑名单（tool_denylist）
+### 9.7 工具黑名单（tool_denylist）
 
 `_create_team_subagent` 中通过 `tool_denylist` 过滤掉 `subagent`/`web_search` 等工具。但这只是从 `tool_defs`（LLM 视角）中移除，工具本身仍在 registry 中。LLM 可以通过已知的工具名绕过黑名单。
 
-### 9.5 ask_user 模式不统一
-
-| 位置                           | 设置                                | 原因                 |
-| ------------------------------ | ----------------------------------- | -------------------- |
-| `orchestrator.py:_run_stage` | `set_ask_user_mode("auto")`       | 团队模式下用户不在线 |
-| `main.py:interactive_mode`   | `set_input_handler(_on_ask_user)` | 交互模式下允许输入   |
-
-两种方式通过 contextvars 隔离，运行时值取决于谁最后设置——可能互相干扰。
-
-### 9.6 进度回调链路过长
+### 9.8 进度回调链路过长
 
 ```
 _run_stage → tool_callback λ → _cb (self.progress_callback)
@@ -323,7 +396,18 @@ _run_stage → tool_callback λ → _cb (self.progress_callback)
 
 λ 嵌套 λ，且 `_cb` 是 orchestrator 的 `self.progress_callback`，但 `tool_callback` 却是 `_run_stage` 本地创建的 λ，两者通过参数传递。调试困难。
 
-## 十、建议重构方向
+## 十、已完成的重构
+
+| 重构 | 状态 | 备注 |
+|------|------|------|
+| MessageRouter 接入层统一 | ✅ | `src/channels/router.py` |
+| Session ID 格式统一 | ✅ | `{channel}:{unique_id}` |
+| ask_user 模式统一 | ✅ | 4处 → 1处 MessageRouter |
+| 临时目录隔离 | ✅ | `agent.temp_dir` |
+| main.py bug 修复 | ✅ | `run_task` 作用域层级 |
+| 团队执行层简化 | ✅ | 移除 run_team_agent |
+
+## 十一、建议重构方向
 
 ### Hook 分层
 
