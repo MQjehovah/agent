@@ -76,14 +76,22 @@ class MemoryManager:
         rows = storage.query_memories(user_id=user_id, limit=limit)
         if not rows:
             return ""
-        # 按 category 分组
+        # 按 category 分组，每组去重+限量
         groups = {}
+        seen = set()
         for r in rows:
             label = CATEGORY_LABELS.get(r["category"], r["category"])
-            groups.setdefault(label, []).append(r["content"])
+            content = r["content"]
+            # 去重：相同纠正/经验只保留最后一条
+            key = content[:60]
+            if key in seen:
+                continue
+            seen.add(key)
+            groups.setdefault(label, []).append(content)
+        # 每组最多 5 条，避免记忆膨胀
         parts = ["【记忆】"]
         for label, items in groups.items():
             parts.append(f"### {label}")
-            for it in items:
-                parts.append(f"- {it}")
+            for it in items[-5:]:
+                parts.append(f"- {it[:200]}")
         return "\n".join(parts)

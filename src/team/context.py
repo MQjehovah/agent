@@ -97,15 +97,16 @@ class TeamContext:
 
         parts.append(f"## 团队任务\n{self.original_task}")
 
-        # 上游阶段产出（避免下游重读文件）
+        # 上游阶段产出（只保留摘要，避免下游上下文膨胀）
         upstream_results = [(nid, r) for nid, r in self.node_results.items() if r]
         if upstream_results:
-            lines = ["## 上游阶段产出", "以下是你之前各阶段的产出摘要，避免重复劳动：", ""]
+            lines = ["## 上游阶段产出摘要"]
             for nid, result in upstream_results:
-                truncated = result[:1500]
-                if len(result) > 1500:
-                    truncated += "\n...（截断）"
-                lines.append(f"### {nid}\n{truncated}\n")
+                # 取前 300 字符作为摘要，够下游判断是否需要读取完整文件
+                truncated = result[:300].replace("\n", " ").strip()
+                if len(result) > 300:
+                    truncated += "..."
+                lines.append(f"- **{nid}**: {truncated}")
             parts.append("\n".join(lines))
 
         artifact_index = self._get_artifact_index()

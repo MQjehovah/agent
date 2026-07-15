@@ -121,14 +121,22 @@ class AgentSessionManager:
 
         result = list(messages)  # 浅拷贝
         modified = False
+        _COMPRESS_TAG = "[旧结果已压缩"
+        # 这些工具的结果需要跨轮次保留，不压缩
+        _KEEP_TOOLS = {"skill", "execute_skill", "ask_user"}
         for idx in old_tool_indices:
             msg = result[idx]
             content = msg.get("content", "")
+            tool_name = msg.get("name", "unknown")
+            # 技能/交互结果不压缩（需要跨轮次参考）
+            if tool_name in _KEEP_TOOLS:
+                continue
             if isinstance(content, str) and len(content) > AgentSessionManager.TOOL_RESULT_COLLAPSE_CHARS:
-                # 获取工具名
-                tool_name = msg.get("name", "unknown")
+                # 跳过已压缩的，避免嵌套压缩
+                if content.startswith(_COMPRESS_TAG):
+                    continue
                 truncated = (
-                    f"[旧结果已压缩 | 工具: {tool_name} | "
+                    f"{_COMPRESS_TAG} | 工具: {tool_name} | "
                     f"原始 {len(content)} 字符]\n"
                     f"{content[:AgentSessionManager.TOOL_RESULT_COLLAPSE_CHARS]}..."
                 )

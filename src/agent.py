@@ -440,8 +440,11 @@ class Agent:
         if self.skill_manager:
             active_skills = self.skill_manager.get_active_skills_prompt()
             if active_skills:
+                # 技能内容已通过 execute_skill 工具返回给 LLM，不重复注入 system prompt
+                # 只记录已激活的技能名，避免 system prompt 膨胀
+                skill_names = list(self.skill_manager._active_skills.keys())
                 builder.add(
-                    "已激活技能", active_skills,
+                    "已激活技能", f"已激活技能: {', '.join(skill_names)}（内容已在工具返回中，按其指导执行）",
                     is_static=False, priority=35
                 )
 
