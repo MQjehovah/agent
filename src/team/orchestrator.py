@@ -71,14 +71,13 @@ class TeamOrchestrator:
             f" (mode={self.pipeline_mode})")
 
         if not self.pipeline_stages:
-            # 简单对话/问答，不需要流水线 → 让 Leader 直接回复
+            # 简单对话/问答，不需要流水线 → 用团队身份直接回复
             if self.progress_callback:
-                chat_role = self.leader if self.leader and self.leader in self.members else next(iter(self.members.keys()))
-                self.progress_callback("chat", "start", chat_role, None)
+                self.progress_callback(f"{self.team_name}|chat", "start", self.team_name, None)
             result = await self._run_direct_chat(self.context.original_task)
             if self.progress_callback:
                 summary = (result or "")[:200].strip()
-                self.progress_callback("chat", "stage_done", summary, None)
+                self.progress_callback(f"{self.team_name}|chat", "stage_done", summary, None)
             return result
 
         if self.progress_callback:

@@ -315,6 +315,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
     ui = TerminalUI()
     progress_shown = False
     cancel_flag = threading.Event()
+    _task_pending = 0
 
     # 工作目录上下文
     ws_context = os.path.basename(os.path.normpath(agent.workspace))
@@ -324,7 +325,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         branch = _sp.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                    cwd=agent.workspace, stderr=_sp.DEVNULL, timeout=3).decode().strip()
     except Exception:
-        pass  # git 不可用时忽略分支名 + (f" {_DIM}({branch}){_RESET}" if branch else "")
+        pass  # git 不可用时忽略分支名
+    ctx_prefix = f"{_DIM}{ws_context}{_RESET}" + (f" {_DIM}({branch}){_RESET}" if branch else "")
     if target_agent:
         ctx_prefix += f" {_GREEN}→ {target_agent}{_RESET}"
 
@@ -444,34 +446,38 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             model = _STATE.get("model_name", "")
             agent_name = _STATE.get("agent_name", agent.name or "")
             parts = []
+            parts.append(f"{_BOLD}{ch}{elapsed:.0f}s{_RESET}")
             if stage:
-                parts.append(f"{_GRAY}{stage}{_RESET}")
+                parts.append(f"{_CYAN}{stage}{_RESET}")
             if agent_name and agent_name != stage:
                 parts.append(f"{_DIM}{agent_name}{_RESET}")
             if model:
-                parts.append(f"{_DIM}[{model}]{_RESET}")
+                parts.append(f"{_GRAY}[{model}]{_RESET}")
             try:
                 u = agent.client.usage_tracker.get_summary() if hasattr(agent.client, 'usage_tracker') else {}
                 total = u.get("total_prompt_tokens", 0) + u.get("total_completion_tokens", 0)
                 if total:
-                    parts.append(f"{_DIM}∑{total:,}{_RESET}")
+                    parts.append(f"{_GRAY}∑{total:,}{_RESET}")
             except Exception:
                 pass  # usage_tracker 读取失败不影响 spinner
+            ctx_val = _STATE.get("ctx_tokens", 0)
             if ctx_val:
-                parts.append(f"{_DIM}ctx {ctx_val:,}{_RESET}")
+                parts.append(f"{_GRAY}ctx {ctx_val:,}{_RESET}")
             stage_iter = _STATE.get("iter", 0)
             stage_max = _STATE.get("stage_max_iter", 0)
             if stage_max and stage_iter:
-                parts.append(f"{_DIM}{stage_iter}/{stage_max}{_RESET}")
+                parts.append(f"{_GRAY}{stage_iter}/{stage_max}{_RESET}")
             elif stage_iter:
-                parts.append(f"{_DIM}{stage_iter}{_RESET}")
-            info = f"  {_DIM}·{_RESET} ".join(parts)
-            _write(f"\r  {_DIM}{ch}{_RESET}  {info}", end="")
-            await asyncio.sleep(0.2)
-        _clear_line()
+                parts.append(f"{_GRAY}r{stage_iter}{_RESET}")
+            info = f" {_GRAY}·{_RESET} ".join(parts)
+            sys.stdout.write(f"\r\033[K  {info}")
+            sys.stdout.flush()
+            await asyncio.sleep(0.15)
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
 
     async def run_task(task_id: int, question: str):
-        nonlocal current_task, progress_shown
+        nonlocal current_task, progress_shown, _task_pending
         cmd_handler.set_current_task_id(task_id)
         progress_shown = False
         _STATE["task_done"] = False
@@ -526,6 +532,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             await spinner_task
             ui.err(f"错误: {e}")
         finally:
+            _task_pending -= 1
             cmd_handler.set_current_task_id(None)
             current_task = None
 
@@ -536,7 +543,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
 
     async def input_reader():
         """后台读取用户输入 — Windows 用 msvcrt 字符级读取，Unix 用 StreamReader"""
-        nonlocal _stdin_transport
+        nonlocal _stdin_transport, _task_pending
         loop = asyncio.get_event_loop()
 
         _esc_last = 0.0
@@ -602,7 +609,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
 
         while not shutdown_event.is_set():
             try:
-                ui.prompt(ctx_prefix)
+                if _task_pending == 0:
+                    ui.prompt(ctx_prefix)
                 first = await _readline()
                 if not first:
                     continue
@@ -629,6 +637,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                         lines.append(chk)
 
                 question = "\n".join(lines)
+                _task_pending += 1  # 标记任务排队，防止 prompt 重复显示
                 await input_queue.put(question.strip())
             except (KeyboardInterrupt, EOFError):
                 shutdown_event.set()
@@ -804,7 +813,10 @@ async def cleanup(plugin_manager, agent):
     if tasks:
         for t in tasks:
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
 
     # 关闭事件循环前执行一次 GC，让 subprocess transport 在循环还活着时被回收
     import gc
