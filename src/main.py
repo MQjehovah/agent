@@ -141,8 +141,8 @@ def _monitor_escape(cancel_flag: threading.Event):
                             last_esc = now
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ESC 监听线程异常: {e}")
 
 
 def _elapsed() -> str:
@@ -324,8 +324,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         branch = _sp.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                    cwd=agent.workspace, stderr=_sp.DEVNULL, timeout=3).decode().strip()
     except Exception:
-        pass
-    ctx_prefix = f"{_DIM}{ws_context}{_RESET}" + (f" {_DIM}({branch}){_RESET}" if branch else "")
+        pass  # git 不可用时忽略分支名 + (f" {_DIM}({branch}){_RESET}" if branch else "")
     if target_agent:
         ctx_prefix += f" {_GREEN}→ {target_agent}{_RESET}"
 
@@ -457,8 +456,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                 if total:
                     parts.append(f"{_DIM}∑{total:,}{_RESET}")
             except Exception:
-                pass
-            ctx_val = _STATE.get("ctx_tokens", 0)
+                pass  # usage_tracker 读取失败不影响 spinner
             if ctx_val:
                 parts.append(f"{_DIM}ctx {ctx_val:,}{_RESET}")
             stage_iter = _STATE.get("iter", 0)
@@ -635,9 +633,10 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
             except (KeyboardInterrupt, EOFError):
                 shutdown_event.set()
                 break
-            except Exception:
+            except Exception as e:
                 if shutdown_event.is_set():
                     break
+                logger.debug(f"input_reader 异常: {e}")
 
     def handle_signal():
         shutdown_event.set()

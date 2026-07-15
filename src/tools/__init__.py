@@ -161,7 +161,8 @@ class ToolRegistry:
 
             try:
                 source = py_file.read_text(encoding="utf-8")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"读取工具源码失败 {module_name}: {e}")
                 continue
 
             tool_classes = _find_tool_classes(source)

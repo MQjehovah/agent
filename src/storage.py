@@ -676,8 +676,8 @@ class Storage:
                 try:
                     _os.rename(path, path + ".legacy.bak")
                     logger.info(f"旧记忆文件已归档: {name}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"归档旧记忆文件失败 {name}: {e}")
 
     # ---------------- WebUI Token & 密码 鉴权 ----------------
 

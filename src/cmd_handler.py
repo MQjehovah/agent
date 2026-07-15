@@ -411,8 +411,9 @@ class CommandHandler:
                             if label and role == "user":
                                 continue
                             all_msgs.append((label, m))
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("agent.cmd").debug(f"读取子会话消息失败: {e}")
         print(f"\n  [消息] 共 {len(all_msgs)} 条")
         if all_msgs:
             for i, (label, m) in enumerate(all_msgs[-30:], 1):

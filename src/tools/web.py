@@ -37,7 +37,7 @@ def _get_env(key: str, default: str = "") -> str:
         if val is not None and val != "":
             return val
     except Exception:
-        pass
+        pass  # settings 未初始化时回退到环境变量
     return os.getenv(key, default)
 
 
@@ -49,7 +49,7 @@ def _get_env_int(key: str, default: int = 0) -> int:
         if val is not None:
             return int(val)
     except Exception:
-        pass
+        pass  # settings 未初始化时回退到环境变量
     try:
         return int(os.getenv(key, str(default)))
     except (ValueError, TypeError):
@@ -474,7 +474,8 @@ class WebSearchTool(BuiltinTool):
                 encoded = encoded[:amp_idx]
             try:
                 return unquote(encoded)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"URL 解码失败: {e}")
                 return url
         return url
 

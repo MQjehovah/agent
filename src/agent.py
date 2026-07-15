@@ -474,8 +474,8 @@ class Agent:
                     stderr=subprocess.DEVNULL, timeout=5,
                     cwd=cwd
                 ).decode().strip()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"获取 git 分支失败: {e}")
 
         self._env_context_cache = (
             f"工作目录: {cwd}\n"

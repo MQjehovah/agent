@@ -423,8 +423,8 @@ class SubagentManager:
                     _ctx_val = _cs.get("final", 0) or _cs.get("peak", 0)
                     if _ctx_val and tool_callback:
                         tool_callback("_ctx", "_ctx", {"tokens": _ctx_val}, None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"团队子代理 {member_name} 上报上下文大小失败: {e}")
                 # 归并子 agent token 用量到父 agent
                 try:
                     parent = parent_agent or self._parent_agent
@@ -433,8 +433,8 @@ class SubagentManager:
                         parent_usage = parent.client.usage_tracker
                         if child_usage is not parent_usage:
                             parent_usage.records.extend(child_usage.records)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"团队子代理 {member_name} 归并 token 用量失败: {e}")
                 return agent_result.result
             except asyncio.CancelledError:
                 raise
