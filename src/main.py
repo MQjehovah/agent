@@ -12,6 +12,11 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# 日志目录必须在模块导入前设置（llm.py 在导入时读取 AGENT_LOG_DIR）
+_AGENT_HOME = os.path.join(os.path.expanduser("~"), "agent")
+os.environ.setdefault("AGENT_LOG_DIR", os.path.join(_AGENT_HOME, "logs"))
+
 from rich.console import Console
 from rich.panel import Panel
 
@@ -38,23 +43,33 @@ from llm import LLMClient
 from plugins import PluginManager
 from settings import get_settings, init_settings
 
-# ── 文件日志（不输出到终端） ──────────────────────────────────────────
-LOG_DIR = os.path.join(_project_root, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
+# ── 文件日志（不输出到终端，路径在 main 中解析后初始化） ─────────
+_LOGGER_INITIALIZED = False
+logger: logging.Logger = None
 
-_log_file = os.path.join(LOG_DIR, f"agent_{datetime.now().strftime('%Y%m%d')}.log")
-file_handler = logging.FileHandler(_log_file, encoding="utf-8")
-file_handler.setFormatter(logging.Formatter(
-    "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-))
+def _init_logging(log_dir: str):
+    """初始化文件日志（在路径解析后调用）"""
+    global _LOGGER_INITIALIZED, logger
+    if _LOGGER_INITIALIZED:
+        return
+    _LOGGER_INITIALIZED = True
+    os.makedirs(log_dir, exist_ok=True)
+    _log_file = os.path.join(log_dir, f"agent_{datetime.now().strftime('%Y%m%d')}.log")
+    root = logging.getLogger()
+    if root.hasHandlers():
+        root.handlers.clear()
+    file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    root.setLevel(logging.INFO)
+    root.addHandler(file_handler)
 
-logging.basicConfig(level=logging.INFO, handlers=[file_handler])
-
-# 抑制第三方库日志噪音
-for noisy in ("mcp.server.lowlevel.server", "httpx", "apscheduler.scheduler"):
-    logging.getLogger(noisy).setLevel(logging.WARNING)
-logger = logging.getLogger("agent.main")
+    for noisy in ("mcp.server.lowlevel.server", "httpx", "apscheduler.scheduler"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    logger = logging.getLogger("agent.main")
+    logger.info("日志系统初始化完成，目录: %s", log_dir)
 
 # ── ANSI ────────────────────────────────────────────────────────────
 _SGR = lambda c: f"\033[{c}m" if sys.stdout.isatty() else ""
@@ -828,8 +843,8 @@ async def main():
 
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workspace", "-w", default="workspace",
-                        help="agent工作目录，存放agent产生的文件 (默认: ./workspace)")
+    parser.add_argument("--workspace", "-w", default=".",
+                        help="工作目录，agent 在此目录下读写文件 (默认: 当前目录)")
     parser.add_argument("--config", "-c", default="config",
                         help="配置目录，包含PROMPT.md、agents/、skills/等 (默认: ./config)")
     parser.add_argument("--debug", action="store_true")
@@ -871,9 +886,40 @@ async def main():
     )
     args = parser.parse_args()
 
-    config_dir = os.path.abspath(args.config)
-    workspace = os.path.abspath(args.workspace)
-    os.makedirs(workspace, exist_ok=True)
+    # ── 路径解析：当前目录 → 用户目录/agent → 自动创建 ──────────
+    _user_agent_dir = os.path.join(os.path.expanduser("~"), "agent")
+
+    def _resolve_path(path: str, name: str) -> str:
+        """按优先级解析路径: 当前目录 > 用户目录/agent > 自动创建"""
+        if os.path.exists(path):
+            return os.path.abspath(path)
+        user_path = os.path.join(_user_agent_dir, name)
+        if os.path.exists(user_path):
+            return os.path.abspath(user_path)
+        # 自动创建并复制默认配置（打包环境下从 sys._MEIPASS 复制）
+        os.makedirs(user_path, exist_ok=True)
+        _meipass = getattr(sys, '_MEIPASS', None)
+        if _meipass:
+            _src = os.path.join(_meipass, name)  # 打包：config/ 在 _MEIPASS 下
+        else:
+            _src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), name)
+        if os.path.exists(_src):
+            import shutil
+            for item in os.listdir(_src):
+                s = os.path.join(_src, item)
+                d = os.path.join(user_path, item)
+                if os.path.isdir(s):
+                    shutil.copytree(s, d, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(s, d)
+        return os.path.abspath(user_path)
+
+    config_dir = _resolve_path(args.config, "config")
+    workspace = _resolve_path(args.workspace, "workspace")
+
+    # 日志目录
+    _log_dir = os.environ["AGENT_LOG_DIR"]
+    _init_logging(_log_dir)
 
     init_settings(config_dir)
 

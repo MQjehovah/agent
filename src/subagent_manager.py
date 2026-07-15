@@ -723,6 +723,15 @@ class SubagentManager:
                 if not sess:
                     sess = await self._parent_agent.session_manager.create_session(
                         agent_id=f"team:{template_name}", session_id=session_id)
+                    # 从 storage 恢复历史消息
+                    if self._parent_agent.storage:
+                        try:
+                            msgs = self._parent_agent.storage.get_messages(session_id)
+                            if msgs:
+                                sess.messages = msgs
+                                logger.info(f"团队模式从存储恢复session: {session_id}, {len(msgs)} 条")
+                        except Exception:
+                            pass
                 if sess:
                     sess.add_message("user", task)
             return await self._run_team_orchestrator(task, template_name, progress_callback, parent_session_id=session_id)
