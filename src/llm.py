@@ -1,21 +1,15 @@
-import os
+import asyncio
 import json
 import logging
-import asyncio
+import os
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from openai import AsyncOpenAI
-from openai import (
-    APIError,
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError
-)
+from typing import Any
+
 import httpx
+from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from cache import get_cache
 from usage import UsageTracker
-
 
 LOG_DIR = os.environ.get("AGENT_LOG_DIR") or os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -98,7 +92,7 @@ class LLMClient:
             "api_key": api_key,
         }
 
-    def _log_request(self, params: Dict[str, Any]):
+    def _log_request(self, params: dict[str, Any]):
         log_data = {"type": "request", "model": params.get("model"), "messages": params.get(
             "messages", []), "tools": params.get("tools"), "stream": params.get("stream")}
         api_logger.debug(json.dumps(log_data, ensure_ascii=False))
@@ -166,15 +160,12 @@ class LLMClient:
             return True
         if isinstance(exception, APITimeoutError):
             return True
-        if isinstance(exception, APIError):
-            if hasattr(exception, 'status_code') and exception.status_code >= 500:
-                return True
-        return False
+        return isinstance(exception, APIError) and hasattr(exception, 'status_code') and exception.status_code >= 500
 
     @staticmethod
     def _add_prompt_cache(messages: list, model: str) -> list:
         """为支持 prompt caching 的模型添加缓存标记"""
-        cache_models = {"deepseek", "gpt-4", "claude"}
+        cache_models = {"deepseek", "gpt-4", "claude", "glm"}
         if not any(m in model.lower() for m in cache_models):
             return messages
         result = list(messages)
@@ -185,7 +176,7 @@ class LLMClient:
                 break
         return result
 
-    async def chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None,
+    async def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] = None,
                    stream: bool = False, use_cache: bool = True):
         """发送聊天请求，支持多端点自动 failover 与重试"""
         # 流式请求不使用缓存
@@ -271,12 +262,12 @@ class LLMClient:
                             api_logger.warning(
                                 f"端点 #{ep_idx + 1} 重试耗尽 ({retries_per_ep}次)，切换下一个")
                         else:
-                            api_logger.error(f"所有端点均已尝试，放弃")
+                            api_logger.error("所有端点均已尝试，放弃")
 
         raise last_exception or Exception("All LLM endpoints failed")
 
-    async def _create_stream(self, params: Dict[str, Any],
-                              ep: Dict[str, Any], ep_idx: int, retries: int):
+    async def _create_stream(self, params: dict[str, Any],
+                              ep: dict[str, Any], ep_idx: int, retries: int):
         """创建流式连接（单端点内重试），返回 (stream, first_chunk)"""
         client = ep["client"]
         model = ep["model"]
@@ -307,7 +298,7 @@ class LLMClient:
 
         raise last_exception or Exception("Stream creation failed on all endpoints")
 
-    async def stream_chat(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None):
+    async def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] = None):
         """流式聊天，逐 token 返回，支持多端点 failover"""
         retries_per_ep = MULTI_ENDPOINT_RETRIES if self._is_multi else MAX_RETRIES_PER_ENDPOINT
         last_exception = None

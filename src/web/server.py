@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import json
-import jwt
 import logging
 import os
 import threading
@@ -9,6 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import jwt
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -299,7 +299,8 @@ class WebServer:
                     "SELECT password_hash FROM rbac_users WHERE id = ?", (u["uid"],)
                 ).fetchone()
             if row:
-                import hashlib, base64
+                import base64
+                import hashlib
                 try:
                     raw = base64.b64decode(row["password_hash"])
                     salt, stored = raw[:16], raw[16:]
@@ -393,6 +394,10 @@ class WebServer:
         async def chat(request: Request):
             if not self.agent:
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+            except Exception:
+                auth = {"uid": "anon", "name": "匿名用户"}
             data = await request.json()
             if not data or not data.get("message"):
                 return JSONResponse({"error": "Missing message"}, status_code=400)
@@ -409,9 +414,13 @@ class WebServer:
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
 
+            web_user_id = f"web:{auth['uid']}"
+            web_user_name = auth.get("name", "")
+
             # 非流式：后台执行，立即返回 session_id
             async def _web_auto_run():
-                await router.route(message, channel="web", session_id=session_id)
+                await router.route(message, channel="web", session_id=session_id,
+                                   user_id=web_user_id, user_name=web_user_name)
             asyncio.create_task(_web_auto_run())
             return {"session_id": session_id, "status": "processing"}
 
@@ -419,6 +428,10 @@ class WebServer:
         async def chat_stream(request: Request):
             if not self.agent:
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+            except Exception:
+                auth = {"uid": "anon", "name": "匿名用户"}
             data = await request.json()
             if not data or not data.get("message"):
                 return JSONResponse({"error": "Missing message"}, status_code=400)
@@ -430,6 +443,9 @@ class WebServer:
             chat_session = self._get_or_create_session(session_id)
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
+
+            web_user_id = f"web:{auth['uid']}"
+            web_user_name = auth.get("name", "")
 
             # 本次流式请求的唯一 run_id，把流式事件限定在本请求内，杜绝并发串流
             stream_run_id = uuid.uuid4().hex
@@ -485,6 +501,7 @@ class WebServer:
                         result = await router.route(
                             message, channel="web",
                             session_id=session_id, run_id=stream_run_id,
+                            user_id=web_user_id, user_name=web_user_name,
                         )
                         resp_text = result.result if result and hasattr(result, "result") else ""
                         if full_response:

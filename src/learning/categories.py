@@ -1,4 +1,3 @@
-import re
 import logging
 
 logger = logging.getLogger("agent.learning")
@@ -23,16 +22,16 @@ REFLECT_PROMPT = (
     "1. 只提取真正有通用价值的知识点（方法、规律、避坑经验）\n"
     "2. 不要包含具体数据或一次性信息\n"
     "3. 每条经验用一句话概括\n"
-    "4. 如果没有值得记住的经验，回复 SKIP\n\n"
-    "格式:\n"
-    "SAVE: <知识点>\n"
-    "或\n"
-    "SKIP\n\n"
+    "4. category 必须是 failure_lesson（避坑经验）、knowledge（通用知识）、reflection（其他经验）之一\n"
+    "5. importance 为 1-5 的整数，越重要越大\n"
+    "6. 如果没有值得记住的经验，返回 {{\"items\": [], \"skip\": true}}\n\n"
+    "严格按以下JSON格式输出，不要输出其他内容：\n"
+    '{{"items": [{{"knowledge": "<知识点>", "category": "failure_lesson|knowledge|reflection", "importance": 1-5}}], "skip": false}}\n\n'
     "任务: {task}\n"
     "执行摘要:\n{summary}"
 )
 
-REFLECT_SYSTEM_PROMPT = "你是经验提取助手。只有真正有通用价值的知识才保存。用 SAVE: 或 SKIP 回复。兼容中英文冒号。"
+REFLECT_SYSTEM_PROMPT = "你是经验提取助手。只有真正有通用价值的知识才保存。只输出JSON，不要输出其他内容。"
 
 # --- 模式检测 prompt ---
 PATTERN_CLASSIFY_PROMPT = (

@@ -1,13 +1,16 @@
-import os
-import re
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from .categories import (
-    CORRECTION_KEYWORDS, REFLECT_PROMPT, REFLECT_SYSTEM_PROMPT,
-    REFLECT_SKIP_TOOLS, MAX_SUMMARY_LENGTH, TOOL_RESULT_MAX,
+    CORRECTION_KEYWORDS,
+    MAX_SUMMARY_LENGTH,
+    REFLECT_PROMPT,
+    REFLECT_SKIP_TOOLS,
+    REFLECT_SYSTEM_PROMPT,
+    TOOL_RESULT_MAX,
 )
 
 if TYPE_CHECKING:
@@ -28,8 +31,8 @@ class Learner:
 
         self._pattern_tracker = None
         self._auto_creator = None
-        self._skill_manager: Optional["SkillManager"] = None
-        self._subagent_manager: Optional["SubagentManager"] = None
+        self._skill_manager: SkillManager | None = None
+        self._subagent_manager: SubagentManager | None = None
         self._workspace = ""
         self._curator = None
 
@@ -50,8 +53,8 @@ class Learner:
         subagent_manager: "SubagentManager" = None,
     ):
         """初始化模式追踪和自动创建（由 Agent._init_memory 调用）"""
-        from .pattern_tracker import PatternTracker
         from .auto_creator import AutoCreator
+        from .pattern_tracker import PatternTracker
 
         self._workspace = workspace
         self._skill_manager = skill_manager
@@ -276,19 +279,39 @@ class Learner:
         return "\n".join(lines) if lines else ""
 
     def _parse_reflection(self, text: str, user_id: str = "") -> int:
-        saved = 0
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
+        from autonomous import parse_llm_json
 
-            save_match = re.match(
-                r'(?:SAVE|保存)\s*[:：]\s*(.+)', line, re.IGNORECASE
-            )
-            if save_match:
-                knowledge = save_match.group(1).strip()
-                if knowledge:
-                    self.memory.add_reflection(user_id, knowledge)
-                    logger.info(f"[自学习] 反思提取: {knowledge[:80]}")
-                    saved += 1
+        data = parse_llm_json(text)
+        if not isinstance(data, dict):
+            logger.warning(f"[自学习] 反思输出无法解析为 JSON: {text[:200]}")
+            return 0
+        if data.get("skip"):
+            logger.info("[自学习] 反思判定无可保存经验")
+            return 0
+
+        items = data.get("items") or []
+        if not isinstance(items, list):
+            logger.warning("[自学习] 反思输出 items 非列表，跳过")
+            return 0
+
+        allowed = {"failure_lesson", "knowledge", "reflection"}
+        saved = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            knowledge = (item.get("knowledge") or "").strip()
+            if not knowledge:
+                continue
+            category = item.get("category", "reflection")
+            if category not in allowed:
+                category = "reflection"
+            try:
+                importance = int(item.get("importance", 4))
+            except (ValueError, TypeError):
+                importance = 4
+            importance = max(1, min(5, importance))
+            self.memory.add_reflection(
+                user_id, knowledge, category=category, importance=importance)
+            logger.info(f"[自学习] 反思提取: [{category}/{importance}] {knowledge[:80]}")
+            saved += 1
         return saved

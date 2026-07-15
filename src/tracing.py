@@ -1,7 +1,8 @@
-import uuid
-import time
 import json
 import logging
+import os
+import time
+import uuid
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("agent.trace")
@@ -24,10 +25,53 @@ class Span:
         return ((self.end_time or time.time()) - self.start_time) * 1000
 
 
+class JSONLExporter:
+    """把完成的 Span 以 JSON Lines 写入文件（OTel 风格，无重依赖）。
+
+    每行一个 span 记录，便于用 jq / grep / 外部看板消费。
+    启用方式：在 config.json 设置 observability.jsonl_path。
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+    def export(self, span: Span):
+        record = {
+            "trace_id": span.trace_id,
+            "span_id": span.span_id,
+            "parent_id": span.parent_id,
+            "operation": span.operation,
+            "start_time": span.start_time,
+            "end_time": span.end_time,
+            "duration_ms": round(span.duration_ms, 2),
+            "status": span.status,
+            "context_tokens": span.context_tokens,
+            "attributes": span.attributes,
+        }
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 class Tracer:
-    def __init__(self):
+    def __init__(self, exporters=None):
         self._spans: list = []
         self._context_history: list = []
+        self._exporters = exporters if exporters is not None else self._default_exporters()
+
+    @staticmethod
+    def _default_exporters() -> list:
+        """从 settings 读取导出配置（未配置则无导出，保持原内存行为）。"""
+        try:
+            from settings import get_settings
+            jsonl_path = get_settings().get("observability.jsonl_path", "")
+        except RuntimeError:
+            return []
+        if jsonl_path:
+            return [JSONLExporter(jsonl_path)]
+        return []
 
     def start_trace(self, operation: str) -> str:
         tid = str(uuid.uuid4())[:12]
@@ -65,6 +109,11 @@ class Tracer:
         span.end_time = time.time()
         span.status = status
         span.attributes.update(attrs)
+        for exporter in self._exporters:
+            try:
+                exporter.export(span)
+            except Exception as ex:  # noqa: BLE001
+                logger.warning(f"[trace] 导出失败: {ex}")
         logger.debug(
             f"[{span.trace_id}] 结束 {span.operation} "
             f"({span.duration_ms:.0f}ms, {status}"

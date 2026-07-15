@@ -1,5 +1,6 @@
 import json
-from typing import Dict, Any
+from typing import Any
+
 from . import BuiltinTool
 
 
@@ -13,7 +14,7 @@ class MemoryTool(BuiltinTool):
         return "记忆管理工具，用于保存、搜索和列出记忆"
 
     @property
-    def parameters(self) -> Dict[str, Any]:
+    def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -65,7 +66,7 @@ class MemoryTool(BuiltinTool):
         else:
             return json.dumps({"success": False, "error": f"Unknown action: {action}"}, ensure_ascii=False)
 
-    def _save(self, args: Dict[str, Any]) -> str:
+    def _save(self, args: dict[str, Any]) -> str:
         category = args.get("category", "key_info")
         content = args.get("content", "")
         user_id = args.get("_local_user_id", "")
@@ -90,13 +91,13 @@ class MemoryTool(BuiltinTool):
 
         return json.dumps({"success": True, "message": f"Memory saved to {category}"}, ensure_ascii=False)
 
-    def _search(self, args: Dict[str, Any]) -> str:
+    def _search(self, args: dict[str, Any]) -> str:
         user_id = args.get("_local_user_id", "")
-        results = self.memory_manager.load_memory(user_id)
+        results = self.memory_manager.load_memory(user_id, task=args.get("query", ""))
 
         if results:
             return json.dumps({"success": True, "results": results}, ensure_ascii=False)
         return json.dumps({"success": True, "results": "No matching memories found"}, ensure_ascii=False)
 
-    def _list(self, args: Dict[str, Any]) -> str:
+    def _list(self, args: dict[str, Any]) -> str:
         return json.dumps({"success": True, "files": [], "note": "记忆已迁移至数据库，按用户隔离"}, ensure_ascii=False)

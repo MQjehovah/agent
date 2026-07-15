@@ -1,11 +1,12 @@
-import os
-import uuid
 import asyncio
 import json
 import logging
-from typing import Optional, Dict, Any, List
+import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
+
 from openai.types.chat import ChatCompletionMessageParam
 
 from config import Config
@@ -18,7 +19,7 @@ class AgentSession:
     agent_id: str = ""
     session_id: str = ""
     system_prompt: str = ""
-    messages: List[ChatCompletionMessageParam] = field(default_factory=list)
+    messages: list[ChatCompletionMessageParam] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     last_accessed: datetime = field(default_factory=datetime.now)
     user_id: str = ""
@@ -34,7 +35,7 @@ class AgentSession:
         self.last_accessed = datetime.now()
 
     def add_message(self, role: str, content: str, **kwargs):
-        msg: Dict[str, Any] = {"role": role, "content": content or ""}
+        msg: dict[str, Any] = {"role": role, "content": content or ""}
         if kwargs:
             msg.update(kwargs)
         self.messages.append(msg)
@@ -314,7 +315,8 @@ class AgentSessionManager:
         messages: list,
         llm_client,
         max_tokens: int = None,
-        tool_defs: list = None
+        tool_defs: list = None,
+        session_id: str = "",
     ) -> list:
         """四层渐进式上下文压缩。
 
@@ -432,6 +434,16 @@ class AgentSessionManager:
             )
             summary = response.choices[0].message.content or ""
 
+            # 持久化压缩摘要，供重启后无损恢复（避免重新压缩/丢失上下文）
+            if session_id and summary:
+                try:
+                    from storage import get_storage
+                    _st = get_storage()
+                    if _st and hasattr(_st, "save_session_meta"):
+                        _st.save_session_meta(session_id, summary)
+                except Exception:  # noqa: BLE001
+                    pass
+
             compressed = [
                 *system_msgs,
                 {"role": "user", "content": f"[对话历史摘要]\n{summary}"},
@@ -447,11 +459,11 @@ class AgentSessionManager:
             return messages
 
     def __init__(self, ttl_seconds: int = None, max_sessions: int = None):
-        self.sessions: Dict[str, AgentSession] = {}
+        self.sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
         self.ttl_seconds = ttl_seconds or Config.SESSION_TTL_SECONDS
         self.max_sessions = max_sessions or Config.MAX_SESSIONS
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_task: asyncio.Task | None = None
 
     async def start_cleanup_task(self):
         """启动定期清理任务"""
@@ -512,7 +524,7 @@ class AgentSessionManager:
 
     async def create_session(
         self,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         system_prompt: str = "",
         agent_id: str = ""
     ) -> AgentSession:
@@ -537,7 +549,7 @@ class AgentSessionManager:
             self.sessions[session_id] = session
             return session
 
-    async def get_session(self, session_id: str) -> Optional[AgentSession]:
+    async def get_session(self, session_id: str) -> AgentSession | None:
         async with self._lock:
             session = self.sessions.get(session_id)
         if session:
@@ -550,13 +562,13 @@ class AgentSessionManager:
                 del self.sessions[session_id]
                 logger.info(f"删除Session: {session_id}")
 
-    def list_sessions(self) -> List[str]:
+    def list_sessions(self) -> list[str]:
         return list(self.sessions.keys())
 
     def get_session_count(self) -> int:
         return len(self.sessions)
 
-    def get_session_info(self) -> Dict[str, Any]:
+    def get_session_info(self) -> dict[str, Any]:
         """获取会话统计信息"""
         return {
             "total": len(self.sessions),

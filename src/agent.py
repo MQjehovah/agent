@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import subprocess
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -65,6 +66,11 @@ class RunContext:
     # 也避免记忆上下文按 user_id 串号）
     system_prompt: str = ""
     prompt_builder: Any = None
+    # 本次 run 的 agent_id（用于用量统计归因）
+    agent_id: str = ""
+    # P3: prompt cache 拆分——static 可缓存前缀，dynamic 每轮变化的尾缀
+    system_static: str = ""
+    system_dynamic: str = ""
 
 
 # 模块级 ContextVar：run() 内 set()，协程任意位置 get() 取回“当前 run”的上下文。
@@ -101,6 +107,9 @@ class Agent:
         self.description = ""
         self.system_prompt = ""
         self.system_prompt_raw = ""
+        # P3: prompt cache 拆分（实例级初始值；run 内由 RunContext 持有）
+        self.system_static = ""
+        self.system_dynamic = ""
         self.max_iterations = 200
         self.tool_denylist: set[str] = set()
 
@@ -487,21 +496,26 @@ class Agent:
         # 记忆系统（按 user_id 隔离）
         if self.memory:
             uid = rc.user_id if rc else ""
-            memory_context = self.memory.load_memory(uid) if uid else ""
+            memory_context = self.memory.load_memory(uid, task=task) if uid else ""
             if memory_context:
                 builder.add(
                     "记忆上下文", memory_context,
                     is_static=False, priority=60
                 )
 
-        full = builder.build_full()
+        static, dynamic = builder.build()
+        full = static + dynamic
         if rc is not None:
             # run 内：写入本次 run 的上下文（并发隔离）
             rc.prompt_builder = builder
+            rc.system_static = static
+            rc.system_dynamic = dynamic
             rc.system_prompt = full
         else:
             # initialize 路径：单线程启动期，写入实例属性作为初始值
             self._prompt_builder = builder
+            self.system_static = static
+            self.system_dynamic = dynamic
             self.system_prompt = full
 
     def _active_prompt_builder(self):
@@ -540,16 +554,36 @@ class Agent:
             is_static=False, priority=40
         )
 
-        full = builder.build_full()
+        static, dynamic = builder.build()
+        full = static + dynamic
         rc = _current_run.get()
         if rc is not None:
+            rc.system_static = static
+            rc.system_dynamic = dynamic
             rc.system_prompt = full
         else:
+            self.system_static = static
+            self.system_dynamic = dynamic
             self.system_prompt = full
+
+    @staticmethod
+    def _apply_system_messages(messages: list, static: str, dynamic: str) -> list:
+        """规范化消息列表前缀为 (static, dynamic) 两条 system message。
+
+        static 在 run 内字节稳定（可被 prompt cache 命中），dynamic 每轮更新。
+        压缩层（sliding_window / context_collapse / compress_if_needed）均按 role
+        过滤收集 system 消息，故双 system 安全；唯一曾假设单 system 的就是此调用点。
+        """
+        result = list(messages)
+        while result and result[0].get("role") == "system":
+            result.pop(0)
+        if dynamic:
+            result.insert(0, {"role": "system", "content": dynamic})
+        result.insert(0, {"role": "system", "content": static})
+        return result
 
     def _get_env_context(self) -> str:
         """动态生成环境上下文（结果缓存30秒，避免每轮都执行git命令）"""
-        import time
         now = time.time()
         if self._env_context_cache and (now - self._env_context_time) < 30:
             return self._env_context_cache
@@ -659,8 +693,8 @@ class Agent:
 
     async def _team_run_impl(self, task: str, session_id: str, user_id: str, user_name: str) -> "AgentResult":
         """团队模式：通过 TeamOrchestrator 编排成员执行"""
-        from team.orchestrator import TeamOrchestrator
         from agent import AgentResult
+        from team.orchestrator import TeamOrchestrator
 
         orchestrator = TeamOrchestrator(
             team_name=self._team_config["name"],
@@ -689,6 +723,7 @@ class Agent:
 
     async def _run_impl(self, task: str, session_id: str, user_id: str, user_name: str, inherited: RunContext) -> AgentResult:
         ctx = current_run()
+        ctx.agent_id = self.agent_id
         self.status = "running"
         ctx.task = task
 
@@ -757,6 +792,21 @@ class Agent:
                     if self.storage:
                         messages = self.storage.get_messages(session_id)
                         if messages:
+                            # 注入上次压缩的历史摘要（如有），保持跨重启上下文连续性
+                            get_meta = getattr(self.storage, "get_session_meta", None)
+                            if get_meta:
+                                try:
+                                    last_summary = (get_meta(session_id) or {}).get("last_summary", "")
+                                except Exception:
+                                    last_summary = ""
+                            else:
+                                last_summary = ""
+                            if last_summary:
+                                messages = [
+                                    {"role": "user", "content": f"[对话历史摘要]\n{last_summary}"},
+                                    {"role": "assistant", "content": "已了解历史上下文，请继续。"},
+                                    *messages,
+                                ]
                             session.messages = cast(
                                 list[ChatCompletionMessageParam], messages)
                             logger.info(
@@ -803,7 +853,8 @@ class Agent:
                 "当前用户权限有限，部分工具和子代理可能无法使用，遇到权限不足请友好提示用户。",
                 is_static=False, priority=70,
             )
-            ctx.system_prompt = ctx.prompt_builder.build_full()
+            ctx.system_static, ctx.system_dynamic = ctx.prompt_builder.build()
+            ctx.system_prompt = ctx.system_static + ctx.system_dynamic
 
         try:
             for i in range(self.max_iterations):
@@ -813,7 +864,8 @@ class Agent:
                 try:
                     # 上下文压缩检查
                     session.messages = await AgentSessionManager.compress_if_needed(
-                        session.messages, self.client, tool_defs=self.tool_defs
+                        session.messages, self.client, tool_defs=self.tool_defs,
+                        session_id=session.session_id,
                     )
 
                     # 追踪上下文大小
@@ -824,10 +876,12 @@ class Agent:
 
                     # 每轮更新动态 prompt 区块
                     self._update_dynamic_prompt(task)
-                    if not session.messages or session.messages[0].get("role") != "system":
-                        session.messages.insert(0, {"role": "system", "content": ctx.system_prompt})
-                    else:
-                        session.messages[0]["content"] = ctx.system_prompt
+                    # 注入双 system message：static（可缓存）+ dynamic（每轮变）
+                    session.messages = self._apply_system_messages(
+                        session.messages,
+                        ctx.system_static or ctx.system_prompt,
+                        ctx.system_dynamic,
+                    )
 
                     # 清理孤立的 tool_calls（防止 session 复用时历史数据损坏）
                     session.messages = AgentSessionManager.cleanup_orphaned_tool_calls(session.messages)
@@ -928,6 +982,13 @@ class Agent:
             "status": ctx.status,
             "result_length": len(ctx.result) if ctx.result else 0,
         })
+
+        # 用量统计落库（按 user/session/agent 归因，仅记账不拦截）
+        if self.client and hasattr(self.client, "usage_tracker"):
+            try:
+                self.client.usage_tracker.flush()
+            except Exception as e:
+                logger.warning(f"用量 flush 失败: {e}")
 
         self.tracer.end_span(status="ok" if ctx.status == "completed" else "error")
 
@@ -1030,10 +1091,9 @@ class Agent:
             return json.dumps({"success": False, "error": perm_result.reason}, ensure_ascii=False)
 
         role = current_run().session.role if current_run().session else ""
-        if self.rbac and role:
-            if not self.rbac.check_tool(role, name):
-                logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}]")
-                return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
+        if self.rbac and role and not self.rbac.check_tool(role, name):
+            logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}]")
+            return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
 
         # DEFAULT 模式需要用户确认
         if perm_result.reason == "需要用户确认" and self.on_confirm:
@@ -1336,10 +1396,9 @@ class Agent:
         display_name = f"{args['template']} → {args['name']}" if args.get("template") and args.get("name") else agent_name
 
         role = current_run().session.role if current_run().session else ""
-        if self.rbac and role and agent_name:
-            if not self.rbac.check_agent(role, agent_name):
-                logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{agent_name}]")
-                return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
+        if self.rbac and role and agent_name and not self.rbac.check_agent(role, agent_name):
+            logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{agent_name}]")
+            return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
 
         await self.hooks.fire(
             self._hook_event.SUBAGENT_START,
@@ -1378,7 +1437,6 @@ class Agent:
                     parent_session_id=args.get("session_id", ""))
             else:
                 # 个人子代理：直连 agent.run()
-                from subagent_manager import SubagentInstance
                 instance, is_new = await self.subagent_manager.get_or_create_subagent(
                     template=args.get("template", ""),
                     name=args.get("name", ""),

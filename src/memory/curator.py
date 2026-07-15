@@ -11,8 +11,8 @@ CURATE_PROMPT = """\
 用户记忆：
 {chunk}
 
-输出格式（每行一条，无可提取的则只输出 NONE）：
-GENERIC: <通用表述> | REASON: <判为通用的理由>
+严格按以下JSON格式输出，不要输出其他内容（无可提取的则输出 {{"items": []}}）：
+{{"items": [{{"generic": "<通用表述>", "reason": "<判为通用的理由>"}}]}}
 """
 
 
@@ -47,24 +47,27 @@ class MemoryCurator:
                 tools=None, stream=False, use_cache=False,
             )
             out = (resp.choices[0].message.content or "").strip()
-            if not out or out == "NONE":
+            if not out or out.upper() == "NONE":
                 return 0
             source_users = list({r["owner_id"] for r in rows if r.get("owner_id")})
-            for line in out.splitlines():
-                if not line.startswith("GENERIC:"):
-                    continue
-                body = line.split("|", 1)[0][len("GENERIC:"):].strip()
-                reason = ""
-                if "REASON:" in line:
-                    reason = line.split("REASON:", 1)[1].strip()
-                if body and body not in existing:
-                    self._storage.save_proposal(
-                        content=body,
-                        source_users=str(source_users[:10]),
-                        reason=reason,
-                    )
-                    existing.add(body)
-                    created += 1
+            from autonomous import parse_llm_json
+            data = parse_llm_json(out)
+            if not isinstance(data, dict):
+                logger.warning(f"[curator] 输出无法解析为 JSON: {out[:200]}")
+            else:
+                for item in data.get("items") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    body = (item.get("generic") or "").strip()
+                    reason = (item.get("reason") or "").strip()
+                    if body and body not in existing:
+                        self._storage.save_proposal(
+                            content=body,
+                            source_users=str(source_users[:10]),
+                            reason=reason,
+                        )
+                        existing.add(body)
+                        created += 1
         except Exception as e:
             logger.warning(f"[curator] 提炼失败: {e}")
         self._last_run = datetime.now().isoformat()

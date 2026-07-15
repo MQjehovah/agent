@@ -1,12 +1,16 @@
-import sys, os, asyncio
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from storage import Storage
+
 from memory.curator import MemoryCurator
+from storage import Storage
 
 
-def _setup(tmp_path, llm_text="GENERIC: 设备保养需定期进行 | REASON: 通用运维常识"):
+def _setup(tmp_path, llm_text='{"items": [{"generic": "设备保养需定期进行", "reason": "通用运维常识"}]}'):
     s = Storage(str(tmp_path))
     client = MagicMock()
     resp = MagicMock()
@@ -27,7 +31,7 @@ async def test_curator_generates_proposal(tmp_path):
     pending = s.list_proposals("pending")
     assert n >= 1
     assert len(pending) >= 1
-    assert "设备保养需定期进行" == pending[0]["content"]
+    assert pending[0]["content"] == "设备保养需定期进行"
     s.close()
 
 

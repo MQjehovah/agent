@@ -1,14 +1,13 @@
-import sqlite3
 import json
 import logging
+import sqlite3
 import threading
-import asyncio
 import time
-from typing import List, Dict, Any, Optional
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from contextlib import contextmanager
+from typing import Any, Optional
 
 logger = logging.getLogger("agent.storage")
 
@@ -33,11 +32,11 @@ class Storage:
         self.config_dir = config_dir
         self.db_path = self._resolve_db_path(workspace, config_dir)
         self.pool_size = pool_size
-        self._connection_pool: List[sqlite3.Connection] = []
+        self._connection_pool: list[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
         self._write_lock = threading.RLock()
         self._write_queue: Queue = Queue()
-        self._write_thread: Optional[threading.Thread] = None
+        self._write_thread: threading.Thread | None = None
         self._running = True
         self._init_db()
         self._rename_legacy_memory_files()
@@ -228,6 +227,29 @@ class Storage:
                     FOREIGN KEY (user_id) REFERENCES rbac_users(id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_web_tokens_token ON web_tokens(token);
+
+                CREATE TABLE IF NOT EXISTS usage_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL DEFAULT 'system',
+                    session_id TEXT DEFAULT '',
+                    agent_id TEXT DEFAULT '',
+                    model TEXT NOT NULL,
+                    prompt_tokens INTEGER DEFAULT 0,
+                    completion_tokens INTEGER DEFAULT 0,
+                    cost REAL DEFAULT 0,
+                    is_stream INTEGER DEFAULT 0,
+                    created_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_records(user_id);
+                CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_records(created_at);
+
+                CREATE TABLE IF NOT EXISTS session_meta (
+                    session_id TEXT PRIMARY KEY,
+                    last_summary TEXT DEFAULT '',
+                    summary_at TEXT,
+                    context_stats TEXT DEFAULT '',
+                    updated_at TEXT
+                );
             """)
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at)
@@ -367,7 +389,7 @@ class Storage:
         if batch:
             self._safe_flush(batch)
 
-    def _safe_flush(self, batch: List[Dict]):
+    def _safe_flush(self, batch: list[dict]):
         """刷新写入批次；失败时记录日志并把消息重新入队等待重试，绝不静默丢弃"""
         try:
             self._flush_batch(batch)
@@ -377,7 +399,7 @@ class Storage:
             for item in batch:
                 self._write_queue.put(item)
 
-    def _flush_batch(self, batch: List[Dict]):
+    def _flush_batch(self, batch: list[dict]):
         """执行批量写入"""
         if not batch:
             return
@@ -405,7 +427,7 @@ class Storage:
         logger.debug(f"批量写入 {len(batch)} 条消息")
 
     def save_message(self, agent_id: str, session_id: str, role: str, content: str,
-                     tool_calls: Optional[List] = None,
+                     tool_calls: list | None = None,
                      tool_call_id: str = "", name: str = "", reasoning_content: str = ""):
         """保存消息到写入队列（异步写入）"""
         self._write_queue.put({
@@ -421,7 +443,7 @@ class Storage:
         })
 
     def save_message_sync(self, agent_id: str, session_id: str, role: str, content: str,
-                          tool_calls: Optional[List] = None,
+                          tool_calls: list | None = None,
                           tool_call_id: str = "", name: str = "", reasoning_content: str = ""):
         """同步保存消息（立即写入）"""
         with self._write_lock, self._get_connection() as conn:
@@ -435,7 +457,7 @@ class Storage:
             ))
             conn.commit()
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._get_connection() as conn:
             rows = conn.execute("""
                 SELECT role, content, tool_calls, tool_call_id, name, reasoning_content
@@ -456,7 +478,7 @@ class Storage:
             messages.append(msg)
         return messages
 
-    def get_messages_by_date(self, date_str: str, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_messages_by_date(self, date_str: str, agent_id: str | None = None) -> list[dict[str, Any]]:
         with self._get_connection() as conn:
             if agent_id:
                 rows = conn.execute("""
@@ -487,14 +509,14 @@ class Storage:
             messages.append(msg)
         return messages
 
-    def get_all_agent_ids(self) -> List[str]:
+    def get_all_agent_ids(self) -> list[str]:
         with self._get_connection() as conn:
             rows = conn.execute("""
                 SELECT DISTINCT agent_id FROM messages WHERE agent_id != ''
             """).fetchall()
         return [row[0] for row in rows]
 
-    def list_recent_sessions(self, limit: int = 20, agent_id: str = "") -> List[Dict[str, Any]]:
+    def list_recent_sessions(self, limit: int = 20, agent_id: str = "") -> list[dict[str, Any]]:
         """从 messages 表聚合最近 N 个会话（按最后活跃时间倒序）。
 
         内存中的 session_manager 仅保留活跃会话，重启即丢失；此方法基于
@@ -504,7 +526,7 @@ class Storage:
                "MIN(created_at) AS first_at, MAX(created_at) AS last_at "
                "FROM messages "
                "WHERE session_id IS NOT NULL AND session_id != '' AND session_id != 'temp'")
-        args: List[Any] = []
+        args: list[Any] = []
         if agent_id:
             sql += " AND agent_id = ?"; args.append(agent_id)
         sql += " GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT ?"
@@ -513,7 +535,7 @@ class Storage:
             rows = conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
-    def list_session_agents(self) -> List[Dict[str, Any]]:
+    def list_session_agents(self) -> list[dict[str, Any]]:
         """所有出现过的 agent_id 及其会话数（供 Sessions 按 agent 筛选下拉使用）"""
         with self._get_connection() as conn:
             rows = conn.execute("""
@@ -540,7 +562,7 @@ class Storage:
             conn.commit()
             return cur.lastrowid
 
-    def query_memories(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    def query_memories(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """查询某用户可见记忆：自身 user 私有 + global 公共"""
         with self._get_connection() as conn:
             rows = conn.execute(
@@ -553,15 +575,74 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # ---------------- 用量统计（仅记账，不做拦截）----------------
+
+    def save_usage_batch(self, records: list[dict[str, Any]]) -> int:
+        """批量写入用量记录，返回写入条数。
+
+        records 元素字段：user_id, session_id, agent_id, model, prompt_tokens,
+        completion_tokens, cost, is_stream, ts(ISO 字符串)。
+        走写锁 + 连接池直写（镜像 save_memory 模式，不经消息批量队列）。
+        """
+        if not records:
+            return 0
+        rows = [(
+            r.get("user_id", "system"), r.get("session_id", ""), r.get("agent_id", ""),
+            r["model"], r.get("prompt_tokens", 0), r.get("completion_tokens", 0),
+            r.get("cost", 0.0), 1 if r.get("is_stream") else 0, r.get("ts"),
+        ) for r in records]
+        with self._write_lock, self._get_connection() as conn:
+            conn.executemany("""
+                INSERT INTO usage_records (user_id, session_id, agent_id, model,
+                    prompt_tokens, completion_tokens, cost, is_stream, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, rows)
+            conn.commit()
+        return len(rows)
+
+    def query_usage(self, user_id: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        """查询用量记录（按 id 倒序）；user_id 为空时查全部。"""
+        sql = ("SELECT user_id, session_id, agent_id, model, prompt_tokens, "
+               "completion_tokens, cost, is_stream, created_at FROM usage_records")
+        args: list[Any] = []
+        if user_id:
+            sql += " WHERE user_id = ?"
+            args.append(user_id)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(limit)
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------------- 会话元状态（P4c：压缩摘要持久化与重建）----------------
+
+    def save_session_meta(self, session_id: str, summary: str, context_stats: str = "") -> None:
+        """持久化会话压缩摘要，供重启后无损恢复（INSERT OR REPLACE 按 session_id）。"""
+        now = datetime.now().isoformat()
+        with self._write_lock, self._get_connection() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO session_meta
+                (session_id, last_summary, summary_at, context_stats, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (session_id, summary, now, context_stats, now))
+            conn.commit()
+
+    def get_session_meta(self, session_id: str) -> dict[str, Any] | None:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT session_id, last_summary, summary_at, context_stats, updated_at "
+                "FROM session_meta WHERE session_id = ?", (session_id,)).fetchone()
+        return dict(row) if row else None
+
     # ---------------- 记忆管理（WebUI 后台用）----------------
 
     def list_memories(self, scope: str = "", owner_id: str = "",
                       category: str = "", keyword: str = "",
-                      limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+                      limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         """管理用：带筛选的记忆列表（跨用户，按更新时间倒序）"""
         sql = ("SELECT id, scope, owner_id, agent_id, category, content, source, "
                "importance, created_at, updated_at FROM memories WHERE 1=1")
-        args: List[Any] = []
+        args: list[Any] = []
         if scope:
             sql += " AND scope = ?"; args.append(scope)
         if owner_id:
@@ -579,7 +660,7 @@ class Storage:
     def count_memories(self, scope: str = "", owner_id: str = "",
                        category: str = "", keyword: str = "") -> int:
         sql = "SELECT COUNT(*) FROM memories WHERE 1=1"
-        args: List[Any] = []
+        args: list[Any] = []
         if scope:
             sql += " AND scope = ?"; args.append(scope)
         if owner_id:
@@ -591,7 +672,7 @@ class Storage:
         with self._get_connection() as conn:
             return conn.execute(sql, args).fetchone()[0]
 
-    def get_memory(self, memory_id: int) -> Optional[Dict[str, Any]]:
+    def get_memory(self, memory_id: int) -> dict[str, Any] | None:
         with self._get_connection() as conn:
             row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         return dict(row) if row else None
@@ -636,7 +717,7 @@ class Storage:
             conn.commit()
             return cur.lastrowid
 
-    def list_proposals(self, status: str = "pending") -> List[Dict[str, Any]]:
+    def list_proposals(self, status: str = "pending") -> list[dict[str, Any]]:
         with self._get_connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM memory_proposals WHERE status = ? ORDER BY id DESC", (status,)
@@ -652,7 +733,7 @@ class Storage:
             )
             conn.commit()
 
-    def get_proposal(self, proposal_id: int) -> Optional[Dict[str, Any]]:
+    def get_proposal(self, proposal_id: int) -> dict[str, Any] | None:
         with self._get_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM memory_proposals WHERE id = ?", (proposal_id,)
@@ -690,7 +771,7 @@ class Storage:
             conn.commit()
             return cur.lastrowid
 
-    def get_user_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+    def get_user_by_token(self, token: str) -> dict[str, Any] | None:
         with self._get_connection() as conn:
             row = conn.execute("""
                 SELECT u.id, u.name, u.department, u.role, u.status, t.id AS token_id
@@ -704,7 +785,7 @@ class Storage:
             return dict(row)
         return None
 
-    def list_tokens(self) -> List[Dict[str, Any]]:
+    def list_tokens(self) -> list[dict[str, Any]]:
         with self._get_connection() as conn:
             rows = conn.execute("""
                 SELECT t.id, substring(t.token,1,8)||'...' AS token_preview, t.user_id,
@@ -720,7 +801,9 @@ class Storage:
             return cur.rowcount > 0
 
     def set_user_password(self, user_id: int, password: str):
-        import hashlib, secrets, base64
+        import base64
+        import hashlib
+        import secrets
         salt = secrets.token_bytes(16)
         key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200000)
         ph = base64.b64encode(salt + key).decode()
@@ -728,8 +811,9 @@ class Storage:
             conn.execute("UPDATE rbac_users SET password_hash = ? WHERE id = ?", (ph, user_id))
             conn.commit()
 
-    def verify_user_password(self, username: str, password: str) -> Optional[Dict[str, Any]]:
-        import hashlib, base64
+    def verify_user_password(self, username: str, password: str) -> dict[str, Any] | None:
+        import base64
+        import hashlib
         with self._get_connection() as conn:
             row = conn.execute(
                 "SELECT id, name, department, role, status, password_hash FROM rbac_users WHERE name = ? AND status = 'active'",

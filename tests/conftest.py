@@ -16,6 +16,13 @@ def tmp_workspace(tmp_path):
     return str(ws)
 
 
+@pytest.fixture(autouse=True)
+def _init_settings(tmp_path):
+    """初始化 settings 单例（Agent.__init__ 等处读取配置，避免依赖测试执行顺序）。"""
+    from settings import init_settings
+    init_settings(str(tmp_path))
+
+
 @pytest.fixture
 def mock_llm_client():
     """Mock LLM 客户端"""

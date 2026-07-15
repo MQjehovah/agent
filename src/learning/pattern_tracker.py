@@ -1,13 +1,15 @@
-import os
 import json
 import logging
-import re
+import os
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Any
 
 from .categories import (
-    PATTERN_TRIGGER_THRESHOLD, PATTERN_MAX_EXAMPLES,
-    PATTERN_FILE, PATTERN_CLASSIFY_PROMPT, PATTERN_CLASSIFY_SYSTEM_PROMPT,
+    PATTERN_CLASSIFY_PROMPT,
+    PATTERN_CLASSIFY_SYSTEM_PROMPT,
+    PATTERN_FILE,
+    PATTERN_MAX_EXAMPLES,
+    PATTERN_TRIGGER_THRESHOLD,
 )
 
 logger = logging.getLogger("agent.learning.pattern")
@@ -30,7 +32,7 @@ class PatternTracker:
         self.memory_dir = memory_dir
         self.llm_client = llm_client
         self.patterns_file = os.path.join(memory_dir, PATTERN_FILE)
-        self._patterns: Dict[str, Dict[str, Any]] = {}
+        self._patterns: dict[str, dict[str, Any]] = {}
         self._load()
 
     def set_llm_client(self, client):
@@ -66,7 +68,7 @@ class PatternTracker:
         with open(self.patterns_file, "w", encoding="utf-8") as f:
             json.dump(self._patterns, f, ensure_ascii=False, indent=2)
 
-    async def record_task(self, task: str, summary: str) -> Optional[Dict[str, Any]]:
+    async def record_task(self, task: str, summary: str) -> dict[str, Any] | None:
         """
         记录一个完成的任务，进行模式分类。
 
@@ -106,7 +108,7 @@ class PatternTracker:
         suggested_name: str,
         description: str,
         task: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """更新模式计数，达到阈值时返回创建信息"""
         if pattern_key in self._patterns:
             entry = self._patterns[pattern_key]
@@ -161,7 +163,7 @@ class PatternTracker:
             self._patterns[pattern_key]["created"] = True
             self._save()
 
-    async def _classify_task(self, task: str, summary: str) -> Optional[Dict[str, Any]]:
+    async def _classify_task(self, task: str, summary: str) -> dict[str, Any] | None:
         """使用 LLM 对任务进行模式分类"""
         prompt = PATTERN_CLASSIFY_PROMPT.format(
             task=task[:300],
@@ -174,15 +176,15 @@ class PatternTracker:
 
         return self._parse_classification(response)
 
-    def _parse_classification(self, text: str) -> Optional[Dict[str, Any]]:
-        """解析 LLM 返回的分类 JSON"""
-        text = text.strip()
+    def _parse_classification(self, text: str) -> dict[str, Any] | None:
+        """解析 LLM 返回的分类 JSON（复用 parse_llm_json，处理代码块/混杂文本）"""
+        from autonomous import parse_llm_json
+
+        text = (text or "").strip()
         if not text:
             return None
 
-        text = self._strip_code_block(text)
-
-        result = self._extract_json(text)
+        result = parse_llm_json(text)
         if result and isinstance(result, dict) and "pattern_key" in result:
             if result.get("category") not in ("skill", "subagent"):
                 result["category"] = "skill"
@@ -191,53 +193,10 @@ class PatternTracker:
         logger.warning(f"无法解析分类结果: {text[:200]}")
         return None
 
-    def _strip_code_block(self, text: str) -> str:
-        """从 LLM 输出中移除 markdown 代码块标记"""
-        text = text.strip()
-        pattern = re.compile(r'^```(?:\w+)?\s*\n(.*?)\n\s*```', re.DOTALL)
-        match = pattern.search(text)
-        if match:
-            return match.group(1).strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            if len(lines) >= 3:
-                return "\n".join(lines[1:-1]).strip()
-        return text
-
-    def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
-        """从文本中提取 JSON 对象，尝试多种方式"""
-        try:
-            result = json.loads(text)
-            if isinstance(result, dict):
-                return result
-            if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
-                return result[0]
-        except json.JSONDecodeError:
-            pass
-
-        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
-        if json_match:
-            try:
-                result = json.loads(json_match.group())
-                if isinstance(result, dict):
-                    return result
-            except json.JSONDecodeError:
-                pass
-
-        for match in re.finditer(r'\{[^{}]+\}', text):
-            try:
-                result = json.loads(match.group())
-                if isinstance(result, dict):
-                    return result
-            except json.JSONDecodeError:
-                continue
-
-        return None
-
-    def get_all_patterns(self) -> Dict[str, Dict[str, Any]]:
+    def get_all_patterns(self) -> dict[str, dict[str, Any]]:
         return dict(self._patterns)
 
-    def get_pending_patterns(self) -> List[Dict[str, Any]]:
+    def get_pending_patterns(self) -> list[dict[str, Any]]:
         """获取所有已达阈值但未创建的模式"""
         return [
             {"pattern_key": k, **v}
@@ -245,7 +204,7 @@ class PatternTracker:
             if v.get("count", 0) >= PATTERN_TRIGGER_THRESHOLD and not v.get("created")
         ]
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         total = len(self._patterns)
         created = sum(1 for p in self._patterns.values() if p.get("created"))
         pending = len(self.get_pending_patterns())

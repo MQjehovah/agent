@@ -1,9 +1,9 @@
 """
 统一配置系统。单例，加载 config/config.json，所有设置有硬编码默认值，用户只需覆写差异字段。
 """
-import os as _os
 import json
 import logging
+import os as _os
 from typing import Any
 
 logger = logging.getLogger("agent.settings")
@@ -52,6 +52,17 @@ _DEFAULTS = {
     },
     "learning": {
         "per_round": False,
+    },
+    "memory": {
+        "injection_limit": 24,
+        "per_category_limit": 3,
+        "keyword_filter": True,
+    },
+    "cost": {
+        "pricing": {},
+    },
+    "observability": {
+        "jsonl_path": "",
     },
 }
 
