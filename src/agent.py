@@ -71,6 +71,8 @@ class RunContext:
     # P3: prompt cache 拆分——static 可缓存前缀，dynamic 每轮变化的尾缀
     system_static: str = ""
     system_dynamic: str = ""
+    # 本次任务的过程文件目录（顶层 run 建立，子代理继承）；临时文件写这里，交付物写 workspace
+    task_dir: str = ""
 
 
 # 模块级 ContextVar：run() 内 set()，协程任意位置 get() 取回“当前 run”的上下文。
@@ -96,6 +98,7 @@ class Agent:
         parent_agent: "Agent" = None,
         permission_mode: str = "auto",
         config_dir: str = "",
+        mcp_servers: list = None,
     ):
         self.workspace = workspace
         self.client = client
@@ -122,6 +125,8 @@ class Agent:
 
         self.tool_registry = None
         self.mcp = None
+        # 子代理专属 MCP 配置（运行时传入，方案B；主代理始终为空）
+        self._subagent_mcp_configs = list(mcp_servers) if mcp_servers else []
         self.skill_manager = None
         self.subagent_manager = None
         self.session_manager = None
@@ -389,35 +394,48 @@ class Agent:
                 f"Agent [{self.name}] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
     async def _load_mcp_servers(self):
-        # 子 agent 不加载全局 MCP servers（避免 cleanup 时阻塞）
         if self.parent_agent:
-            self.mcp_configs = []
+            # 子 agent（方案B）：优先运行时传入的 mcp_servers，否则读自己 config_dir 的 mcp_servers.json
+            self.mcp_configs = list(self._subagent_mcp_configs) or self._read_mcp_config_file()
+            if not self.mcp_configs:
+                return
+            await self._connect_mcp_servers(subagent=True)
             return
-        mcp_file = os.path.join(self.config_dir, "mcp_servers.json")
-        self.mcp_configs = []
 
-        if os.path.exists(mcp_file):
-            try:
-                with open(mcp_file, encoding="utf-8") as f:
-                    self.mcp_configs = json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load mcp_servers.json: {e}")
-
+        # 主 agent：读 config_dir/mcp_servers.json
+        self.mcp_configs = self._read_mcp_config_file()
         if self.mcp_configs:
-            from mcps import MCPManager
-            self.mcp = MCPManager("")
-            for config in self.mcp_configs:
-                if config.get("enabled", True):
-                    await self.mcp.connect_server(config)
-                else:
-                    logger.debug(
-                        f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
-            self.mcp.start_health_check()
+            await self._connect_mcp_servers(subagent=False)
 
-            connected = [c.get("name", "unnamed")
-                         for c in self.mcp_configs if c.get("enabled", True)]
-            logger.info(
-                f"Agent [{self.name}] 已连接 {len(connected)} MCP servers: {connected}")
+    def _read_mcp_config_file(self) -> list:
+        """读取 config_dir/mcp_servers.json（主子代理共用）"""
+        mcp_file = os.path.join(self.config_dir, "mcp_servers.json")
+        if not os.path.exists(mcp_file):
+            return []
+        try:
+            with open(mcp_file, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load mcp_servers.json: {e}")
+            return []
+
+    async def _connect_mcp_servers(self, subagent: bool = False):
+        """连接 mcp_configs 中的 MCP servers"""
+        from mcps import MCPManager
+        self.mcp = MCPManager("")
+        for config in self.mcp_configs:
+            if config.get("enabled", True):
+                await self.mcp.connect_server(config)
+            else:
+                logger.debug(
+                    f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
+        self.mcp.start_health_check()
+
+        connected = [c.get("name", "unnamed")
+                     for c in self.mcp_configs if c.get("enabled", True)]
+        role = "子 Agent" if subagent else "Agent"
+        logger.info(
+            f"{role} [{self.name}] 已连接 {len(connected)} MCP servers: {connected}")
 
     def _init_subagents(self):
         agents_dir = os.path.join(self.config_dir, "agents")
@@ -582,35 +600,48 @@ class Agent:
         result.insert(0, {"role": "system", "content": static})
         return result
 
+    def _init_task_dir(self, task: str) -> str:
+        """顶层任务建立过程文件目录：workspace/.agent/{时间戳}_{任务摘要}/artifacts/"""
+        from datetime import datetime
+        slug = re.sub(r"[^\w一-鿿]+", "_", task)[:20].strip("_")
+        tdir = os.path.join(self.workspace, ".agent", f"{datetime.now():%Y%m%d_%H%M%S}_{slug}", "artifacts")
+        try:
+            os.makedirs(tdir, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"创建任务目录失败: {e}")
+        return tdir
+
     def _get_env_context(self) -> str:
-        """动态生成环境上下文（结果缓存30秒，避免每轮都执行git命令）"""
+        """动态生成环境上下文（git 等部分缓存30秒；task_dir 随 run 变化不缓存）"""
         now = time.time()
-        if self._env_context_cache and (now - self._env_context_time) < 30:
-            return self._env_context_cache
+        if not (self._env_context_cache and (now - self._env_context_time) < 30):
+            cwd = self.workspace
+            is_git = os.path.exists(os.path.join(cwd, ".git"))
+            branch = ""
+            if is_git:
+                try:
+                    branch = subprocess.check_output(
+                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                        stderr=subprocess.DEVNULL, timeout=5,
+                        cwd=cwd
+                    ).decode().strip()
+                except Exception as e:
+                    logger.debug(f"获取 git 分支失败: {e}")
 
-        cwd = self.workspace
-        is_git = os.path.exists(os.path.join(cwd, ".git"))
-        branch = ""
-        if is_git:
-            try:
-                branch = subprocess.check_output(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    stderr=subprocess.DEVNULL, timeout=5,
-                    cwd=cwd
-                ).decode().strip()
-            except Exception as e:
-                logger.debug(f"获取 git 分支失败: {e}")
-
-        self._env_context_cache = (
-            f"工作目录: {cwd}\n"
-            f"临时目录: {self.temp_dir}\n"
-            f"Git 仓库: {'是' if is_git else '否'}\n"
-            f"当前分支: {branch or 'N/A'}\n"
-            f"平台: {platform.system()} {platform.release()}\n"
-            f"模型: {self.client.model}"
-        )
-        self._env_context_time = now
-        return self._env_context_cache
+            self._env_context_cache = (
+                f"工作目录: {cwd}\n"
+                f"Git 仓库: {'是' if is_git else '否'}\n"
+                f"当前分支: {branch or 'N/A'}\n"
+                f"平台: {platform.system()} {platform.release()}\n"
+                f"模型: {self.client.model}"
+            )
+            self._env_context_time = now
+        # task_dir 随 run 变化（任务级），不进缓存，每次动态拼接
+        base = self._env_context_cache
+        task_dir = current_run().task_dir
+        if task_dir:
+            return base + f"\n临时文件目录: {task_dir}（过程/临时文件写这里；交付物写工作目录）"
+        return base
 
     def _get_tool_summary(self) -> str:
         """生成工具描述汇总"""
@@ -675,6 +706,11 @@ class Agent:
         inherited = current_run()
         # 创建本次 run 的独立上下文，绑定到当前 asyncio Task —— 并发隔离的关键
         ctx = RunContext(task=task, run_id=run_id or uuid.uuid4().hex)
+        # 任务级过程目录：顶层 run 建立（时间戳+任务摘要），子代理继承父目录（同任务共享）
+        if self.parent_agent and inherited.task_dir:
+            ctx.task_dir = inherited.task_dir
+        elif not self.parent_agent:
+            ctx.task_dir = self._init_task_dir(task)
         run_token = _current_run.set(ctx)
 
         # 建立流式事件作用域：仅顶层 run 建立；嵌套子代理 run 继承父级作用域，
@@ -1539,7 +1575,13 @@ class Agent:
         if self.memory and not self.parent_agent:
             self.learner.stop_daily_task()
         if self.mcp:
-            await self.mcp.close()
+            try:
+                # 超时保护：避免 cleanup 因 MCP stdio 子进程关闭而长时间阻塞
+                await asyncio.wait_for(self.mcp.close(), timeout=10)
+            except asyncio.TimeoutError:
+                logger.warning(f"Agent [{self.name}] MCP close 超时(10s)，强制跳过")
+            except Exception as e:
+                logger.warning(f"Agent [{self.name}] MCP close 失败: {e}")
 
         self._cleanup_temp_dir()
         logger.info(f"Agent [{self.name}] cleaned up")

@@ -552,6 +552,7 @@ class SubagentManager:
             client=self._client or client,
             parent_agent=self._parent_agent or parent_agent,
             config_dir=config_dir,
+            mcp_servers=mcp_servers,
         )
 
         if self._parent_agent or parent_agent:

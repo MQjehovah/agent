@@ -192,3 +192,8 @@ SELECT
 FROM bom_tree
 GROUP BY material_code;
 ```
+
+## 输出规范
+
+- 所有文件操作默认基于工作目录（workspace），读写一致
+- 经营分析报告、数据报表等交付物写入工作目录的 `reports/` 子目录（如 `reports/2026_H1_经营分析报告.md`），保持根目录整洁

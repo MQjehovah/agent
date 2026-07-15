@@ -2,7 +2,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("agent.tools")
 
@@ -11,10 +11,10 @@ logger = logging.getLogger("agent.tools")
 class ToolDefinition:
     name: str
     description: str
-    parameters: Dict[str, Any] = field(default_factory=dict)
-    required: List[str] = field(default_factory=list)
+    parameters: dict[str, Any] = field(default_factory=dict)
+    required: list[str] = field(default_factory=list)
 
-    def to_openai_format(self) -> Dict[str, Any]:
+    def to_openai_format(self) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
@@ -45,7 +45,7 @@ class BuiltinTool(ABC):
 
     @property
     @abstractmethod
-    def parameters(self) -> Dict[str, Any]:
+    def parameters(self) -> dict[str, Any]:
         pass
 
     @abstractmethod
@@ -53,7 +53,12 @@ class BuiltinTool(ABC):
         pass
 
     def resolve_path(self, path: str) -> str:
-        """将路径解析为绝对路径。相对路径基于 workspace 解析。"""
+        """将路径解析为绝对路径。相对路径基于 workspace（单一工作目录，读写一致）。
+
+        参照 Claude Code / opencode：所有文件操作默认工作目录，不区分中间产物与
+        交付物；需要整洁时由 agent 提示写入子目录（如 reports/）。temp_dir 仅用于
+        agent 内部真正的临时文件，不作为 LLM 的默认写入区。
+        """
         if not path:
             return self.workspace or os.getcwd()
         if os.path.isabs(path):
@@ -72,7 +77,7 @@ class BuiltinTool(ABC):
         resolved = os.path.normpath(os.path.abspath(path))
         return any(resolved == a or resolved.startswith(a + os.sep) for a in allowed)
 
-    def get_definition(self) -> Dict[str, Any]:
+    def get_definition(self) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
@@ -85,7 +90,7 @@ class BuiltinTool(ABC):
 
 class ToolRegistry:
     def __init__(self):
-        self._tools: Dict[str, BuiltinTool] = {}
+        self._tools: dict[str, BuiltinTool] = {}
         self._workspace: str = ""
         self._temp_dir: str = ""
 
@@ -129,10 +134,10 @@ class ToolRegistry:
     def has_tool(self, name: str) -> bool:
         return name in self._tools
 
-    def get_tool_definitions(self) -> List[Dict[str, Any]]:
+    def get_tool_definitions(self) -> list[dict[str, Any]]:
         return [tool.get_definition() for tool in self._tools.values()]
 
-    async def execute(self, name: str, args: Dict[str, Any]) -> str:
+    async def execute(self, name: str, args: dict[str, Any]) -> str:
         if name not in self._tools:
             logger.error(f"工具 '{name}' 未找到")
             return f"错误: 工具 '{name}' 未找到"
@@ -148,10 +153,10 @@ class ToolRegistry:
             logger.error(f"工具 '{name}' 执行失败: {e}")
             return f"错误: 工具 '{name}' 执行失败 - {e}"
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         return list(self._tools.keys())
 
-    def get_tool(self, name: str) -> Optional[BuiltinTool]:
+    def get_tool(self, name: str) -> BuiltinTool | None:
         return self._tools.get(name)
 
     def auto_discover(self, tools_dir: str = None, **extra_instances):
@@ -239,26 +244,25 @@ def _find_tool_classes(source: str) -> list[str]:
 
 
 # 核心工具
-from .todo import TodoTool
+# 用户交互工具
+from .ask_user import AskUserTool
+from .code_preview import CodePreviewTool
+from .edit import EditTool
 from .file import FileTool
-from .subagent import SubagentTool
-from .memory import MemoryTool
-from .shell import ShellTool
+from .glob import GlobTool
 
 # 搜索与编辑工具
 from .grep import GrepTool
-from .glob import GlobTool
-from .edit import EditTool
-from .code_preview import CodePreviewTool
-
-# Web 工具
-from .web import WebSearchTool, WebFetchTool
+from .memory import MemoryTool
+from .shell import ShellTool
+from .subagent import SubagentTool
 
 # 后台任务工具
-from .task import TaskCreateTool, TaskListTool, TaskGetTool, TaskCancelTool
+from .task import TaskCancelTool, TaskCreateTool, TaskGetTool, TaskListTool
+from .todo import TodoTool
 
-# 用户交互工具
-from .ask_user import AskUserTool
+# Web 工具
+from .web import WebFetchTool, WebSearchTool
 
 __all__ = [
     'ToolRegistry', 'BuiltinTool', 'ToolDefinition',

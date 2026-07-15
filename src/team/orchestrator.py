@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+from datetime import datetime
 from typing import Any
 
 from team.context import TeamContext
@@ -46,6 +48,8 @@ class TeamOrchestrator:
         self.dag: ExecutionDAG | None = None
         self.workspace: str = ""
         self.artifacts: dict[str, str] = {}
+        self.artifacts_dir: str = ""
+        self.run_id: str = ""
         self.pipeline_stages: list[dict] = []
         self._completed_stages: set[str] = set()
 
@@ -168,6 +172,10 @@ class TeamOrchestrator:
 
         role = stage_config["role"]
         output_file = stage_config.get("output")
+        # 阶段产出文件隔离到 .agent/artifacts/，不污染代码工作区根目录
+        if output_file:
+            output_file = os.path.join(self.artifacts_dir, output_file)
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
         logger.info(f"团队 [{self.team_name}] 阶段 [{node.id}] -> {role}")
         if self.progress_callback:
@@ -184,7 +192,7 @@ class TeamOrchestrator:
 
         # 记录产出物路径（不读内容）
         if output_file:
-            artifact_path = os.path.join(self.workspace, output_file)
+            artifact_path = output_file  # 已是 .agent/artifacts/ 下的绝对路径
             self.artifacts[node.id] = artifact_path
             self.context.set_blackboard(f"{node.id}_output", artifact_path)
 
@@ -359,7 +367,7 @@ class TeamOrchestrator:
             _cb("_max_iter", "_max_iter", {"max_iter": stage_max_iter or 200}, None)
 
         from hooks import HookEvent
-        from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+        from tools.ask_user import reset_ask_user_mode, set_ask_user_mode
 
         async def _run_with_agent(task_body: str, max_iter: int) -> str:
             agent = await self.subagent_manager._create_team_subagent(
@@ -471,7 +479,22 @@ class TeamOrchestrator:
         if not workspace:
             workspace = os.getcwd()
         self.workspace = workspace
-        logger.info(f"工作目录: {self.workspace}")
+        # 复用 agent run 的任务目录（顶层 run 建立，主代理+子代理+编排器共享同一任务目录）
+        from agent import current_run
+        task_dir = current_run().task_dir
+        if task_dir:
+            self.artifacts_dir = task_dir
+            self.run_id = os.path.basename(os.path.dirname(task_dir))
+        else:
+            # 兜底：编排器在无 agent run 上下文时独立运行，自建任务目录
+            task_slug = ""
+            if self.context and getattr(self.context, "original_task", ""):
+                task_slug = re.sub(r"[^\w一-鿿]+", "_", self.context.original_task)[:20].strip("_")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.run_id = f"{ts}_{task_slug}" if task_slug else ts
+            self.artifacts_dir = os.path.join(workspace, ".agent", self.run_id, "artifacts")
+            os.makedirs(self.artifacts_dir, exist_ok=True)
+        logger.info(f"工作目录: {self.workspace}, 本次产物目录: {self.artifacts_dir}")
 
     @staticmethod
     def _read_file_head(path: str, max_chars: int) -> str:
