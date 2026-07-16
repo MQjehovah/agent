@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -82,6 +83,7 @@ class WebhookPlugin(BasePlugin):
         self.tasks: dict[str, WebhookTask] = {}
         self.agent_executor: Callable | None = None
         self._server: uvicorn.Server | None = None
+        self._serve_task: asyncio.Task | None = None
         self._app: FastAPI | None = None
         self._task_lock = asyncio.Lock()
 
@@ -100,6 +102,7 @@ class WebhookPlugin(BasePlugin):
 
     def start(self):
         self._build_app()
+        self._silence_lifespan_errors()
 
         config = uvicorn.Config(
             self._app, host=self.config.host, port=self.config.port,
@@ -112,8 +115,20 @@ class WebhookPlugin(BasePlugin):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.get_event_loop()
-        loop.create_task(self._server.serve())
+        async def _safe_serve():
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._server.serve()
+        self._serve_task = loop.create_task(_safe_serve())
         logger.info(f"Webhook (FastAPI/uvicorn) started at http://{self.config.host}:{self.config.port}")
+
+    def _silence_lifespan_errors(self):
+        """Filter out CancelledError traceback from uvicorn's lifespan handler."""
+        uvicorn_logger = logging.getLogger("uvicorn.error")
+        class _Filter(logging.Filter):
+            def filter(self, record):
+                msg = record.getMessage()
+                return "CancelledError" not in msg and "lifespan" not in msg
+        uvicorn_logger.addFilter(_Filter())
 
     def _setup_routes(self):
         webhook_path = self.config.path
@@ -350,6 +365,8 @@ class WebhookPlugin(BasePlugin):
         """停止 uvicorn 服务"""
         if self._server is not None:
             self._server.should_exit = True
+        if self._serve_task is not None and not self._serve_task.done():
+            self._serve_task.cancel()
         logger.info("Webhook plugin stopped")
 
     def get_stats(self) -> dict[str, Any]:

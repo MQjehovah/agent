@@ -8,7 +8,7 @@ import time
 from .layout import ChatLayout
 from .output import Display, _fmt_args, _truncate
 from .status import StatusBar
-from .styles import CYAN, DIM, GRAY, GREEN, RED, RESET
+from .styles import CYAN, DIM, GRAY, GREEN, RESET
 
 logger = logging.getLogger("agent.tui")
 
@@ -79,7 +79,8 @@ class TUIApp:
     def __init__(self, agent=None):
         self.state = TUIState()
         self.status_bar = StatusBar()
-        self.chat = ChatLayout(self.status_bar)
+        agent_name = agent.name if agent else ""
+        self.chat = ChatLayout(self.status_bar, agent_name=agent_name)
         self.display = Display(self.chat.append_output)
         self.agent = agent
         self._shutdown = asyncio.Event()
@@ -95,8 +96,10 @@ class TUIApp:
 
         self.chat.on_submit(self._on_input_submit)
         self.chat.on_cancel(lambda: self._cancel_flag.set())
+        self.chat.on_exit(lambda: self._shutdown.set())
 
     def _on_input_submit(self, text: str):
+        self.chat.append_output(f"  {GREEN}❯{RESET} {text}")
         self._input_queue.put_nowait(text)
 
     # ── setup ────────────────────────────────────────────────────
@@ -118,12 +121,9 @@ class TUIApp:
             self.state.tool_name = ctx.tool_name
             self.state.tool_args = _fmt_args(ctx.arguments or {})
             self.state.task_active = True
-            self.display.tool_call(ctx.tool_name, ctx.arguments or {})
 
         def _on_tool_result(ctx):
-            if self._target_agent:
-                return
-            self.display.tool_result(ctx.tool_name, str(ctx.result or ""))
+            pass
 
         def _on_round_start(ctx):
             it = (ctx.metadata or {}).get("iteration", 0)
@@ -157,16 +157,9 @@ class TUIApp:
             self.state.tool_count += 1
             self.state.tool_name = ctx.tool_name
             self.state.tool_args = _fmt_args(ctx.arguments or {})
-            self.display.tool_call(f"├─ {ctx.tool_name}", ctx.arguments or {},
-                                   prefix="│")
 
         def _on_subagent_tool_result(ctx):
-            if self._target_agent:
-                return
-            brief = _truncate(str(ctx.result or ""), 60)
-            if brief and not brief.startswith('{"success": true') and brief != "{}":
-                icon = f"{GREEN}✔{RESET}" if not brief.startswith('{"success": false') else f"{RED}✗{RESET}"
-                self.chat.append_output(f"  {DIM}│{RESET} {icon} {DIM}{brief}{RESET}")
+            pass
 
         def _on_subagent_progress(ctx):
             meta = ctx.metadata or {}
@@ -192,7 +185,20 @@ class TUIApp:
                         self.chat.append_output(f"  {DIM}┊ {t}{RESET}")
 
         def _on_chat_event(ctx):
-            pass  # streaming tokens used by web; too noisy for CLI
+            pass
+
+        def _on_subagent_llm_response(ctx):
+            content = ctx.content or ""
+            reasoning = ctx.reasoning or ""
+            lines = []
+            if reasoning:
+                for line in reasoning.strip().split("\n")[-2:]:
+                    if line.strip():
+                        lines.append(f"  {DIM}┊ {line.strip()[:120]}{RESET}")
+            if content:
+                lines.append(f"  {DIM}┊ {content.strip()[:120]}{RESET}")
+            if lines:
+                self.chat.append_output("\n".join(lines))
 
         def _on_subagent_chat_event(ctx):
             pass
@@ -215,6 +221,7 @@ class TUIApp:
         agent.hooks.register(HookEvent.SUBAGENT_TOOL_START, _on_subagent_tool_start)
         agent.hooks.register(HookEvent.SUBAGENT_TOOL_RESULT, _on_subagent_tool_result)
         agent.hooks.register(HookEvent.SUBAGENT_CHAT_EVENT, _on_subagent_chat_event)
+        agent.hooks.register(HookEvent.SUBAGENT_LLM_RESPONSE, _on_subagent_llm_response)
         agent.hooks.register(HookEvent.SUBAGENT_PROGRESS, _on_subagent_progress)
         agent.hooks.register("agent_start", _on_agent_start)
         agent.hooks.register("agent_stop", _on_agent_stop)
@@ -241,19 +248,15 @@ class TUIApp:
         self.status_bar.set_waiting(question)
         self.chat.update_status()
         self.display.ask_question(question, options, default)
+        self.chat.start_ask(options, default)
         self.chat.input_locked = False
         try:
             text = await self._input_queue.get()
         except asyncio.CancelledError:
+            self.chat.end_ask()
             return default or ""
-        ans = text.strip()
-        if not ans:
-            return default or ""
-        if options and ans.isdigit():
-            idx = int(ans) - 1
-            if 0 <= idx < len(options):
-                return options[idx]
-        return ans
+        self.chat.end_ask()
+        return text or default or ""
 
     # ── lifecycle ───────────────────────────────────────────────
 
@@ -342,11 +345,15 @@ class TUIApp:
 
     async def get_input(self) -> str | None:
         self._set_input_locked(False)
-        try:
-            text = await self._input_queue.get()
-            return text
-        except (asyncio.CancelledError, RuntimeError):
-            return None
+        while not self._shutdown.is_set():
+            try:
+                text = await asyncio.wait_for(self._input_queue.get(), timeout=0.5)
+                return text
+            except asyncio.TimeoutError:
+                continue
+            except (asyncio.CancelledError, RuntimeError):
+                return None
+        return None
 
     # ── spinner ─────────────────────────────────────────────────
 

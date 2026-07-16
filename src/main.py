@@ -7,6 +7,7 @@ import signal
 import sys
 import time
 import uuid
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from llm import LLMClient
 from plugins import PluginManager
 from settings import get_settings, init_settings
 from tui import TUIApp
-from tui.display import _fmt_args, _truncate, _write
+from tui.display import _fmt_args, _truncate
 from tui.styles import BOLD, CYAN, DIM, GRAY, GREEN, RED, RESET, YELLOW
 
 # 日志目录必须在模块导入前设置（llm.py 在导入时读取 AGENT_LOG_DIR）
@@ -44,6 +45,20 @@ else:
         load_dotenv(_env_example)
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
+
+# 抑制 Windows asyncio 关闭时的管道清理和子进程传输警告
+warnings.filterwarnings("ignore", category=ResourceWarning,
+                        message=".*unclosed.*transport.*")
+warnings.filterwarnings("ignore", category=ResourceWarning,
+                        message=".*unclosed transport.*")
+_orig_unraisable = getattr(sys, "unraisablehook", None)
+def _silent_hook(hook_args):
+    msg = str(hook_args.exc_value) if hook_args.exc_value else ""
+    if "Event loop is closed" in msg or "I/O operation on closed pipe" in msg:
+        return
+    if _orig_unraisable:
+        _orig_unraisable(hook_args)
+sys.unraisablehook = _silent_hook
 
 
 # ── 文件日志（不输出到终端，路径在 main 中解析后初始化） ─────────
@@ -108,7 +123,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         "ask_user") if agent.tool_registry else None
     tui.setup_ask_handler(ask_tool)
 
-    cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set)
+    cmd_handler = CommandHandler(agent, session_id, on_exit=shutdown_event.set,
+                                  output=tui.chat.append_output)
     current_task: asyncio.Task | None = None
 
     # 启动 TUI（清屏 + 全屏 Application）
@@ -120,36 +136,36 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
         if status == "start":
             tui.state.current_stage = stage
             tui.state.agent_name = info
-            _write(f"  {DIM}{'─' * 40}{RESET}")
-            _write(f"  {BOLD}{CYAN}{stage}{RESET}  {GRAY}({info}){RESET}")
+            tui.chat.append_output(f"  {DIM}{'─' * 40}{RESET}")
+            tui.chat.append_output(f"  {BOLD}{CYAN}{stage}{RESET}  {GRAY}({info}){RESET}")
         elif status == "pipeline":
-            _write(f"  {DIM}pipeline: {', '.join(info)}{RESET}")
+            tui.chat.append_output(f"  {DIM}pipeline: {', '.join(info)}{RESET}")
         elif status == "feedback":
-            _write(f"  {DIM}{'─' * 40}{RESET}")
-            _write(f"  {BOLD}{YELLOW}↻{RESET} 开发↔测试反馈循环 {GRAY}{info}{RESET}")
+            tui.chat.append_output(f"  {DIM}{'─' * 40}{RESET}")
+            tui.chat.append_output(f"  {BOLD}{YELLOW}↻{RESET} 开发↔测试反馈循环 {GRAY}{info}{RESET}")
             if extra:
-                _write(f"  {DIM}  · 失败详情: {GRAY}{extra[:120]}{RESET}")
+                tui.chat.append_output(f"  {DIM}  · 失败详情: {GRAY}{extra[:120]}{RESET}")
         elif status == "stage_timeout":
-            _write(f"  {DIM}  {YELLOW}⚠{RESET} {GRAY}timeout{RESET}")
+            tui.chat.append_output(f"  {DIM}  {YELLOW}⚠{RESET} {GRAY}timeout{RESET}")
         elif status == "stage_done":
             parts = stage.split("|", 1)
             name = parts[0]
             tui.state.current_stage = ""
-            _write(f"  {DIM}  {GREEN}✔{RESET} {name}  {GRAY}{now - tui.state.task_start_ts:.0f}s{RESET}")
+            tui.chat.append_output(f"  {DIM}  {GREEN}✔{RESET} {name}  {GRAY}{now - tui.state.task_start_ts:.0f}s{RESET}")
         elif status == "llm":
             text = str(info or "").strip()
             if text:
                 first = text.split("\n")[0].strip()[:120]
                 if first:
-                    _write(f"  {DIM}  · {GRAY}{first}{RESET}")
+                    tui.chat.append_output(f"  {DIM}  · {GRAY}{first}{RESET}")
         elif status == "tool_start":
             tname = stage.split("|", 1)[0] if "|" in stage else stage
             brief = _fmt_args(info) if info else ""
-            _write(f"  {DIM}  · {tname} {GRAY}{brief}{RESET}")
+            tui.chat.append_output(f"  {DIM}  · {tname} {GRAY}{brief}{RESET}")
         elif status == "tool_result":
             brief = _truncate(extra or "", 45)
             if brief and (brief.startswith('{"success": false') or "错误" in brief or "失败" in brief):
-                _write(f"  {DIM}  · {RED}✗{RESET} {DIM}{brief[:60]}{RESET}")
+                tui.chat.append_output(f"  {DIM}  · {RED}✗{RESET} {DIM}{brief[:60]}{RESET}")
 
     # ── 信号处理 ──────────────────────────────────────────────
     def handle_signal():
@@ -551,7 +567,7 @@ async def main():
         from channels import MessageRouter
         router = MessageRouter(agent)
 
-        start_web = args.web or (args.mode == "autonomous" and not args.no_web)
+        start_web = args.web
 
         if not args.no_plugins:
             plugin_manager = PluginManager(os.path.join(

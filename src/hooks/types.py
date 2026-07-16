@@ -1,5 +1,5 @@
-from enum import Enum
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 
@@ -21,6 +21,7 @@ class HookEvent(Enum):
     SUBAGENT_TOOL_RESULT = "subagent_tool_result"
     SUBAGENT_ROUND_START = "subagent_round_start"
     SUBAGENT_PROGRESS = "subagent_progress"
+    SUBAGENT_LLM_RESPONSE = "subagent_llm_response"
     LLM_RESPONSE = "llm_response"
 
 

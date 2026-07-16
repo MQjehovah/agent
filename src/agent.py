@@ -1534,6 +1534,7 @@ class Agent:
             self._hook_event.TOOL_RESULT: self._hook_event.SUBAGENT_TOOL_RESULT,
             self._hook_event.ROUND_START: self._hook_event.SUBAGENT_ROUND_START,
             self._hook_event.CHAT_EVENT: self._hook_event.SUBAGENT_CHAT_EVENT,
+            self._hook_event.LLM_RESPONSE: self._hook_event.SUBAGENT_LLM_RESPONSE,
         }
         self._subagent_hook_unregisters = []
         for src_evt, dst_evt in mapping.items():

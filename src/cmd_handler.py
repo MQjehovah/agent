@@ -2,27 +2,46 @@
 交互模式命令处理器
 """
 import logging
-from typing import Optional, Callable
-from rich import box
-from rich.table import Table
-from rich.panel import Panel
-from rich.console import Console
+import re
+from collections.abc import Callable
 
-console = Console()
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+_ANSI_RE = re.compile(r"\033\[[0-9;]*[a-zA-Z]")
+
+def strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 logger = logging.getLogger("agent.cmd")
 
 
 class CommandHandler:
     """命令处理器 - 处理所有以 / 开头的交互命令"""
 
-    def __init__(self, agent, session_id: str, on_exit: Callable[[], None] = None, panel=None):
+    def __init__(self, agent, session_id: str, on_exit: Callable[[], None] = None, panel=None, output=None):
         self.agent = agent
         self.session_id = session_id
         self._current_task_id = None
         self._on_exit = on_exit
         self._panel = panel
+        self._output = output
 
-    def set_current_task_id(self, task_id: Optional[int]):
+    def _print(self, *args, **kwargs):
+        """Route output through TUI if available, else fallback to self._print."""
+        if self._output is not None:
+            from io import StringIO
+            buf = StringIO()
+            c = Console(file=buf, width=80)
+            c.print(*args, **kwargs)
+            text = buf.getvalue()
+            if text.strip():
+                self._output(strip_ansi(text))
+        else:
+            self._print(*args, **kwargs)
+
+    def set_current_task_id(self, task_id: int | None):
         self._current_task_id = task_id
 
     def is_command(self, input_str: str) -> bool:
@@ -78,21 +97,21 @@ class CommandHandler:
             if main_mod and hasattr(main_mod, "BOUND_PLUGIN_SESSION"):
                 main_mod.BOUND_PLUGIN_SESSION = getattr(main_mod, "CLI_SESSION_ID", "")
                 cid = main_mod.CLI_SESSION_ID[:8] if getattr(main_mod, "CLI_SESSION_ID", "") else ""
-                console.print(f"[green]插件会话已绑定到 CLI ({cid}...)[/green]")
+                self._print(f"[green]插件会话已绑定到 CLI ({cid}...)[/green]")
             else:
-                console.print("[red]无法获取 CLI 会话[/red]")
+                self._print("[red]无法获取 CLI 会话[/red]")
         elif cmd_lower == "/unbind":
             import sys
             main_mod = sys.modules.get("__main__")
             if main_mod and hasattr(main_mod, "BOUND_PLUGIN_SESSION"):
                 main_mod.BOUND_PLUGIN_SESSION = ""
-                console.print("[yellow]插件会话已解绑[/yellow]")
+                self._print("[yellow]插件会话已解绑[/yellow]")
         elif cmd_lower in ["/q", "/quit", "/exit"]:
             if self._on_exit:
                 self._on_exit()
         else:
-            console.print(f"[red]未知命令: {cmd}[/red]")
-            console.print("[dim]输入 /help 查看可用命令[/dim]")
+            self._print(f"[red]未知命令: {cmd}[/red]")
+            self._print("[dim]输入 /help 查看可用命令[/dim]")
 
     def _show_help(self):
         """显示帮助信息"""
@@ -129,11 +148,11 @@ class CommandHandler:
         ]
         for cmd, desc in commands:
             table.add_row(cmd, desc)
-        console.print(table)
+        self._print(table)
 
     def _show_prompt(self):
         """显示系统提示词"""
-        console.print(Panel.fit(
+        self._print(Panel.fit(
             f"[bold green]系统提示词:[/bold green]\n{self.agent.system_prompt}",
             border_style="green", box=box.ROUNDED
         ))
@@ -151,7 +170,7 @@ class CommandHandler:
             if len(desc) > 60:
                 desc = desc[:60] + "..."
             table.add_row(name, desc)
-        console.print(table)
+        self._print(table)
 
     def _show_skills(self):
         """显示技能列表"""
@@ -161,20 +180,20 @@ class CommandHandler:
             table.add_column("名称", style="cyan")
             for skill_name in self.agent.skill_manager.list_skills():
                 table.add_row(skill_name)
-            console.print(table)
+            self._print(table)
         else:
-            console.print("[yellow]无可用技能[/yellow]")
+            self._print("[yellow]无可用技能[/yellow]")
 
     def _show_tasks(self):
         """显示任务状态"""
         if self._current_task_id:
-            console.print(f"[cyan]正在执行任务 #{self._current_task_id}[/cyan]")
+            self._print(f"[cyan]正在执行任务 #{self._current_task_id}[/cyan]")
         else:
-            console.print("[dim]无正在执行的任务[/dim]")
+            self._print("[dim]无正在执行的任务[/dim]")
 
     def _cancel_task(self):
         """取消当前任务"""
-        console.print("[dim]使用 Ctrl+C 中断任务[/dim]")
+        self._print("[dim]使用 Ctrl+C 中断任务[/dim]")
 
     def _show_subagents(self):
         """显示子代理列表"""
@@ -189,11 +208,11 @@ class CommandHandler:
                 table.add_column("任务数", style="green", justify="right")
                 for sub in active:
                     table.add_row(sub["session_id"], sub["template"], str(sub["task_count"]))
-                console.print(table)
+                self._print(table)
             else:
-                console.print("[yellow]暂无活跃子代理[/yellow]")
+                self._print("[yellow]暂无活跃子代理[/yellow]")
         else:
-            console.print("[yellow]子代理管理器未初始化[/yellow]")
+            self._print("[yellow]子代理管理器未初始化[/yellow]")
 
     def _show_subagent_sessions(self, template_name: str):
         """显示指定模板的子代理会话"""
@@ -211,11 +230,11 @@ class CommandHandler:
                         str(sess["task_count"]),
                         sess["agent_id"]
                     )
-                console.print(table)
+                self._print(table)
             else:
-                console.print(f"[yellow]子代理 [{template_name}] 暂无活跃会话[/yellow]")
+                self._print(f"[yellow]子代理 [{template_name}] 暂无活跃会话[/yellow]")
         else:
-            console.print("[yellow]子代理管理器未初始化[/yellow]")
+            self._print("[yellow]子代理管理器未初始化[/yellow]")
 
     def _show_all_subagents(self):
         """显示所有子代理"""
@@ -234,17 +253,17 @@ class CommandHandler:
                             str(sess["task_count"]),
                             sess["agent_id"]
                         )
-                    console.print(table)
+                    self._print(table)
             else:
-                console.print("[yellow]暂无活跃子代理[/yellow]")
+                self._print("[yellow]暂无活跃子代理[/yellow]")
         else:
-            console.print("[yellow]子代理管理器未初始化[/yellow]")
+            self._print("[yellow]子代理管理器未初始化[/yellow]")
 
     async def _clear_subagents(self):
         """清理所有子代理"""
         if self.agent.subagent_manager:
             await self.agent.subagent_manager.cleanup_all()
-            console.print("[green]已清理所有子代理[/green]")
+            self._print("[green]已清理所有子代理[/green]")
 
     def _set_loglevel(self, level: str):
         """设置日志级别"""
@@ -252,10 +271,10 @@ class CommandHandler:
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if level in valid_levels:
             logging.getLogger("agent").setLevel(getattr(logging, level))
-            console.print(f"[green]日志级别已设置为: {level}[/green]")
+            self._print(f"[green]日志级别已设置为: {level}[/green]")
         else:
-            console.print(f"[red]无效的日志级别: {level}[/red]")
-            console.print(f"[yellow]有效值: {', '.join(valid_levels)}[/yellow]")
+            self._print(f"[red]无效的日志级别: {level}[/red]")
+            self._print(f"[yellow]有效值: {', '.join(valid_levels)}[/yellow]")
 
     # ================================================================
     #  任务面板
@@ -263,11 +282,11 @@ class CommandHandler:
 
     def _show_panel(self):
         if self._panel is None:
-            console.print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            self._print("[yellow]任务面板仅在自主模式下可用[/yellow]")
             return
         tasks = self._panel.list_all()
         if not tasks:
-            console.print(Panel.fit(
+            self._print(Panel.fit(
                 "[dim]任务面板为空[/dim]\n"
                 "使用 [cyan]/panel add <任务>[/cyan] 添加\n"
                 "启动时已根据角色自动生成，部分纯响应型角色无需主动任务",
@@ -290,35 +309,35 @@ class CommandHandler:
             itv = f"{t.interval}s" if t.interval else "一次"
             src = {"user": "U", "llm": "AI", "event": "E"}.get(t.source, t.source)
             table.add_row(t.id, f"[{sc}]{t.status}[/{sc}]", str(t.priority), src, itv, t.title)
-        console.print(table)
-        console.print("[dim]/panel add <任务> | /panel rm <id> | /panel clear[/dim]")
+        self._print(table)
+        self._print("[dim]/panel add <任务> | /panel rm <id> | /panel clear[/dim]")
 
     def _add_panel_task(self, text: str):
         if self._panel is None:
-            console.print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            self._print("[yellow]任务面板仅在自主模式下可用[/yellow]")
             return
         if not text:
-            console.print("[red]用法: /panel add <任务标题>[/red]")
+            self._print("[red]用法: /panel add <任务标题>[/red]")
             return
         task = self._panel.add_task(title=text, source="user")
-        console.print(f"[green]已添加: [{task.id}] {text}[/green]")
+        self._print(f"[green]已添加: [{task.id}] {text}[/green]")
 
     def _rm_panel_task(self, task_id: str):
         if self._panel is None:
-            console.print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            self._print("[yellow]任务面板仅在自主模式下可用[/yellow]")
             return
         if self._panel.remove_task(task_id):
-            console.print(f"[green]已删除: {task_id}[/green]")
+            self._print(f"[green]已删除: {task_id}[/green]")
         else:
-            console.print(f"[red]未找到: {task_id}[/red]")
+            self._print(f"[red]未找到: {task_id}[/red]")
 
     def _clear_panel(self):
         if self._panel is None:
-            console.print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            self._print("[yellow]任务面板仅在自主模式下可用[/yellow]")
             return
         for t in list(self._panel.list_all()):
             self._panel.remove_task(t.id)
-        console.print("[green]面板已清空[/green]")
+        self._print("[green]面板已清空[/green]")
 
     def _show_cache(self):
         """显示缓存统计"""
@@ -331,14 +350,14 @@ class CommandHandler:
         table.add_column("值", style="green")
         table.add_row("缓存大小", f"{stats['size']}/{stats['max_size']}")
         table.add_row("总命中次数", str(stats['total_hits']))
-        console.print(table)
+        self._print(table)
 
     def _clear_cache(self):
         """清空缓存"""
         from cache import get_cache
         cache = get_cache()
         cache.clear()
-        console.print("[green]缓存已清空[/green]")
+        self._print("[green]缓存已清空[/green]")
 
     async def _show_sessions(self):
         """显示会话列表"""
@@ -353,11 +372,11 @@ class CommandHandler:
                     session = await self.agent.session_manager.get_session(sid)
                     msg_count = len(session.messages) if session else 0
                     table.add_row(sid, str(msg_count))
-                console.print(table)
+                self._print(table)
             else:
-                console.print("[yellow]暂无会话[/yellow]")
+                self._print("[yellow]暂无会话[/yellow]")
         else:
-            console.print("[yellow]Session Manager 未初始化[/yellow]")
+            self._print("[yellow]Session Manager 未初始化[/yellow]")
 
     async def _show_session(self, target_id: str):
         """显示指定会话"""
@@ -375,11 +394,11 @@ class CommandHandler:
                     if len(content) > 100:
                         content = content[:100] + "..."
                     table.add_row(str(i), role, content)
-                console.print(table)
+                self._print(table)
             else:
-                console.print(f"[yellow]会话 {target_id} 不存在[/yellow]")
+                self._print(f"[yellow]会话 {target_id} 不存在[/yellow]")
         else:
-            console.print("[yellow]Session Manager 未初始化[/yellow]")
+            self._print("[yellow]Session Manager 未初始化[/yellow]")
 
     async def _show_messages(self):
         """显示当前会话消息（含子代理消息）"""
@@ -425,7 +444,7 @@ class CommandHandler:
     def _show_usage(self):
         """显示 LLM 用量统计"""
         if not (hasattr(self.agent, 'client') and hasattr(self.agent.client, 'usage_tracker')):
-            console.print("[yellow]用量追踪未启用[/yellow]")
+            self._print("[yellow]用量追踪未启用[/yellow]")
             return
 
         tracker = self.agent.client.usage_tracker
@@ -452,7 +471,7 @@ class CommandHandler:
             if summary["total_completion_tokens"] > 0 and total_sec > 0:
                 speed = summary["total_completion_tokens"] / total_sec
                 overview.add_row("输出速度", f"{speed:,.1f} tokens/s")
-        console.print(overview)
+        self._print(overview)
 
         # ── 按模型分布 ──
         per_model = tracker.get_per_model_summary()
@@ -477,7 +496,7 @@ class CommandHandler:
                     f"¥{ms['cost']:.4f}",
                     f"{dur_sec:.1f}s",
                 )
-            console.print(model_table)
+            self._print(model_table)
 
         # ── 上下文统计 ──
         if hasattr(self.agent, 'tracer'):
@@ -491,7 +510,7 @@ class CommandHandler:
                 ctx_table.add_row("峰值", f"{ctx_stats['peak']:,}")
                 ctx_table.add_row("最终值", f"{ctx_stats['final']:,}")
                 ctx_table.add_row("平均值", f"{ctx_stats['avg']:,}")
-                console.print(ctx_table)
+                self._print(ctx_table)
 
     def _show_bg_tasks(self):
         """显示后台任务列表"""
@@ -506,8 +525,8 @@ class CommandHandler:
                 table.add_column("创建时间", style="dim")
                 for t in tasks:
                     table.add_row(t["id"], t["description"], t["status"], t["created_at"])
-                console.print(table)
+                self._print(table)
             else:
-                console.print("[dim]暂无后台任务[/dim]")
+                self._print("[dim]暂无后台任务[/dim]")
         else:
-            console.print("[yellow]任务管理器未初始化[/yellow]")
+            self._print("[yellow]任务管理器未初始化[/yellow]")
