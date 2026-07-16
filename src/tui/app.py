@@ -266,6 +266,7 @@ class TUIApp:
         self._update_token_stats()
         self.status_bar.set_idle(
             context=self._context, branch=self._branch,
+            ctx_tokens=self.state.ctx_tokens,
             tokens=self._fmt_tokens(), cost=self._fmt_cost(),
             session_id=self._session_id,
         )
@@ -298,10 +299,10 @@ class TUIApp:
         self._stop_esc_monitor()
         if result_text:
             self.display.result_text(result_text, elapsed)
-        self._update_token_stats()
+        # _update_token_stats 已在 agent_stop 钩子中调用（flush 之前）
         self.status_bar.set_idle(
             context=self._context, branch=self._branch,
-            tokens=self._fmt_tokens(), cost=self._fmt_cost(),
+            ctx_tokens=self.state.ctx_tokens, tokens=self._fmt_tokens(), cost=self._fmt_cost(),
             session_id=self._session_id,
         )
         self._set_input_locked(False)
@@ -312,7 +313,7 @@ class TUIApp:
         self.display.cancel_notice()
         self.status_bar.set_idle(
             context=self._context, branch=self._branch,
-            tokens=self._fmt_tokens(), cost=self._fmt_cost(),
+            ctx_tokens=self.state.ctx_tokens, tokens=self._fmt_tokens(), cost=self._fmt_cost(),
             session_id=self._session_id,
         )
         self._set_input_locked(False)
@@ -323,7 +324,7 @@ class TUIApp:
         self.display.error(msg)
         self.status_bar.set_idle(
             context=self._context, branch=self._branch,
-            tokens=self._fmt_tokens(), cost=self._fmt_cost(),
+            ctx_tokens=self.state.ctx_tokens, tokens=self._fmt_tokens(), cost=self._fmt_cost(),
             session_id=self._session_id,
         )
         self._set_input_locked(False)
@@ -419,13 +420,15 @@ class TUIApp:
         if not self.agent:
             return
         try:
-            u = self.agent.client.usage_tracker.get_summary() if hasattr(
-                self.agent.client, 'usage_tracker') else {}
+            tracker = getattr(self.agent.client, 'usage_tracker', None)
+            if tracker is None:
+                return
+            u = tracker.get_summary()
             self.state.total_prompt = u.get("total_prompt_tokens", 0)
             self.state.total_completion = u.get("total_completion_tokens", 0)
             self.state.total_cost = u.get("total_cost_cny", 0.0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"更新用量统计失败: {e}")
 
     def _fmt_tokens(self) -> str:
         total = self.state.total_prompt + self.state.total_completion

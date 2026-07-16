@@ -26,13 +26,14 @@ class StatusBar:
         self._tool_args = ""
 
     def set_idle(self, context: str = "", branch: str = "", tokens: str = "",
-                 cost: str = "", session_id: str = ""):
+                 cost: str = "", session_id: str = "", ctx_tokens: int = 0):
         self.mode = "idle"
         self._context = context
         self._branch = branch
         self._tokens = tokens
         self._cost = cost
         self._session_id = session_id
+        self._ctx_tokens = ctx_tokens
 
     def set_running(self, elapsed: float = 0, round_num: int = 0,
                     agent_name: str = "", stage: str = "", tool_count: int = 0,
@@ -71,14 +72,17 @@ class StatusBar:
             ctx += f' <style fg="gray">({html.escape(self._branch)})</style>'
         parts.append(f'<style fg="gray">{ctx}</style>')
         right = []
+        safe_tokens = self._tokens or "0"
+        safe_cost = self._cost or "¥0"
+        if self._ctx_tokens:
+            right.append(f'ctx {self._ctx_tokens:,}')
+        elif safe_tokens:
+            right.append(f'ctx {safe_tokens}')
         if self._session_id:
             right.append(f'session: {html.escape(self._session_id[:12])}')
-        if self._tokens:
-            right.append(f'tokens: {self._tokens}')
-        if self._cost:
-            right.append(f'cost: {html.escape(self._cost)}')
-        if right:
-            parts.append(f'<style fg="gray">|</style> {" ".join(right)}')
+        right.append(f'∑{safe_tokens}')
+        right.append(f'{html.escape(safe_cost)}')
+        parts.append(f'<style fg="gray">|</style> {" ".join(right)}')
         return HTML("  ".join(parts))
 
     def _render_running(self):
@@ -106,12 +110,11 @@ class StatusBar:
             if self._tool_args:
                 label += f" {html.escape(self._tool_args)}"
             right.append(label)
-        if self._tokens:
-            right.append(f'tokens: {self._tokens}')
-        if self._cost:
-            right.append(f'cost: {html.escape(self._cost)}')
-        if right:
-            parts.append(f'<style fg="gray">|</style> {" ".join(right)}')
+        safe_tokens = self._tokens or "0"
+        safe_cost = self._cost or "¥0"
+        right.append(f'∑{safe_tokens}')
+        right.append(f'{html.escape(safe_cost)}')
+        parts.append(f'<style fg="gray">|</style> {" ".join(right)}')
         return HTML("  ".join(parts))
 
     def _render_waiting(self):
