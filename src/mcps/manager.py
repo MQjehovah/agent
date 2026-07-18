@@ -104,7 +104,7 @@ class MCPServerConnection:
         """安全清理 ExitStack"""
         if self._exit_stack:
             try:
-                await asyncio.shield(self._exit_stack.__aexit__(None, None, None))
+                await self._exit_stack.__aexit__(None, None, None)
             except (RuntimeError, asyncio.CancelledError, BaseException) as e:
                 logger.debug(f"MCP [{self.name}] 清理异常(可忽略): {e}")
             finally:

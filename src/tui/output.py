@@ -70,12 +70,15 @@ class Display:
             return
         self._write(f"  {GREEN}✔{RESET} {DIM}{brief}{RESET}")
 
-    def subagent_result(self, name: str, status: str, preview: str = ""):
+    def subagent_result(self, name: str, status: str, result: str = ""):
         s = f"{GREEN}done{RESET}" if status == "completed" else f"{RED}{status}{RESET}"
-        line = f"  {DIM}└─ {name} [{s}]{RESET}"
-        if preview:
-            line += f"  {DIM}{preview}{RESET}"
-        self._write(line)
+        self._write(f"  {CYAN}{'━' * 10} {name} [{s}] {'━' * (53 - len(name) - 6)}{RESET}")
+        if result:
+            for line in result.strip().split("\n"):
+                if line.strip():
+                    self._write(f"  {CYAN}│{RESET} {line}")
+                else:
+                    self._write("")
 
     def user_message(self, text: str):
         if not text:

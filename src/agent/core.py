@@ -861,8 +861,8 @@ class Agent:
             self.learner.stop_daily_task()
         if self.mcp:
             try:
-                # 超时保护：避免 cleanup 因 MCP stdio 子进程关闭而长时间阻塞
-                await asyncio.wait_for(self.mcp.close(), timeout=10)
+                async with asyncio.timeout(10):
+                    await self.mcp.close()
             except asyncio.TimeoutError:
                 logger.warning(f"Agent [{self.name}] MCP close 超时(10s)，强制跳过")
             except Exception as e:
