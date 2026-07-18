@@ -551,8 +551,16 @@ class SubagentManager:
 
         # 创建新的子代理（不持锁，因为初始化耗时）
         template_data = self.templates.get(template_name)
-        workspace = template_data["workspace"] if template_data else None
-        config_dir = template_data.get("config_dir", "") if template_data else ""
+        if not template_data:
+            from agent import AgentResult
+            return AgentResult(
+                agent_id="",
+                status="failed",
+                result=f"子代理模板 '{template_name}' 未找到，请检查 agents 目录配置"
+            ), False
+
+        workspace = template_data.get("workspace") or self.parent_workspace or os.getcwd()
+        config_dir = template_data.get("config_dir", "")
 
         agent = Agent(
             workspace=workspace,
