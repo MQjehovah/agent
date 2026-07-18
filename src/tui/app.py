@@ -223,8 +223,8 @@ class TUIApp:
         agent.hooks.register(HookEvent.SUBAGENT_CHAT_EVENT, _on_subagent_chat_event)
         agent.hooks.register(HookEvent.SUBAGENT_LLM_RESPONSE, _on_subagent_llm_response)
         agent.hooks.register(HookEvent.SUBAGENT_PROGRESS, _on_subagent_progress)
-        agent.hooks.register("agent_start", _on_agent_start)
-        agent.hooks.register("agent_stop", _on_agent_stop)
+        agent.hooks.register(HookEvent.AGENT_START, _on_agent_start)
+        agent.hooks.register(HookEvent.AGENT_STOP, _on_agent_stop)
 
         self._hook_unregisters = [
             (HookEvent.TOOL_START, _on_tool_start),
@@ -235,8 +235,8 @@ class TUIApp:
             (HookEvent.SUBAGENT_TOOL_START, _on_subagent_tool_start),
             (HookEvent.SUBAGENT_TOOL_RESULT, _on_subagent_tool_result),
             (HookEvent.SUBAGENT_PROGRESS, _on_subagent_progress),
-            ("agent_start", _on_agent_start),
-            ("agent_stop", _on_agent_stop),
+            (HookEvent.AGENT_START, _on_agent_start),
+            (HookEvent.AGENT_STOP, _on_agent_stop),
         ]
 
     def setup_ask_handler(self, ask_tool):

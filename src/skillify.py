@@ -226,7 +226,7 @@ class Skillifier:
             "grep": "搜索代码",
             "glob": "查找文件",
             "edit": "修改文件",
-            "code_preview": "阅读代码",
+            "file_operation(preview)": "阅读代码",
             "web_search": "搜索网络",
             "web_fetch": "抓取网页",
             "subagent": "委派子代理",

@@ -177,6 +177,11 @@ class SubagentManager:
             "team_roles": team_roles,
             "leader_prompt": prompt_body,
             "dir_name": dir_name,
+            "tool_denylist": set(frontmatter.get("tool_denylist", [
+                "subagent", "knowledge_search", "web_search", "web_fetch",
+                "task_create", "task_list", "task_get", "task_cancel",
+                "ask_user", "memory",
+            ])),
         }
         self._team_configs[name] = config
 
@@ -320,10 +325,12 @@ class SubagentManager:
             agent.max_iterations = max_iterations
 
         # 团队子 agent 只保留必要工具，砍掉无关工具定义节省 token
-        agent.tool_denylist = {
+        team_config = self._team_configs.get(team_name, {})
+        agent.tool_denylist = team_config.get("tool_denylist", {
             "subagent", "knowledge_search", "web_search", "web_fetch",
             "task_create", "task_list", "task_get", "task_cancel",
-        }
+            "ask_user", "memory",
+        })
 
         # 注入团队共享技能（config/agents/<team>/skills/）
         team_skills_dir = os.path.join(self.base_dir, team_name, "skills")
@@ -587,6 +594,7 @@ class SubagentManager:
 
 
     async def _run_team_orchestrator(self, task: str, team_name: str,
+                                     client=None,
                                      progress_callback=None,
                                      parent_session_id: str = "") -> "AgentResult":
         """通过 TeamOrchestrator 运行团队"""
@@ -610,7 +618,7 @@ class SubagentManager:
             team_config=config,
             members=members,
             subagent_manager=self,
-            llm_client=self._client,
+            llm_client=client or self._client,
             memory_manager=getattr(self._parent_agent, "memory", None) if self._parent_agent else None,
             pipeline_mode=config.get("pipeline_mode", "feedback"),
             progress_callback=progress_callback,

@@ -412,7 +412,7 @@ class TeamOrchestrator:
         if stage in ("implementation", "fix", "bug_fix"):
             full_task += (
                 "\n\n## 铁律\n"
-                "- 用 `grep` 定位目标代码，用 `code_preview` 看关键片段，不要通读无关文件\n"
+                "- 用 `grep` 定位目标代码，用 `file_operation(preview)` 看关键片段，不要通读无关文件\n"
                 "- 读完文件后必须立即动手修改代码，禁止反复读取同一文件\n"
                 "- 每个文件最多读 2 次，第 3 次读到同一文件视为分析瘫痪，直接报错\n"
                 "- 必须使用 edit 或 file_operation(write) 工具修改源文件\n"
@@ -571,7 +571,7 @@ class TeamOrchestrator:
         if stage in ("implementation", "fix", "bug_fix"):
             full_task += (
                 "\n\n## 铁律\n"
-                "- 用 `grep` 定位目标代码，用 `code_preview` 看关键片段，不要通读无关文件\n"
+                "- 用 `grep` 定位目标代码，用 `file_operation(preview)` 看关键片段，不要通读无关文件\n"
                 "- 读完文件后必须立即动手修改代码，禁止反复读取同一文件\n"
                 "- 每个文件最多读 2 次，第 3 次读到同一文件视为分析瘫痪，直接报错\n"
                 "- 必须使用 edit 或 file_operation(write) 工具修改源文件\n"

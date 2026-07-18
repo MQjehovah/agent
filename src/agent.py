@@ -220,6 +220,11 @@ class Agent:
         self._init_subagents()
         self._init_memory()
 
+        # 将 memory_manager 注入已注册的 MemoryTool
+        memory_tool = self.tool_registry.get_tool("memory")
+        if memory_tool and self.memory:
+            memory_tool.set_memory_manager(self.memory)
+
         # 构建分层 prompt（必须在所有初始化完成后）
         self._build_prompt()
 
@@ -376,9 +381,6 @@ class Agent:
             TaskCancelTool=TaskCancelTool(task_manager),
         )
 
-        # ── v2.0: 注册新工具 ──
-        self._init_v2_tools()
-
         self._init_retrieval()
 
         self._init_code_quality()
@@ -404,27 +406,6 @@ class Agent:
         )
         self.tool_registry.register_tool(tool)
         logger.info(f"Agent [{self.name}] RAG 知识库已接入: {rag_url}")
-
-    def _init_v2_tools(self):
-        """注册 v2.0 新增工具"""
-        try:
-            from tools.code_search import CodeSearchTool
-            code_search = CodeSearchTool()
-            # 如果 ToolRegistry 有 register_tool 方法，直接注册
-            if hasattr(self.tool_registry, 'register_tool'):
-                self.tool_registry.register_tool(code_search)
-        except Exception as e:
-            logger.warning(f"注册 code_search 工具失败: {e}")
-
-        try:
-            from tools.batch_edit import BatchEditTool
-            batch_edit = BatchEditTool()
-            if hasattr(self.tool_registry, 'register_tool'):
-                self.tool_registry.register_tool(batch_edit)
-        except Exception as e:
-            logger.warning(f"注册 batch_edit 工具失败: {e}")
-
-        logger.debug(f"Agent [{self.name}] v2.0 工具已注册")
 
     def _init_code_quality(self):
         """初始化代码质量相关模块"""
@@ -961,7 +942,7 @@ class Agent:
 
         self.tracer.start_trace(f"agent.run: {task[:50]}")
 
-        await self.hooks.fire("agent_start", metadata={"task": task})
+        await self.hooks.fire(self._hook_event.AGENT_START, metadata={"task": task})
 
         from agent_session import AgentSession, AgentSessionManager
         session = None
@@ -1168,7 +1149,7 @@ class Agent:
             bg_task.add_done_callback(self._background_tasks.discard)
 
         # 触发 AGENT_STOP 钩子
-        await self.hooks.fire("agent_stop", metadata={
+        await self.hooks.fire(self._hook_event.AGENT_STOP, metadata={
             "status": ctx.status,
             "result_length": len(ctx.result) if ctx.result else 0,
         })
@@ -1308,7 +1289,7 @@ class Agent:
             return sandbox_result
 
         # PreToolUse 钩子
-        await self.hooks.fire("pre_tool_use", tool_name=name, arguments=args)
+        await self.hooks.fire(self._hook_event.PRE_TOOL_USE, tool_name=name, arguments=args)
 
         # 插件 on_pre_tool_call 拦截
         if self.plugin_manager:
@@ -1644,6 +1625,7 @@ class Agent:
 
                 result = await self.subagent_manager._run_team_orchestrator(
                     task, template_name,
+                    client=self.client,
                     progress_callback=_team_progress,
                     parent_session_id=args.get("session_id", ""))
             else:

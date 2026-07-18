@@ -1,12 +1,17 @@
 """
-结构化代码搜索工具 — 增强版 grep/code_preview
+结构化代码搜索工具 — 多语言 AST 搜索
 
 支持:
-- 查找函数/类定义（基于 AST）
+- 查找函数/类定义（基于 Tree-sitter AST）
 - 查找调用方
 - 查找引用
-- 依赖关系追踪
 - 跨文件分析
+
+支持语言:
+  Python (.py), JavaScript (.js,.jsx), TypeScript (.ts,.tsx),
+  Go (.go), Rust (.rs), Java (.java), Kotlin (.kt),
+  C (.c,.h), C++ (.cpp,.hpp), C# (.cs),
+  Ruby (.rb), PHP (.php), Swift (.swift), Scala (.scala)
 
 用法:
     # 查找定义
@@ -18,20 +23,176 @@
     # 全面分析
     code_search(query="get_user", target="all")
 """
-import ast
 import json
 import logging
 import os
 import re
 import subprocess
-from pathlib import Path
-from typing import Any
+
+from tools import BuiltinTool
 
 logger = logging.getLogger("agent.tools.code_search")
 
+# ── Tree-sitter 初始化（延迟加载） ─────────────────────
 
-class CodeSearchTool:
-    """结构化代码搜索"""
+_ts_available = False
+_ts_dll_path = None
+
+
+def _init_tree_sitter():
+    global _ts_available, _ts_dll_path
+    if _ts_available:
+        return True
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            import tree_sitter_languages
+        _ts_dll_path = os.path.join(
+            os.path.dirname(tree_sitter_languages.__file__), "languages.dll"
+        )
+        if os.path.exists(_ts_dll_path):
+            _ts_available = True
+            return True
+    except Exception as e:
+        logger.debug(f"tree-sitter 不可用: {e}")
+    return False
+
+
+def _get_ts_language(ext: str):
+    """获取 Tree-sitter Language 对象，失败返回 None"""
+    lang_name = LANGUAGE_MAP.get(ext)
+    if not lang_name or not _init_tree_sitter():
+        return None
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            from tree_sitter import Language
+            return Language(_ts_dll_path, lang_name)
+    except Exception as e:
+        logger.debug(f"加载 tree-sitter 语言 [{lang_name}] 失败: {e}")
+        return None
+
+
+def _get_ts_parser(ext: str):
+    """获取 Tree-sitter Parser 对象，失败返回 None"""
+    lang = _get_ts_language(ext)
+    if not lang:
+        return None
+    try:
+        from tree_sitter import Parser
+        parser = Parser()
+        parser.set_language(lang)
+        return parser
+    except Exception as e:
+        logger.debug(f"创建 tree-sitter parser 失败: {e}")
+        return None
+
+
+# ── 语言映射 ────────────────────────────────────────
+
+LANGUAGE_MAP = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".rb": "ruby",
+    ".php": "php",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".hpp": "cpp",
+    ".cs": "c_sharp",
+    ".swift": "swift",
+    ".scala": "scala",
+}
+
+# ── 语言特定的 AST 查询表达式（Tree-sitter S-expressions） ──
+
+# 每个语言定义多组查询：
+#   name: 返回的名称字段
+#   kind: 结果类型标签
+#   query: S-expression 字符串
+
+LANGUAGE_QUERIES = {
+    "python": [
+        {"name": "function_def", "query": "(function_definition name: (identifier) @name)", "kind": "function"},
+        {"name": "async_function_def", "query": "(async_function_definition name: (identifier) @name)", "kind": "async_function"},
+        {"name": "class_def", "query": "(class_definition name: (identifier) @name)", "kind": "class"},
+        {"name": "decorated_function", "query": "(decorated_definition (function_definition name: (identifier) @name))", "kind": "function"},
+        {"name": "call", "query": "(call function: (identifier) @caller)", "kind": "call"},
+    ],
+    "javascript": [
+        {"name": "function_decl", "query": "(function_declaration name: (identifier) @name)", "kind": "function"},
+        {"name": "arrow_function", "query": "(arrow_function name: (identifier) @name)", "kind": "function"},
+        {"name": "class_decl", "query": "(class_declaration name: (identifier) @name)", "kind": "class"},
+        {"name": "method_def", "query": "(method_definition name: (property_identifier) @name)", "kind": "method"},
+        {"name": "call", "query": "(call_expression function: (identifier) @caller)", "kind": "call"},
+        {"name": "export_func", "query": "(export_statement (function_declaration name: (identifier) @name))", "kind": "function"},
+    ],
+    "typescript": [
+        {"name": "function_decl", "query": "(function_declaration name: (identifier) @name)", "kind": "function"},
+        {"name": "arrow_function", "query": "(arrow_function name: (identifier) @name)", "kind": "function"},
+        {"name": "class_decl", "query": "(class_declaration name: (type_identifier) @name)", "kind": "class"},
+        {"name": "method_def", "query": "(method_definition name: (property_identifier) @name)", "kind": "method"},
+        {"name": "interface_decl", "query": "(interface_declaration name: (type_identifier) @name)", "kind": "interface"},
+        {"name": "call", "query": "(call_expression function: (identifier) @caller)", "kind": "call"},
+    ],
+    "go": [
+        {"name": "func_decl", "query": "(function_declaration name: (identifier) @name)", "kind": "function"},
+        {"name": "method_decl", "query": "(method_declaration name: (field_identifier) @name)", "kind": "method"},
+        {"name": "type_struct", "query": "(type_declaration (type_spec name: (type_identifier) @name))", "kind": "struct"},
+        {"name": "type_interface", "query": "(type_declaration (type_spec name: (type_identifier) @name (interface_type)))", "kind": "interface"},
+        {"name": "call", "query": "(call_expression function: (identifier) @caller)", "kind": "call"},
+    ],
+    "rust": [
+        {"name": "fn_item", "query": "(function_item name: (identifier) @name)", "kind": "function"},
+        {"name": "struct_item", "query": "(struct_item name: (type_identifier) @name)", "kind": "struct"},
+        {"name": "impl_item", "query": "(impl_item trait: (type_identifier) @name)", "kind": "impl"},
+        {"name": "trait_item", "query": "(trait_item name: (type_identifier) @name)", "kind": "trait"},
+        {"name": "enum_item", "query": "(enum_item name: (type_identifier) @name)", "kind": "enum"},
+        {"name": "call", "query": "(call_expression function: (identifier) @caller)", "kind": "call"},
+    ],
+    "java": [
+        {"name": "method_decl", "query": "(method_declaration name: (identifier) @name)", "kind": "method"},
+        {"name": "class_decl", "query": "(class_declaration name: (identifier) @name)", "kind": "class"},
+        {"name": "interface_decl", "query": "(interface_declaration name: (identifier) @name)", "kind": "interface"},
+        {"name": "call", "query": "(method_invocation name: (identifier) @caller)", "kind": "call"},
+    ],
+    "kotlin": [
+        {"name": "function", "query": "(function_declaration name: (simple_identifier) @name)", "kind": "function"},
+        {"name": "class", "query": "(class_declaration name: (simple_identifier) @name)", "kind": "class"},
+    ],
+    "ruby": [
+        {"name": "method", "query": "(method name: (identifier) @name)", "kind": "method"},
+        {"name": "class", "query": "(class name: (constant) @name)", "kind": "class"},
+        {"name": "call", "query": "(call method: (identifier) @caller)", "kind": "call"},
+    ],
+    "php": [
+        {"name": "function", "query": "(function_definition name: (name) @name)", "kind": "function"},
+        {"name": "class", "query": "(class_declaration name: (name) @name)", "kind": "class"},
+        {"name": "method", "query": "(method_declaration name: (name) @name)", "kind": "method"},
+    ],
+    "c": [
+        {"name": "function", "query": "(function_definition declarator: (function_declarator declarator: (identifier) @name))", "kind": "function"},
+        {"name": "call", "query": "(call_expression function: (identifier) @caller)", "kind": "call"},
+    ],
+    "cpp": [
+        {"name": "function", "query": "(function_definition declarator: (function_declarator declarator: (identifier) @name))", "kind": "function"},
+        {"name": "class", "query": "(class_specifier name: (type_identifier) @name)", "kind": "class"},
+        {"name": "call", "query": "(call_expression function: (identifier) @caller)", "kind": "call"},
+    ],
+}
+
+
+class CodeSearchTool(BuiltinTool):
+    """结构化代码搜索（多语言 AST）"""
 
     @property
     def name(self) -> str:
@@ -39,8 +200,12 @@ class CodeSearchTool:
 
     @property
     def description(self) -> str:
-        return """结构化代码搜索工具。支持查找函数/类定义、调用方、引用、依赖分析。
-比普通 grep 更智能：能理解代码结构，区分定义和调用，追踪跨文件依赖。
+        return """结构化代码搜索工具（基于 Tree-sitter AST）。能理解代码结构，区分定义和调用。
+
+【和 grep 的区别】
+- code_search: 基于 AST 的结构化搜索，支持 Python/JS/TS/Go/Rust/Java 等主流语言，
+  能精确识别函数定义、类定义、方法、调用方
+- grep: 基于正则表达式的全文搜索，**支持所有文件类型**
 
 用法:
 - 查找定义: {"query": "get_user", "target": "definition"}
@@ -70,8 +235,8 @@ class CodeSearchTool:
                 },
                 "symbol_type": {
                     "type": "string",
-                    "enum": ["function", "class", "variable", "all"],
-                    "description": "符号类型过滤（可选）"
+                    "enum": ["function", "class", "method", "variable", "all"],
+                    "description": "符号类型过滤（可选，仅 AST 支持的语言有效）"
                 },
                 "workspace": {
                     "type": "string",
@@ -100,7 +265,7 @@ class CodeSearchTool:
         }
 
         if target in ("definition", "all"):
-            defs = await self._find_definitions(query, workspace, file_path, symbol_type)
+            defs = self._find_definitions(query, workspace, file_path, symbol_type)
             if defs:
                 result["definitions"] = defs
 
@@ -117,37 +282,130 @@ class CodeSearchTool:
         result["success"] = True
         return json.dumps(result, ensure_ascii=False, indent=2)
 
-    async def _find_definitions(self, query: str, workspace: str,
-                                 file_path: str = "", symbol_type: str = "all") -> list[dict]:
-        """查找定义（使用 AST）"""
+    # ── Tree-sitter AST 解析 ─────────────────────────
+
+    def _parse_with_ts(self, file_path: str) -> tuple | None:
+        """用 Tree-sitter 解析文件，返回 (tree, lang_obj, ext, code) 或 None"""
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext not in LANGUAGE_MAP:
+            return None
+        lang = _get_ts_language(ext)
+        if not lang:
+            return None
+        parser = _get_ts_parser(ext)
+        if not parser:
+            return None
+        try:
+            with open(file_path, encoding="utf-8", errors="replace") as f:
+                code = f.read()
+            tree = parser.parse(bytes(code, "utf-8"))
+            return tree, lang, ext, code
+        except Exception as e:
+            logger.debug(f"Tree-sitter 解析失败 {file_path}: {e}")
+            return None
+
+    def _ts_find_definitions(self, query: str, file_path: str,
+                              symbol_type: str, lang, tree, code: str) -> list[dict]:
+        """在 Tree-sitter AST 中查找定义"""
+        ext = os.path.splitext(file_path)[1].lower()
+        lang_name = LANGUAGE_MAP.get(ext)
+        queries = LANGUAGE_QUERIES.get(lang_name, [])
+        if not queries:
+            return []
+
+        results = []
+        root = tree.root_node
+        def_queries = [q for q in queries if q["kind"] != "call"]
+
+        for qdef in def_queries:
+            if symbol_type != "all" and qdef["kind"] != symbol_type:
+                continue
+            try:
+                q = lang.query(qdef["query"])
+                for node, cap_name in q.captures(root):
+                    name = node.text.decode("utf-8") if node.text else ""
+                    if name == query:
+                        start_row, start_col = node.start_point
+                        results.append({
+                            "kind": qdef["kind"],
+                            "name": name,
+                            "file": file_path,
+                            "line": start_row + 1,
+                            "column": start_col,
+                        })
+            except Exception as e:
+                logger.debug(f"Tree-sitter 查询 [{qdef['name']}] 失败: {e}")
+
+        return results
+
+    def _ts_find_callers(self, query: str, file_path: str,
+                          lang, tree, code: str) -> list[dict]:
+        """在 Tree-sitter AST 中查找调用方"""
+        ext = os.path.splitext(file_path)[1].lower()
+        lang_name = LANGUAGE_MAP.get(ext)
+        queries = LANGUAGE_QUERIES.get(lang_name, [])
+        if not queries:
+            return []
+
+        results = []
+        root = tree.root_node
+        lines = code.split("\n")
+        call_queries = [q for q in queries if q["kind"] == "call"]
+
+        for qdef in call_queries:
+            try:
+                q = lang.query(qdef["query"])
+                for node, cap_name in q.captures(root):
+                    name = node.text.decode("utf-8") if node.text else ""
+                    if name == query:
+                        start_row, start_col = node.start_point
+                        line_text = lines[start_row] if start_row < len(lines) else ""
+                        results.append({
+                            "file": file_path,
+                            "line": start_row + 1,
+                            "code": line_text.strip()[:200],
+                        })
+            except Exception as e:
+                logger.debug(f"Tree-sitter 调用方查询失败: {e}")
+
+        return results
+
+    # ── 主查找方法 ───────────────────────────────────
+
+    def _find_definitions(self, query: str, workspace: str,
+                           file_path: str = "", symbol_type: str = "all") -> list[dict]:
+        """查找定义：优先使用 Tree-sitter，回退到 grep"""
         definitions = []
 
-        # 优先用 ripgrep 找到可能包含定义的 Python 文件
-        files = self._grep_files(rf"(class |def |async def ){re.escape(query)}", workspace, file_path)
+        # 确定搜索范围
+        files = self._grep_files_for_def(query, workspace, file_path)
+        if not files:
+            return definitions
 
-        for file in files[:10]:  # 最多查 10 个文件
+        for file in files[:10]:
             full_path = file if os.path.isabs(file) else os.path.join(workspace, file)
             if not os.path.isfile(full_path):
                 continue
 
-            # 使用 AST 解析
-            try:
-                tree = self._parse_ast(full_path)
-                if tree:
-                    definitions.extend(self._find_in_ast(tree, query, file, symbol_type, full_path))
-            except Exception as e:
-                logger.debug(f"AST 解析失败 {file}: {e}")
-                # 回退到行级 grep
-                defs = self._grep_definitions_fallback(query, file, full_path, symbol_type)
-                definitions.extend(defs)
+            # 尝试 Tree-sitter AST 解析
+            ts_result = self._parse_with_ts(full_path)
+            if ts_result:
+                tree, lang, ext, code = ts_result
+                defs = self._ts_find_definitions(query, full_path, symbol_type, lang, tree, code)
+                if defs:
+                    definitions.extend(defs)
+                    continue
+
+            # 回退：行级 grep
+            ext = os.path.splitext(full_path)[1].lower()
+            defs = self._grep_definitions_fallback(query, file, full_path, symbol_type, ext)
+            definitions.extend(defs)
 
         return definitions
 
     async def _find_callers(self, query: str, workspace: str, file_path: str = "") -> list[dict]:
-        """查找调用方"""
+        """查找调用方：优先 Tree-sitter，回退到 grep"""
         callers = []
-
-        # 搜索所有引用位置
         files = self._grep_files(re.escape(query), workspace, file_path)
 
         for file in files[:15]:
@@ -155,32 +413,33 @@ class CodeSearchTool:
             if not os.path.isfile(full_path):
                 continue
 
+            # 尝试 Tree-sitter
+            ts_result = self._parse_with_ts(full_path)
+            if ts_result:
+                tree, lang, ext, code = ts_result
+                ts_callers = self._ts_find_callers(query, full_path, lang, tree, code)
+                if ts_callers:
+                    callers.extend(ts_callers)
+                    continue
+
+            # 回退：grep 行级匹配
             lines = self._get_matching_lines(full_path, query)
             for line_no, line_text in lines:
-                # 跳过定义行自身
-                if re.match(rf"\s*(class |def |async def ){re.escape(query)}", line_text):
+                if re.match(rf"\s*(class |def |async def |function |func |fn ){re.escape(query)}", line_text):
                     continue
-                # 跳过 import 行
-                if re.match(rf"\s*(import |from .+ import )", line_text):
-                    continue
-
-                # 尝试确定当前所属的函数/类上下文
-                context = self._get_surrounding_context(full_path, line_no)
-
                 callers.append({
                     "file": file,
                     "line": line_no,
                     "code": line_text.strip()[:200],
-                    "context": context,
                 })
 
         return callers
 
     async def _find_references(self, query: str, workspace: str, file_path: str = "") -> list[dict]:
-        """查找所有引用（包括定义、调用、导入）"""
+        """查找所有引用（基于 grep，因为引用范围最广）"""
         refs = []
-
         files = self._grep_files(re.escape(query), workspace, file_path)
+
         for file in files[:20]:
             full_path = file if os.path.isabs(file) else os.path.join(workspace, file)
             if not os.path.isfile(full_path):
@@ -188,7 +447,7 @@ class CodeSearchTool:
 
             lines = self._get_matching_lines(full_path, query)
             for line_no, line_text in lines:
-                kind = self._classify_reference(line_text, query, file)
+                kind = self._classify_reference(line_text, query)
                 refs.append({
                     "file": file,
                     "line": line_no,
@@ -198,64 +457,17 @@ class CodeSearchTool:
 
         return refs
 
-    # ── AST 解析 ───────────────────────────────────────
-
-    @staticmethod
-    def _parse_ast(file_path: str):
-        """解析 Python 文件为 AST"""
-        try:
-            with open(file_path, encoding="utf-8", errors="replace") as f:
-                return ast.parse(f.read(), filename=file_path)
-        except SyntaxError:
-            return None
-
-    def _find_in_ast(self, tree, query: str, file_path: str,
-                      symbol_type: str, full_path: str) -> list[dict]:
-        """在 AST 中查找符号定义"""
-        results = []
-
-        for node in ast.walk(tree):
-            # 类定义
-            if isinstance(node, ast.ClassDef) and node.name == query:
-                if symbol_type in ("class", "all"):
-                    # 获取基类
-                    bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
-                    # 获取方法列表
-                    methods = [n.name for n in node.body
-                              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-                    results.append({
-                        "kind": "class",
-                        "name": node.name,
-                        "file": file_path,
-                        "line": node.lineno,
-                        "bases": bases,
-                        "methods": methods[:10],
-                        "docstring": ast.get_docstring(node) or "",
-                    })
-
-            # 函数定义
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == query:
-                if symbol_type in ("function", "all"):
-                    # 获取参数列表
-                    args = [a.arg for a in node.args.args]
-                    # 获取返回值标注
-                    returns = None
-                    if node.returns:
-                        returns = ast.dump(node.returns)[:50]
-
-                    results.append({
-                        "kind": "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function",
-                        "name": node.name,
-                        "file": file_path,
-                        "line": node.lineno,
-                        "args": args,
-                        "returns": returns,
-                        "docstring": ast.get_docstring(node) or "",
-                    })
-
-        return results
-
     # ── grep 辅助 ─────────────────────────────────────
+
+    def _grep_files_for_def(self, query: str, workspace: str, file_path: str = "") -> list[str]:
+        """搜索可能包含定义的文件（多语言关键词）"""
+        # 用 OR 模式匹配各种语言的定义关键字
+        def_keywords = (
+            r"(class |def |async def |function |func |fn |"
+            r"interface |struct |trait |enum |impl )"
+        )
+        pattern = def_keywords + re.escape(query)
+        return self._grep_files(pattern, workspace, file_path)
 
     def _grep_files(self, pattern: str, workspace: str, file_path: str = "") -> list[str]:
         """grep 搜索包含匹配的文件"""
@@ -264,22 +476,40 @@ class CodeSearchTool:
             return []
 
         try:
-            cmd = ["grep", "-rl", "--include=*.py", "--include=*.ts", "--include=*.js",
-                   "--include=*.rs", "--include=*.java", "--include=*.go",
-                   "--include=*.md", ".", "-e", pattern]
-            # 排除 .git 等目录
+            include_exts = [
+                "--include=*.py", "--include=*.ts", "--include=*.tsx",
+                "--include=*.js", "--include=*.jsx",
+                "--include=*.rs", "--include=*.java", "--include=*.go",
+                "--include=*.kt", "--include=*.rb", "--include=*.php",
+                "--include=*.c", "--include=*.h", "--include=*.cpp", "--include=*.hpp",
+                "--include=*.cs", "--include=*.swift", "--include=*.scala",
+                "--include=*.md",
+            ]
+            exclude_dirs = [
+                "--exclude-dir=.git", "--exclude-dir=node_modules",
+                "--exclude-dir=.venv", "--exclude-dir=__pycache__",
+                "--exclude-dir=target", "--exclude-dir=build",
+                "--exclude-dir=dist", "--exclude-dir=vendor",
+            ]
+            # 选项+模式必须放在路径之前（某些 grep 版本对顺序敏感）
+            cmd = (["grep", "-r", "-l", "-E", pattern] + exclude_dirs
+                   + include_exts + ["."])
             if os.path.isdir(search_path):
                 result = subprocess.run(
-                    cmd + ["--exclude-dir=.git", "--exclude-dir=node_modules",
-                           "--exclude-dir=.venv", "--exclude-dir=__pycache__"],
-                    cwd=search_path, capture_output=True, text=True, timeout=15,
+                    cmd, cwd=search_path, capture_output=True, text=True, timeout=15,
                 )
             else:
-                # 单个文件直接返回
                 return [search_path]
 
-            files = [f for f in result.stdout.strip().split("\n") if f]
-            # 过滤 .agentignore
+            files = []
+            for f in result.stdout.strip().split("\n"):
+                f = f.strip()
+                if not f:
+                    continue
+                # 去掉 grep 返回的 ./ 前缀
+                if f.startswith("./"):
+                    f = f[2:]
+                files.append(f)
             try:
                 from agent_ignore import AgentIgnore
                 ai = AgentIgnore(workspace)
@@ -315,29 +545,11 @@ class CodeSearchTool:
             return []
 
     @staticmethod
-    def _get_surrounding_context(file_path: str, line_no: int, window: int = 3) -> str:
-        """获取指定行周围的上下文（用于确定所属函数）"""
-        try:
-            with open(file_path, encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-            start = max(0, line_no - window - 1)
-            # 向前扫描找最近的函数/类定义
-            context = ""
-            for i in range(line_no - 2, -1, -1):
-                line = lines[i].strip()
-                if re.match(r"^(class |def |async def )", line):
-                    context = f"在 {line}" + (f" (第{i+1}行)" if i != line_no - 1 else "")
-                    break
-            return context
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _classify_reference(line_text: str, query: str, file_path: str) -> str:
+    def _classify_reference(line_text: str, query: str) -> str:
         """分类引用的类型"""
         if re.match(rf"\s*(class ){re.escape(query)}", line_text):
             return "definition:class"
-        if re.match(rf"\s*(def |async def ){re.escape(query)}", line_text):
+        if re.match(rf"\s*(def |async def |function |func |fn ){re.escape(query)}", line_text):
             return "definition:function"
         if re.match(rf"\s*(import {re.escape(query)}|from .+ import .*{re.escape(query)})", line_text):
             return "import"
@@ -348,29 +560,33 @@ class CodeSearchTool:
         return "unknown"
 
     def _grep_definitions_fallback(self, query: str, file_path: str,
-                                     full_path: str, symbol_type: str) -> list[dict]:
-        """AST 解析失败时的回退方案：行级 grep 找定义"""
+                                    full_path: str, symbol_type: str,
+                                    ext: str) -> list[dict]:
+        """行级 grep 回退方案：支持多语言定义关键词"""
         results = []
+        # 按语言匹配对应的定义关键字
+        def_patterns = {
+            ".py": [("class", r"class\s+(\w+)"), ("function", r"(?:async )?def\s+(\w+)")],
+            ".js": [("class", r"class\s+(\w+)"), ("function", r"(?:function|const)\s+(\w+)")],
+            ".jsx": [("class", r"class\s+(\w+)"), ("function", r"(?:function|const)\s+(\w+)")],
+            ".ts": [("class", r"class\s+(\w+)"), ("function", r"(?:function|const)\s+(\w+)")],
+            ".tsx": [("class", r"class\s+(\w+)"), ("function", r"(?:function|const)\s+(\w+)")],
+            ".rs": [("struct", r"struct\s+(\w+)"), ("function", r"fn\s+(\w+)")],
+            ".go": [("struct", r"type\s+(\w+)\s+struct"), ("function", r"func\s+(?:\([^)]+\)\s*)?(\w+)")],
+            ".java": [("class", r"class\s+(\w+)"), ("method", r"(?:public|private|protected).*?(\w+)\s*\(")],
+        }
+        patterns = def_patterns.get(ext, [("function", r"(\w+)\s*\(")])
         try:
             with open(full_path, encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
             for i, line in enumerate(lines, 1):
-                # 匹配 class/def 定义行
-                if symbol_type in ("class", "all"):
-                    m = re.match(rf"\s*class ({re.escape(query)})\s*[\(:]", line)
-                    if m:
+                for kind, pat in patterns:
+                    if symbol_type not in ("all", kind):
+                        continue
+                    m = re.search(pat, line)
+                    if m and m.group(1) == query:
                         results.append({
-                            "kind": "class",
-                            "name": m.group(1),
-                            "file": file_path,
-                            "line": i,
-                            "code": line.strip()[:200],
-                        })
-                if symbol_type in ("function", "all"):
-                    m = re.match(rf"\s*(?:async )?def ({re.escape(query)})\s*\(", line)
-                    if m:
-                        results.append({
-                            "kind": "function",
+                            "kind": kind,
                             "name": m.group(1),
                             "file": file_path,
                             "line": i,

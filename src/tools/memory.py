@@ -29,8 +29,8 @@ class MemoryTool(BuiltinTool):
                 },
                 "category": {
                     "type": "string",
-                    "enum": ["preference", "key_info", "todo", "knowledge", "failure_lesson", "correction", "reflection"],
-                    "description": "记忆分类（action=save时使用）"
+                    "enum": ["preference", "key_info", "knowledge", "failure_lesson", "correction", "reflection"],
+                    "description": "记忆分类（action=save时使用）。注意：待办事项请使用独立的 todowrite 工具"
                 },
                 "query": {
                     "type": "string",
@@ -78,8 +78,6 @@ class MemoryTool(BuiltinTool):
             self.memory_manager.add_preference(user_id, content)
         elif category == "key_info":
             self.memory_manager.add_key_info(user_id, content)
-        elif category == "todo":
-            self.memory_manager.add_todo(user_id, content)
         elif category == "knowledge":
             self.memory_manager.add_key_info(user_id, f"[知识] {content}")
         elif category == "failure_lesson":

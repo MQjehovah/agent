@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 
 from . import BuiltinTool
 
@@ -10,6 +11,14 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 DEFAULT_READ_LIMIT = 200
 MAX_READ_LIMIT = 2000
 MAX_OUTPUT_CHARS = 50000
+MAX_PREVIEW_LINES = 50
+
+# 支持结构分析的文件类型
+PREVIEW_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".vue",
+                      ".java", ".go", ".rs", ".c", ".cpp", ".h",
+                      ".rb", ".php", ".swift", ".kt", ".scala",
+                      ".lua", ".sh", ".css", ".scss", ".html",
+                      ".md", ".json", ".yaml", ".yml", ".toml"}
 
 
 class FileTool(BuiltinTool):
@@ -20,12 +29,13 @@ class FileTool(BuiltinTool):
     @property
     def description(self) -> str:
         return (
-            "文件操作工具。**每次调用必须指定 operation 参数**，可选值: read, write, append, delete, exists, list。\n"
+            "通用文件操作工具。**每次调用必须指定 operation 参数**，可选值: read, write, append, delete, exists, list, preview。\n"
             "\n"
             "【必填参数】operation 和 path 是必填的，每次调用都必须提供，不可省略。\n"
             "\n"
             "【操作说明】\n"
-            "- operation=read: 读取文件，默认200行，可搭配 offset(起始行号) 和 limit(行数) 分段读取\n"
+            "- operation=read: 读取文件内容，默认200行，可搭配 offset(起始行号) 和 limit(行数) 分段读取\n"
+            "- operation=preview: 分析代码文件结构，返回函数/类/导入列表（仅限常用编程语言），适合读取大文件前先了解结构\n"
             "- operation=write: 覆盖写入文件，需提供 content 参数\n"
             "- operation=append: 追加内容到文件末尾，需提供 content 参数\n"
             "- operation=delete: 删除文件或目录\n"
@@ -33,7 +43,7 @@ class FileTool(BuiltinTool):
             "- operation=list: 列出目录下的文件和子目录\n"
             "\n"
             "【使用建议】\n"
-            "- 大文件先用 grep 找到目标行号，再用 offset+limit 精确读取\n"
+            "- 大文件先用 operation=preview 了解结构，再用 operation=read + offset/limit 精确读取\n"
             "- 交付物（代码/单元测试/报告等最终文件）写入工作目录；过程/临时文件（草稿、中间结果、临时验证脚本）写入环境上下文里的「临时文件目录」，不要污染工作目录\n"
             "- 多个文件并行读取时，每个 limit 控制在 50-100 行\n"
             "- 修改文件前先 read 确认内容\n"
@@ -56,8 +66,8 @@ class FileTool(BuiltinTool):
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["read", "write", "append", "delete", "exists", "list"],
-                    "description": "操作类型: read-读取文件, write-写入文件(覆盖), append-追加内容, delete-删除文件, exists-检查文件是否存在, list-列出目录内容"
+                    "enum": ["read", "write", "append", "delete", "exists", "list", "preview"],
+                    "description": "操作类型: read-读取文件, write-写入文件(覆盖), append-追加内容, delete-删除文件, exists-检查文件是否存在, list-列出目录内容, preview-分析文件结构(函数/类/导入)"
                 },
                 "path": {
                     "type": "string",
@@ -81,13 +91,24 @@ class FileTool(BuiltinTool):
                     "type": "integer",
                     "description": f"读取的行数，默认{DEFAULT_READ_LIMIT}行，最大{MAX_READ_LIMIT}行",
                     "default": DEFAULT_READ_LIMIT
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["structure", "search"],
+                    "default": "structure",
+                    "description": "预览模式（仅 operation=preview 时使用）: structure-分析文件结构, search-搜索函数/类名"
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "搜索模式（仅 operation=preview + mode=search 时使用）: 要搜索的函数名或类名"
                 }
             },
             "required": ["operation", "path"]
         }
 
     async def execute(self, operation: str, path: str, content: str = None,
-                      encoding: str = "utf-8", offset: int = 0, limit: int = DEFAULT_READ_LIMIT) -> str:
+                      encoding: str = "utf-8", offset: int = 0, limit: int = DEFAULT_READ_LIMIT,
+                      mode: str = "structure", pattern: str = None) -> str:
         try:
             path = self.resolve_path(path)
 
@@ -99,6 +120,8 @@ class FileTool(BuiltinTool):
 
             if operation == "read":
                 return self._read_file(path, encoding, offset, limit)
+            elif operation == "preview":
+                return self._preview_file(path, mode, pattern)
             elif operation == "write":
                 return self._write_file(path, content, encoding)
             elif operation == "append":
@@ -254,4 +277,108 @@ class FileTool(BuiltinTool):
             "path": path,
             "count": len(items),
             "items": items
+        }, ensure_ascii=False)
+
+    # ── 文件结构预览（原 code_preview 工具的功能） ─────────
+
+    def _preview_file(self, path: str, mode: str = "structure", pattern: str = None) -> str:
+        if not os.path.exists(path):
+            return json.dumps({"success": False, "error": f"文件不存在: {path}"}, ensure_ascii=False)
+        if os.path.isdir(path):
+            return json.dumps({"success": False, "error": f"路径是目录: {path}"}, ensure_ascii=False)
+
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in PREVIEW_EXTENSIONS:
+            return json.dumps({"success": False, "error": f"不支持 preview 的文件类型: {ext}"}, ensure_ascii=False)
+
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        if mode == "search":
+            return self._preview_search(path, lines, pattern, ext)
+        return self._preview_structure(path, lines, ext)
+
+    def _preview_structure(self, path: str, lines: list, ext: str) -> str:
+        structure = {"imports": [], "classes": [], "functions": []}
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+
+            if ext == ".py":
+                if stripped.startswith(("import ", "from ")):
+                    structure["imports"].append({"line": i + 1, "content": stripped[:80]})
+                elif re.match(r"^class\s+\w+", stripped):
+                    m = re.match(r"^class\s+(\w+)", stripped)
+                    structure["classes"].append({"line": i + 1, "name": m.group(1), "content": stripped[:80]})
+                elif re.match(r"^def\s+\w+", stripped) and not stripped.startswith("def _"):
+                    m = re.match(r"^def\s+(\w+)", stripped)
+                    structure["functions"].append({"line": i + 1, "name": m.group(1), "content": stripped[:80]})
+
+            elif ext in (".js", ".ts", ".tsx", ".jsx", ".vue"):
+                if stripped.startswith(("import ", "require(")):
+                    structure["imports"].append({"line": i + 1, "content": stripped[:80]})
+                elif re.match(r"^class\s+\w+", stripped):
+                    m = re.match(r"^class\s+(\w+)", stripped)
+                    structure["classes"].append({"line": i + 1, "name": m.group(1), "content": stripped[:80]})
+                elif re.match(r"^(?:export\s+)?(?:function|const|class)\s+\w+", stripped):
+                    m = re.search(r"(?:function|const|class)\s+(\w+)", stripped)
+                    structure["functions"].append({"line": i + 1, "name": m.group(1) if m else "?", "content": stripped[:80]})
+
+            elif ext in (".java", ".kt", ".scala"):
+                if stripped.startswith("import "):
+                    structure["imports"].append({"line": i + 1, "content": stripped[:80]})
+                if re.search(r"class\s+(\w+)", stripped):
+                    m = re.search(r"class\s+(\w+)", stripped)
+                    structure["classes"].append({"line": i + 1, "name": m.group(1), "content": stripped[:80]})
+
+            elif ext == ".go":
+                if stripped.startswith(("import ", "import (")):
+                    structure["imports"].append({"line": i + 1, "content": stripped[:80]})
+                elif re.match(r"^type\s+\w+\s+struct", stripped):
+                    m = re.match(r"^type\s+(\w+)", stripped)
+                    structure["classes"].append({"line": i + 1, "name": m.group(1), "content": stripped[:80]})
+                elif re.match(r"^func\s+", stripped):
+                    m = re.match(r"^func\s+(?:\([^)]+\)\s*)?(\w+)", stripped)
+                    structure["functions"].append({"line": i + 1, "name": m.group(1), "content": stripped[:80]})
+
+        summary = f"文件 {path} ({len(lines)} 行)\n"
+        if structure["imports"]:
+            summary += f"导入 ({len(structure['imports'])}个): {', '.join(i['content'][:30] for i in structure['imports'][:5])}\n"
+        if structure["classes"]:
+            summary += f"类 ({len(structure['classes'])}个): {', '.join(c['name'] for c in structure['classes'])}\n"
+        if structure["functions"]:
+            summary += f"函数 ({len(structure['functions'])}个): {', '.join(f['name'] for f in structure['functions'][:10])}\n"
+
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "total_lines": len(lines),
+            "structure": structure,
+            "summary": summary,
+            "hint": "使用 operation=read + offset/limit 读取特定代码段"
+        }, ensure_ascii=False)
+
+    def _preview_search(self, path: str, lines: list, pattern: str, ext: str) -> str:
+        if not pattern:
+            return json.dumps({"success": False, "error": "search 模式需要 pattern 参数"}, ensure_ascii=False)
+
+        regex = None
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            pass
+
+        matches = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if pattern.lower() in stripped.lower() or (regex and regex.search(stripped)):
+                matches.append({"line": i + 1, "content": stripped[:100]})
+
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "pattern": pattern,
+            "matches": matches[:20],
+            "total_matches": len(matches),
+            "hint": f"找到 {len(matches)} 处匹配，使用 operation=read 读取相关行"
         }, ensure_ascii=False)

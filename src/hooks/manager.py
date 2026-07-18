@@ -60,7 +60,8 @@ class HookManager:
                 if inspect.iscoroutine(result):
                     await result
             except Exception as e:
-                logger.error(f"钩子回调执行失败 [{event.value}]: {e}")
+                event_name = event.value if hasattr(event, 'value') else str(event)
+                logger.error(f"钩子回调执行失败 [{event_name}]: {e}")
 
     def unregister(self, event: HookEvent, callback: Callable):
         if event in self._hooks:

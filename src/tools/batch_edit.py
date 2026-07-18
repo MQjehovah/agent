@@ -19,10 +19,12 @@ import logging
 import os
 import re
 
+from tools import BuiltinTool
+
 logger = logging.getLogger("agent.tools.batch_edit")
 
 
-class BatchEditTool:
+class BatchEditTool(BuiltinTool):
     """原子批处理编辑工具"""
 
     @property

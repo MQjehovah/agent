@@ -65,11 +65,11 @@ class CodeQualityHooks:
 
     # ── 公开钩子 ───────────────────────────────────────
 
-    async def post_edit_lint(self, event, ctx):
+    async def post_edit_lint(self, ctx):
         """文件修改后自动 lint（注册到 TOOL_RESULT 事件）
 
-        钩子签名: async def handler(event, ctx)
-        其中 ctx 包含 tool_name, arguments, result 等字段
+        钩子签名: async def handler(ctx)
+        其中 ctx 包含 event, tool_name, arguments, result 等字段
         """
         if not hasattr(ctx, 'tool_name') or ctx.tool_name not in ("file_operation", "batch_edit", "edit"):
             return
@@ -126,7 +126,7 @@ class CodeQualityHooks:
             except Exception as e:
                 logger.debug(f"[quality_hooks] {tool_name} 执行失败: {e}")
 
-    async def pre_commit_secret_scan(self, event, ctx):
+    async def pre_commit_secret_scan(self, ctx):
         """提交前扫描密钥（注册到 TOOL_START 事件）
 
         拦截包含 "git commit" 的 shell 命令，提交前扫描变更中是否包含敏感信息。
@@ -186,7 +186,7 @@ class CodeQualityHooks:
             # hooks 系统目前不支持修改工具结果，所以只记录警告
             logger.warning("[quality_hooks] 建议在提交前移除上述敏感信息")
 
-    async def post_test_analyze(self, event, ctx):
+    async def post_test_analyze(self, ctx):
         """测试运行后分析失败原因（注册到 TOOL_RESULT 事件）
 
         当测试工具（pytest, jest 等）返回失败时，自动分析失败原因。
@@ -226,9 +226,10 @@ class CodeQualityHooks:
 
     def register_all(self, hooks):
         """注册所有钩子到 HookManager"""
-        hooks.register("post_tool_use", self.post_edit_lint)
-        hooks.register("pre_tool_use", self.pre_commit_secret_scan)
-        hooks.register("post_tool_use", self.post_test_analyze)
+        from hooks import HookEvent
+        hooks.register(HookEvent.TOOL_RESULT, self.post_edit_lint)
+        hooks.register(HookEvent.PRE_TOOL_USE, self.pre_commit_secret_scan)
+        hooks.register(HookEvent.TOOL_RESULT, self.post_test_analyze)
         logger.info("[quality_hooks] 已注册 3 个代码质量钩子")
 
     def get_stats(self) -> dict:
