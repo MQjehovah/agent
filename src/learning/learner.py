@@ -15,7 +15,7 @@ from .categories import (
 
 if TYPE_CHECKING:
     from skills.skill import SkillManager
-    from subagent_manager import SubagentManager
+    from agent.subagent import SubagentManager
 
 logger = logging.getLogger("agent.learning")
 

@@ -333,7 +333,7 @@ class EditTool(BuiltinTool):
         """编辑前自动备份"""
         try:
             from undo_manager import UndoManager
-            from agent import current_run
+            from agent.core import current_run
             rc = current_run()
             ws = self.workspace or (rc.task_dir if rc else "")
             if ws and os.path.exists(ws):

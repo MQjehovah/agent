@@ -197,7 +197,7 @@ class DingTalkPlugin(BasePlugin):
         return f"Tool {name} not implemented"
 
     def _get_dingtalk_staff_id(self, local_user_id) -> str | None:
-        from storage import get_storage
+        from storage.storage import get_storage
         storage = get_storage()
         if not storage or not local_user_id:
             return None

@@ -7,8 +7,8 @@ import asyncio
 import json
 import logging
 
-from agent import AgentResult
-from agent_tool import execute_tool_safe
+from agent.core import AgentResult
+from agent.executor import execute_tool_safe
 
 logger = logging.getLogger("agent.agent")
 
@@ -221,7 +221,7 @@ async def execute_tool_calls_parallel_reflective(agent, tool_calls: list, sessio
 
 async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: str, inherited) -> AgentResult:
     """react 循环：思考 → 执行 → 重复"""
-    from agent import current_run
+    from agent.core import current_run
     rc = current_run()
     session = rc.session or inherited.session
     if session is None:
@@ -325,7 +325,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                 logger.error(f"Agent [{agent.name}] 第 {i+1} 轮出错: {e}")
                 agent.tracer.end_span(status="error")
 
-                from error_classifier import ErrorClassifier
+                from quality.error_classifier import ErrorClassifier
                 recovery_hint = ""
                 try:
                     err_type = ErrorClassifier.classify(e, {"func_name": "agent_think", "error_count": ctx.consecutive_errors})
@@ -357,7 +357,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
 
     # 后台反思
     if hasattr(agent, 'learner') and agent.learner and agent._learning_per_round and session and len(session.messages) > 1:
-        from agent_tool import run_reflection
+        from agent.executor import run_reflection
         bg_task = asyncio.create_task(run_reflection(agent, agent.learner, task, list(session.messages), ctx.user_id))
         agent._background_tasks.add(bg_task)
         bg_task.add_done_callback(agent._background_tasks.discard)
@@ -387,7 +387,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
 
 async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, user_name: str, inherited) -> AgentResult:
     """reflective 循环：计划 → 执行 → 观察 → 评估 → 调整 → 重复"""
-    from agent import current_run
+    from agent.core import current_run
     rc = current_run()
     session = rc.session or inherited.session
     if session is None:
@@ -548,7 +548,7 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
 async def team_run_impl(agent, task: str, session_id: str, user_id: str, user_name: str) -> AgentResult:
     """团队执行入口"""
     from team.orchestrator import TeamOrchestrator
-    from agent import current_run
+    from agent.core import current_run
 
     team_config = agent._team_config
     team_members = agent._team_members

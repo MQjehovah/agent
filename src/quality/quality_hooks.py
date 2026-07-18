@@ -7,7 +7,7 @@
 - post_test: 测试运行后自动分析失败原因
 
 用法:
-    from quality_hooks import CodeQualityHooks
+    from quality.quality_hooks import CodeQualityHooks
     agent.hooks.register(HookEvent.TOOL_RESULT, CodeQualityHooks.post_edit_lint)
 """
 import json

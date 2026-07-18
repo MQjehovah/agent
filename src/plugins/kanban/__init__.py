@@ -53,7 +53,7 @@ class KanbanPlugin(BasePlugin):
         config_dir = self.config_dir or "."
         panel_path = os.path.join(config_dir, "task_panel.json")
 
-        from storage import get_storage
+        from storage.storage import get_storage
         self.board = KanbanBoard(storage=get_storage())
         self.board.migrate_from_panel(panel_path)
 

@@ -197,7 +197,7 @@ class WebServer:
 
     def _ensure_admin_user(self):
         """首次启动时创建默认 admin 用户 (admin / admin123)，若无密码用户则初始化"""
-        from storage import get_storage
+        from storage.storage import get_storage
         storage = get_storage()
         if not storage:
             return
@@ -226,7 +226,7 @@ class WebServer:
     # ------------------------------------------------------------------ #
 
     def _setup_routes(self):
-        from storage import get_storage
+        from storage.storage import get_storage
 
         # ===== Auth 中间件：所有 /api/* 需有效 token（auth 端点、OPTIONS、或 DISABLE_AUTH 除外） =====
         @self._app.middleware("http")

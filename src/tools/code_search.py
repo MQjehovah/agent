@@ -511,7 +511,7 @@ class CodeSearchTool(BuiltinTool):
                     f = f[2:]
                 files.append(f)
             try:
-                from agent_ignore import AgentIgnore
+                from agent.ignore import AgentIgnore
                 ai = AgentIgnore(workspace)
                 files = [f for f in files if not ai.should_ignore(f)]
             except ImportError:

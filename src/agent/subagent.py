@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from utils.frontmatter import extract_frontmatter
 
 if TYPE_CHECKING:
-    from agent import Agent, AgentResult
+    from agent.core import Agent, AgentResult
 
 logger = logging.getLogger("agent.subagent")
 
@@ -299,7 +299,7 @@ class SubagentManager:
         Returns:
             Agent 实例
         """
-        from agent import Agent
+        from agent.core import Agent
 
         cache_key = f"{team_name}/{member_name}"
         if cache_key not in self._team_member_cache:
@@ -522,7 +522,7 @@ class SubagentManager:
         Returns:
             (SubagentInstance, is_new)
         """
-        from agent import Agent
+        from agent.core import Agent
 
         # 保存客户端和父代理引用
         if client:
@@ -552,7 +552,7 @@ class SubagentManager:
         # 创建新的子代理（不持锁，因为初始化耗时）
         template_data = self.templates.get(template_name)
         if not template_data:
-            from agent import AgentResult
+            from agent.core import AgentResult
             return AgentResult(
                 agent_id="",
                 status="failed",
@@ -606,7 +606,7 @@ class SubagentManager:
                                      progress_callback=None,
                                      parent_session_id: str = "") -> "AgentResult":
         """通过 TeamOrchestrator 运行团队"""
-        from agent import AgentResult
+        from agent.core import AgentResult
         from team.orchestrator import TeamOrchestrator
 
         config = self._team_configs.get(team_name)

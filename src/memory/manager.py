@@ -25,7 +25,7 @@ class MemoryManager:
     def _get_storage(self):
         if self._storage:
             return self._storage
-        from storage import get_storage
+        from storage.storage import get_storage
         return get_storage()
 
     # ---------------- 写入（user 私有）----------------

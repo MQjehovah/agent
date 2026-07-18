@@ -47,7 +47,7 @@ def _resolve_attribution() -> tuple[str, str, str]:
     run 之外（如 autonomous 系统调用）user_id 为空 → 归因 'system'。
     """
     try:
-        from agent import current_run
+        from agent.core import current_run
         rc = current_run()
         user_id = rc.user_id or "system"
         session_id = rc.session.session_id if rc.session else ""
@@ -174,7 +174,7 @@ class UsageTracker:
         if not self.records:
             return 0
         try:
-            from storage import get_storage
+            from storage.storage import get_storage
             storage = get_storage()
             if not storage or not hasattr(storage, "save_usage_batch"):
                 return 0

@@ -15,11 +15,11 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 
-from agent import Agent
-from agent_session import AgentSessionManager
+from agent.core import Agent
+from agent.session import AgentSessionManager
 from cmd_handler import CommandHandler
 from config import Config, validate_config
-from llm import LLMClient
+from llm.client import LLMClient
 from plugins import PluginManager
 from settings import get_settings, init_settings
 from tui import TUIApp
@@ -280,7 +280,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
     from autonomous.planner import Planner
     from autonomous.reporter import DingTalkReporter, Reporter
     from autonomous.verifier import Verifier
-    from storage import get_storage
+    from storage.storage import get_storage
     storage = get_storage()
 
     event_bus = EventBus(storage=storage)

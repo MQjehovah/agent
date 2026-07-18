@@ -70,12 +70,12 @@ class TaskDecomposer:
 [{{"module": "模块名", "task": "该模块的完整任务描述"}}]"""
 
         try:
-            from agent import current_run
+            from agent.core import current_run
             rc = current_run()
             client = getattr(rc, '_llm_client', None) if rc else None
             if client is None:
                 # 尝试从 settings 创建临时 client
-                from llm import LLMClient
+                from llm.client import LLMClient
                 from settings import get_settings
                 eps = get_settings().llm_endpoints
                 if eps:
@@ -707,7 +707,7 @@ class TeamOrchestrator:
         if not workspace:
             workspace = os.getcwd()
         self.workspace = workspace
-        from agent import current_run
+        from agent.core import current_run
         task_dir = current_run().task_dir
         if task_dir:
             self.artifacts_dir = task_dir

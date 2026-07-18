@@ -9,11 +9,11 @@ import os
 
 # 延迟导入 current_run，避免与 agent.py 的循环导入问题
 def _current_run():
-    from agent import current_run
+    from agent.core import current_run
     return current_run()
 
 # 工具输出最大字符数（与 agent.py 保持一致）
-MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 3000))
+MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 50000))
 
 logger = logging.getLogger("agent.agent")
 
@@ -233,7 +233,7 @@ async def execute_subagent(agent, args: dict) -> str:
             result = text
 
         await agent.hooks.fire(agent._hook_event.SUBAGENT_RESULT, metadata={
-            "name": display_name, "status": "completed" if result else "failed", "result": result[:500] if result else "",
+            "name": display_name, "status": "completed" if result else "failed", "result": result[:3000] if result else "",
         })
         return json.dumps({
             "success": True,

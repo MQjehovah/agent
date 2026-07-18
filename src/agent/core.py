@@ -18,7 +18,7 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from learning import Learner
 from prompt import PromptBuilder
-from subagent_manager import SubagentManager
+from agent.subagent import SubagentManager
 from utils.frontmatter import extract_frontmatter
 
 if TYPE_CHECKING:
@@ -158,7 +158,7 @@ class Agent:
         self._hook_event = HookEvent
 
         # 调用链路追踪
-        from tracing import Tracer
+        from llm.tracing import Tracer
         self.tracer = Tracer()
 
         # 后台任务管理器
@@ -211,8 +211,8 @@ class Agent:
         self._init_skills()
         await self._load_mcp_servers()
 
-        from agent_session import AgentSessionManager
-        from storage import init_storage
+        from agent.session import AgentSessionManager
+        from storage.storage import init_storage
         self.session_manager = AgentSessionManager()
         await self.session_manager.start_cleanup_task()
 
@@ -221,7 +221,7 @@ class Agent:
         else:
             self.storage = init_storage(self.workspace, config_dir=self.config_dir)
 
-        from rbac import RBACManager
+        from security.rbac import RBACManager
         self.rbac = RBACManager(self.storage)
 
         self._init_subagents()
@@ -418,7 +418,7 @@ class Agent:
         """初始化代码质量相关模块"""
         try:
             # ── .agentignore ──
-            from agent_ignore import AgentIgnore
+            from agent.ignore import AgentIgnore
             self._agent_ignore = AgentIgnore(self.workspace)
             self._agent_ignore.inject_into(self.tool_registry)
 
@@ -431,7 +431,7 @@ class Agent:
 
         try:
             # ── 熔断器 ──
-            from circuit_breaker import CircuitBreaker
+            from quality.circuit_breaker import CircuitBreaker
             self._circuit_breaker = CircuitBreaker(
                 name=f"agent:{self.name}" if self.name else "agent",
                 threshold=5,
@@ -451,7 +451,7 @@ class Agent:
 
         try:
             # ── 代码质量钩子 ──
-            from quality_hooks import CodeQualityHooks
+            from quality.quality_hooks import CodeQualityHooks
             self._quality_hooks = CodeQualityHooks(self.workspace)
             if hasattr(self, 'hooks') and self.hooks:
                 self._quality_hooks.register_all(self.hooks)
@@ -539,7 +539,7 @@ class Agent:
             # 子 agent 复用父 memory（DB 统一，按 user_id 隔离）
             self.memory = self.parent_agent.memory
         else:
-            from storage import get_storage
+            from storage.storage import get_storage
             self.memory = MemoryManager(storage=get_storage(), agent_id=self.agent_id)
 
         # 初始化自学习模块
@@ -558,7 +558,7 @@ class Agent:
             )
             # 主 agent 初始化 curator（定时提炼通用知识）
             from memory.curator import MemoryCurator
-            from storage import get_storage
+            from storage.storage import get_storage
             self.curator = MemoryCurator(storage=get_storage(), llm_client=self.client)
             self.learner.set_curator(self.curator)
 
@@ -807,10 +807,10 @@ class Agent:
 
         try:
             if self._is_team and self._team_config and self._team_members:
-                from agent_loop import team_run_impl; return await team_run_impl(self, task, session_id, user_id, user_name)
+                from agent.loop import team_run_impl; return await team_run_impl(self, task, session_id, user_id, user_name)
             if self.loop_mode == "reflective":
-                from agent_loop import run_impl_reflective; return await run_impl_reflective(self, task, session_id, user_id, user_name, inherited)
-            from agent_loop import run_impl; return await run_impl(self, task, session_id, user_id, user_name, inherited)
+                from agent.loop import run_impl_reflective; return await run_impl_reflective(self, task, session_id, user_id, user_name, inherited)
+            from agent.loop import run_impl; return await run_impl(self, task, session_id, user_id, user_name, inherited)
         finally:
             if hook_token is not None:
                 reset_run_id(hook_token)

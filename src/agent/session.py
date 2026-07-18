@@ -42,7 +42,7 @@ class AgentSession:
         self.last_accessed = datetime.now()
 
         try:
-            from storage import get_storage
+            from storage.storage import get_storage
             storage = get_storage()
             if storage and self.session_id:
                 storage.save_message(
@@ -72,7 +72,7 @@ class AgentSessionManager:
     CLEANUP_INTERVAL = 300  # 清理间隔: 5分钟
     MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", 100 * 1000)) # 上下文 token 上限（按模型调整）
     KEEP_RECENT_TOOL_RESULTS = int(os.environ.get("KEEP_RECENT_TOOL_RESULTS", 5)) # 保留最近 N 条工具结果的完整内容
-    TOOL_RESULT_COLLAPSE_CHARS = int(os.environ.get("TOOL_RESULT_COLLAPSE_CHARS", 150))  # 旧工具结果截断到多少字符
+    TOOL_RESULT_COLLAPSE_CHARS = int(os.environ.get("TOOL_RESULT_COLLAPSE_CHARS", 500))  # 旧工具结果截断到多少字符
     TEXT_BLOCK_COLLAPSE_THRESHOLD = int(os.environ.get("TEXT_BLOCK_COLLAPSE_THRESHOLD", 3000)) # 超过此长度的文本块被折叠
     TEXT_BLOCK_COLLAPSE_HEAD = int(os.environ.get("TEXT_BLOCK_COLLAPSE_HEAD", 500)) # 折叠后保留头部字符数
     TEXT_BLOCK_COLLAPSE_TAIL = int(os.environ.get("TEXT_BLOCK_COLLAPSE_TAIL", 300)) # 折叠后保留尾部字符数
@@ -437,7 +437,7 @@ class AgentSessionManager:
             # 持久化压缩摘要，供重启后无损恢复（避免重新压缩/丢失上下文）
             if session_id and summary:
                 try:
-                    from storage import get_storage
+                    from storage.storage import get_storage
                     _st = get_storage()
                     if _st and hasattr(_st, "save_session_meta"):
                         _st.save_session_meta(session_id, summary)

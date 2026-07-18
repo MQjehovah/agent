@@ -390,7 +390,7 @@ class CommandHandler:
 
     async def _flush_memory(self):
         """将当前 session 决策固化到 MEMORY.md"""
-        from session_memory import SessionMemory
+        from storage.session_memory import SessionMemory
 
         if not self.agent:
             self._print("[red]Agent 未初始化[/red]")
@@ -424,7 +424,7 @@ class CommandHandler:
 
     async def _dream_memory(self):
         """跨 session 知识融合"""
-        from session_memory import SessionMemory
+        from storage.session_memory import SessionMemory
 
         if not self.agent:
             self._print("[red]Agent 未初始化[/red]")
@@ -507,7 +507,7 @@ class CommandHandler:
 
     async def _resume(self, cmd: str):
         """恢复历史会话"""
-        from resume_manager import ResumeManager
+        from storage.resume_manager import ResumeManager
 
         if not self.agent:
             self._print("[red]Agent 未初始化[/red]")
@@ -549,7 +549,7 @@ class CommandHandler:
 
     async def _goal(self, cmd: str):
         """管理自治目标"""
-        from resume_manager import GoalLifecycle
+        from storage.resume_manager import GoalLifecycle
 
         parts = cmd.split()
         subcmd = parts[1].lower() if len(parts) > 1 else "status"
@@ -673,7 +673,7 @@ class CommandHandler:
 
     def _show_cache(self):
         """显示缓存统计"""
-        from cache import get_cache
+        from llm.cache import get_cache
         cache = get_cache()
         stats = cache.get_stats()
         table = Table(title="缓存统计", show_header=True,
@@ -686,7 +686,7 @@ class CommandHandler:
 
     def _clear_cache(self):
         """清空缓存"""
-        from cache import get_cache
+        from llm.cache import get_cache
         cache = get_cache()
         cache.clear()
         self._print("[green]缓存已清空[/green]")
@@ -734,7 +734,7 @@ class CommandHandler:
 
     async def _show_messages(self):
         """显示当前会话消息（含子代理消息）"""
-        from storage import get_storage
+        from storage.storage import get_storage
         storage = get_storage()
         all_msgs = []
         # 从 memory 收集当前会话消息
