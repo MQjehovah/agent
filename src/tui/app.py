@@ -179,15 +179,10 @@ class TUIApp:
         def _on_llm_response(ctx):
             content = ctx.content or ""
             reasoning = ctx.reasoning or ""
-            lines = []
             if reasoning:
-                for line in reasoning.strip().split("\n")[-2:]:
-                    if line.strip():
-                        lines.append(f"  {DIM}┊ {line.strip()[:120]}{RESET}")
+                self.chat.append_output(f"  {DIM}┊ {reasoning.strip()}{RESET}")
             if content:
-                lines.append(f"  {DIM}┊ {content.strip()[:120]}{RESET}")
-            if lines:
-                self.chat.append_output("\n".join(lines))
+                self.chat.append_output(f"  {DIM}┊ {content.strip()}{RESET}")
 
         def _on_chat_event(ctx):
             pass
@@ -195,15 +190,10 @@ class TUIApp:
         def _on_subagent_llm_response(ctx):
             content = ctx.content or ""
             reasoning = ctx.reasoning or ""
-            lines = []
             if reasoning:
-                for line in reasoning.strip().split("\n")[-2:]:
-                    if line.strip():
-                        lines.append(f"  {DIM}┊ {line.strip()[:120]}{RESET}")
+                self.chat.append_output(f"  {DIM}┊ {reasoning.strip()}{RESET}")
             if content:
-                lines.append(f"  {DIM}┊ {content.strip()[:120]}{RESET}")
-            if lines:
-                self.chat.append_output("\n".join(lines))
+                self.chat.append_output(f"  {DIM}┊ {content.strip()}{RESET}")
 
         def _on_subagent_chat_event(ctx):
             pass

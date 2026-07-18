@@ -655,5 +655,6 @@ if __name__ == "__main__":
         # 清理所有剩余任务，避免 anyio cancel scope 崩溃
         for t in asyncio.all_tasks(loop):
             t.cancel()
-        loop.run_until_complete(loop.shutdown_asyncgens())
+        with contextlib.suppress(BaseException):
+            loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
