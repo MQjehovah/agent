@@ -287,6 +287,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                     await agent.hooks.fire(agent._hook_event.ROUND_START, metadata={"iteration": i + 1})
 
                 think_messages = session.messages
+                _is_retry = bool(ctx.retry_context)
                 if ctx.retry_context:
                     think_messages = list(session.messages)
                     think_messages.append({"role": "user", "content": ctx.retry_context})
@@ -295,11 +296,15 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                 # 上下文压缩
                 from agent.session import AgentSessionManager
                 try:
-                    think_messages = await AgentSessionManager.compress_if_needed(
+                    compressed = await AgentSessionManager.compress_if_needed(
                         think_messages, agent.client,
                         tool_defs=agent.tool_defs,
                         session_id=session.session_id if session else "",
                     )
+                    if compressed is not think_messages:
+                        think_messages = compressed
+                        if not _is_retry:
+                            session.messages = compressed
                 except Exception as e:
                     logger.warning(f"上下文压缩失败(跳过): {e}")
 
@@ -493,11 +498,14 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                 # 上下文压缩
                 from agent.session import AgentSessionManager
                 try:
-                    think_messages = await AgentSessionManager.compress_if_needed(
+                    compressed = await AgentSessionManager.compress_if_needed(
                         think_messages, agent.client,
                         tool_defs=agent.tool_defs,
                         session_id=session.session_id if session else "",
                     )
+                    if compressed is not think_messages:
+                        think_messages = compressed
+                        session.messages = compressed
                 except Exception as e:
                     logger.warning(f"上下文压缩失败(跳过): {e}")
 

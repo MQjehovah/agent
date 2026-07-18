@@ -246,39 +246,6 @@ class AgentSessionManager:
         return result
 
     @staticmethod
-    def cleanup_orphaned_tool_calls(messages: list) -> list:
-        """清理孤立的 tool_calls：移除那些没有对应 tool 响应的 tool_calls。
-
-        OpenAI API 要求 assistant(tool_calls) 后面必须有 tool 消息覆盖所有 tool_call_id。
-        此函数扫描整个消息列表，清理不满足此约束的 tool_calls。
-        """
-        result = list(messages)
-        i = 0
-        while i < len(result):
-            msg = result[i]
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                tc_ids = {tc.get("id", "") for tc in msg["tool_calls"] if tc.get("id")}
-                if not tc_ids:
-                    i += 1
-                    continue
-                n = 1
-                while i + n < len(result) and result[i + n].get("role") == "tool":
-                    n += 1
-                tool_msgs = result[i + 1:i + n]
-                responded_ids = {m.get("tool_call_id", "") for m in tool_msgs if m.get("tool_call_id")}
-                missing = tc_ids - responded_ids
-                if missing:
-                    logger.warning(f"cleanup_orphaned_tool_calls: 发现 {len(missing)} 个孤立 tool_calls, 正在清理")
-                    cleaned = {k: v for k, v in msg.items() if k != "tool_calls"}
-                    if cleaned.get("content"):
-                        result[i] = cleaned
-                    else:
-                        result.pop(i)
-                        i -= 1
-            i += 1
-        return result
-
-    @staticmethod
     def context_collapse(messages: list) -> list:
         """中等压缩：折叠超长文本块（不调用 LLM）。
 
