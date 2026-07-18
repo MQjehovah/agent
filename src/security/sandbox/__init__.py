@@ -23,7 +23,7 @@ class SandboxMiddleware:
     """
 
     SANDBOXED_TOOLS = {"shell"}
-    PATH_VALIDATED_TOOLS = {"file_operation", "edit"}
+    PATH_VALIDATED_TOOLS = {"file", "edit"}
 
     def __init__(self, config: dict, workspace: str = ""):
         from .command_validator import CommandValidator

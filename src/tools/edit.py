@@ -74,7 +74,7 @@ class EditTool(BuiltinTool):
 
 使用规则:
 - old_text 提供足够上下文使其在文件中唯一（推荐周围 2-3 行代码）
-- 修改前建议先用 file_operation(read) 确认文件内容
+- 修改前建议先用 file(read) 确认文件内容
 - 批量编辑（edits 参数）是原子的：全部成功或全部失败
 
 单处编辑: {"path": "src/main.py", "old_text": "foo()", "new_text": "bar()"}

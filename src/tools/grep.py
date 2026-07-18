@@ -45,7 +45,7 @@ class GrepTool(BuiltinTool):
 - 跨文件查找所有出现某个函数/变量名的地方
 - 查找配置文件、JSON、Markdown 中的特定内容
 
-代码分析时先用 grep 搜到目标行号，再用 file_operation(read, offset=行号) 精确读取，避免读取整个大文件。"""
+代码分析时先用 grep 搜到目标行号，再用 file(read, offset=行号) 精确读取，避免读取整个大文件。"""
 
     @property
     def parameters(self) -> Dict[str, Any]:

@@ -8,7 +8,7 @@ CORRECTION_KEYWORDS = [
 ]
 
 REFLECT_SKIP_TOOLS = {
-    "file_operation", "grep", "glob", "todo", "memory",
+    "file", "grep", "glob", "todo", "memory",
     "shell", "web_search", "web_fetch", "ask_user",
 }
 

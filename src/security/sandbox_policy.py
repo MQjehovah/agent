@@ -159,7 +159,7 @@ class SandboxPolicy:
                     }
 
         # 路径检查（file_write 时检查目标路径）
-        if tool_name in ("file_operation", "batch_edit", "edit"):
+        if tool_name in ("file", "batch_edit", "edit"):
             path = args.get("file", args.get("path", ""))
             if path:
                 for rp in profile.read_only_paths:
@@ -196,7 +196,7 @@ class SandboxPolicy:
 
     def check_file_write(self, path: str) -> dict:
         """专门的文件写入检查"""
-        return self.check("file_operation", {"path": path, "operation": "write"})
+        return self.check("file", {"path": path, "operation": "write"})
 
     def get_profile_info(self) -> dict:
         """获取当前配置信息"""
@@ -222,7 +222,7 @@ class SandboxPolicy:
         """将工具名归类为策略类别"""
         category_map = {
             "shell": "shell",
-            "file_operation": "file_write",
+            "file": "file_write",
             "edit": "file_write",
             "batch_edit": "file_write",
             "write": "file_write",

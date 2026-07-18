@@ -80,7 +80,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
         if cb and name != "ask_user":
             cb.on_success()
 
-        if name == "file_operation" and args.get("operation") == "read":
+        if name == "file" and args.get("operation") == "read":
             path = args.get("path", "")
             if path and '"success": true' in result:
                 try:
@@ -235,7 +235,7 @@ async def _sandbox_intercept(agent, name: str, args: dict) -> str | None:
         if result is not None:
             logger.info(f"[沙箱拦截] shell → {result.get('sandbox', '?')}")
             return json.dumps(result, ensure_ascii=False)
-    if name in ("file_operation", "edit"):
+    if name in ("file", "edit"):
         path = args.get("path", "")
         if path:
             valid, reason = agent.sandbox.validate_path(path)

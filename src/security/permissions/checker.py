@@ -34,7 +34,7 @@ class PermissionChecker:
 
         # PLAN 模式：禁止所有写操作
         if self.config.mode == PermissionMode.PLAN:
-            if tool_name == "file_operation":
+            if tool_name == "file":
                 op = arguments.get("operation", "")
                 if op in ("read", "exists", "list"):
                     return PermissionCheckResult(allowed=True)
@@ -77,7 +77,7 @@ class PermissionChecker:
         # DEFAULT 模式下写操作需要确认
         if self.config.mode == PermissionMode.DEFAULT and tool_name in self.config.write_tools:
             # 判断是否为读操作
-            if tool_name == "file_operation":
+            if tool_name == "file":
                 op = arguments.get("operation", "")
                 if op in ("read", "exists", "list"):
                     return PermissionCheckResult(allowed=True)

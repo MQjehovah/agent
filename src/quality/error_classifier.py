@@ -93,7 +93,7 @@ class ErrorClassifier:
 
     # 工具级错误映射（某些工具的错误几乎总是特定类型）
     TOOL_ERROR_MAP: dict[str, ErrorType] = {
-        "file_operation": ErrorType.NOT_FOUND,      # 默认为文件未找到
+        "file": ErrorType.NOT_FOUND,      # 默认为文件未找到
         "edit": ErrorType.SYNTAX,                    # 默认为替换文本不匹配
         "shell": ErrorType.TIMEOUT,                  # 默认为命令超时
         "web_search": ErrorType.NETWORK,             # 默认为网络问题
@@ -269,7 +269,7 @@ class ErrorClassifier:
             ("shell", ErrorType.TIMEOUT): "命令执行太久，先检查命令是否正确，或拆分为小步骤执行",
             ("shell", ErrorType.NOT_FOUND): "命令未找到，先检查是否安装了对应工具",
             ("code_search", ErrorType.NOT_FOUND): "符号未找到，尝试不同的大小写或缩写",
-            ("file_operation", ErrorType.PERMISSION): "文件受保护，尝试其他路径或使用 shell 检查权限",
+            ("file", ErrorType.PERMISSION): "文件受保护，尝试其他路径或使用 shell 检查权限",
         }
         return advice_map.get((tool_name, error_type), "")
 

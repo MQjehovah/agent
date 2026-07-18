@@ -71,7 +71,7 @@ class CodeQualityHooks:
         钩子签名: async def handler(ctx)
         其中 ctx 包含 event, tool_name, arguments, result 等字段
         """
-        if not hasattr(ctx, 'tool_name') or ctx.tool_name not in ("file_operation", "batch_edit", "edit"):
+        if not hasattr(ctx, 'tool_name') or ctx.tool_name not in ("file", "batch_edit", "edit"):
             return
         if not hasattr(ctx, 'arguments'):
             return

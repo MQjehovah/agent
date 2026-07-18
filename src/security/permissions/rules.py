@@ -40,12 +40,12 @@ class PermissionConfig:
         "format",
     ])
     write_tools: list = field(default_factory=lambda: [
-        "file_operation",
+        "file",
         "shell",
         "edit",
     ])
     path_params: dict = field(default_factory=lambda: {
-        "file_operation": "path",
+        "file": "path",
         "edit": "path",
     })
     blocked_paths: list = field(default_factory=lambda: [

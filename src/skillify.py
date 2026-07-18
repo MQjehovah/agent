@@ -221,12 +221,12 @@ class Skillifier:
     @staticmethod
     def _tool_to_action(tool_name: str) -> str:
         mapping = {
-            "file_operation": "文件操作",
+            "file": "文件操作",
             "shell": "执行命令",
             "grep": "搜索代码",
             "glob": "查找文件",
             "edit": "修改文件",
-            "file_operation(preview)": "阅读代码",
+            "file(preview)": "阅读代码",
             "web_search": "搜索网络",
             "web_fetch": "抓取网页",
             "subagent": "委派子代理",

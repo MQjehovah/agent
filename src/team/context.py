@@ -263,7 +263,7 @@ class TeamContext:
         artifact_keys = [k for k in self.blackboard if k.endswith("_output")]
         if not artifact_keys:
             return ""
-        lines = ["## 上游产出物索引", "请使用 file_operation 工具按需读取以下文件：", ""]
+        lines = ["## 上游产出物索引", "请使用 file 工具按需读取以下文件：", ""]
         for key in artifact_keys:
             path = self.blackboard[key]
             stage_name = key.replace("_output", "")

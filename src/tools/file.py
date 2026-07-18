@@ -24,7 +24,7 @@ PREVIEW_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".vue",
 class FileTool(BuiltinTool):
     @property
     def name(self) -> str:
-        return "file_operation"
+        return "file"
 
     @property
     def description(self) -> str:
