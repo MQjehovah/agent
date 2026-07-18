@@ -15,7 +15,7 @@ def _current_run():
     return current_run()
 
 # 工具输出最大字符数（与 agent.py 保持一致）
-MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 50000))
+MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 5000))
 
 logger = logging.getLogger("agent.agent")
 

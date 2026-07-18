@@ -72,7 +72,7 @@ class AgentSessionManager:
     CLEANUP_INTERVAL = 300  # 清理间隔: 5分钟
     MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", 100 * 1000)) # 上下文 token 上限（按模型调整）
     KEEP_RECENT_TOOL_RESULTS = int(os.environ.get("KEEP_RECENT_TOOL_RESULTS", 5)) # 保留最近 N 条工具结果的完整内容
-    TOOL_RESULT_COLLAPSE_CHARS = int(os.environ.get("TOOL_RESULT_COLLAPSE_CHARS", 500))  # 旧工具结果截断到多少字符
+    TOOL_RESULT_COLLAPSE_CHARS = int(os.environ.get("TOOL_RESULT_COLLAPSE_CHARS", 300))  # 旧工具结果截断到多少字符
     TEXT_BLOCK_COLLAPSE_THRESHOLD = int(os.environ.get("TEXT_BLOCK_COLLAPSE_THRESHOLD", 3000)) # 超过此长度的文本块被折叠
     TEXT_BLOCK_COLLAPSE_HEAD = int(os.environ.get("TEXT_BLOCK_COLLAPSE_HEAD", 500)) # 折叠后保留头部字符数
     TEXT_BLOCK_COLLAPSE_TAIL = int(os.environ.get("TEXT_BLOCK_COLLAPSE_TAIL", 300)) # 折叠后保留尾部字符数
@@ -106,7 +106,7 @@ class AgentSessionManager:
         return max(1, int(payload_bytes / BYTES_PER_TOKEN))
 
     @staticmethod
-    def microcompact(messages: list) -> list:
+    def tool_collapse(messages: list) -> list:
         """轻量级压缩：将旧的工具结果截断，零成本不调用 LLM。
 
         策略：
@@ -147,7 +147,7 @@ class AgentSessionManager:
                 modified = True
 
         if modified:
-            logger.debug(f"microcompact: 截断了 {len(old_tool_indices)} 条旧工具结果")
+            logger.debug(f"tool_collapse: 截断了 {len(old_tool_indices)} 条旧工具结果")
         return result
 
     @staticmethod
@@ -321,9 +321,9 @@ class AgentSessionManager:
         """四层渐进式上下文压缩。
 
         Layer 0: sliding_window — 滑动窗口，始终裁剪到最近 N 条，零成本
-        Layer 1 (50%): microcompact — 截断旧工具结果，零成本
-        Layer 2 (65%): context_collapse — 折叠超长文本块，零成本
-        Layer 3 (80%): LLM 压缩 — 调用模型生成摘要，有成本
+        Layer 1: tool_collapse — 截断旧工具结果，零成本（仅 tool 角色）
+        Layer 2: context_collapse — 折叠超长文本块，零成本（兜底 assistant/user 的长回复）
+        Layer 3: LLM 压缩 — 超预算时调用模型生成结构化摘要，有成本
         """
         max_tokens = max_tokens or AgentSessionManager.MAX_CONTEXT_TOKENS
         token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
@@ -333,14 +333,14 @@ class AgentSessionManager:
         if len(non_system) > AgentSessionManager.SLIDING_WINDOW_SIZE:
             messages = AgentSessionManager.sliding_window(messages)
 
-        # Layer 1: microcompact — 每轮无条件截断旧工具结果
-        messages = AgentSessionManager.microcompact(messages)
+        # Layer 1: tool_collapse — 每轮无条件截断旧工具结果
+        messages = AgentSessionManager.tool_collapse(messages)
         token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
 
         if token_count < max_tokens * 0.65:
             return messages
 
-        # Layer 2: context_collapse — 折叠超长文本块
+        # Layer 2: context_collapse — 折叠超长文本块（兜底 assistant/user 长内容）
         if token_count >= max_tokens * 0.65:
             messages = AgentSessionManager.context_collapse(messages)
             token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)

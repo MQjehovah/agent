@@ -292,6 +292,17 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                     think_messages.append({"role": "user", "content": ctx.retry_context})
                     ctx.retry_context = ""
 
+                # 上下文压缩
+                from agent.session import AgentSessionManager
+                try:
+                    think_messages = await AgentSessionManager.compress_if_needed(
+                        think_messages, agent.client,
+                        tool_defs=agent.tool_defs,
+                        session_id=session.session_id if session else "",
+                    )
+                except Exception as e:
+                    logger.warning(f"上下文压缩失败(跳过): {e}")
+
                 response = await think(agent, think_messages)
                 agent.tracer.end_span()
 
@@ -478,6 +489,17 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                 elif ctx.retry_context:
                     think_messages.append({"role": "user", "content": ctx.retry_context})
                     ctx.retry_context = ""
+
+                # 上下文压缩
+                from agent.session import AgentSessionManager
+                try:
+                    think_messages = await AgentSessionManager.compress_if_needed(
+                        think_messages, agent.client,
+                        tool_defs=agent.tool_defs,
+                        session_id=session.session_id if session else "",
+                    )
+                except Exception as e:
+                    logger.warning(f"上下文压缩失败(跳过): {e}")
 
                 response = await think(agent, think_messages)
                 agent.tracer.end_span()
