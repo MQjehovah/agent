@@ -105,6 +105,16 @@ class CommandHandler:
                 self._print("[red]无法获取 CLI 会话[/red]")
         elif cmd_lower.startswith("/skillify"):
             await self._skillify(cmd.strip())
+        elif cmd_lower == "/flush":
+            await self._flush_memory()
+        elif cmd_lower == "/dream":
+            await self._dream_memory()
+        elif cmd_lower.startswith("/undo"):
+            await self._undo(cmd.strip())
+        elif cmd_lower.startswith("/resume"):
+            await self._resume(cmd.strip())
+        elif cmd_lower.startswith("/goal"):
+            await self._goal(cmd.strip())
         elif cmd_lower == "/plan":
             self._show_plan_mode()
         elif cmd_lower.startswith("/plan "):
@@ -149,6 +159,16 @@ class CommandHandler:
             ("/session <id>", "查看指定会话详情"),
             ("/messages", "查看当前会话消息"),
             ("/skillify [name] [desc]", "从当前会话提取工作流为可复用 Skill"),
+            ("/flush", "将当前 session 决策固化到 MEMORY.md"),
+            ("/dream", "跨 session 知识梦境融合"),
+            ("/undo [n] [code|conversation|both]", "撤销最近 N 步操作"),
+            ("/undo --list", "查看可撤销的操作"),
+            ("/resume [id]", "恢复历史会话或列出可恢复会话"),
+            ("/goal status [id]", "查看目标状态"),
+            ("/goal pause [id]", "暂停目标"),
+            ("/goal resume [id]", "恢复目标"),
+            ("/goal clear [id]", "清除目标"),
+            ("/goal history", "查看目标历史"),
             ("/plan", "查看 Plan Mode 状态"),
             ("/plan on|off|approval|auto", "控制 Plan Mode"),
             ("/parallel", "查看并行执行状态"),
@@ -365,6 +385,232 @@ class CommandHandler:
     # ================================================================
     #  任务面板
     # ================================================================
+
+    # ── v3.0: /flush & /dream ──
+
+    async def _flush_memory(self):
+        """将当前 session 决策固化到 MEMORY.md"""
+        from session_memory import SessionMemory
+
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+
+        session = None
+        if self.agent.session_manager:
+            session = await self.agent.session_manager.get_session(self.session_id)
+
+        if not session or not session.messages:
+            self._print("[yellow]当前 session 无消息，无法固化[/yellow]")
+            return
+
+        self._print("[cyan]正在分析 session 并提取关键决策...[/cyan]")
+
+        memory = SessionMemory(
+            client=self.agent.client,
+            workspace=self.agent.workspace,
+        )
+        entry = await memory.flush(self.session_id, session.messages)
+
+        if entry:
+            self._print(f"[green]✅ 已固化到 MEMORY.md[/green]")
+            self._print(Panel.fit(
+                entry[:800],
+                title="固化内容预览",
+                border_style="green",
+            ))
+        else:
+            self._print("[yellow]本次 session 未发现值得固化的内容[/yellow]")
+
+    async def _dream_memory(self):
+        """跨 session 知识融合"""
+        from session_memory import SessionMemory
+
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+
+        self._print("[cyan]正在执行知识梦境融合...[/cyan]")
+
+        memory = SessionMemory(
+            client=self.agent.client,
+            workspace=self.agent.workspace,
+        )
+        entry = await memory.dream(recent_sessions=5)
+
+        if entry:
+            self._print(f"[green]✅ 知识梦境完成[/green]")
+            self._print(Panel.fit(
+                entry[:800],
+                title="梦境结果预览",
+                border_style="cyan",
+            ))
+            stats = memory.get_stats()
+            self._print(f"[dim]MEMORY.md: {stats['memory_file']}, 共 {stats['flush_count']} 次固化[/dim]")
+        else:
+            self._print("[yellow]梦境融合未产生新内容（可能需要更多的 session 数据）[/yellow]")
+
+    # ── v4.0: /undo ──
+
+    async def _undo(self, cmd: str):
+        """撤销最近的文件修改"""
+        from undo_manager import UndoManager
+
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+
+        parts = cmd.split()
+        steps = 1
+        mode = "code"
+        for p in parts[1:]:
+            if p.lstrip("-").isdigit():
+                steps = int(p)
+            elif p in ("code", "conversation", "both"):
+                mode = p
+
+        undo_mgr = getattr(self.agent, '_undo_manager', None)
+        if not undo_mgr:
+            undo_mgr = UndoManager(self.agent.workspace)
+            self.agent._undo_manager = undo_mgr
+
+        # 先查看历史
+        if steps == 0 or "--list" in cmd:
+            history = undo_mgr.get_history(limit=10)
+            if history:
+                table = Table(title="可撤销操作", show_header=True, header_style="bold cyan", box=box.ROUNDED)
+                table.add_column("ID", style="dim")
+                table.add_column("时间", style="yellow")
+                table.add_column("工具", style="green")
+                table.add_column("文件", style="white")
+                for h in history:
+                    files_str = ", ".join(h["files"][:3])
+                    if len(h["files"]) > 3:
+                        files_str += f" +{len(h['files'])-3}"
+                    table.add_row(h["id"], h["time_ago"], h["tool"], files_str)
+                self._print(table)
+            else:
+                self._print("[yellow]无可撤销的操作[/yellow]")
+            return
+
+        self._print(f"[cyan]正在撤销 {steps} 步...[/cyan]")
+        result = await undo_mgr.undo(steps=steps, mode=mode)
+        files = result.get("files_restored", [])
+        if files:
+            for f in files:
+                self._print(f"  ↩️ [green]恢复: {f}[/green]")
+            self._print(f"[green]✅ 已撤销 {len(files)} 个文件的修改[/green]")
+        else:
+            self._print("[yellow]没有需要恢复的文件[/yellow]")
+
+    # ── v4.0: /resume ──
+
+    async def _resume(self, cmd: str):
+        """恢复历史会话"""
+        from resume_manager import ResumeManager
+
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+
+        parts = cmd.split()
+        session_id = parts[1] if len(parts) > 1 else ""
+
+        if not session_id:
+            # 列出可恢复的 session
+            rm = ResumeManager(
+                storage=getattr(self.agent, 'storage', None),
+                session_manager=self.agent.session_manager,
+            )
+            sessions = await rm.list_sessions(limit=10)
+            if sessions:
+                table = Table(title="可恢复的会话", show_header=True, header_style="bold cyan", box=box.ROUNDED)
+                table.add_column("Session ID", style="cyan")
+                table.add_column("消息数", style="green")
+                for s in sessions:
+                    sid = s.get("session_id", "")
+                    msgs = len(self.agent.storage.get_messages(sid)) if self.agent.storage else 0
+                    table.add_row(sid[:12], str(msgs))
+                self._print(table)
+                self._print("[dim]使用 /resume <session_id> 恢复[/dim]")
+            else:
+                self._print("[yellow]无可恢复的会话[/yellow]")
+            return
+
+        rm = ResumeManager(
+            storage=getattr(self.agent, 'storage', None),
+            session_manager=self.agent.session_manager,
+        )
+        context = await rm.resume_session(session_id)
+        self._print(f"[green]✅ 已加载 session {session_id[:8]} 的上下文[/green]")
+        self._print(Panel.fit(context[:600], title="恢复的上下文", border_style="green"))
+
+    # ── v4.0: /goal ──
+
+    async def _goal(self, cmd: str):
+        """管理自治目标"""
+        from resume_manager import GoalLifecycle
+
+        parts = cmd.split()
+        subcmd = parts[1].lower() if len(parts) > 1 else "status"
+
+        storage = getattr(self.agent, 'storage', None)
+        gm = GoalLifecycle(storage=storage)
+
+        if subcmd == "status":
+            if len(parts) > 2:
+                status = gm.get_status(parts[2])
+            else:
+                status = gm.get_status()
+            self._print(f"[cyan]目标状态:[/cyan]")
+            for k, v in status.items():
+                self._print(f"  {k}: {v}")
+            history = gm.get_history(limit=5)
+            if history:
+                self._print(f"\n[dim]历史目标:[/dim]")
+                for h in history:
+                    self._print(f"  {h['id']}: {h['title']} [{h['status']}]")
+
+        elif subcmd == "pause":
+            goal_id = parts[2] if len(parts) > 2 else ""
+            if await gm.pause(goal_id):
+                self._print(f"[yellow]⏸️ 目标已暂停: {goal_id or '当前'}[/yellow]")
+            else:
+                self._print(f"[red]暂停失败: 未找到目标[/red]")
+
+        elif subcmd == "resume":
+            goal_id = parts[2] if len(parts) > 2 else ""
+            context = await gm.resume(goal_id)
+            if context:
+                self._print(f"[green]▶️ 目标已恢复: {context.get('title', '')}[/green]")
+                self._print(f"[dim]进度: {context.get('progress', '')}[/dim]")
+                if context.get("next_step"):
+                    self._print(f"[dim]下一步: {context['next_step']}[/dim]")
+            else:
+                self._print(f"[red]恢复失败: 未找到目标[/red]")
+
+        elif subcmd == "clear":
+            goal_id = parts[2] if len(parts) > 2 else ""
+            await gm.clear(goal_id)
+            self._print(f"[yellow]🗑️ 目标已清除: {goal_id or '全部'}[/yellow]")
+
+        elif subcmd == "history":
+            history = gm.get_history(limit=20)
+            if history:
+                table = Table(title="目标历史", show_header=True, header_style="bold cyan", box=box.ROUNDED)
+                table.add_column("ID", style="dim")
+                table.add_column("标题", style="white")
+                table.add_column("状态", style="yellow")
+                table.add_column("步骤", style="green")
+                for h in history:
+                    table.add_row(h["id"], h["title"], h["status"], str(h["steps"]))
+                self._print(table)
+            else:
+                self._print("[yellow]无目标历史[/yellow]")
+
+        else:
+            self._print(f"[red]未知子命令: {subcmd}[/red]")
+            self._print("[dim]/goal status | /goal pause [id] | /goal resume [id] | /goal clear [id] | /goal history[/dim]")
 
     def _show_panel(self):
         if self._panel is None:
