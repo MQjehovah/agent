@@ -86,15 +86,6 @@ def _init_logging(log_dir: str):
     root.setLevel(logging.INFO)
     root.addHandler(file_handler)
 
-    # 控制台错误输出（stderr，避免被 TUI 淹没）
-    stderr_handler = logging.StreamHandler(sys.stderr)
-    stderr_handler.setLevel(logging.ERROR)
-    stderr_handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%H:%M:%S",
-    ))
-    root.addHandler(stderr_handler)
-
     for noisy in ("mcp.server.lowlevel.server", "httpx", "apscheduler.scheduler"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logger = logging.getLogger("agent.main")
@@ -649,11 +640,20 @@ async def main():
 
 if __name__ == "__main__":
     # 捕获 anyio cancel scope 跨任务 bug（MCP stdio 引起），不污染终端
+    _log = logging.getLogger()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.set_exception_handler(lambda _loop, ctx: (
-        logger.debug(f"事件循环异常(已抑制): {ctx.get('message', '')}")
-        if "cancel scope" in ctx.get("message", "") else
-        logger.error(f"事件循环异常: {ctx.get('message', '')}", exc_info=ctx.get("exception"))
+    loop.set_exception_handler(lambda _loop, ctx: _log.log(
+        logging.DEBUG if "cancel scope" in ctx.get("message", "") else logging.WARNING,
+        "事件循环异常: %s", ctx.get("message", ""),
     ))
-    asyncio.run(main())
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # 清理所有剩余任务，避免 anyio cancel scope 崩溃
+        for t in asyncio.all_tasks(loop):
+            t.cancel()
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
