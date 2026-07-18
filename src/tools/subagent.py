@@ -1,5 +1,5 @@
 import json
-from typing import Dict, Any, List
+from typing import Any
 
 from . import BuiltinTool
 
@@ -35,7 +35,7 @@ class SubagentTool(BuiltinTool):
 注意: 推荐在配置文件(workspace/agents/*.md)中预先定义subagent模板，包含mcp_servers配置"""
 
     @property
-    def parameters(self) -> Dict[str, Any]:
+    def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -45,7 +45,7 @@ class SubagentTool(BuiltinTool):
                 },
                 "template": {
                     "type": "string",
-                    "description": "使用的模板名称，如 设备运维, 数字中台, IT运维 等。如果该模板的子代理已存在，会自动复用"
+                    "description": "使用的模板名称，必须是以下之一：AI开发团队、代码审查、测试工程师、设备运维、售后客服、数字中台、IT运维。严禁编造不存在的名称！如果该模板的子代理已存在，会自动复用"
                 },
                 "name": {
                     "type": "string",

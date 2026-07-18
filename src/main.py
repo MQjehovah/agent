@@ -637,4 +637,12 @@ async def main():
 
 
 if __name__ == "__main__":
+    # 捕获 anyio cancel scope 跨任务 bug（MCP stdio 引起），不污染终端
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.set_exception_handler(lambda _loop, ctx: (
+        logger.warning(f"事件循环异常(已抑制): {ctx.get('message', '')}")
+        if "cancel scope" in ctx.get("message", "") else
+        logger.warning(f"事件循环异常: {ctx.get('message', '')}")
+    ))
     asyncio.run(main())

@@ -4,6 +4,7 @@
 支持子代理持久化，保持上下文连续性
 """
 import asyncio
+import difflib
 import logging
 import os
 import time
@@ -308,7 +309,7 @@ class SubagentManager:
                 raise ValueError(f"团队 {team_name} 中未找到成员 {member_name}")
             self._team_member_cache[cache_key] = template_data
 
-        workspace = self._team_member_cache[cache_key]["workspace"]
+        workspace = self._team_member_cache[cache_key].get("workspace") or self.parent_workspace or os.getcwd()
         config_dir = self._team_member_cache[cache_key].get("config_dir", "")
 
         agent = Agent(
@@ -369,14 +370,18 @@ class SubagentManager:
         if not self.templates:
             return "没有可用的子代理"
 
-        lines = ["\n\n## 【SubAgent列表】\n"]
-        for key, template_data in self.templates.items():
+        lines = ["\n## SubAgent列表（仅限以下名称，严禁编造）\n"]
+        lines.append("| 名称 | 类型 | 描述 |")
+        lines.append("|------|------|------|")
+        for key, template_data in sorted(self.templates.items()):
             if "/" in key:
                 continue
-            tag = " [团队]" if template_data.get("is_team") else ""
-            lines.append(f"名称：[{template_data['name']}]{tag}\n")
-            lines.append(f"描述：{template_data['description']}\n")
-        lines.append("\n通过subagent工具调用激活\n")
+            tag = "团队" if template_data.get("is_team") else "个人"
+            desc = template_data.get("description", "")[:60]
+            lines.append(f"| {template_data['name']} | {tag} | {desc} |")
+        lines.append("\n**调用方式**: subagent(template=\"名称\", task=\"...\")")
+        lines.append("**所有可用子代理已完整列出在上表中，不要自己去工作目录查找团队成员，直接使用上表中的名称调用 subagent 工具即可**")
+        lines.append("**严禁编造不存在的template名称，template必须严格等于上表列出的名称之一**\n")
         return "\n".join(lines)
 
     def list_templates(self) -> list[str]:
@@ -552,12 +557,15 @@ class SubagentManager:
         # 创建新的子代理（不持锁，因为初始化耗时）
         template_data = self.templates.get(template_name)
         if not template_data:
-            from agent.core import AgentResult
-            return AgentResult(
-                agent_id="",
-                status="failed",
-                result=f"子代理模板 '{template_name}' 未找到，请检查 agents 目录配置"
-            ), False
+            available = list(self.templates.keys())
+            matches = difflib.get_close_matches(template_name, available, n=3, cutoff=0.4)
+            hint = ""
+            if matches:
+                hint = f"，最接近的名称: {', '.join(matches)}"
+            raise ValueError(
+                f"子代理模板 '{template_name}' 未找到{hint}，"
+                f"可用模板: {', '.join(available)}"
+            )
 
         workspace = template_data.get("workspace") or self.parent_workspace or os.getcwd()
         config_dir = template_data.get("config_dir", "")

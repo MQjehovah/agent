@@ -192,11 +192,13 @@ async def execute_subagent(agent, args: dict) -> str:
                     metadata={"stage": stage, "status": status, "info": info, "extra": extra, "team": display_name},
                 )
 
-            result = await agent.subagent_manager._run_team_orchestrator(
+            team_result = await agent.subagent_manager._run_team_orchestrator(
                 task, template_name,
                 client=agent.client,
                 progress_callback=_team_progress,
                 parent_session_id=args.get("session_id", ""))
+            # AgentResult dataclass → 字符串
+            result = team_result.result if hasattr(team_result, 'result') else str(team_result)
         else:
             instance, _ = await agent.subagent_manager.get_or_create_subagent(
                 template=args.get("template", ""),

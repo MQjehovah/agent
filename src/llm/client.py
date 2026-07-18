@@ -11,7 +11,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, R
 from llm.cache import get_cache
 from llm.usage import UsageTracker
 
-LOG_DIR = os.environ.get("AGENT_LOG_DIR") or os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+LOG_DIR = os.environ.get("AGENT_LOG_DIR") or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 api_logger = logging.getLogger("api")

@@ -146,7 +146,7 @@ class Agent:
         self.sandbox = None
 
         # 权限系统
-        from permissions import PermissionChecker, PermissionConfig, PermissionMode
+        from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
         self._permission_config = PermissionConfig(
             mode=PermissionMode(permission_mode)
         )
@@ -333,7 +333,7 @@ class Agent:
         """加载并初始化沙箱中间层"""
         sandbox_config_path = os.path.join(self.config_dir, "sandbox.json")
         try:
-            from sandbox import create_sandbox, load_sandbox_config
+            from security.sandbox import create_sandbox, load_sandbox_config
             config = load_sandbox_config(sandbox_config_path)
             if config:
                 self.sandbox = create_sandbox(config, self.workspace)
