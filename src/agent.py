@@ -376,7 +376,12 @@ class Agent:
             TaskCancelTool=TaskCancelTool(task_manager),
         )
 
+        # ── v2.0: 注册新工具 ──
+        self._init_v2_tools()
+
         self._init_retrieval()
+
+        self._init_code_quality()
 
         logger.info(
             f"Agent [{self.name}] 已注册 {len(self.tool_registry.list_tools())} 个工具: {self.tool_registry.list_tools()}"
@@ -399,6 +404,82 @@ class Agent:
         )
         self.tool_registry.register_tool(tool)
         logger.info(f"Agent [{self.name}] RAG 知识库已接入: {rag_url}")
+
+    def _init_v2_tools(self):
+        """注册 v2.0 新增工具"""
+        try:
+            from tools.code_search import CodeSearchTool
+            code_search = CodeSearchTool()
+            # 如果 ToolRegistry 有 register_tool 方法，直接注册
+            if hasattr(self.tool_registry, 'register_tool'):
+                self.tool_registry.register_tool(code_search)
+        except Exception as e:
+            logger.warning(f"注册 code_search 工具失败: {e}")
+
+        try:
+            from tools.batch_edit import BatchEditTool
+            batch_edit = BatchEditTool()
+            if hasattr(self.tool_registry, 'register_tool'):
+                self.tool_registry.register_tool(batch_edit)
+        except Exception as e:
+            logger.warning(f"注册 batch_edit 工具失败: {e}")
+
+        logger.debug(f"Agent [{self.name}] v2.0 工具已注册")
+
+    def _init_code_quality(self):
+        """初始化代码质量相关模块"""
+        try:
+            # ── .agentignore ──
+            from agent_ignore import AgentIgnore
+            self._agent_ignore = AgentIgnore(self.workspace)
+            self._agent_ignore.inject_into(self.tool_registry)
+
+            # 生成示例文件（如果不存在）
+            if not os.path.exists(os.path.join(self.workspace, ".agentignore")):
+                self._agent_ignore.generate_example(self.workspace)
+        except Exception as e:
+            logger.warning(f"初始化 .agentignore 失败: {e}")
+            self._agent_ignore = None
+
+        try:
+            # ── 熔断器 ──
+            from circuit_breaker import CircuitBreaker
+            self._circuit_breaker = CircuitBreaker(
+                name=f"agent:{self.name}" if self.name else "agent",
+                threshold=5,
+                cooldown=30,
+            )
+        except Exception as e:
+            logger.warning(f"初始化熔断器失败: {e}")
+            self._circuit_breaker = None
+
+        try:
+            # ── Git 集成 ──
+            from git_integration import GitIntegration
+            self._git = GitIntegration(self.workspace)
+        except Exception as e:
+            logger.warning(f"初始化 Git 集成失败: {e}")
+            self._git = None
+
+        try:
+            # ── 代码质量钩子 ──
+            from quality_hooks import CodeQualityHooks
+            self._quality_hooks = CodeQualityHooks(self.workspace)
+            if hasattr(self, 'hooks') and self.hooks:
+                self._quality_hooks.register_all(self.hooks)
+        except Exception as e:
+            logger.warning(f"初始化质量钩子失败: {e}")
+            self._quality_hooks = None
+
+        try:
+            # ── 自动技能路由 ──
+            from auto_skill import AutoSkillActivator
+            self._auto_skill = AutoSkillActivator(self.skill_manager)
+        except Exception as e:
+            logger.warning(f"初始化自动技能路由失败: {e}")
+            self._auto_skill = None
+
+        logger.info(f"Agent [{self.name}] 代码质量模块初始化完成")
 
     def _init_skills(self):
         skills_dir = os.path.join(self.config_dir, "skills")
@@ -873,6 +954,11 @@ class Agent:
         if self.skill_manager:
             self.skill_manager.clear_active_skills()
 
+        # ── v2.0: 自动技能路由 ──
+        if hasattr(self, '_auto_skill') and self._auto_skill:
+            self._auto_skill.reset()
+            await self._auto_skill.activate_for_task(task)
+
         self.tracer.start_trace(f"agent.run: {task[:50]}")
 
         await self.hooks.fire("agent_start", metadata={"task": task})
@@ -1187,7 +1273,14 @@ class Agent:
         return "dingtalk", uid
 
     async def _execute_tool_safe(self, name: str, args: dict) -> str:
-        """带权限检查、沙箱拦截、钩子和错误恢复的工具执行"""
+        """带权限检查、沙箱拦截、钩子、熔断器和错误恢复的工具执行"""
+        # ── v2.0: 熔断器检查 ──
+        cb = getattr(self, '_circuit_breaker', None)
+        if cb and name != "ask_user":
+            if not cb.allow_request():
+                logger.warning(f"熔断器开启，拒绝工具调用: {name}")
+                return cb.get_fallback()
+
         # 权限检查
         perm_result = self.permission.check(name, args)
         if not perm_result:
@@ -1247,6 +1340,11 @@ class Agent:
         try:
             result = await self._execute_tool(name, args)
 
+            # ── v2.0: 熔断器记录成功 ──
+            cb = getattr(self, '_circuit_breaker', None)
+            if cb and name != "ask_user":
+                cb.on_success()
+
             # 跟踪文件读取（用于压缩后恢复）
             if name == "file_operation" and args.get("operation") == "read":
                 path = args.get("path", "")
@@ -1291,12 +1389,21 @@ class Agent:
             return result
         except Exception as e:
             self.tracer.end_span(status="error")
+
+            # ── v2.0: 熔断器记录失败 ──
+            cb = getattr(self, '_circuit_breaker', None)
+            if cb and name != "ask_user":
+                cb.on_failure(e)
+
             logger.error(f"[工具异常] {name} | 错误: {type(e).__name__}: {e}")
             await self.hooks.fire("post_tool_use", tool_name=name,
                                   arguments=args, error=e)
             if self.learner and self._learning_per_round:
                 args_summary = json.dumps(args, ensure_ascii=False)[:100]
                 self.learner.record_failure(name, args_summary, f"{type(e).__name__}: {e}"[:150], current_run().user_id)
+            # 如果熔断器开启，返回降级响应
+            if cb and cb.is_open:
+                return cb.get_fallback(e)
             return json.dumps({
                 "success": False,
                 "error": f"工具执行失败: {type(e).__name__}: {e}"
