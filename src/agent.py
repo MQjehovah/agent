@@ -187,6 +187,9 @@ class Agent:
             "require_approval": True,         # 是否需要用户审批
         }
 
+        # ── Agent 循环模式: "react"(标准ReAct) / "reflective"(计划→执行→评估→调整) ──
+        self.loop_mode = "react"
+
         # ── v2.0: Agent 连接池（团队模式下使用） ──
         self._agent_pool = None
 
@@ -797,6 +800,8 @@ class Agent:
         try:
             if self._is_team and self._team_config and self._team_members:
                 return await self._team_run_impl(task, session_id, user_id, user_name)
+            if self.loop_mode == "reflective":
+                return await self._run_impl_reflective(task, session_id, user_id, user_name, inherited)
             return await self._run_impl(task, session_id, user_id, user_name, inherited)
         finally:
             if hook_token is not None:
@@ -1245,6 +1250,241 @@ class Agent:
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+
+    async def _execute_tool_calls_parallel_reflective(self, tool_calls: list, session) -> bool:
+        """v2: 并行执行工具（返回是否有错误）"""
+        had_errors = False
+        if len(tool_calls) <= 1:
+            for tc in tool_calls:
+                func_name = tc.get("function", {}).get("name", "")
+                func_args = tc.get("function", {}).get("arguments", {})
+                if isinstance(func_args, str):
+                    try:
+                        func_args = json.loads(func_args)
+                    except (json.JSONDecodeError, ValueError):
+                        func_args = {}
+
+                try:
+                    result = await self._execute_tool_safe(func_name, func_args)
+                    session.add_message("tool", str(result), name=func_name,
+                                        tool_call_id=tc.get("id", ""))
+                    had_errors = had_errors or ("工具执行异常" in str(result) or "ERROR" in str(result)[:10])
+                except Exception as e:
+                    logger.error(f"工具执行异常: {e}")
+                    session.add_message("tool", f"工具执行异常: {e}", name=func_name,
+                                        tool_call_id=tc.get("id", ""))
+                    had_errors = True
+            return had_errors
+
+        async def _run_one(tc):
+            func_name = tc.get("function", {}).get("name", "")
+            func_args = tc.get("function", {}).get("arguments", {})
+            if isinstance(func_args, str):
+                try:
+                    func_args = json.loads(func_args)
+                except (json.JSONDecodeError, ValueError):
+                    func_args = {}
+            return tc, await self._execute_tool_safe(func_name, func_args)
+
+        tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
+        had_errors = False
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, item in enumerate(results):
+                tc = tool_calls[i]
+                func_name = tc.get("function", {}).get("name", "")
+                tc_id = tc.get("id", "")
+                if isinstance(item, asyncio.CancelledError):
+                    logger.warning("工具执行被取消")
+                    session.add_message("tool", "工具执行被取消", name=func_name,
+                                        tool_call_id=tc_id)
+                    had_errors = True
+                elif isinstance(item, Exception):
+                    logger.error(f"工具执行异常: {item}")
+                    session.add_message("tool", f"工具执行异常: {item}", name=func_name,
+                                        tool_call_id=tc_id)
+                    had_errors = True
+                else:
+                    _, result = item
+                    session.add_message("tool", str(result), name=func_name,
+                                        tool_call_id=tc_id)
+                    had_errors = had_errors or ("工具执行异常" in str(result) or "ERROR" in str(result)[:10])
+        except asyncio.CancelledError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        return had_errors
+
+
+    async def _run_impl_reflective(self, task: str, session_id: str, user_id: str, user_name: str, inherited: RunContext) -> AgentResult:
+        """reflective 循环：计划 → 执行 → 观察结果 → 评估目标 → 调整计划 → 重复"""
+        rc = current_run()
+        session = rc.session or inherited.session
+        if session and session_id:
+            session.session_id = session_id
+
+        rc.agent_id = self.agent_id
+        ctx = rc
+
+        if not rc.system_prompt:
+            rc.system_prompt = self.system_prompt
+            rc.system_static = self.system_static
+            rc.system_dynamic = self.system_dynamic
+
+        if user_id:
+            ctx.user_id = user_id
+        if user_name:
+            ctx.user_name = user_name
+
+        # v2 phase state machine
+        phase = "plan"
+        plan_rounds = 0
+        execute_rounds = 0
+        max_plan_rounds = 2
+        max_execute_rounds_before_eval = 3
+        plan_prompt_injected = False
+
+        try:
+            i = 0
+            while i < self.max_iterations:
+                if self._shutdown_event and self._shutdown_event.is_set():
+                    ctx.status = "cancelled"
+                    break
+                if self._cancel_flag and self._cancel_flag.is_set():
+                    ctx.status = "cancelled"
+                    break
+
+                try:
+                    ctx_tokens = self.tracer.get_context_stats().get("final", 0)
+                    self.tracer.start_span("agent.think")
+                    usage_summary = self.client.usage_tracker.get_summary()
+                    logger.info(
+                        f"[{self.name}] reflective phase={phase} "
+                        f"第 {i + 1}/{self.max_iterations} 轮 | "
+                        f"ctx {ctx_tokens:,}t | "
+                        f"累计 {usage_summary['total_calls']}次"
+                    )
+
+                    if i > 0:
+                        await self.hooks.fire(
+                            self._hook_event.ROUND_START,
+                            metadata={"iteration": i + 1},
+                        )
+
+                    think_messages = list(session.messages)
+
+                    if phase == "plan" and not plan_prompt_injected:
+                        plan_prompt = (
+                            "【制定计划】请先分析任务，制定一个清晰的执行计划。\n\n"
+                            "计划应包含：\n"
+                            "1. 目标：明确本次任务要达成的目标\n"
+                            "2. 步骤：列出具体执行步骤，每个步骤用什么工具\n"
+                            "3. 预期产出：每个步骤的预期结果\n\n"
+                            "请先输出计划，计划确认后开始执行。"
+                        )
+                        think_messages.append({"role": "user", "content": plan_prompt})
+                        plan_prompt_injected = True
+                        plan_rounds += 1
+
+                    elif phase == "evaluate":
+                        evaluate_prompt = (
+                            "【评估进展】请检查当前执行结果：\n\n"
+                            "1. 目标达成度：已完成了多少？还差什么？\n"
+                            "2. 是否遇到障碍：有什么问题需要解决？\n"
+                            "3. 下一步：\n"
+                            "   - 如果目标已基本达成 → 直接输出最终结果，不要调工具\n"
+                            "   - 如果还有工作要做 → 调整计划后继续执行\n"
+                            "   - 如果方案行不通 → 换一种方案重新来"
+                        )
+                        think_messages.append({"role": "user", "content": evaluate_prompt})
+                        phase = "execute"
+                        execute_rounds = 0
+
+                    elif ctx.retry_context:
+                        think_messages.append({"role": "user", "content": ctx.retry_context})
+                        ctx.retry_context = ""
+
+                    response = await self._think(think_messages)
+                    self.tracer.end_span()
+
+                    msg = response.get("message", {})
+                    content = msg.get("content") or ""
+                    if content:
+                        await self.hooks.fire(
+                            self._hook_event.LLM_RESPONSE,
+                            content=content,
+                            reasoning=getattr(msg, "reasoning_content", None) or "",
+                        )
+
+                    session.add_message(
+                        "assistant",
+                        msg.get("content") or "",
+                        tool_calls=msg.get("tool_calls"),
+                        reasoning_content=msg.get("reasoning_content")
+                    )
+
+                    if msg.get("tool_calls"):
+                        had_errors = await self._execute_tool_calls_parallel_reflective(
+                            msg["tool_calls"], session
+                        )
+                        ctx.consecutive_errors = 0
+                        execute_rounds += 1
+
+                        if phase == "plan":
+                            phase = "execute"
+
+                        if execute_rounds >= max_execute_rounds_before_eval:
+                            phase = "evaluate"
+
+                        i += 1
+                        continue
+
+                    if msg.get("content"):
+                        if phase == "plan" and plan_rounds <= max_plan_rounds:
+                            phase = "execute"
+                            i += 1
+                            continue
+                        else:
+                            ctx.status = "completed"
+                            ctx.result = msg.get("content")
+                            ctx.retry_context = ""
+                            break
+
+                    i += 1
+
+                except Exception as e:
+                    ctx.consecutive_errors += 1
+                    logger.error(f"Agent [{self.name}] reflective 第 {i+1} 轮出错: {e}")
+                    self.tracer.end_span(status="error")
+
+                    if ctx.consecutive_errors >= 3:
+                        ctx.status = "failed"
+                        ctx.result = f"连续 {ctx.consecutive_errors} 次出错"
+                        break
+
+                    ctx.retry_context = f"上一轮出错: {e}，请用其他方式继续。"
+                    i += 1
+                    continue
+            else:
+                if ctx.status == "pending":
+                    ctx.status = "max_iterations"
+                    ctx.result = "达到最大迭代次数"
+                    logger.warning(f"Agent [{self.name}] reflective max iterations")
+
+        except asyncio.CancelledError:
+            logger.warning(f"Agent [{self.name}] reflective 被取消")
+            ctx.status = "cancelled"
+        except Exception as e:
+            ctx.status = "failed"
+            logger.error(f"Agent [{self.name}] reflective 失败: {e}")
+
+        return AgentResult(
+            agent_id=self.agent_id,
+            status=ctx.status,
+            result=ctx.result or "",
+        )
 
     def _parse_user_id(self) -> tuple[str, str]:
         uid = current_run().user_id

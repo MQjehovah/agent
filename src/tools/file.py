@@ -118,6 +118,17 @@ class FileTool(BuiltinTool):
                     "error": f"路径超出工作目录范围: {path}，工作目录: {self.workspace}"
                 }, ensure_ascii=False)
 
+            # 写操作前自动备份
+            if operation in ("write", "append", "delete") and os.path.exists(path):
+                try:
+                    from undo_manager import UndoManager
+                    mgr = UndoManager(self.workspace)
+                    with open(path, encoding=encoding, errors="replace") as f:
+                        original = f.read()
+                    await mgr.snapshot_before_edit(path, original)
+                except Exception as e:
+                    logger.debug(f"自动备份失败: {e}")
+
             if operation == "read":
                 return self._read_file(path, encoding, offset, limit)
             elif operation == "preview":

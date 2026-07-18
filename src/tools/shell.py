@@ -4,6 +4,7 @@ import contextlib
 import json
 import logging
 import os
+import shlex
 import subprocess
 import threading
 
@@ -128,10 +129,19 @@ class ShellTool(BuiltinTool):
         try:
             env = {**os.environ, **extra_env} if extra_env else None
 
+            # 将命令字符串拆分为参数列表（避免 shell=True 的安全风险）
+            # 兼容 Windows 和 Unix 路径
+            try:
+                cmd_args = shlex.split(command, posix=(os.name != 'nt'))
+                if not cmd_args:
+                    cmd_args = [command]
+            except Exception:
+                cmd_args = command if isinstance(command, list) else [command]
+
             def _run_sync():
                 proc = subprocess.Popen(
-                    command,
-                    shell=True,
+                    cmd_args,
+                    shell=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=cwd,
