@@ -2,10 +2,11 @@ import re
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import to_filter
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout.containers import HSplit, VSplit, Window
@@ -19,6 +20,58 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+# ── 命令列表（带描述） ─────────────────────────────
+
+_COMMANDS = {
+    "/help": "显示帮助信息",
+    "/prompt": "查看/修改系统提示词",
+    "/tools": "列出可用工具",
+    "/skills": "列出已加载技能",
+    "/cancel": "中断当前任务",
+    "/quit": "退出程序",
+    "/exit": "退出程序",
+    "/q": "退出程序（简写）",
+    "/bind": "绑定外部会话（飞书/钉钉）",
+    "/unbind": "解绑外部会话",
+    "/usage": "查看 token 用量统计",
+    "/sessions": "列出所有会话",
+    "/session": "查看/切换当前会话",
+    "/messages": "查看当前会话消息",
+    "/subagents": "列出子代理",
+    "/subagents all": "列出全部子代理实例",
+    "/subagents clear": "清理空闲子代理",
+    "/cache": "查看缓存状态",
+    "/cache clear": "清空 LLM 缓存",
+    "/loglevel": "设置日志级别",
+    "/panel": "打开团队任务面板",
+    "/panel add": "面板中添加任务",
+    "/panel rm": "面板中移除任务",
+    "/panel clear": "清空面板任务",
+    "/tasks": "查看后台任务",
+}
+
+
+class CommandCompleter(Completer):
+    """智能命令补全：输入 / 时弹出所有命令，继续输入则模糊匹配"""
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+
+        # 只在输入 `/` 开头时触发补全
+        if not text.startswith("/"):
+            return
+
+        # 按前缀模糊匹配（区分大小写）
+        for cmd, desc in sorted(_COMMANDS.items(), key=lambda x: len(x[0])):
+            if text == "/":
+                # 只输入 / 时显示全部命令
+                yield Completion(cmd, start_position=-len(text),
+                                 display=cmd, display_meta=desc)
+            elif cmd.startswith(text):
+                yield Completion(cmd, start_position=-len(text),
+                                 display=cmd, display_meta=desc)
+
+
 class ChatLayout:
     """Full-screen chat layout with scrollable output, input line, and status bar."""
 
@@ -30,16 +83,17 @@ class ChatLayout:
         self._exit_callback = None
         self._input_locked = False
 
-        # Output — NOT read_only so cursor movement scrolls
+        # Output
         self._output_lines: list[str] = []
         self._output_buffer = Buffer()
 
-        # Input
-        from .input import _COMMANDS
+        # Input — with history for ↑↓ navigation, and custom completer for / commands
+        self._input_history = InMemoryHistory()
         self._input_buffer = Buffer(
             multiline=False,
-            completer=WordCompleter(_COMMANDS, match_middle=False),
+            completer=CommandCompleter(),
             complete_while_typing=True,
+            history=self._input_history,
         )
 
         # Ask-mode: ↑↓ select, Enter confirm
@@ -98,8 +152,8 @@ class ChatLayout:
                 self._ask_selected = max(0, self._ask_selected - 1)
                 self._input_buffer.text = self._ask_options[self._ask_selected]
                 return
-            # Normal: let input buffer handle history / cursor
-            event.app.layout.current_buffer.cursor_up(1)
+            # 正常模式：浏览输入历史（↑）
+            self._input_buffer.history_backward()
 
         @kb.add("down")
         def _down(event):
@@ -107,7 +161,8 @@ class ChatLayout:
                 self._ask_selected = min(len(self._ask_options) - 1, self._ask_selected + 1)
                 self._input_buffer.text = self._ask_options[self._ask_selected]
                 return
-            event.app.layout.current_buffer.cursor_down(1)
+            # 正常模式：浏览输入历史（↓）
+            self._input_buffer.history_forward()
 
         @kb.add("pageup")
         def _page_up(event):
@@ -124,6 +179,21 @@ class ChatLayout:
         @kb.add(Keys.ScrollDown)
         def _scroll_down(event):
             self._output_buffer.cursor_down(3)
+
+        @kb.add("tab")
+        def _tab_complete(event):
+            """Tab 触发补全菜单"""
+            b = event.app.layout.current_buffer
+            if b.complete_state:
+                b.complete_next()
+            else:
+                b.start_completion(select_first=True)
+
+        @kb.add("s-tab")
+        def _tab_complete_previous(event):
+            b = event.app.layout.current_buffer
+            if b.complete_state:
+                b.complete_previous()
 
         @kb.add("enter")
         def _submit(event):
@@ -184,7 +254,7 @@ class ChatLayout:
         header = Window(
             FormattedTextControl(
                 HTML(f'<style fg="ansicyan" bold="true"> ◆ {self._agent_name}</style>'
-                     f' <style fg="gray">│ ↑↓PgUp/PgDn滚动 │ Enter发送</style>'),
+                     f' <style fg="gray">│ ↑↓历史 │ Tab补全 │ Enter发送</style>'),
             ),
             height=1,
             style="bg:#ansibrightblack",
