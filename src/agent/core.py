@@ -176,7 +176,9 @@ class Agent:
         self.rbac = None
 
         from settings import get_settings
+        self._learning_enabled = get_settings().get("learning.enabled", False)
         self._learning_per_round = get_settings().get("learning.per_round", False)
+        self._learning_auto_create = get_settings().get("learning.auto_create", False)
         self._is_team = False
         self._team_config: dict = {}
         self._team_members: dict = {}
@@ -536,38 +538,36 @@ class Agent:
     def _init_memory(self):
         from memory import MemoryManager
         if self.parent_agent and self.parent_agent.memory:
-            # 子 agent 复用父 memory（DB 统一，按 user_id 隔离）
             self.memory = self.parent_agent.memory
         else:
             from storage.storage import get_storage
             self.memory = MemoryManager(storage=get_storage(), agent_id=self.agent_id)
 
-        # 初始化自学习模块
-        self.learner = Learner(
-            memory_manager=self.memory,
-            llm_client=self.client,
-            agent_id=self.agent_id,
-        )
-
-        # 初始化自动创建模块（仅主代理）
-        if not self.parent_agent:
-            self.learner.init_auto_creation(
-                workspace=self.config_dir,
-                skill_manager=self.skill_manager,
-                subagent_manager=self.subagent_manager,
+        if self._learning_enabled:
+            self.learner = Learner(
+                memory_manager=self.memory,
+                llm_client=self.client,
+                agent_id=self.agent_id,
             )
-            # 主 agent 初始化 curator（定时提炼通用知识）
-            from memory.curator import MemoryCurator
-            from storage.storage import get_storage
-            self.curator = MemoryCurator(storage=get_storage(), llm_client=self.client)
-            self.learner.set_curator(self.curator)
+
+            if not self.parent_agent:
+                if self._learning_auto_create:
+                    self.learner.init_auto_creation(
+                        workspace=self.config_dir,
+                        skill_manager=self.skill_manager,
+                        subagent_manager=self.subagent_manager,
+                    )
+                from memory.curator import MemoryCurator
+                from storage.storage import get_storage
+                self.curator = MemoryCurator(storage=get_storage(), llm_client=self.client)
+                self.learner.set_curator(self.curator)
+                self.learner.start_daily_task()
+        else:
+            self.learner = None
 
         memory_tool = self.tool_registry.get_tool("memory")
         if memory_tool and hasattr(memory_tool, 'set_memory_manager'):
             memory_tool.set_memory_manager(self.memory)
-
-        if not self.parent_agent:
-            self.learner.start_daily_task()
 
     # ------------------------------------------------------------------ #
     #  Prompt 分层拼装
@@ -857,7 +857,7 @@ class Agent:
             self.subagent_manager.stop_cleanup_task()
             await self.subagent_manager.cleanup_all()
 
-        if self.memory and not self.parent_agent:
+        if self.learner and self.memory and not self.parent_agent:
             self.learner.stop_daily_task()
         if self.mcp:
             try:

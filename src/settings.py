@@ -51,7 +51,9 @@ _DEFAULTS = {
         "token": "",
     },
     "learning": {
+        "enabled": False,
         "per_round": False,
+        "auto_create": False,
     },
     "memory": {
         "injection_limit": 24,

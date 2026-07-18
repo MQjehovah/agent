@@ -330,7 +330,9 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                     try:
                         await execute_tool_calls_parallel(agent, msg["tool_calls"], session)
                     except BaseException:
-                        # 事务回滚：移除刚才添加的 assistant(tool_calls) 消息
+                        # 事务回滚：移除刚添加的 assistant(tool_calls) 及其后所有 tool 消息
+                        while session.messages and session.messages[-1].get("role") == "tool":
+                            session.messages.pop()
                         if session.messages and session.messages[-1].get("role") == "assistant":
                             session.messages.pop()
                         raise
@@ -540,6 +542,8 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                     try:
                         had_errors = await execute_tool_calls_parallel_reflective(agent, msg["tool_calls"], session)
                     except BaseException:
+                        while session.messages and session.messages[-1].get("role") == "tool":
+                            session.messages.pop()
                         if session.messages and session.messages[-1].get("role") == "assistant":
                             session.messages.pop()
                         raise

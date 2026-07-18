@@ -13,7 +13,9 @@
         "connect_timeout": 30
     },
     "learning": {
-        "per_round": true
+        "enabled": false,
+        "per_round": false,
+        "auto_create": false
     },
     "session": {
         "ttl_seconds": 3600,

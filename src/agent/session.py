@@ -279,7 +279,19 @@ class AgentSessionManager:
 
     @staticmethod
     def cleanup_orphaned_tool_calls(messages: list) -> list:
-        """清理孤立的 tool_calls：移除那些没有对应 tool 响应的 tool_calls。"""
+        """清理孤立的 tool_calls 和 tool response：
+        - 移除没有对应 tool response 的 tool_calls
+        - 移除没有对应 assistant tool_calls 的 tool response
+        """
+        # 第一遍：构建所有有效 tool_call_id 的集合
+        valid_ids = set()
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    tid = tc.get("id", "")
+                    if tid:
+                        valid_ids.add(tid)
+
         result = list(messages)
         i = 0
         while i < len(result):
@@ -303,6 +315,12 @@ class AgentSessionManager:
                     else:
                         result.pop(i)
                         i -= 1
+            elif msg.get("role") == "tool":
+                tid = msg.get("tool_call_id", "")
+                if tid and tid not in valid_ids:
+                    logger.warning(f"清理孤儿 tool response: {tid[:16]}")
+                    result.pop(i)
+                    i -= 1
             i += 1
         return result
 
