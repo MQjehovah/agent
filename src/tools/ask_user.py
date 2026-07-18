@@ -82,7 +82,7 @@ class AskUserTool(BuiltinTool):
         mode = _ask_mode.get()
         if mode == "auto":
             answer = default or ""
-            logger.info(f"ask_user: auto 模式，使用默认值: {answer}")
+            logger.warning(f"ask_user: 意外进入 auto 模式(默认值={answer}), question={question[:60]}")
             return json.dumps({
                 "success": True,
                 "question": question,

@@ -8,7 +8,7 @@ import time
 from .layout import ChatLayout
 from .output import Display, _fmt_args
 from .status import StatusBar
-from .styles import CYAN, DIM, GRAY, GREEN, RESET
+from .styles import CYAN, DIM, GRAY, RESET
 
 logger = logging.getLogger("agent.tui")
 
@@ -99,7 +99,7 @@ class TUIApp:
         self.chat.on_exit(lambda: self._shutdown.set())
 
     def _on_input_submit(self, text: str):
-        self.chat.append_output(f"  {GREEN}❯{RESET} {text}")
+        self.display.user_message(text)
         self._input_queue.put_nowait(text)
 
     # ── setup ────────────────────────────────────────────────────
@@ -123,7 +123,8 @@ class TUIApp:
             self.state.task_active = True
 
         def _on_tool_result(ctx):
-            pass
+            if ctx.tool_name == "ask_user":
+                self.chat.end_ask()
 
         def _on_round_start(ctx):
             it = (ctx.metadata or {}).get("iteration", 0)
@@ -179,10 +180,12 @@ class TUIApp:
         def _on_llm_response(ctx):
             content = ctx.content or ""
             reasoning = ctx.reasoning or ""
+            agent_label = self.state.agent_name or self._target_agent or (
+                getattr(self.agent, 'name', None) or "助手")
             if reasoning:
-                self.chat.append_output(f"  {DIM}┊ {reasoning.strip()}{RESET}")
+                self.display.assistant_message(f"{agent_label} 思考", reasoning)
             if content:
-                self.chat.append_output(f"  {DIM}┊ {content.strip()}{RESET}")
+                self.display.assistant_message(agent_label, content)
 
         def _on_chat_event(ctx):
             pass
@@ -190,10 +193,11 @@ class TUIApp:
         def _on_subagent_llm_response(ctx):
             content = ctx.content or ""
             reasoning = ctx.reasoning or ""
+            agent_label = self.state.agent_name or "子代理"
             if reasoning:
-                self.chat.append_output(f"  {DIM}┊ {reasoning.strip()}{RESET}")
+                self.display.assistant_message(f"{agent_label} 思考", reasoning)
             if content:
-                self.chat.append_output(f"  {DIM}┊ {content.strip()}{RESET}")
+                self.display.assistant_message(agent_label, content)
 
         def _on_subagent_chat_event(ctx):
             pass
@@ -264,6 +268,7 @@ class TUIApp:
             ctx_tokens=self.state.ctx_tokens,
             tokens=self._fmt_tokens(), cost=self._fmt_cost(),
             session_id=self._session_id,
+            agent_name=self.state.agent_name,
         )
         self._app_task = asyncio.create_task(self.chat.application.run_async())
 
@@ -299,6 +304,7 @@ class TUIApp:
             context=self._context, branch=self._branch,
             ctx_tokens=self.state.ctx_tokens, tokens=self._fmt_tokens(), cost=self._fmt_cost(),
             session_id=self._session_id,
+            agent_name=self.state.agent_name,
         )
         self._set_input_locked(False)
 
@@ -320,7 +326,7 @@ class TUIApp:
         self.status_bar.set_idle(
             context=self._context, branch=self._branch,
             ctx_tokens=self.state.ctx_tokens, tokens=self._fmt_tokens(), cost=self._fmt_cost(),
-            session_id=self._session_id,
+            session_id=self._session_id, agent_name=self.state.agent_name,
         )
         self._set_input_locked(False)
 
@@ -334,6 +340,13 @@ class TUIApp:
                 tool_args=self.state.tool_args, ctx_tokens=self.state.ctx_tokens,
                 model=self.state.model_name, tokens=self._fmt_tokens(),
                 cost=self._fmt_cost(),
+            )
+        else:
+            self.status_bar.set_idle(
+                context=self._context, branch=self._branch,
+                ctx_tokens=self.state.ctx_tokens, tokens=self._fmt_tokens(),
+                cost=self._fmt_cost(), session_id=self._session_id,
+                agent_name=self.state.agent_name,
             )
         self.chat.update_status()
 

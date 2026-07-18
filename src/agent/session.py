@@ -278,6 +278,35 @@ class AgentSessionManager:
         return result
 
     @staticmethod
+    def cleanup_orphaned_tool_calls(messages: list) -> list:
+        """清理孤立的 tool_calls：移除那些没有对应 tool 响应的 tool_calls。"""
+        result = list(messages)
+        i = 0
+        while i < len(result):
+            msg = result[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                tc_ids = {tc.get("id", "") for tc in msg["tool_calls"] if tc.get("id")}
+                if not tc_ids:
+                    i += 1
+                    continue
+                n = 1
+                while i + n < len(result) and result[i + n].get("role") == "tool":
+                    n += 1
+                tool_msgs = result[i + 1:i + n]
+                responded_ids = {m.get("tool_call_id", "") for m in tool_msgs if m.get("tool_call_id")}
+                missing = tc_ids - responded_ids
+                if missing:
+                    logger.warning(f"清理 {len(missing)} 个孤儿 tool_calls")
+                    cleaned = {k: v for k, v in msg.items() if k != "tool_calls"}
+                    if cleaned.get("content"):
+                        result[i] = cleaned
+                    else:
+                        result.pop(i)
+                        i -= 1
+            i += 1
+        return result
+
+    @staticmethod
     async def compress_if_needed(
         messages: list,
         llm_client,
@@ -294,6 +323,9 @@ class AgentSessionManager:
         """
         max_tokens = max_tokens or AgentSessionManager.MAX_CONTEXT_TOKENS
         token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
+
+        # 清理孤儿 tool_calls（assistant(tool_calls) 后缺少对应 tool response）
+        messages = AgentSessionManager.cleanup_orphaned_tool_calls(messages)
 
         # Layer 0: sliding_window — 始终裁剪到窗口大小
         non_system = [m for m in messages if m.get("role") != "system"]

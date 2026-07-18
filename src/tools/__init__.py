@@ -246,7 +246,6 @@ def _find_tool_classes(source: str) -> list[str]:
 # 核心工具
 # 用户交互工具
 from .ask_user import AskUserTool
-from .bind_session import BindSessionTool
 from .edit import EditTool
 from .file import FileTool
 from .glob import GlobTool
@@ -259,8 +258,6 @@ from .memory import MemoryTool
 from .shell import ShellTool
 from .subagent import SubagentTool
 
-# 后台任务工具
-from .task import TaskCancelTool, TaskCreateTool, TaskGetTool, TaskListTool
 from .todo import TodoTool
 
 # Web 工具
@@ -268,10 +265,9 @@ from .web import WebFetchTool, WebSearchTool
 
 __all__ = [
     'ToolRegistry', 'BuiltinTool', 'ToolDefinition',
-    'AskUserTool', 'BindSessionTool',
+    'AskUserTool',
     'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
     'GrepTool', 'GlobTool', 'EditTool',
     'CodeSearchTool', 'BatchEditTool',
     'WebSearchTool', 'WebFetchTool',
-    'TaskCreateTool', 'TaskListTool', 'TaskGetTool', 'TaskCancelTool',
 ]

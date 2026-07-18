@@ -223,11 +223,11 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
     """react 循环：思考 → 执行 → 重复"""
     from agent.core import current_run
     rc = current_run()
-    session = rc.session or inherited.session
+    # 优先使用 RunContext 中的 session（由 agent.run 管理），否则回退
+    session = rc.session
     if session is None:
         session = inherited.session if hasattr(inherited, 'session') and inherited.session else None
     if session is None:
-        # 创建最小 fallback session 避免后续空指针
         from dataclasses import dataclass, field
         @dataclass
         class _MinSession:
@@ -242,10 +242,6 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
         session = _MinSession()
     if session and session_id:
         session.session_id = session_id
-
-    # 确保至少有一条用户消息，防止 LLM API 拒绝空输入
-    if not session.messages:
-        session.add_message("user", task)
 
     rc.agent_id = agent.agent_id
     ctx = rc
@@ -308,6 +304,14 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                 except Exception as e:
                     logger.warning(f"上下文压缩失败(跳过): {e}")
 
+                # 记录上下文 token 数
+                try:
+                    ctx_est = AgentSessionManager.estimate_tokens(
+                        think_messages, agent.tool_defs)
+                    agent.tracer.record_context_size(ctx_est)
+                except Exception:
+                    pass
+
                 response = await think(agent, think_messages)
                 agent.tracer.end_span()
 
@@ -323,7 +327,13 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                                     reasoning_content=msg.get("reasoning_content"))
 
                 if msg.get("tool_calls"):
-                    await execute_tool_calls_parallel(agent, msg["tool_calls"], session)
+                    try:
+                        await execute_tool_calls_parallel(agent, msg["tool_calls"], session)
+                    except BaseException:
+                        # 事务回滚：移除刚才添加的 assistant(tool_calls) 消息
+                        if session.messages and session.messages[-1].get("role") == "assistant":
+                            session.messages.pop()
+                        raise
                     ctx.consecutive_errors = 0
                     i += 1
                     continue
@@ -405,11 +415,10 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
     """reflective 循环：计划 → 执行 → 观察 → 评估 → 调整 → 重复"""
     from agent.core import current_run
     rc = current_run()
-    session = rc.session or inherited.session
+    session = rc.session
     if session is None:
         session = inherited.session if hasattr(inherited, 'session') and inherited.session else None
     if session is None:
-        # 创建最小 fallback session 避免后续空指针
         from dataclasses import dataclass, field
         @dataclass
         class _MinSession:
@@ -424,10 +433,6 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
         session = _MinSession()
     if session and session_id:
         session.session_id = session_id
-
-    # 确保至少有一条用户消息，防止 LLM API 拒绝空输入
-    if not session.messages:
-        session.add_message("user", task)
 
     rc.agent_id = agent.agent_id
     ctx = rc
@@ -509,6 +514,14 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                 except Exception as e:
                     logger.warning(f"上下文压缩失败(跳过): {e}")
 
+                # 记录上下文 token 数
+                try:
+                    ctx_est = AgentSessionManager.estimate_tokens(
+                        think_messages, agent.tool_defs)
+                    agent.tracer.record_context_size(ctx_est)
+                except Exception:
+                    pass
+
                 response = await think(agent, think_messages)
                 agent.tracer.end_span()
 
@@ -524,7 +537,12 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                                     reasoning_content=msg.get("reasoning_content"))
 
                 if msg.get("tool_calls"):
-                    had_errors = await execute_tool_calls_parallel_reflective(agent, msg["tool_calls"], session)
+                    try:
+                        had_errors = await execute_tool_calls_parallel_reflective(agent, msg["tool_calls"], session)
+                    except BaseException:
+                        if session.messages and session.messages[-1].get("role") == "assistant":
+                            session.messages.pop()
+                        raise
                     ctx.consecutive_errors = 0
                     execute_rounds += 1
                     if phase == "plan":

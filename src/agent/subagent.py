@@ -377,7 +377,7 @@ class SubagentManager:
             if "/" in key:
                 continue
             tag = "团队" if template_data.get("is_team") else "个人"
-            desc = template_data.get("description", "")[:60]
+            desc = template_data.get("description", "")[:40]
             lines.append(f"| {template_data['name']} | {tag} | {desc} |")
         lines.append("\n**调用方式**: subagent(template=\"名称\", task=\"...\")")
         lines.append("**所有可用子代理已完整列出在上表中，不要自己去工作目录查找团队成员，直接使用上表中的名称调用 subagent 工具即可**")

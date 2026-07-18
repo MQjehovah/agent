@@ -1,7 +1,7 @@
 import json
 import sys
 
-from .styles import BOLD, DIM, GRAY, GREEN, RED, RESET, YELLOW
+from .styles import BOLD, CYAN, DIM, GRAY, GREEN, RED, RESET, YELLOW
 
 
 def _truncate(text: str, w: int = 60) -> str:
@@ -77,10 +77,25 @@ class Display:
             line += f"  {DIM}{preview}{RESET}"
         self._write(line)
 
+    def user_message(self, text: str):
+        if not text:
+            return
+        self._write(f"  {GREEN}{'━' * 10} 用户 {'━' * (53 - len(text.split(chr(10))[0]))}{RESET}")
+        for line in text.strip().split("\n"):
+            self._write(f"  {GREEN}❯{RESET} {line}")
+
+    def assistant_message(self, agent_name: str, text: str):
+        if not text:
+            return
+        label = agent_name or "助手"
+        self._write(f"  {CYAN}{'━' * 10} {label} {'━' * (53 - len(label))}{RESET}")
+        for line in text.strip().split("\n"):
+            self._write(f"  {CYAN}│{RESET} {line}")
+
     def result_text(self, text: str, elapsed: str = ""):
         if not text:
             return
-        self._write(f"  {DIM}{'━' * 64}{RESET}")
+        self._write(f"  {GREEN}{'━' * 10} 完成 {'━' * 53}{RESET}")
         in_code = False
         for line in text.strip().split("\n"):
             if line.startswith("```"):
@@ -101,7 +116,7 @@ class Display:
                 self._write(f"  {line}")
             else:
                 self._write("")
-        self._write(f"  {DIM}{'━' * 64}{RESET}")
+        self._write(f"  {GREEN}{'━' * 10} 完成 {'━' * 53}{RESET}")
         footer = f"  {GREEN}completed{RESET}"
         if elapsed:
             footer += f" {DIM}in {elapsed}{RESET}"

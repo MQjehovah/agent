@@ -87,8 +87,9 @@ class ChatLayout:
         # Output
         self._output_lines: list[str] = []
         self._output_buffer = Buffer()
-        self._scroll_offset = 0
         self._output_window = None
+        # cursor offset from end; 0 = bottom, positive = scrolled up
+        self._scroll_offset = 0
 
         # Input — with history for ↑↓ navigation, and custom completer for / commands
         self._input_history = InMemoryHistory()
@@ -155,7 +156,6 @@ class ChatLayout:
                 self._ask_selected = max(0, self._ask_selected - 1)
                 self._input_buffer.text = self._ask_options[self._ask_selected]
                 return
-            # 正常模式：浏览输入历史（↑）
             self._input_buffer.history_backward()
 
         @kb.add("down")
@@ -164,38 +164,32 @@ class ChatLayout:
                 self._ask_selected = min(len(self._ask_options) - 1, self._ask_selected + 1)
                 self._input_buffer.text = self._ask_options[self._ask_selected]
                 return
-            # 正常模式：浏览输入历史（↓）
             self._input_buffer.history_forward()
 
         @kb.add("pageup")
         def _page_up(event):
-            self._scroll_offset = max(0, self._scroll_offset - 20)
-            if self._output_window:
-                self._output_window.vertical_scroll = self._scroll_offset
+            text_len = len(self._output_buffer.document.text) if self._output_buffer.document else 0
+            self._scroll_offset = min(text_len, self._scroll_offset + 500)
+            self._rebuild_output()
 
         @kb.add("pagedown")
         def _page_down(event):
-            total = len(self._output_lines)
-            self._scroll_offset = min(total, self._scroll_offset + 20)
-            if self._output_window:
-                self._output_window.vertical_scroll = self._scroll_offset
+            self._scroll_offset = max(0, self._scroll_offset - 500)
+            self._rebuild_output()
 
         @kb.add(Keys.ScrollUp)
         def _scroll_up(event):
-            self._scroll_offset = max(0, self._scroll_offset - 8)
-            if self._output_window:
-                self._output_window.vertical_scroll = self._scroll_offset
+            text_len = len(self._output_buffer.document.text) if self._output_buffer.document else 0
+            self._scroll_offset = min(text_len, self._scroll_offset + 80)
+            self._rebuild_output()
 
         @kb.add(Keys.ScrollDown)
         def _scroll_down(event):
-            total = len(self._output_lines)
-            self._scroll_offset = min(total, self._scroll_offset + 8)
-            if self._output_window:
-                self._output_window.vertical_scroll = self._scroll_offset
+            self._scroll_offset = max(0, self._scroll_offset - 80)
+            self._rebuild_output()
 
         @kb.add("tab")
         def _tab_complete(event):
-            """Tab 触发补全菜单"""
             b = event.app.layout.current_buffer
             if b.complete_state:
                 b.complete_next()
@@ -214,17 +208,13 @@ class ChatLayout:
                 return
             text = self._input_buffer.text
             if self._ask_active and self._ask_options:
-                text = self._ask_options[self._ask_selected]
                 self._input_buffer.text = ""
                 if self._submit_callback:
-                    self._submit_callback(text)
+                    self._submit_callback(text or self._ask_options[self._ask_selected])
                 return
             if not text.strip():
                 return
             self._input_buffer.text = ""
-            self._scroll_offset = len(self._output_lines)
-            if self._output_window:
-                self._output_window.vertical_scroll = self._scroll_offset
             if self._submit_callback:
                 self._submit_callback(text)
 
@@ -254,30 +244,18 @@ class ChatLayout:
 
     def _rebuild_output(self):
         all_text = "\n".join(self._output_lines)
-        total = len(self._output_lines)
-        self._scroll_offset = max(0, min(self._scroll_offset, total))
-        self._output_buffer.set_document(Document(all_text, len(all_text)))
-        if self._output_window:
-            self._output_window.vertical_scroll = self._scroll_offset
+        cursor = max(0, len(all_text) - self._scroll_offset)
+        self._output_buffer.set_document(Document(all_text, cursor_position=cursor))
 
     def append_output(self, text: str = ""):
         self._output_lines.append(strip_ansi(text))
         total = len(self._output_lines)
-        # 超出上限时裁剪顶部
         trimmed = 0
         if total > self._max_lines:
             trimmed = total - self._max_lines
             self._output_lines = self._output_lines[trimmed:]
-            total = self._max_lines
-        self._scroll_offset = max(0, self._scroll_offset - trimmed)
-        # 之前在底部则追新，否则保持当前滚动位置
-        if self._scroll_offset < total - 1:
-            old = self._scroll_offset
-            self._rebuild_output()
-            self._scroll_offset = old
-        else:
-            self._scroll_offset = total
-            self._rebuild_output()
+        self._scroll_offset = 0
+        self._rebuild_output()
         self._app.invalidate()
 
     def update_status(self):

@@ -73,6 +73,8 @@ class RunContext:
     system_dynamic: str = ""
     # 本次任务的过程文件目录（顶层 run 建立，子代理继承）；临时文件写这里，交付物写 workspace
     task_dir: str = ""
+    # 会话对象（复用 session_id 时保留历史消息）
+    session: Any = None
 
 
 # 模块级 ContextVar：run() 内 set()，协程任意位置 get() 取回“当前 run”的上下文。
@@ -375,18 +377,15 @@ class Agent:
 
     def _init_tools(self):
         from tools import ToolRegistry
-        from tools.task import TaskCancelTool, TaskCreateTool, TaskGetTool, TaskListTool
 
         self.tool_registry = ToolRegistry()
         self.tool_registry.workspace = self.workspace
 
-        task_manager = self.task_manager
-        self.tool_registry.auto_discover(
-            TaskCreateTool=TaskCreateTool(task_manager),
-            TaskListTool=TaskListTool(task_manager),
-            TaskGetTool=TaskGetTool(task_manager),
-            TaskCancelTool=TaskCancelTool(task_manager),
-        )
+        self.tool_registry.auto_discover()
+
+        # task/bind_session 是管理命令，不是 LLM 工具，排除
+        self.tool_denylist.update(["task_list", "task_get", "task_create", "task_cancel",
+                                   "bind_session"])
 
         self._init_retrieval()
 
@@ -799,6 +798,10 @@ class Agent:
 
     async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "") -> AgentResult:
         from hooks import get_run_id, reset_run_id, set_run_id
+        # 顶层 agent 重置 ask_user 模式为交互模式
+        if not self.parent_agent:
+            from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+            _ask_token = set_ask_user_mode("interactive")
         # 读取调用方（父级 run）上下文：子代理在同 Task 内 await 执行，可继承父级身份；
         # 顶层调用时返回空 RunContext。
         inherited = current_run()
@@ -815,6 +818,20 @@ class Agent:
         # 使整条调用树共享同一 run_id（配合 HookManager 的 run_id 过滤，杜绝并发串流）。
         hook_token = set_run_id(ctx.run_id) if not get_run_id() else None
 
+        # 会话管理：复用 session_id 保持历史消息
+        if session_id and self.session_manager and not self.parent_agent:
+            sess = await self.session_manager.create_session(
+                session_id=session_id, system_prompt=self.system_prompt or "",
+                agent_id=self.agent_id,
+            )
+            if not sess.messages and self.system_prompt:
+                sess.reset()
+            sess.add_message("user", task)
+            ctx.session = sess
+        elif not self.parent_agent and not session_id:
+            # 无 session_id 的顶层调用：添加用户消息到上下文
+            pass
+
         try:
             if self._is_team and self._team_config and self._team_members:
                 from agent.loop import team_run_impl; return await team_run_impl(self, task, session_id, user_id, user_name)
@@ -822,9 +839,10 @@ class Agent:
                 from agent.loop import run_impl_reflective; return await run_impl_reflective(self, task, session_id, user_id, user_name, inherited)
             from agent.loop import run_impl; return await run_impl(self, task, session_id, user_id, user_name, inherited)
         finally:
+            if not self.parent_agent:
+                reset_ask_user_mode(_ask_token)
             if hook_token is not None:
                 reset_run_id(hook_token)
-            # 恢复父级上下文：避免子代理的 ctx 泄漏到父级 run 的剩余逻辑
             _current_run.reset(run_token)
 
     async def cleanup(self):
