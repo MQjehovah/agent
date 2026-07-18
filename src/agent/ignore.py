@@ -202,20 +202,20 @@ class AgentIgnore:
         # 注入 glob
         glob_tool = tool_registry.get_tool("glob")
         if glob_tool and hasattr(glob_tool, '_original_execute'):
-            return  # 已经注入过了
+            return
         if glob_tool and hasattr(glob_tool, 'execute'):
-            original = glob_tool.execute
+            _glob_original = glob_tool.execute
             async def patched_glob(**kwargs):
-                result = await original(**kwargs)
+                result = await _glob_original(**kwargs)
                 return ai.filter_tool_results("glob", result)
             glob_tool.execute = patched_glob
 
         # 注入 grep
         grep_tool = tool_registry.get_tool("grep")
         if grep_tool and hasattr(grep_tool, 'execute'):
-            original = grep_tool.execute
+            _grep_original = grep_tool.execute
             async def patched_grep(**kwargs):
-                result = await original(**kwargs)
+                result = await _grep_original(**kwargs)
                 return ai.filter_tool_results("grep", result)
             grep_tool.execute = patched_grep
 

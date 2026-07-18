@@ -158,10 +158,9 @@ class TUIApp:
             self.state.tool_count += 1
             self.state.tool_name = ctx.tool_name
             self.state.tool_args = _fmt_args(ctx.arguments or {})
-            self.display.tool_call(ctx.tool_name, ctx.arguments or {}, "sub")
 
         def _on_subagent_tool_result(ctx):
-            self.display.tool_result(ctx.tool_name, ctx.result or "")
+            pass
 
         def _on_subagent_progress(ctx):
             meta = ctx.metadata or {}

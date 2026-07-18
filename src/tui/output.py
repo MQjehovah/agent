@@ -16,6 +16,13 @@ def _truncate(text: str, w: int = 60) -> str:
 def _fmt_args(args: dict) -> str:
     if not args:
         return ""
+    op = args.get("operation", "")
+    if op:
+        for key in ("path", "file_path", "pattern", "name", "command"):
+            val = args.get(key)
+            if val:
+                return f"{op}({str(val)[:40]})"
+        return op
     for key in ("path", "file_path", "pattern", "name", "command"):
         val = args.get(key)
         if val:
