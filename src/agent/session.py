@@ -215,10 +215,23 @@ class AgentSessionManager:
         if not evicted:
             return messages
 
+        summary_prefix = "[早期对话摘要"
+        ack_text = "已了解早期上下文，继续对话。"
+        filtered_evicted = []
+        for m in evicted:
+            content = m.get("content", "")
+            if content.startswith(summary_prefix) or content == ack_text:
+                continue
+            filtered_evicted.append(m)
+
+        # 如果过滤后无可摘要消息，直接返回不滑动（避免空摘要）
+        if not filtered_evicted:
+            return messages
+
         summary_parts = []
         max_chars = AgentSessionManager.SLIDING_WINDOW_SUMMARY_MAX
         char_count = 0
-        for m in evicted:
+        for m in filtered_evicted:
             role = m.get("role", "unknown")
             content = m.get("content", "")
             name = m.get("name", "")
@@ -234,7 +247,7 @@ class AgentSessionManager:
         summary_text = "\n".join(summary_parts)
         summary_msg = {
             "role": "user",
-            "content": f"[早期对话摘要 — {len(evicted)} 条消息已压缩]\n{summary_text}",
+            "content": f"[早期对话摘要 — {len(filtered_evicted)} 条消息已压缩]\n{summary_text}",
         }
         ack_msg = {"role": "assistant", "content": "已了解早期上下文，继续对话。"}
 
@@ -318,7 +331,7 @@ class AgentSessionManager:
             elif msg.get("role") == "tool":
                 tid = msg.get("tool_call_id", "")
                 if tid and tid not in valid_ids:
-                    logger.warning(f"清理孤儿 tool response: {tid[:16]}")
+                    logger.warning(f"清理孤儿 tool response: {tid[:16]}, valid_ids={{{','.join(sorted(valid_ids))[:200]}}}")
                     result.pop(i)
                     i -= 1
             i += 1

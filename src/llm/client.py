@@ -164,15 +164,17 @@ class LLMClient:
 
     @staticmethod
     def _add_prompt_cache(messages: list, model: str) -> list:
-        """为支持 prompt caching 的模型添加缓存标记"""
+        """为支持 prompt caching 的模型添加缓存标记（标注最后一条 system 消息，
+        使其之前的内容包括 tools 均可被缓存）。"""
         cache_models = {"deepseek", "gpt-4", "claude", "glm"}
         if not any(m in model.lower() for m in cache_models):
             return messages
         result = list(messages)
-        for i, msg in enumerate(result):
-            if msg.get("role") == "system" and i < 2:
-                if "cache_control" not in msg:
-                    result[i] = {**msg, "cache_control": {"type": "ephemeral"}}
+        # 从后往前找最后一条 system 消息
+        for i in range(len(result) - 1, -1, -1):
+            if result[i].get("role") == "system":
+                if "cache_control" not in result[i]:
+                    result[i] = {**result[i], "cache_control": {"type": "ephemeral"}}
                 break
         return result
 

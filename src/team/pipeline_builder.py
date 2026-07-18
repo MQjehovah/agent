@@ -66,9 +66,8 @@ def _generate_pipeline_with_llm(task: str, members: dict, llm_client) -> list[di
     """用 LLM 根据需求和可用成员动态生成流水线"""
     member_list = "\n".join(f"- {name}: {m.get('description', '')}" for name, m in members.items())
 
-    prompt = f"""你是一个软件开发流程编排器。根据需求和可用的团队成员，设计最优的执行流水线。
-
-## 需求
+    system_prompt = "你是一个软件开发流程编排器。根据需求和可用的团队成员，设计最优的执行流水线。"
+    user_prompt = f"""## 需求
 {task}
 
 ## 可用团队成员
@@ -105,7 +104,7 @@ def _generate_pipeline_with_llm(task: str, members: dict, llm_client) -> list[di
             return FEEDBACK_PIPELINE
 
         resp = loop.run_until_complete(
-            llm_client.chat([{"role": "user", "content": prompt}])
+            llm_client.chat([{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}])
         )
         content = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
         content = content.strip()
@@ -124,9 +123,8 @@ async def generate_pipeline_async(task: str, members: dict, llm_client) -> list[
     """异步版本的 LLM 动态流水线生成"""
     member_list = "\n".join(f"- {name}: {m.get('description', '')}" for name, m in members.items())
 
-    prompt = f"""你是一个软件开发流程编排器。判断需求类型并设计执行流水线。
-
-## 需求
+    system_prompt = "你是一个软件开发流程编排器。判断需求类型并设计执行流水线。"
+    user_prompt = f"""## 需求
 {task}
 
 ## 可用团队成员
@@ -161,7 +159,7 @@ async def generate_pipeline_async(task: str, members: dict, llm_client) -> list[
 只返回 JSON 数组。"""
 
     try:
-        resp = await llm_client.chat([{"role": "user", "content": prompt}])
+        resp = await llm_client.chat([{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}])
         content = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
         content = content.strip()
         if content.startswith("```"):

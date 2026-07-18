@@ -614,7 +614,7 @@ class TeamOrchestrator:
                 agent.hooks.register(HookEvent.LLM_RESPONSE, lambda _ctx: _cb(
                     "llm", "llm", _ctx.content or "", None))
             _ask_token = set_ask_user_mode("auto")
-            sub_sid = f"{self.parent_session_id}:{role}" if self.parent_session_id else ""
+            sub_sid = f"{self.parent_session_id}:{role}" if self.parent_session_id else f"team:{self.run_id}:{role}"
             try:
                 r = await asyncio.wait_for(
                     agent.run(task_body, session_id=sub_sid,

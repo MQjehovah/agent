@@ -173,21 +173,6 @@ async def execute_subagent(agent, args: dict) -> str:
 
     try:
         if agent.subagent_manager and agent.subagent_manager.is_team(template_name):
-            if args.get("session_id") and agent.session_manager:
-                sess = await agent.session_manager.get_session(args["session_id"])
-                if not sess:
-                    sess = await agent.session_manager.create_session(
-                        agent_id=f"team:{agent_name}", session_id=args["session_id"])
-                    if agent.storage:
-                        try:
-                            msgs = agent.storage.get_messages(args["session_id"])
-                            if msgs:
-                                sess.messages = msgs
-                        except Exception:
-                            pass
-                if sess:
-                    sess.add_message("user", task)
-
             def _team_progress(stage, status, info, extra=None):
                 asyncio.ensure_future(agent.hooks.fire(
                     agent._hook_event.SUBAGENT_PROGRESS,
@@ -213,18 +198,7 @@ async def execute_subagent(agent, args: dict) -> str:
                 parent_agent=agent,
             )
             sub_agent = instance.agent
-            use_sid = instance.session_id
-
-            if args.get("session_id") and agent.session_manager:
-                sess = await agent.session_manager.get_session(args["session_id"])
-                if not sess:
-                    sess = await agent.session_manager.create_session(
-                        agent_id=f"subagent:{display_name}", session_id=args["session_id"])
-                if sess:
-                    sess.add_message("user", task)
-                sub_sid = args["session_id"]
-            else:
-                sub_sid = use_sid
+            sub_sid = instance.session_id
 
             user_id = _current_run().user_id or "cli:admin"
             user_name = _current_run().user_name or "管理员"

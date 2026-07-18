@@ -223,9 +223,9 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
     """react 循环：思考 → 执行 → 重复"""
     from agent.core import current_run
     rc = current_run()
-    # 优先使用 RunContext 中的 session（由 agent.run 管理），否则回退
+    # 优先使用 RunContext 中的 session（由 agent.run 管理），否则创建新 session
     session = rc.session
-    if session is None:
+    if session is None and not agent.parent_agent:
         session = inherited.session if hasattr(inherited, 'session') and inherited.session else None
     if session is None:
         from dataclasses import dataclass, field
@@ -250,6 +250,12 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
         rc.system_prompt = agent.system_prompt
         rc.system_static = agent.system_static
         rc.system_dynamic = agent.system_dynamic
+
+    # 将单 system 消息拆为 static + dynamic 两条（static 可被 prompt cache 命中）
+    if session and session.messages:
+        from agent.core import Agent
+        session.messages = Agent._apply_system_messages(
+            session.messages, rc.system_static, rc.system_dynamic)
 
     if user_id:
         ctx.user_id = user_id
@@ -418,7 +424,7 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
     from agent.core import current_run
     rc = current_run()
     session = rc.session
-    if session is None:
+    if session is None and not agent.parent_agent:
         session = inherited.session if hasattr(inherited, 'session') and inherited.session else None
     if session is None:
         from dataclasses import dataclass, field
@@ -443,6 +449,11 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
         rc.system_prompt = agent.system_prompt
         rc.system_static = agent.system_static
         rc.system_dynamic = agent.system_dynamic
+
+    if session and session.messages:
+        from agent.core import Agent
+        session.messages = Agent._apply_system_messages(
+            session.messages, rc.system_static, rc.system_dynamic)
 
     if user_id:
         ctx.user_id = user_id

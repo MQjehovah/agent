@@ -531,6 +531,7 @@ class Agent:
         agents_dir = os.path.join(self.config_dir, "agents")
         if os.path.exists(agents_dir):
             self.subagent_manager = SubagentManager(agents_dir, parent_workspace=self.workspace)
+            self.subagent_manager._parent_agent = self
             self.subagent_manager.start_cleanup_task()
             logger.info(
                 f"Agent [{self.name}] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {self.subagent_manager.list_templates()}")
@@ -611,18 +612,16 @@ class Agent:
 
         static, dynamic = builder.build()
         full = static + dynamic
+        # 始终写入实例属性（子 agent initialize 时 rc 是父级的，不能依赖它）
+        self._prompt_builder = builder
+        self.system_static = static
+        self.system_dynamic = dynamic
+        self.system_prompt = full
         if rc is not None:
-            # run 内：写入本次 run 的上下文（并发隔离）
             rc.prompt_builder = builder
             rc.system_static = static
             rc.system_dynamic = dynamic
             rc.system_prompt = full
-        else:
-            # initialize 路径：单线程启动期，写入实例属性作为初始值
-            self._prompt_builder = builder
-            self.system_static = static
-            self.system_dynamic = dynamic
-            self.system_prompt = full
 
     def _active_prompt_builder(self):
         """当前 run 的 prompt builder；run 之外回退到实例级（initialize）"""
@@ -680,12 +679,16 @@ class Agent:
         压缩层（sliding_window / context_collapse / compress_if_needed）均按 role
         过滤收集 system 消息，故双 system 安全；唯一曾假设单 system 的就是此调用点。
         """
+        # 无拆分内容时保持原样
+        if not static and not dynamic:
+            return messages
         result = list(messages)
         while result and result[0].get("role") == "system":
             result.pop(0)
         if dynamic:
             result.insert(0, {"role": "system", "content": dynamic})
-        result.insert(0, {"role": "system", "content": static})
+        if static:
+            result.insert(0, {"role": "system", "content": static})
         return result
 
     def _init_task_dir(self, task: str) -> str:
@@ -819,18 +822,21 @@ class Agent:
         hook_token = set_run_id(ctx.run_id) if not get_run_id() else None
 
         # 会话管理：复用 session_id 保持历史消息
-        if session_id and self.session_manager and not self.parent_agent:
+        if session_id and self.session_manager:
             sess = await self.session_manager.create_session(
                 session_id=session_id, system_prompt=self.system_prompt or "",
                 agent_id=self.agent_id,
             )
+            if self.parent_agent:
+                if sess.messages:
+                    old_count = len(sess.messages)
+                    sess.messages = [m for m in sess.messages if m.get("role") == "system"]
+                    if len(sess.messages) != old_count:
+                        logger.debug(f"清除了 {old_count - len(sess.messages)} 条旧消息 (session={session_id[:16]}...)")
             if not sess.messages and self.system_prompt:
                 sess.reset()
             sess.add_message("user", task)
             ctx.session = sess
-        elif not self.parent_agent and not session_id:
-            # 无 session_id 的顶层调用：添加用户消息到上下文
-            pass
 
         try:
             if self._is_team and self._team_config and self._team_members:
