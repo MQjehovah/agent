@@ -179,6 +179,21 @@ class Agent:
         self._team_config: dict = {}
         self._team_members: dict = {}
 
+        # ── v2.0: Plan Mode ──
+        self._plan_mode = None
+        self._enable_plan_mode = True
+        self._plan_mode_config = {
+            "auto_plan": True,               # 自动判断是否进入 Plan Mode
+            "require_approval": True,         # 是否需要用户审批
+        }
+
+        # ── v2.0: Agent 连接池（团队模式下使用） ──
+        self._agent_pool = None
+
+        # ── v2.0: 并行的 TeamOrchestrator ──
+        self._enable_parallel = True
+        self._max_parallel = 4
+
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
         await self._load_team_config()
@@ -728,10 +743,50 @@ class Agent:
             _current_run.reset(run_token)
 
     async def _team_run_impl(self, task: str, session_id: str, user_id: str, user_name: str) -> "AgentResult":
-        """团队模式：通过 TeamOrchestrator 编排成员执行"""
-        from agent import AgentResult
-        from team.orchestrator import TeamOrchestrator
+        """团队模式：通过 TeamOrchestrator 编排成员执行
 
+        v2.0: 集成 Plan Mode、AgentPool、并行执行
+        """
+        from agent import AgentResult
+        from agent_pool import AgentPool
+        from plan_mode import PlanMode
+        from team.orchestrator import TeamOrchestrator
+        from worktree import WorktreeManager
+
+        # ── Plan Mode（先规划，后执行） ──
+        if self._enable_plan_mode and not self._plan_mode:
+            self._plan_mode = PlanMode(
+                client=self.client,
+                workspace=self.workspace,
+                auto_plan=self._plan_mode_config.get("auto_plan", True),
+                require_approval=self._plan_mode_config.get("require_approval", True),
+                on_confirm=self.on_confirm,
+            )
+
+        if self._plan_mode and self._plan_mode.should_plan(task):
+            self.tracer.start_span("plan_mode", attributes={"task": task[:80]})
+            plan = await self._plan_mode.generate_plan(task)
+            approved = await self._plan_mode.present_plan(plan)
+            self.tracer.end_span(status="approved" if approved else "rejected")
+            if not approved:
+                return AgentResult(
+                    agent_id=f"team:{self._team_config.get('name', 'unknown')}",
+                    status="cancelled",
+                    result="计划被用户拒绝，任务已取消",
+                )
+
+        # ── Agent 连接池 ──
+        if not self._agent_pool and self.subagent_manager:
+            self._agent_pool = AgentPool(
+                subagent_manager=self.subagent_manager,
+                max_size=10,
+                default_ttl=300,
+            )
+
+        # ── Worktree 管理器 ──
+        wt_manager = WorktreeManager(self.workspace)
+
+        # ── 初始化并行编排器 ──
         orchestrator = TeamOrchestrator(
             team_name=self._team_config["name"],
             team_config=self._team_config,
@@ -742,14 +797,27 @@ class Agent:
             pipeline_mode=self._team_config.get("pipeline_mode", "auto"),
             progress_callback=getattr(self, '_progress_callback', None),
             parent_session_id=session_id or "",
+            # v2.0 新参数
+            agent_pool=self._agent_pool if hasattr(self, '_agent_pool') else None,
+            worktree_manager=wt_manager,
+            max_parallel=self._max_parallel,
+            enable_parallel=self._enable_parallel,
         )
         try:
             result = await orchestrator.run(task)
             status = "completed" if not result.startswith("ERROR:") else "failed"
+
+            # Plan Mode 完成
+            if self._plan_mode and self._plan_mode.current_plan:
+                self._plan_mode.complete_plan()
+
         except Exception as e:
             logger.error(f"团队编排异常: {e}")
             result = f"团队执行错误: {e}"
             status = "failed"
+
+        # 清理 worktree
+        await wt_manager.cleanup_all()
 
         return AgentResult(
             agent_id=f"team:{self._team_config.get('name', 'unknown')}",
@@ -1459,7 +1527,7 @@ class Agent:
                     if sess:
                         sess.add_message("user", task)
 
-                async def _team_progress(stage: str, status: str, info, extra):
+                async def _team_progress(stage: str, status: str, info, extra=None):
                     await self.hooks.fire(
                         self._hook_event.SUBAGENT_PROGRESS,
                         metadata={"stage": stage, "status": status,

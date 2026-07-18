@@ -2,6 +2,7 @@
 交互模式命令处理器
 """
 import logging
+import os
 import re
 from collections.abc import Callable
 
@@ -77,6 +78,8 @@ class CommandHandler:
             self._clear_cache()
         elif cmd_lower == "/usage":
             self._show_usage()
+        elif cmd_lower == "/tasks":
+            self._show_bg_tasks()
         elif cmd_lower == "/panel":
             self._show_panel()
         elif cmd_lower.startswith("/panel add "):
@@ -100,6 +103,16 @@ class CommandHandler:
                 self._print(f"[green]插件会话已绑定到 CLI ({cid}...)[/green]")
             else:
                 self._print("[red]无法获取 CLI 会话[/red]")
+        elif cmd_lower.startswith("/skillify"):
+            await self._skillify(cmd.strip())
+        elif cmd_lower == "/plan":
+            self._show_plan_mode()
+        elif cmd_lower.startswith("/plan "):
+            await self._set_plan_mode(cmd.strip())
+        elif cmd_lower == "/parallel":
+            self._show_parallel_mode()
+        elif cmd_lower.startswith("/parallel "):
+            await self._set_parallel_mode(cmd.strip())
         elif cmd_lower == "/unbind":
             import sys
             main_mod = sys.modules.get("__main__")
@@ -135,6 +148,11 @@ class CommandHandler:
             ("/sessions", "列出所有会话"),
             ("/session <id>", "查看指定会话详情"),
             ("/messages", "查看当前会话消息"),
+            ("/skillify [name] [desc]", "从当前会话提取工作流为可复用 Skill"),
+            ("/plan", "查看 Plan Mode 状态"),
+            ("/plan on|off|approval|auto", "控制 Plan Mode"),
+            ("/parallel", "查看并行执行状态"),
+            ("/parallel on|off|<N>", "控制并行执行"),
             ("/loglevel <level>", "设置日志级别"),
             ("/cache", "查看缓存统计"),
             ("/cache clear", "清空缓存"),
@@ -275,6 +293,74 @@ class CommandHandler:
         else:
             self._print(f"[red]无效的日志级别: {level}[/red]")
             self._print(f"[yellow]有效值: {', '.join(valid_levels)}[/yellow]")
+
+    # ── v2.0: /skillify ──
+
+    async def _skillify(self, cmd: str):
+        """从当前 session 自动提取工作流为可复用 Skill"""
+        from skillify import Skillifier
+
+        parts = cmd.split(None, 2)
+        skill_name = parts[1] if len(parts) > 1 else ""
+        description = parts[2] if len(parts) > 2 else ""
+
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+
+        skills_dir = ""
+        if self.agent.skill_manager:
+            if hasattr(self.agent.skill_manager, 'skills_dir'):
+                skills_dir = self.agent.skill_manager.skills_dir
+        if not skills_dir and self.agent.config_dir:
+            skills_dir = os.path.join(self.agent.config_dir, "skills")
+
+        if not skills_dir:
+            self._print("[red]技能目录未找到，请指定技能路径[/red]")
+            return
+
+        self._print(f"[cyan]正在从 session [{self.session_id}] 提取技能...[/cyan]")
+        if skill_name:
+            self._print(f"[dim]技能名称: {skill_name}[/dim]")
+
+        skillifier = Skillifier(
+            agent=self.agent,
+            skill_manager=self.agent.skill_manager,
+            skills_dir=skills_dir,
+        )
+
+        try:
+            skill_path = await skillifier.skillify(
+                session_id=self.session_id,
+                skill_name=skill_name,
+                description=description,
+                require_llm=True,
+            )
+            if skill_path:
+                self._print(f"[green]✅ 技能已创建: {skill_path}[/green]")
+
+                # 显示技能内容摘要
+                try:
+                    with open(skill_path, encoding="utf-8") as f:
+                        content = f.read()
+                    self._print(Panel.fit(
+                        content[:1000],
+                        title="技能预览（前 1000 字符）",
+                        border_style="green",
+                    ))
+                except Exception:
+                    pass
+
+                # 提示加载
+                skill_name_only = os.path.basename(os.path.dirname(skill_path))
+                self._print(f"[green]使用 /skills 查看所有技能[/green]")
+                self._print(f"[dim]提示: 下次任务匹配时将自动激活此技能[/dim]")
+            else:
+                self._print("[red]❌ 技能创建失败（session 可能为空或无工具调用记录）[/red]")
+                self._print("[yellow]提示: 需要先执行一些包含工具调用的任务才能提取技能[/yellow]")
+        except Exception as e:
+            self._print(f"[red]❌ 技能提取异常: {e}[/red]")
+            logger.error(f"Skillify error: {e}", exc_info=True)
 
     # ================================================================
     #  任务面板
@@ -511,6 +597,100 @@ class CommandHandler:
                 ctx_table.add_row("最终值", f"{ctx_stats['final']:,}")
                 ctx_table.add_row("平均值", f"{ctx_stats['avg']:,}")
                 self._print(ctx_table)
+
+    # ── v2.0: /plan ──
+
+    def _show_plan_mode(self):
+        """显示 Plan Mode 状态"""
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+        enabled = getattr(self.agent, '_enable_plan_mode', False)
+        require_approval = getattr(self.agent, '_plan_mode_config', {}).get("require_approval", True)
+        plan_mode = getattr(self.agent, '_plan_mode', None)
+        status = "🟢 已启用" if enabled else "🔴 已禁用"
+        approval = "需要审批" if require_approval else "自动通过"
+        self._print(f"[cyan]Plan Mode: {status}[/cyan]")
+        self._print(f"[dim]审批模式: {approval}[/dim]")
+        if plan_mode and plan_mode.current_plan:
+            plan = plan_mode.current_plan
+            self._print(f"[yellow]当前计划: {plan.title}[/yellow]")
+            self._print(f"[dim]步骤数: {len(plan.steps)}, 状态: {plan.status}[/dim]")
+        else:
+            self._print("[dim]当前无活跃计划[/dim]")
+        self._print("[dim]/plan on | /plan off | /plan approval | /plan auto[/dim]")
+
+    async def _set_plan_mode(self, cmd: str):
+        """设置 Plan Mode"""
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+        parts = cmd.split(None, 1)
+        setting = parts[1].lower() if len(parts) > 1 else ""
+        if setting == "on":
+            self.agent._enable_plan_mode = True
+            if not self.agent._plan_mode:
+                from plan_mode import PlanMode
+                self.agent._plan_mode = PlanMode(
+                    client=self.agent.client,
+                    workspace=self.agent.workspace,
+                    on_confirm=self.agent.on_confirm,
+                )
+            self._print("[green]✅ Plan Mode 已启用[/green]")
+        elif setting == "off":
+            self.agent._enable_plan_mode = False
+            self._print("[yellow]Plan Mode 已禁用[/yellow]")
+        elif setting == "approval":
+            if not hasattr(self.agent, '_plan_mode_config'):
+                self.agent._plan_mode_config = {}
+            self.agent._plan_mode_config["require_approval"] = True
+            self._print("[green]✅ 计划需审批[/green]")
+        elif setting == "auto":
+            if not hasattr(self.agent, '_plan_mode_config'):
+                self.agent._plan_mode_config = {}
+            self.agent._plan_mode_config["require_approval"] = False
+            self._print("[yellow]计划自动通过（无需审批）[/yellow]")
+        else:
+            self._print(f"[red]未知设置: {setting}[/red]")
+            self._print("[dim]/plan on | /plan off | /plan approval | /plan auto[/dim]")
+
+    # ── v2.0: /parallel ──
+
+    def _show_parallel_mode(self):
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+        enabled = getattr(self.agent, '_enable_parallel', False)
+        max_p = getattr(self.agent, '_max_parallel', 4)
+        pool = getattr(self.agent, '_agent_pool', None)
+        status = "🟢 已启用" if enabled else "🔴 已禁用"
+        pool_info = f", Agent 池大小: {pool.total_created}, 空闲: {pool.idle_count}, 忙碌: {pool.busy_count}" if pool else ", Agent 池: 未创建"
+        self._print(f"[cyan]并行模式: {status}[/cyan]")
+        self._print(f"[dim]最大并行度: {max_p}{pool_info}[/dim]")
+        self._print("[dim]/parallel on | /parallel off | /parallel N (设置并行度)[/dim]")
+
+    async def _set_parallel_mode(self, cmd: str):
+        if not self.agent:
+            self._print("[red]Agent 未初始化[/red]")
+            return
+        parts = cmd.split(None, 1)
+        setting = parts[1].lower() if len(parts) > 1 else ""
+        if setting == "on":
+            self.agent._enable_parallel = True
+            self._print("[green]✅ 并行模式已启用[/green]")
+        elif setting == "off":
+            self.agent._enable_parallel = False
+            self._print("[yellow]并行模式已禁用（回退到串行）[/yellow]")
+        elif setting.isdigit():
+            n = int(setting)
+            if 1 <= n <= 16:
+                self.agent._max_parallel = n
+                self._print(f"[green]✅ 最大并行度已设为 {n}[/green]")
+            else:
+                self._print("[red]并行度范围: 1-16[/red]")
+        else:
+            self._print(f"[red]未知设置: {setting}[/red]")
+            self._print("[dim]/parallel on | /parallel off | /parallel N[/dim]")
 
     def _show_bg_tasks(self):
         """显示后台任务列表"""
