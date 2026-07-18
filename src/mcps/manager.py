@@ -57,18 +57,14 @@ class MCPServerConnection:
 
         try:
             self._exit_stack = AsyncExitStack()
-            await asyncio.wait_for(
-                self._exit_stack.__aenter__(),
-                timeout=timeout
-            )
+            async with asyncio.timeout(timeout):
+                await self._exit_stack.__aenter__()
 
             try:
-                stdio_transport = await asyncio.wait_for(
-                    self._exit_stack.enter_async_context(
+                async with asyncio.timeout(timeout):
+                    stdio_transport = await self._exit_stack.enter_async_context(
                         stdio_client(server_params, errlog=subprocess.DEVNULL),
-                    ),
-                    timeout=timeout
-                )
+                    )
             except (asyncio.TimeoutError, asyncio.CancelledError) as e:
                 logger.error(f"✗ MCP [{self.name}] 连接超时或被取消: {e}")
                 await self._safe_exit_stack_cleanup()
@@ -109,8 +105,8 @@ class MCPServerConnection:
         if self._exit_stack:
             try:
                 await asyncio.shield(self._exit_stack.__aexit__(None, None, None))
-            except BaseException:
-                pass
+            except (RuntimeError, asyncio.CancelledError, BaseException) as e:
+                logger.debug(f"MCP [{self.name}] 清理异常(可忽略): {e}")
             finally:
                 self._exit_stack = None
                 self.session = None

@@ -110,12 +110,14 @@ class AgentIgnore:
         home_ignore = os.path.join(os.path.expanduser("~"), ".agentignore")
         if os.path.isfile(home_ignore):
             ignore_files.append(home_ignore)
-        # 项目级
+        # 项目级（优先 .agent/ 子目录，兼容工作空间根目录）
         if self.workspace:
             for fname in (".agentignore", ".grokignore"):
-                fpath = os.path.join(self.workspace, fname)
-                if os.path.isfile(fpath):
-                    ignore_files.append(fpath)
+                for sub in (".agent", "."):
+                    fpath = os.path.join(self.workspace, sub, fname)
+                    if os.path.isfile(fpath):
+                        ignore_files.append(fpath)
+                        break
 
         for fpath in ignore_files:
             try:
@@ -283,7 +285,9 @@ build/
 # 例外：如果想允许某些被排除的文件，用 ! 开头
 # !.env.example
 """
-        path = os.path.join(workspace, ".agentignore")
+        agent_dir = os.path.join(workspace, ".agent")
+        os.makedirs(agent_dir, exist_ok=True)
+        path = os.path.join(agent_dir, ".agentignore")
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)

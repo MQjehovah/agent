@@ -423,7 +423,8 @@ class Agent:
             self._agent_ignore.inject_into(self.tool_registry)
 
             # 生成示例文件（如果不存在）
-            if not os.path.exists(os.path.join(self.workspace, ".agentignore")):
+            agent_dir = os.path.join(self.workspace, ".agent")
+            if not os.path.exists(os.path.join(agent_dir, ".agentignore")):
                 self._agent_ignore.generate_example(self.workspace)
         except Exception as e:
             logger.warning(f"初始化 .agentignore 失败: {e}")
@@ -689,13 +690,18 @@ class Agent:
         return result
 
     def _init_task_dir(self, task: str) -> str:
-        """过程文件目录：workspace/.agent/tmp/，每次顶层 run 启动时清空"""
+        """初始化临时目录和产出目录：
+        - workspace/.agent/tmp/ — 过程/临时文件，每次 run 清空
+        - workspace/.agent/report/ — 报告/文档等有效产出，不清空
+        """
         import shutil
         tdir = os.path.join(self.workspace, ".agent", "tmp")
+        rdir = os.path.join(self.workspace, ".agent", "report")
         try:
             if os.path.isdir(tdir):
                 shutil.rmtree(tdir)
             os.makedirs(tdir, exist_ok=True)
+            os.makedirs(rdir, exist_ok=True)
         except Exception as e:
             logger.warning(f"重置临时目录失败: {e}")
         return tdir
@@ -729,7 +735,10 @@ class Agent:
         base = self._env_context_cache
         task_dir = current_run().task_dir
         if task_dir:
-            return base + f"\n临时文件目录: {task_dir}（过程/临时文件写这里；交付物写工作目录）"
+            report_dir = os.path.join(self.workspace, ".agent", "report")
+            return (base
+                    + f"\n临时文件目录: {task_dir}（过程/临时文件写这里）"
+                    + f"\n有效产出目录: {report_dir}（报告、文档等最终成果写这里）")
         return base
 
     def _get_tool_summary(self) -> str:

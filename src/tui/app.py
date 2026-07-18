@@ -6,7 +6,7 @@ import threading
 import time
 
 from .layout import ChatLayout
-from .output import Display, _fmt_args, _truncate
+from .output import Display, _fmt_args
 from .status import StatusBar
 from .styles import CYAN, DIM, GRAY, GREEN, RESET
 
@@ -177,12 +177,17 @@ class TUIApp:
                 self.state.stage_max_iter = extra if isinstance(extra, (int, float)) else 0
 
         def _on_llm_response(ctx):
+            content = ctx.content or ""
             reasoning = ctx.reasoning or ""
+            lines = []
             if reasoning:
                 for line in reasoning.strip().split("\n")[-2:]:
-                    t = _truncate(line, 100)
-                    if t:
-                        self.chat.append_output(f"  {DIM}┊ {t}{RESET}")
+                    if line.strip():
+                        lines.append(f"  {DIM}┊ {line.strip()[:120]}{RESET}")
+            if content:
+                lines.append(f"  {DIM}┊ {content.strip()[:120]}{RESET}")
+            if lines:
+                self.chat.append_output("\n".join(lines))
 
         def _on_chat_event(ctx):
             pass
@@ -359,7 +364,12 @@ class TUIApp:
     # ── spinner ─────────────────────────────────────────────────
 
     async def run_spinner(self):
+        _refresh_ts = 0.0
         while self.state.task_active and not self._shutdown.is_set():
+            now = time.time()
+            if now - _refresh_ts > 2.0:
+                self._update_token_stats()
+                _refresh_ts = now
             self.update_status()
             elapsed = time.time() - self.state.task_start_ts
             ch = _SPINNER_CHARS[int(time.time() * 10) % 10]
@@ -421,12 +431,15 @@ class TUIApp:
             return
         try:
             tracker = getattr(self.agent.client, 'usage_tracker', None)
-            if tracker is None:
-                return
-            u = tracker.get_summary()
-            self.state.total_prompt = u.get("total_prompt_tokens", 0)
-            self.state.total_completion = u.get("total_completion_tokens", 0)
-            self.state.total_cost = u.get("total_cost_cny", 0.0)
+            if tracker is not None:
+                u = tracker.get_summary()
+                self.state.total_prompt = u.get("total_prompt_tokens", 0)
+                self.state.total_completion = u.get("total_completion_tokens", 0)
+                self.state.total_cost = u.get("total_cost_cny", 0.0)
+            tracer = getattr(self.agent, 'tracer', None)
+            if tracer is not None:
+                cs = tracer.get_context_stats()
+                self.state.ctx_tokens = cs.get("final", 0)
         except Exception as e:
             logger.warning(f"更新用量统计失败: {e}")
 
