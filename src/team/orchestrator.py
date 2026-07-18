@@ -709,16 +709,15 @@ class TeamOrchestrator:
         self.workspace = workspace
         from agent.core import current_run
         task_dir = current_run().task_dir
+        task_slug = ""
+        if self.context and getattr(self.context, "original_task", ""):
+            task_slug = re.sub(r"[^\w一-鿿]+", "_", self.context.original_task)[:20].strip("_")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_id = f"{ts}_{task_slug}" if task_slug else ts
         if task_dir:
             self.artifacts_dir = task_dir
-            self.run_id = os.path.basename(os.path.dirname(task_dir))
         else:
-            task_slug = ""
-            if self.context and getattr(self.context, "original_task", ""):
-                task_slug = re.sub(r"[^\w一-鿿]+", "_", self.context.original_task)[:20].strip("_")
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.run_id = f"{ts}_{task_slug}" if task_slug else ts
-            self.artifacts_dir = os.path.join(workspace, ".agent", self.run_id, "artifacts")
+            self.artifacts_dir = os.path.join(workspace, ".agent", self.run_id)
             os.makedirs(self.artifacts_dir, exist_ok=True)
         logger.info(f"工作目录: {self.workspace}, 本次产物目录: {self.artifacts_dir}")
 

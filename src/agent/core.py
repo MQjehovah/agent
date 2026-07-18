@@ -689,14 +689,15 @@ class Agent:
         return result
 
     def _init_task_dir(self, task: str) -> str:
-        """顶层任务建立过程文件目录：workspace/.agent/{时间戳}_{任务摘要}/artifacts/"""
-        from datetime import datetime
-        slug = re.sub(r"[^\w一-鿿]+", "_", task)[:20].strip("_")
-        tdir = os.path.join(self.workspace, ".agent", f"{datetime.now():%Y%m%d_%H%M%S}_{slug}", "artifacts")
+        """过程文件目录：workspace/.agent/tmp/，每次顶层 run 启动时清空"""
+        import shutil
+        tdir = os.path.join(self.workspace, ".agent", "tmp")
         try:
+            if os.path.isdir(tdir):
+                shutil.rmtree(tdir)
             os.makedirs(tdir, exist_ok=True)
         except Exception as e:
-            logger.warning(f"创建任务目录失败: {e}")
+            logger.warning(f"重置临时目录失败: {e}")
         return tdir
 
     def _get_env_context(self) -> str:

@@ -88,6 +88,7 @@ class ChatLayout:
         self._output_lines: list[str] = []
         self._output_buffer = Buffer()
         self._scroll_offset = 0
+        self._output_window = None
 
         # Input — with history for ↑↓ navigation, and custom completer for / commands
         self._input_history = InMemoryHistory()
@@ -169,20 +170,28 @@ class ChatLayout:
         @kb.add("pageup")
         def _page_up(event):
             self._scroll_offset = max(0, self._scroll_offset - 20)
+            if self._output_window:
+                self._output_window.vertical_scroll = self._scroll_offset
 
         @kb.add("pagedown")
         def _page_down(event):
             total = len(self._output_lines)
             self._scroll_offset = min(total, self._scroll_offset + 20)
+            if self._output_window:
+                self._output_window.vertical_scroll = self._scroll_offset
 
         @kb.add(Keys.ScrollUp)
         def _scroll_up(event):
             self._scroll_offset = max(0, self._scroll_offset - 8)
+            if self._output_window:
+                self._output_window.vertical_scroll = self._scroll_offset
 
         @kb.add(Keys.ScrollDown)
         def _scroll_down(event):
             total = len(self._output_lines)
             self._scroll_offset = min(total, self._scroll_offset + 8)
+            if self._output_window:
+                self._output_window.vertical_scroll = self._scroll_offset
 
         @kb.add("tab")
         def _tab_complete(event):
@@ -214,6 +223,8 @@ class ChatLayout:
                 return
             self._input_buffer.text = ""
             self._scroll_offset = len(self._output_lines)
+            if self._output_window:
+                self._output_window.vertical_scroll = self._scroll_offset
             if self._submit_callback:
                 self._submit_callback(text)
 
@@ -245,10 +256,9 @@ class ChatLayout:
         all_text = "\n".join(self._output_lines)
         total = len(self._output_lines)
         self._scroll_offset = max(0, min(self._scroll_offset, total))
-        cursor_char = 0
-        for i in range(self._scroll_offset):
-            cursor_char += len(self._output_lines[i]) + 1
-        self._output_buffer.set_document(Document(all_text, cursor_position=min(cursor_char, len(all_text))))
+        self._output_buffer.set_document(Document(all_text, len(all_text)))
+        if self._output_window:
+            self._output_window.vertical_scroll = self._scroll_offset
 
     def append_output(self, text: str = ""):
         self._output_lines.append(strip_ansi(text))
@@ -285,11 +295,12 @@ class ChatLayout:
             style="bg:#ansibrightblack",
         )
 
-        output_window = Window(
+        self._output_window = Window(
             BufferControl(buffer=self._output_buffer, focusable=False),
             wrap_lines=True,
             always_hide_cursor=True,
         )
+        output_window = self._output_window
 
         separator = Window(
             FormattedTextControl(
