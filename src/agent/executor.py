@@ -3,9 +3,11 @@ Agent 工具执行模块 — execute_tool_safe / execute_tool / execute_subagent
 
 提取自 agent.py，函数第一个参数为 agent 实例。
 """
+import asyncio
 import json
 import logging
 import os
+
 
 # 延迟导入 current_run，避免与 agent.py 的循环导入问题
 def _current_run():
@@ -186,11 +188,11 @@ async def execute_subagent(agent, args: dict) -> str:
                 if sess:
                     sess.add_message("user", task)
 
-            async def _team_progress(stage, status, info, extra=None):
-                await agent.hooks.fire(
+            def _team_progress(stage, status, info, extra=None):
+                asyncio.ensure_future(agent.hooks.fire(
                     agent._hook_event.SUBAGENT_PROGRESS,
                     metadata={"stage": stage, "status": status, "info": info, "extra": extra, "team": display_name},
-                )
+                ))
 
             team_result = await agent.subagent_manager._run_team_orchestrator(
                 task, template_name,

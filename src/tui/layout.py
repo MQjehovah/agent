@@ -75,18 +75,19 @@ class CommandCompleter(Completer):
 class ChatLayout:
     """Full-screen chat layout with scrollable output, input line, and status bar."""
 
-    def __init__(self, status_bar, agent_name: str = ""):
+    def __init__(self, status_bar, agent_name: str = "", max_lines: int = 2000):
         self.status_bar = status_bar
         self._agent_name = agent_name or "Zero Agent"
         self._submit_callback = None
         self._cancel_callback = None
         self._exit_callback = None
         self._input_locked = False
+        self._max_lines = max_lines
 
         # Output
         self._output_lines: list[str] = []
         self._output_buffer = Buffer()
-        self._output_window = None
+        self._scroll_offset = 0
 
         # Input — with history for ↑↓ navigation, and custom completer for / commands
         self._input_history = InMemoryHistory()
@@ -167,27 +168,21 @@ class ChatLayout:
 
         @kb.add("pageup")
         def _page_up(event):
-            if self._output_window:
-                self._output_window.vertical_scroll = max(0, (self._output_window.vertical_scroll or 0) - 20)
+            self._scroll_offset = max(0, self._scroll_offset - 20)
 
         @kb.add("pagedown")
         def _page_down(event):
-            if self._output_window:
-                total_lines = len(self._output_lines)
-                cur = self._output_window.vertical_scroll or 0
-                self._output_window.vertical_scroll = min(total_lines, cur + 20)
+            total = len(self._output_lines)
+            self._scroll_offset = min(total, self._scroll_offset + 20)
 
         @kb.add(Keys.ScrollUp)
         def _scroll_up(event):
-            if self._output_window:
-                self._output_window.vertical_scroll = max(0, (self._output_window.vertical_scroll or 0) - 8)
+            self._scroll_offset = max(0, self._scroll_offset - 8)
 
         @kb.add(Keys.ScrollDown)
         def _scroll_down(event):
-            if self._output_window:
-                total_lines = len(self._output_lines)
-                cur = self._output_window.vertical_scroll or 0
-                self._output_window.vertical_scroll = min(total_lines, cur + 8)
+            total = len(self._output_lines)
+            self._scroll_offset = min(total, self._scroll_offset + 8)
 
         @kb.add("tab")
         def _tab_complete(event):
@@ -218,6 +213,7 @@ class ChatLayout:
             if not text.strip():
                 return
             self._input_buffer.text = ""
+            self._scroll_offset = len(self._output_lines)
             if self._submit_callback:
                 self._submit_callback(text)
 
@@ -247,13 +243,31 @@ class ChatLayout:
 
     def _rebuild_output(self):
         all_text = "\n".join(self._output_lines)
-        self._output_buffer.set_document(Document(all_text, len(all_text)))
-        if self._output_window:
-            self._output_window.vertical_scroll = len(self._output_lines)
+        total = len(self._output_lines)
+        self._scroll_offset = max(0, min(self._scroll_offset, total))
+        cursor_char = 0
+        for i in range(self._scroll_offset):
+            cursor_char += len(self._output_lines[i]) + 1
+        self._output_buffer.set_document(Document(all_text, cursor_position=min(cursor_char, len(all_text))))
 
     def append_output(self, text: str = ""):
         self._output_lines.append(strip_ansi(text))
-        self._rebuild_output()
+        total = len(self._output_lines)
+        # 超出上限时裁剪顶部
+        trimmed = 0
+        if total > self._max_lines:
+            trimmed = total - self._max_lines
+            self._output_lines = self._output_lines[trimmed:]
+            total = self._max_lines
+        self._scroll_offset = max(0, self._scroll_offset - trimmed)
+        # 之前在底部则追新，否则保持当前滚动位置
+        if self._scroll_offset < total - 1:
+            old = self._scroll_offset
+            self._rebuild_output()
+            self._scroll_offset = old
+        else:
+            self._scroll_offset = total
+            self._rebuild_output()
         self._app.invalidate()
 
     def update_status(self):
@@ -271,7 +285,7 @@ class ChatLayout:
             style="bg:#ansibrightblack",
         )
 
-        self._output_window = output_window = Window(
+        output_window = Window(
             BufferControl(buffer=self._output_buffer, focusable=False),
             wrap_lines=True,
             always_hide_cursor=True,

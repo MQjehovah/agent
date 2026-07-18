@@ -86,6 +86,15 @@ def _init_logging(log_dir: str):
     root.setLevel(logging.INFO)
     root.addHandler(file_handler)
 
+    # 控制台错误输出（stderr，避免被 TUI 淹没）
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.ERROR)
+    stderr_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    root.addHandler(stderr_handler)
+
     for noisy in ("mcp.server.lowlevel.server", "httpx", "apscheduler.scheduler"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logger = logging.getLogger("agent.main")
@@ -235,9 +244,11 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                     tui.after_task(text)
                 except asyncio.CancelledError:
                     await tui.stop_spinner()
+                    logger.warning("任务被用户取消")
                     tui.cancel_notice()
                 except Exception as e:
                     await tui.stop_spinner()
+                    logger.exception(f"任务执行异常: {e}")
                     tui.error_notice(str(e))
                 finally:
                     cmd_handler.set_current_task_id(None)
@@ -641,8 +652,8 @@ if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.set_exception_handler(lambda _loop, ctx: (
-        logger.warning(f"事件循环异常(已抑制): {ctx.get('message', '')}")
+        logger.debug(f"事件循环异常(已抑制): {ctx.get('message', '')}")
         if "cancel scope" in ctx.get("message", "") else
-        logger.warning(f"事件循环异常: {ctx.get('message', '')}")
+        logger.error(f"事件循环异常: {ctx.get('message', '')}", exc_info=ctx.get("exception"))
     ))
     asyncio.run(main())
