@@ -244,17 +244,10 @@ def _resolve_run_context(agent, inherited, session_id):
     if session and session_id:
         session.session_id = session_id
 
-    rc.agent_id = agent.agent_id
-
-    if not rc.system_prompt:
-        rc.system_prompt = agent.system_prompt
-        rc.system_static = agent.system_static
-        rc.system_dynamic = agent.system_dynamic
-
     if session and session.messages:
         from agent.core import Agent
         session.messages = Agent._apply_system_messages(
-            session.messages, rc.system_static, rc.system_dynamic)
+            session.messages, agent.system_static, agent.system_dynamic)
 
     return session, rc
 

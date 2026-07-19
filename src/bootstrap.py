@@ -5,8 +5,11 @@ import logging
 import os
 import shutil
 import sys
+import warnings
 from datetime import datetime
+from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 
 from agent.core import Agent
@@ -18,6 +21,39 @@ from settings import get_settings, init_settings, validate_config
 console = Console()
 
 _LOGGER_INITIALIZED = False
+
+
+def setup_environment(caller_path: str = ""):
+    """模块级环境初始化：AGENT_LOG_DIR、.env、警告抑制、编码"""
+    caller_path = caller_path or __file__
+    _local_log = os.path.join(Path(caller_path).parent.parent, "logs")
+    _agent_log = os.path.join(os.path.expanduser("~"), "agent", "logs")
+    os.environ.setdefault("AGENT_LOG_DIR", _local_log if os.path.isdir(_local_log) else _agent_log)
+
+    _project_root = Path(caller_path).parent.parent
+    _env_file = _project_root / ".env"
+    if _env_file.exists():
+        load_dotenv(_env_file)
+    else:
+        _env_example = _project_root / ".env.example"
+        if _env_example.exists():
+            load_dotenv(_env_example)
+
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
+    warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed.*transport.*")
+    warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed transport.*")
+
+    _orig_unraisable = getattr(sys, "unraisablehook", None)
+
+    def _silent_hook(hook_args):
+        msg = str(hook_args.exc_value) if hook_args.exc_value else ""
+        if "Event loop is closed" in msg or "I/O operation on closed pipe" in msg:
+            return
+        if _orig_unraisable:
+            _orig_unraisable(hook_args)
+
+    sys.unraisablehook = _silent_hook
 logger: logging.Logger = None
 
 # 绑定到 CLI 会话的插件会话（如 feishu 绑定后共享上下文）

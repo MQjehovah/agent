@@ -553,24 +553,10 @@ class Agent:
         self.system_static = static
         self.system_dynamic = dynamic
         self.system_prompt = full
-        if rc is not None:
-            rc.prompt_builder = builder
-            rc.system_static = static
-            rc.system_dynamic = dynamic
-            rc.system_prompt = full
-
     def _active_prompt_builder(self):
-        """当前 run 的 prompt builder；run 之外回退到实例级（initialize）"""
-        rc = _current_run.get()
-        if rc is not None:
-            return rc.prompt_builder
         return self._prompt_builder
 
     def _active_system_prompt(self) -> str:
-        """当前 run 的系统提示；run 之外回退到实例级"""
-        rc = _current_run.get()
-        if rc is not None:
-            return rc.system_prompt
         return self.system_prompt
 
     def _update_dynamic_prompt(self, task: str = ""):
@@ -596,16 +582,9 @@ class Agent:
         )
 
         static, dynamic = builder.build()
-        full = static + dynamic
-        rc = _current_run.get()
-        if rc is not None:
-            rc.system_static = static
-            rc.system_dynamic = dynamic
-            rc.system_prompt = full
-        else:
-            self.system_static = static
-            self.system_dynamic = dynamic
-            self.system_prompt = full
+        self.system_static = static
+        self.system_dynamic = dynamic
+        self.system_prompt = static + dynamic
 
     @staticmethod
     def _apply_system_messages(messages: list, static: str, dynamic: str) -> list:
