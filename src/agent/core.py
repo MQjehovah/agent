@@ -776,10 +776,10 @@ class Agent:
 
         try:
             if self._is_team and self._team_config and self._team_members:
-                from agent.loop import team_run_impl; return await team_run_impl(self, task, session_id, user_id, user_name)
+                from agent.reactor import team_run_impl; return await team_run_impl(self, task, session_id, user_id, user_name)
             if self.loop_mode == "reflective":
-                from agent.loop import run_impl_reflective; return await run_impl_reflective(self, task, session_id, user_id, user_name, inherited)
-            from agent.loop import run_impl; return await run_impl(self, task, session_id, user_id, user_name, inherited)
+                from agent.reactor import run_impl_reflective; return await run_impl_reflective(self, task, session_id, user_id, user_name, inherited)
+            from agent.reactor import run_impl; return await run_impl(self, task, session_id, user_id, user_name, inherited)
         finally:
             if not self.parent_agent:
                 reset_ask_user_mode(_ask_token)

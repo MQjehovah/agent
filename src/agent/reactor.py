@@ -4,6 +4,7 @@ Agent ReAct 循环 — think → execute → repeat
 从 agent/loop.py 提取，函数第一个参数为 agent 实例。
 """
 import asyncio
+import contextlib
 import json
 import logging
 
@@ -217,13 +218,13 @@ async def execute_tool_calls_parallel_reflective(agent, tool_calls: list, sessio
     return had_errors
 
 
-# ── React 循环 ─────────────────────────────────────
+# ── Shared helpers ──────────────────────────────────
 
-async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: str, inherited) -> AgentResult:
-    """react 循环：思考 → 执行 → 重复"""
+
+def _resolve_run_context(agent, inherited, session_id):
+    """设置 RunContext 和 session（run_impl / run_impl_reflective 共享）"""
     from agent.context import current_run
     rc = current_run()
-    # 优先使用 RunContext 中的 session（由 agent.run 管理），否则创建新 session
     session = rc.session
     if session is None and not agent.parent_agent:
         session = inherited.session if hasattr(inherited, 'session') and inherited.session else None
@@ -244,25 +245,72 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
         session.session_id = session_id
 
     rc.agent_id = agent.agent_id
-    ctx = rc
 
     if not rc.system_prompt:
         rc.system_prompt = agent.system_prompt
         rc.system_static = agent.system_static
         rc.system_dynamic = agent.system_dynamic
 
-    # 将单 system 消息拆为 static + dynamic 两条（static 可被 prompt cache 命中）
     if session and session.messages:
         from agent.core import Agent
         session.messages = Agent._apply_system_messages(
             session.messages, rc.system_static, rc.system_dynamic)
 
+    return session, rc
+
+
+async def _compress_and_trace(messages, agent, session_id, writeback=None):
+    """上下文压缩 + token 追踪（run_impl / run_impl_reflective 共享）"""
+    from conversation.session import AgentSessionManager
+    try:
+        compressed = await AgentSessionManager.compress_if_needed(
+            messages, agent.client, tool_defs=agent.tool_defs, session_id=session_id,
+        )
+        if compressed is not messages:
+            messages = compressed
+            if writeback is not None:
+                writeback.messages = compressed
+    except Exception as e:
+        logger.warning(f"上下文压缩失败(跳过): {e}")
+    try:
+        ctx_est = AgentSessionManager.estimate_tokens(messages, agent.tool_defs)
+        agent.tracer.record_context_size(ctx_est)
+    except Exception:
+        pass
+    return messages
+
+
+def _rollback_tool_messages(session):
+    """工具执行异常时回滚消息"""
+    while session.messages and session.messages[-1].get("role") == "tool":
+        session.messages.pop()
+    if session.messages and session.messages[-1].get("role") == "assistant":
+        session.messages.pop()
+
+
+async def _finalize_run(agent, ctx, task, session, user_id):
+    """后台反思 + AGENT_STOP hook（run_impl / run_impl_reflective 共享）"""
+    if hasattr(agent, 'learner') and agent.learner and agent._learning_per_round and session and len(session.messages) > 1:
+        from agent.executor import run_reflection
+        bg_task = asyncio.create_task(run_reflection(agent, agent.learner, task, list(session.messages), user_id))
+        agent._background_tasks.add(bg_task)
+        bg_task.add_done_callback(agent._background_tasks.discard)
+    await agent.hooks.fire(agent._hook_event.AGENT_STOP, metadata={
+        "status": ctx.status, "result_length": len(ctx.result) if ctx.result else 0,
+    })
+
+
+# ── React 循环 ─────────────────────────────────────
+
+async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: str, inherited) -> AgentResult:
+    """react 循环：思考 → 执行 → 重复"""
+    session, rc = _resolve_run_context(agent, inherited, session_id)
+    ctx = rc
     if user_id:
         ctx.user_id = user_id
     if user_name:
         ctx.user_name = user_name
 
-    
     try:
         i = 0
         while i < agent.max_iterations:
@@ -278,7 +326,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                 agent.tracer.start_span("agent.think")
                 usage_summary = agent.client.usage_tracker.get_summary()
                 logger.info(
-                    f"[{agent.name}] [{session.session_id if session else ""}] 开始思考 | "
+                    f"[{agent.name}] [{session.session_id if session else ''}] 开始思考 | "
                     f"轮次 {i + 1}/{agent.max_iterations} | "
                     f"上下文 {ctx_tokens:,}token | "
                     f"累计 {usage_summary['total_calls']}次 "
@@ -295,28 +343,9 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                     think_messages.append({"role": "user", "content": ctx.retry_context})
                     ctx.retry_context = ""
 
-                # 上下文压缩
-                from conversation.session import AgentSessionManager
-                try:
-                    compressed = await AgentSessionManager.compress_if_needed(
-                        think_messages, agent.client,
-                        tool_defs=agent.tool_defs,
-                        session_id=session.session_id if session else "",
-                    )
-                    if compressed is not think_messages:
-                        think_messages = compressed
-                        if not _is_retry:
-                            session.messages = compressed
-                except Exception as e:
-                    logger.warning(f"上下文压缩失败(跳过): {e}")
-
-                # 记录上下文 token 数
-                try:
-                    ctx_est = AgentSessionManager.estimate_tokens(
-                        think_messages, agent.tool_defs)
-                    agent.tracer.record_context_size(ctx_est)
-                except Exception:
-                    pass
+                think_messages = await _compress_and_trace(
+                    think_messages, agent, session.session_id if session else '',
+                    writeback=None if _is_retry else session)
 
                 response = await think(agent, think_messages)
                 agent.tracer.end_span()
@@ -336,11 +365,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                     try:
                         await execute_tool_calls_parallel(agent, msg["tool_calls"], session)
                     except BaseException:
-                        # 事务回滚：移除刚添加的 assistant(tool_calls) 及其后所有 tool 消息
-                        while session.messages and session.messages[-1].get("role") == "tool":
-                            session.messages.pop()
-                        if session.messages and session.messages[-1].get("role") == "assistant":
-                            session.messages.pop()
+                        _rollback_tool_messages(session)
                         raise
                     ctx.consecutive_errors = 0
                     i += 1
@@ -389,54 +414,13 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
         ctx.status = "failed"
         logger.error(f"Agent [{agent.name}] [{session.session_id if session else ''}] failed: {e}")
 
-    # 后台反思
-    if hasattr(agent, 'learner') and agent.learner and agent._learning_per_round and session and len(session.messages) > 1:
-        from agent.executor import run_reflection
-        bg_task = asyncio.create_task(run_reflection(agent, agent.learner, task, list(session.messages), ctx.user_id))
-        agent._background_tasks.add(bg_task)
-        bg_task.add_done_callback(agent._background_tasks.discard)
-
-    await agent.hooks.fire(agent._hook_event.AGENT_STOP, metadata={
-        "status": ctx.status, "result_length": len(ctx.result) if ctx.result else 0,
-    })
+    await _finalize_run(agent, ctx, task, session, user_id)
 
 
 async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, user_name: str, inherited) -> AgentResult:
     """reflective 循环：计划 → 执行 → 观察 → 评估 → 调整 → 重复"""
-    from agent.context import current_run
-    rc = current_run()
-    session = rc.session
-    if session is None and not agent.parent_agent:
-        session = inherited.session if hasattr(inherited, 'session') and inherited.session else None
-    if session is None:
-        from dataclasses import dataclass, field
-        @dataclass
-        class _MinSession:
-            messages: list = field(default_factory=list)
-            session_id: str = ""
-            def add_message(self, role, content, **kwargs):
-                msg = {"role": role, "content": content}
-                for key in ("tool_call_id", "name", "tool_calls"):
-                    if key in kwargs and kwargs[key]:
-                        msg[key] = kwargs[key]
-                self.messages.append(msg)
-        session = _MinSession()
-    if session and session_id:
-        session.session_id = session_id
-
-    rc.agent_id = agent.agent_id
+    session, rc = _resolve_run_context(agent, inherited, session_id)
     ctx = rc
-
-    if not rc.system_prompt:
-        rc.system_prompt = agent.system_prompt
-        rc.system_static = agent.system_static
-        rc.system_dynamic = agent.system_dynamic
-
-    if session and session.messages:
-        from agent.core import Agent
-        session.messages = Agent._apply_system_messages(
-            session.messages, rc.system_static, rc.system_dynamic)
-
     if user_id:
         ctx.user_id = user_id
     if user_name:
@@ -452,9 +436,11 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
         i = 0
         while i < agent.max_iterations:
             if agent._shutdown_event and agent._shutdown_event.is_set():
-                ctx.status = "cancelled"; break
+                ctx.status = "cancelled"
+                break
             if agent._cancel_flag and agent._cancel_flag.is_set():
-                ctx.status = "cancelled"; break
+                ctx.status = "cancelled"
+                break
 
             try:
                 ctx_tokens = agent.tracer.get_context_stats().get("final", 0)
@@ -495,27 +481,9 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                     think_messages.append({"role": "user", "content": ctx.retry_context})
                     ctx.retry_context = ""
 
-                # 上下文压缩
-                from conversation.session import AgentSessionManager
-                try:
-                    compressed = await AgentSessionManager.compress_if_needed(
-                        think_messages, agent.client,
-                        tool_defs=agent.tool_defs,
-                        session_id=session.session_id if session else "",
-                    )
-                    if compressed is not think_messages:
-                        think_messages = compressed
-                        session.messages = compressed
-                except Exception as e:
-                    logger.warning(f"上下文压缩失败(跳过): {e}")
-
-                # 记录上下文 token 数
-                try:
-                    ctx_est = AgentSessionManager.estimate_tokens(
-                        think_messages, agent.tool_defs)
-                    agent.tracer.record_context_size(ctx_est)
-                except Exception:
-                    pass
+                think_messages = await _compress_and_trace(
+                    think_messages, agent, session.session_id if session else '',
+                    writeback=session)
 
                 response = await think(agent, think_messages)
                 agent.tracer.end_span()
@@ -533,12 +501,9 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
 
                 if msg.get("tool_calls"):
                     try:
-                        had_errors = await execute_tool_calls_parallel_reflective(agent, msg["tool_calls"], session)
+                        await execute_tool_calls_parallel_reflective(agent, msg["tool_calls"], session)
                     except BaseException:
-                        while session.messages and session.messages[-1].get("role") == "tool":
-                            session.messages.pop()
-                        if session.messages and session.messages[-1].get("role") == "assistant":
-                            session.messages.pop()
+                        _rollback_tool_messages(session)
                         raise
                     ctx.consecutive_errors = 0
                     execute_rounds += 1
@@ -586,4 +551,46 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
         logger.error(f"Agent [{agent.name}] reflective 失败: {e}")
 
     return AgentResult(agent_id=agent.agent_id, status=ctx.status, result=ctx.result or "")
+
+
+# ── Team execution ────────────────────────────────────
+
+
+async def team_run_impl(agent, task: str, session_id: str, user_id: str, user_name: str) -> AgentResult:
+    """团队执行入口"""
+    from team.orchestrator import TeamOrchestrator
+    from team.worktree import WorktreeManager
+
+    team_config = agent._team_config
+    team_members = agent._team_members
+    team_name = team_config.get("name", "未知团队")
+
+    logger.info(f"[{agent.name}] 团队模式启动: {team_name}")
+    wt_manager = None
+    with contextlib.suppress(Exception):
+        wt_manager = WorktreeManager(agent.workspace)
+
+    orchestrator = TeamOrchestrator(
+        team_name=team_name,
+        team_config=team_config,
+        members=team_members,
+        agent=agent,
+        llm_client=agent.client,
+        memory_manager=getattr(agent, 'memory', None),
+        pipeline_mode=team_config.get("pipeline_mode", "auto"),
+        progress_callback=getattr(agent, '_progress_callback', None),
+        parent_session_id=session_id or "",
+        agent_pool=agent._agent_pool if hasattr(agent, '_agent_pool') else None,
+        worktree_manager=wt_manager,
+        max_parallel=agent._max_parallel,
+        enable_parallel=agent._enable_parallel,
+    )
+
+    try:
+        result = await orchestrator.run(task)
+        status = "completed" if not result.startswith("ERROR:") else "failed"
+        return AgentResult(agent_id=f"team:{team_name}", status=status, result=result)
+    except Exception as e:
+        logger.error(f"团队编排异常: {e}")
+        return AgentResult(agent_id=f"team:{team_name}", status="failed", result=str(e))
 
