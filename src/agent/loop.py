@@ -39,7 +39,7 @@ async def team_run_impl(agent, task: str, session_id: str, user_id: str, user_na
         team_name=team_name,
         team_config=team_config,
         members=team_members,
-        subagent_manager=getattr(agent, 'subagent_manager', None),
+        agent=agent,
         llm_client=agent.client,
         memory_manager=getattr(agent, 'memory', None),
         pipeline_mode=team_config.get("pipeline_mode", "auto"),

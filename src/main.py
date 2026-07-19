@@ -204,8 +204,8 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
 
                 try:
                     target = target_agent
-                    if target and agent.subagent_manager:
-                        if target in agent.subagent_manager._team_configs:
+                    if target and agent.factory:
+                        if target in agent.factory._team_configs:
                             team_dir = os.path.join(
                                 agent.config_dir, "agents", target)
                             team_agent = Agent(
@@ -214,7 +214,7 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                                 permission_mode=getattr(agent, '_permission_config', None) and
                                 agent._permission_config.mode.value or "auto",
                             )
-                            team_agent.subagent_manager = agent.subagent_manager
+                            team_agent.factory = agent.factory
                             team_agent._progress_callback = _team_progress
                             await team_agent.initialize()
                             result = await team_agent.run(
@@ -222,11 +222,11 @@ async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_a
                                 user_id="cli:admin", user_name="管理员",
                             )
                         else:
-                            instance, _ = await agent.subagent_manager.get_or_create_subagent(
-                                name=target, session_id=session_id,
-                                client=agent.client, parent_agent=agent,
+                            sub_agent, sub_sid = await agent.factory.create(
+                                name=target, client=agent.client,
+                                parent_agent=agent,
                             )
-                            result = await instance.agent.run(question)
+                            result = await sub_agent.run(question)
                     else:
                         result = await agent.run(question, session_id=session_id,
                                                   user_id="cli:admin", user_name="管理员")
@@ -299,8 +299,8 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
         tool_summary = agent._get_tool_summary()
 
     subagent_summary = ""
-    if agent.subagent_manager:
-        subagent_summary = agent.subagent_manager.get_subagent_prompt()
+    if agent.factory:
+        subagent_summary = agent.factory.get_subagent_prompt()
 
     perceiver = Perceiver(event_bus=event_bus, agent=agent)
     planner = Planner(
@@ -546,20 +546,15 @@ async def main():
                         agent.system_prompt += _skill_guide
                         agent.system_prompt_raw += _skill_guide
                 # 用团队成员替换子代理列表
-                if agent.subagent_manager:
-                    _members = agent.subagent_manager._team_members.get(
-                        target_agent, {})
+                if agent.factory:
+                    _members = agent.factory.get_team_members(target_agent) or {}
                     if _members:
-                        _orig_prompt = agent.subagent_manager.get_subagent_prompt
                         _lines = ["\n\n## 【团队成员】\n"]
                         for _mname, _minfo in _members.items():
                             _lines.append(f"名称：{_mname}\n")
-                            _lines.append(
-                                f"角色：{_minfo.get('description', '')}\n")
+                            _lines.append(f"角色：{_minfo.get('description', '')}\n")
                         _lines.append("\n团队 Leader 可根据需要将任务委派给对应成员。")
-                        _team_prompt_text = "\n".join(_lines)
-                        # 注入到 prompt builder 中
-                        agent.subagent_manager.get_subagent_prompt = lambda: _team_prompt_text
+                        agent.factory.get_subagent_prompt = lambda: "\n".join(_lines)
                 agent._build_prompt()
 
     web_server = None

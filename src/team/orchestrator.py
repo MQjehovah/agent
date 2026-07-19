@@ -103,8 +103,9 @@ class TeamOrchestrator:
         team_name: str,
         team_config: dict[str, Any],
         members: dict[str, dict[str, Any]],
-        subagent_manager,
         llm_client,
+        agent=None,
+        subagent_manager=None,
         memory_manager=None,
         pipeline_mode: str = "feedback",
         progress_callback=None,
@@ -119,7 +120,8 @@ class TeamOrchestrator:
         self.config = team_config
         self.members = members
         self.leader = team_config.get("leader", "")
-        self.subagent_manager = subagent_manager
+        self.factory = agent.factory if agent else (subagent_manager if hasattr(subagent_manager, 'create_team_member') else None)
+        self.subagent_manager = subagent_manager or agent
         self.llm = llm_client
         self.memory = memory_manager
         self.pipeline_mode = pipeline_mode
@@ -590,7 +592,7 @@ class TeamOrchestrator:
         from tools.ask_user import reset_ask_user_mode, set_ask_user_mode
 
         async def _run_with_agent(task_body: str, max_iter: int) -> str:
-            agent = await self.subagent_manager._create_team_subagent(
+            agent = await self.factory.create_team_member(
                 self.team_name, role, client=self.llm,
                 parent_agent=None, max_iterations=max_iter,
             )

@@ -123,7 +123,7 @@ async def execute_tool(agent, name: str, args: dict) -> str:
         current_uid = rc.user_id
 
     try:
-        if name == "subagent" and agent.subagent_manager:
+        if name == "subagent" and agent.factory:
             return await execute_subagent(agent, args)
 
         if agent.tool_registry and agent.tool_registry.has_tool(name):
@@ -172,22 +172,27 @@ async def execute_subagent(agent, args: dict) -> str:
     await agent.hooks.fire(agent._hook_event.SUBAGENT_START, metadata={"name": display_name, "task": task})
 
     try:
-        if agent.subagent_manager and agent.subagent_manager.is_team(template_name):
+        if agent.factory and agent.factory.is_team(template_name):
             def _team_progress(stage, status, info, extra=None):
                 asyncio.ensure_future(agent.hooks.fire(
                     agent._hook_event.SUBAGENT_PROGRESS,
                     metadata={"stage": stage, "status": status, "info": info, "extra": extra, "team": display_name},
                 ))
 
-            team_result = await agent.subagent_manager._run_team_orchestrator(
-                task, template_name,
-                client=agent.client,
+            from team.orchestrator import TeamOrchestrator
+            config = agent.factory.get_team_config(template_name)
+            members = agent.factory.get_team_members(template_name) or {}
+            orch = TeamOrchestrator(
+                team_name=template_name, team_config=config, members=members,
+                agent=agent, llm_client=agent.client,
+                pipeline_mode=config.get("pipeline_mode", "feedback"),
                 progress_callback=_team_progress,
-                parent_session_id=args.get("session_id", ""))
-            # AgentResult dataclass → 字符串
+                parent_session_id=args.get("session_id", ""),
+            )
+            team_result = await orch.run(task)
             result = team_result.result if hasattr(team_result, 'result') else str(team_result)
         else:
-            instance, _ = await agent.subagent_manager.get_or_create_subagent(
+            sub_agent, sub_sid = await agent.factory.create(
                 template=args.get("template", ""),
                 name=args.get("name", ""),
                 session_id=args.get("session_id", ""),
@@ -197,17 +202,12 @@ async def execute_subagent(agent, args: dict) -> str:
                 client=agent.client,
                 parent_agent=agent,
             )
-            sub_agent = instance.agent
-            sub_sid = instance.session_id
-
             user_id = _current_run().user_id or "cli:admin"
             user_name = _current_run().user_name or "管理员"
             r = await sub_agent.run(task, session_id=sub_sid, user_id=user_id, user_name=user_name)
             text = r.result if hasattr(r, 'result') else str(r)
-
             if args.get("keep_alive", True):
-                await agent.subagent_manager.cleanup_subagent(instance.session_id)
-
+                await agent.factory.cleanup_agent(sub_sid)
             result = text
 
         await agent.hooks.fire(agent._hook_event.SUBAGENT_RESULT, metadata={
@@ -215,7 +215,7 @@ async def execute_subagent(agent, args: dict) -> str:
         })
         return json.dumps({
             "success": True,
-            "agent_id": f"team:{display_name}" if agent.subagent_manager and agent.subagent_manager.is_team(template_name) else display_name,
+            "agent_id": f"team:{display_name}" if agent.factory and agent.factory.is_team(template_name) else display_name,
             "status": "completed",
             "result": result,
         }, ensure_ascii=False)

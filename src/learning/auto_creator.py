@@ -12,7 +12,7 @@ from .categories import (
 
 if TYPE_CHECKING:
     from skills.skill import SkillManager
-    from agent.subagent import SubagentManager
+    from agent.factory import AgentFactory
 
 logger = logging.getLogger("agent.learning.auto_creator")
 
@@ -27,7 +27,7 @@ class AutoCreator:
         agents_dir: str,
         llm_client=None,
         skill_manager: "SkillManager" = None,
-        subagent_manager: "SubagentManager" = None,
+        subagent_manager: "AgentFactory" = None,
     ):
         self.memory_dir = memory_dir
         self.skills_dir = skills_dir
@@ -42,7 +42,7 @@ class AutoCreator:
     def set_skill_manager(self, manager: "SkillManager"):
         self.skill_manager = manager
 
-    def set_subagent_manager(self, manager: "SubagentManager"):
+    def set_subagent_manager(self, manager: "AgentFactory"):
         self.subagent_manager = manager
 
     async def create_from_pattern(self, pattern_info: Dict[str, Any]) -> Optional[str]:

@@ -7,9 +7,9 @@ Agent 连接池 — 复用 Agent 实例，避免每次创建/销毁的开销。
 - 支持 TTL 过期、最大连接数控制、角色分类
 
 与 SubagentManager 的关系：
-- SubagentManager 负责"模板管理"（加载 PROMPT.md，创建新 Agent）
-- AgentPool 负责"实例复用"（缓存活跃 Agent，避免重复初始化）
-- 两者配合使用：SubagentManager 创建，AgentPool 缓存
+    - AgentFactory 负责"模板管理"（加载 PROMPT.md，创建新 Agent）
+    - AgentPool 负责"实例缓存"（复用运行完成的 Agent 实例）
+    - 两者配合使用：Factory 创建，AgentPool 缓存
 """
 import asyncio
 import logging
@@ -57,12 +57,12 @@ class AgentPool:
 
     def __init__(
         self,
-        subagent_manager=None,
+        factory=None,
         max_size: int = 10,
         default_ttl: float = 300.0,
         min_idle: int = 0,
     ):
-        self._subagent_manager = subagent_manager
+        self._factory = factory
         self.max_size = max_size
         self.default_ttl = default_ttl
         self.min_idle = min_idle  # 最少保持空闲 Agent 数（预热用）
@@ -307,13 +307,10 @@ class AgentPool:
         max_iterations: int = 0,
     ) -> "Agent":
         """创建新 Agent（委托给 SubagentManager）"""
-        if self._subagent_manager:
-            agent = await self._subagent_manager._create_team_subagent(
-                team_name or self._subagent_manager._team_name or "",
-                role,
-                client=client,
-                parent_agent=parent_agent,
-                max_iterations=max_iterations,
+        if self._factory:
+            agent = await self._factory.create_team_member(
+                team_name or "", role, client=client,
+                parent_agent=parent_agent, max_iterations=max_iterations,
             )
             return agent
 

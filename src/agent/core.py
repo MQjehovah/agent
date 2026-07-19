@@ -15,7 +15,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from agent.context import AgentResult, RunContext, current_run, _current_run
 from learning import Learner
 from conversation.prompt import PromptBuilder
-from agent.subagent import SubagentManager
+from agent.factory import AgentFactory
 from utils.frontmatter import extract_frontmatter
 
 if TYPE_CHECKING:
@@ -65,6 +65,8 @@ class Agent:
         # 子代理专属 MCP 配置（运行时传入，方案B；主代理始终为空）
         self._subagent_mcp_configs = list(mcp_servers) if mcp_servers else []
         self.skill_manager = None
+        self.factory = None
+        # 向后兼容：subagent_manager -> factory
         self.subagent_manager = None
         self.session_manager = None
         self.storage = None
@@ -163,7 +165,7 @@ class Agent:
         from security.rbac import RBACManager
         self.rbac = RBACManager(self.storage)
 
-        self._init_subagents()
+        self._init_factory()
         self._init_memory()
 
         # 将 memory_manager 注入已注册的 MemoryTool
@@ -462,14 +464,13 @@ class Agent:
         logger.info(
             f"{role} [{self.name}] 已连接 {len(connected)} MCP servers: {connected}")
 
-    def _init_subagents(self):
-        agents_dir = os.path.join(self.config_dir, "agents")
-        if os.path.exists(agents_dir):
-            self.subagent_manager = SubagentManager(agents_dir, parent_workspace=self.workspace)
-            self.subagent_manager._parent_agent = self
-            self.subagent_manager.start_cleanup_task()
-            logger.info(
-                f"Agent [{self.name}] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {self.subagent_manager.list_templates()}")
+    def _init_factory(self):
+        self.factory = AgentFactory(self.config_dir, self.workspace)
+        self.factory._parent_agent = self
+        self.factory.start_cleanup_task()
+        self.subagent_manager = self.factory  # 向后兼容
+        logger.info(
+            f"Agent [{self.name}] 已加载 {len(self.factory.scan_teams())} 个模板: {self.factory.scan_teams()}")
 
     def _init_memory(self):
         from memory import MemoryManager
@@ -491,7 +492,7 @@ class Agent:
                     self.learner.init_auto_creation(
                         workspace=self.config_dir,
                         skill_manager=self.skill_manager,
-                        subagent_manager=self.subagent_manager,
+                        factory=self.factory,
                     )
                 from memory.curator import MemoryCurator
                 from storage.storage import get_storage
@@ -527,8 +528,8 @@ class Agent:
         )
 
         # 子代理列表
-        if self.subagent_manager:
-            subagent_prompt = self.subagent_manager.get_subagent_prompt()
+        if self.factory:
+            subagent_prompt = self.factory.get_subagent_prompt()
             if subagent_prompt:
                 builder.add(
                     "子代理列表", subagent_prompt,
@@ -794,9 +795,9 @@ class Agent:
         if self.session_manager:
             self.session_manager.stop_cleanup_task()
 
-        if not self.parent_agent and self.subagent_manager:
-            self.subagent_manager.stop_cleanup_task()
-            await self.subagent_manager.cleanup_all()
+        if not self.parent_agent and self.factory:
+            self.factory.stop_cleanup_task()
+            await self.factory.cleanup_all()
 
         if self.learner and self.memory and not self.parent_agent:
             self.learner.stop_daily_task()

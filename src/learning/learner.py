@@ -15,7 +15,7 @@ from .categories import (
 
 if TYPE_CHECKING:
     from skills.skill import SkillManager
-    from agent.subagent import SubagentManager
+    from agent.factory import AgentFactory
 
 logger = logging.getLogger("agent.learning")
 
@@ -32,7 +32,7 @@ class Learner:
         self._pattern_tracker = None
         self._auto_creator = None
         self._skill_manager: SkillManager | None = None
-        self._subagent_manager: SubagentManager | None = None
+        self._subagent_manager = None  # AgentFactory instance
         self._workspace = ""
         self._curator = None
 
