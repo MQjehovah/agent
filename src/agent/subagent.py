@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any
 from utils.frontmatter import extract_frontmatter
 
 if TYPE_CHECKING:
-    from agent.core import Agent, AgentResult
+    from agent.core import Agent
+    from agent.context import AgentResult
 
 logger = logging.getLogger("agent.subagent")
 
@@ -614,7 +615,7 @@ class SubagentManager:
                                      progress_callback=None,
                                      parent_session_id: str = "") -> "AgentResult":
         """通过 TeamOrchestrator 运行团队"""
-        from agent.core import AgentResult
+        from agent.context import AgentResult
         from team.orchestrator import TeamOrchestrator
 
         config = self._team_configs.get(team_name)

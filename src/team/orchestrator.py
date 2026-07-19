@@ -70,7 +70,7 @@ class TaskDecomposer:
 [{{"module": "模块名", "task": "该模块的完整任务描述"}}]"""
 
         try:
-            from agent.core import current_run
+            from agent.context import current_run
             rc = current_run()
             client = getattr(rc, '_llm_client', None) if rc else None
             if client is None:
@@ -707,7 +707,7 @@ class TeamOrchestrator:
         if not workspace:
             workspace = os.getcwd()
         self.workspace = workspace
-        from agent.core import current_run
+        from agent.context import current_run
         task_dir = current_run().task_dir
         task_slug = ""
         if self.context and getattr(self.context, "original_task", ""):

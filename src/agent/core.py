@@ -1,5 +1,4 @@
 import asyncio
-import contextvars
 import json
 import logging
 import os
@@ -9,15 +8,13 @@ import subprocess
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Sequence
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from openai.types.chat import ChatCompletionMessageParam
 
+from agent.context import AgentResult, RunContext, current_run, _current_run
 from learning import Learner
-from prompt import PromptBuilder
+from conversation.prompt import PromptBuilder
 from agent.subagent import SubagentManager
 from utils.frontmatter import extract_frontmatter
 
@@ -27,69 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("agent.agent")
 
 
-@dataclass
-class AgentResult:
-    agent_id: str
-    status: str
-    result: str
-    completed_at: str = field(
-        default_factory=lambda: datetime.now().isoformat())
-
-
 MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 3000))
-
-
-@dataclass
-class RunContext:
-    """单次 agent.run() 的执行上下文。
-
-    通过 contextvars.ContextVar 绑定到当前 asyncio Task，因此多个并发 run()
-    （Web 多请求 / webhook / scheduler / 子代理）各自拥有独立上下文，彻底消除原先
-    把用户身份、会话、错误计数等写入 self 实例属性导致的竞态：
-      - 用户身份串号（RBAC 越权 / 记忆隔离失效）
-      - _consecutive_errors / _retry_context 跨请求互相干扰
-      - self.status / self.result 返回错误结果
-    """
-
-    user_id: str = ""
-    user_name: str = ""
-    role: str = "default"
-    session: Any = None
-    task: str = ""
-    consecutive_errors: int = 0
-    retry_context: str = ""
-    status: str = "pending"
-    result: str = ""
-    # 本次 run 的唯一标识，配合 HookManager 做流式事件作用域过滤
-    run_id: str = ""
-    # 本次 run 的分层 prompt 构建器与最终系统提示（局部化，避免并发 run 互相覆盖，
-    # 也避免记忆上下文按 user_id 串号）
-    system_prompt: str = ""
-    prompt_builder: Any = None
-    # 本次 run 的 agent_id（用于用量统计归因）
-    agent_id: str = ""
-    # P3: prompt cache 拆分——static 可缓存前缀，dynamic 每轮变化的尾缀
-    system_static: str = ""
-    system_dynamic: str = ""
-    # 本次任务的过程文件目录（顶层 run 建立，子代理继承）；临时文件写这里，交付物写 workspace
-    task_dir: str = ""
-    # 会话对象（复用 session_id 时保留历史消息）
-    session: Any = None
-
-
-# 模块级 ContextVar：run() 内 set()，协程任意位置 get() 取回“当前 run”的上下文。
-# asyncio Task 会拷贝上下文，故每个并发 run 天然隔离。
-# 注意：default 用 None 而非共享的可变 RunContext 实例（见 ruff B039）。
-_current_run: contextvars.ContextVar[RunContext | None] = contextvars.ContextVar(
-    "agent_current_run", default=None
-)
-# run() 之外读取时返回的只读空上下文（仅用于读取字段，不应被修改）
-_EMPTY_RUN = RunContext()
-
-
-def current_run() -> RunContext:
-    """获取当前 run() 的执行上下文（并发安全）。run() 之外调用返回空上下文（只读）。"""
-    return _current_run.get() or _EMPTY_RUN
 
 
 class Agent:
@@ -215,7 +150,7 @@ class Agent:
         self._init_skills()
         await self._load_mcp_servers()
 
-        from agent.session import AgentSessionManager
+        from conversation.session import AgentSessionManager
         from storage.storage import init_storage
         self.session_manager = AgentSessionManager()
         await self.session_manager.start_cleanup_task()
@@ -445,7 +380,7 @@ class Agent:
 
         try:
             # ── Git 集成 ──
-            from git_integration import GitIntegration
+            from worker.git_integration import GitIntegration
             self._git = GitIntegration(self.workspace)
         except Exception as e:
             logger.warning(f"初始化 Git 集成失败: {e}")
@@ -463,7 +398,7 @@ class Agent:
 
         try:
             # ── 自动技能路由 ──
-            from auto_skill import AutoSkillActivator
+            from worker.auto_skill import AutoSkillActivator
             self._auto_skill = AutoSkillActivator(self.skill_manager)
         except Exception as e:
             logger.warning(f"初始化自动技能路由失败: {e}")

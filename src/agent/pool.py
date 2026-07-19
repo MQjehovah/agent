@@ -161,7 +161,7 @@ class AgentPool:
         """快捷方法：acquire → run → release 一步完成"""
         agent = await self.acquire(role, team_name, client, parent_agent, max_iterations)
         try:
-            from agent.core import AgentResult
+            from agent.context import AgentResult
             result = await agent.run(task, session_id=session_id,
                                       user_id="cli:admin", user_name="管理员")
             return result.result if hasattr(result, 'result') else str(result)
@@ -197,7 +197,7 @@ class AgentPool:
                     max_iterations=item.get("max_iterations", 0),
                 )
                 try:
-                    from agent.core import AgentResult
+                    from agent.context import AgentResult
                     sid = item.get("session_id", "")
                     result = await agent.run(
                         item["task"],

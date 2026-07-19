@@ -9,7 +9,7 @@ import time
 from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 
-from config import Config
+from settings import get_settings
 
 
 @dataclass
@@ -143,18 +143,19 @@ def get_cache() -> ResponseCache:
     """获取全局缓存实例"""
     global _cache_instance
     if _cache_instance is None:
+        s = get_settings()
         _cache_instance = ResponseCache(
-            max_size=Config.CACHE_MAX_SIZE,
-            default_ttl=Config.CACHE_TTL_SECONDS
+            max_size=int(s.get("cache.max_size", 1000)),
+            default_ttl=int(s.get("cache.ttl_seconds", 3600)),
         )
     return _cache_instance
 
 
 def init_cache(max_size: int = None, default_ttl: float = None) -> ResponseCache:
-    """初始化全局缓存"""
     global _cache_instance
+    s = get_settings()
     _cache_instance = ResponseCache(
-        max_size or Config.CACHE_MAX_SIZE,
-        default_ttl or Config.CACHE_TTL_SECONDS
+        max_size or int(s.get("cache.max_size", 1000)),
+        default_ttl or int(s.get("cache.ttl_seconds", 3600)),
     )
     return _cache_instance

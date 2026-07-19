@@ -332,8 +332,8 @@ class EditTool(BuiltinTool):
     async def _backup(self, path: str, content: str):
         """编辑前自动备份"""
         try:
-            from undo_manager import UndoManager
-            from agent.core import current_run
+            from worker.undo_manager import UndoManager
+            from agent.context import current_run
             rc = current_run()
             ws = self.workspace or (rc.task_dir if rc else "")
             if ws and os.path.exists(ws):

@@ -173,3 +173,20 @@ class Settings:
                 if "key" in k and search[k]:
                     search[k] = "***"
         return json.dumps(safe, indent=2, ensure_ascii=False)
+
+
+def validate_config() -> bool:
+    """启动时校验配置"""
+    import logging
+    logger = logging.getLogger("agent.config")
+    eps = get_settings().llm_endpoints
+    if not eps:
+        logger.error("LLM 端点未配置: 请在 config/config.json 的 llm.endpoints 中配置")
+        return False
+    for i, ep in enumerate(eps):
+        missing = [k for k in ("model", "base_url", "api_key") if not ep.get(k)]
+        if missing:
+            logger.error(f"LLM 端点 #{i + 1} 缺少必填字段: {missing}")
+            return False
+    logger.info("读取配置成功")
+    return True

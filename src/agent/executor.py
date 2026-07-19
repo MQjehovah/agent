@@ -11,7 +11,7 @@ import os
 
 # 延迟导入 current_run，避免与 agent.py 的循环导入问题
 def _current_run():
-    from agent.core import current_run
+    from agent.context import current_run
     return current_run()
 
 # 工具输出最大字符数（与 agent.py 保持一致）
@@ -98,7 +98,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
 
         await agent.hooks.fire(agent._hook_event.TOOL_RESULT, tool_name=name, result=result_preview)
 
-        from tool_result_compressor import compress_tool_result
+        from tools.compressor import compress_tool_result
         if len(result) > MAX_TOOL_OUTPUT_CHARS:
             original_len = len(result)
             result = compress_tool_result(name, result, MAX_TOOL_OUTPUT_CHARS)

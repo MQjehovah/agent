@@ -16,9 +16,9 @@ from rich.console import Console
 from rich.panel import Panel
 
 from agent.core import Agent
-from agent.session import AgentSessionManager
-from cmd_handler import CommandHandler
-from config import Config, validate_config
+from conversation.session import AgentSessionManager
+from commands.handler import CommandHandler
+from settings import validate_config
 from llm.client import LLMClient
 from plugins import PluginManager
 from settings import get_settings, init_settings
@@ -479,13 +479,13 @@ async def main():
 
     init_settings(config_dir)
 
-    Config.load_from_env()
     AgentSessionManager.load_config()
 
-    # 应用日志等级（Settings 已加载，覆盖 basicConfig 的默认 INFO）
-    logging.getLogger().setLevel(getattr(logging, Config.LOG_LEVEL, logging.INFO))
+    # 应用日志等级
+    log_level = get_settings().get("logging.level", "INFO")
+    logging.getLogger().setLevel(getattr(logging, log_level, logging.INFO))
     logging.getLogger("agent").setLevel(
-        getattr(logging, Config.LOG_LEVEL, logging.INFO))
+        getattr(logging, log_level, logging.INFO))
 
     if not args.skip_config_check and not validate_config():
         console.print("[red]配置验证失败[/red]")
