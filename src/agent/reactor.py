@@ -281,11 +281,12 @@ def _rollback_tool_messages(session):
         session.messages.pop()
 
 
-async def _finalize_run(agent, ctx, task, session, user_id):
+async def _finalize_run(agent, ctx, task, session):
     """后台反思 + AGENT_STOP hook（run_impl / run_impl_reflective 共享）"""
+    _uid = session.user_id if session else ""
     if hasattr(agent, 'learner') and agent.learner and agent._learning_per_round and session and len(session.messages) > 1:
         from agent.executor import run_reflection
-        bg_task = asyncio.create_task(run_reflection(agent, agent.learner, task, list(session.messages), user_id))
+        bg_task = asyncio.create_task(run_reflection(agent, agent.learner, task, list(session.messages), _uid))
         agent._background_tasks.add(bg_task)
         bg_task.add_done_callback(agent._background_tasks.discard)
     await agent.hooks.fire(agent._hook_event.AGENT_STOP, metadata={
@@ -295,14 +296,10 @@ async def _finalize_run(agent, ctx, task, session, user_id):
 
 # ── React 循环 ─────────────────────────────────────
 
-async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: str, inherited) -> AgentResult:
+async def run_impl(agent, task: str, session_id: str, inherited) -> AgentResult:
     """react 循环：思考 → 执行 → 重复"""
     session, rc = _resolve_run_context(agent, inherited, session_id)
     ctx = rc
-    if user_id:
-        ctx.user_id = user_id
-    if user_name:
-        ctx.user_name = user_name
 
     try:
         i = 0
@@ -407,17 +404,13 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
         ctx.status = "failed"
         logger.error(f"Agent [{agent.name}] [{session.session_id if session else ''}] failed: {e}")
 
-    await _finalize_run(agent, ctx, task, session, user_id)
+    await _finalize_run(agent, ctx, task, session)
 
 
-async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, user_name: str, inherited) -> AgentResult:
+async def run_impl_reflective(agent, task: str, session_id: str, inherited) -> AgentResult:
     """reflective 循环：计划 → 执行 → 观察 → 评估 → 调整 → 重复"""
     session, rc = _resolve_run_context(agent, inherited, session_id)
     ctx = rc
-    if user_id:
-        ctx.user_id = user_id
-    if user_name:
-        ctx.user_name = user_name
 
     phase = "plan"
     plan_rounds = 0
@@ -549,7 +542,7 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
 # ── Team execution ────────────────────────────────────
 
 
-async def team_run_impl(agent, task: str, session_id: str, user_id: str, user_name: str) -> AgentResult:
+async def team_run_impl(agent, task: str, session_id: str) -> AgentResult:
     """团队执行入口"""
     from team.orchestrator import TeamOrchestrator
     from team.worktree import WorktreeManager

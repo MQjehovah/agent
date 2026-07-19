@@ -116,11 +116,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
 async def execute_tool(agent, name: str, args: dict) -> str:
     """执行工具（根据名称分发到对应的工具实现）"""
     rc = _current_run()
-    current_uid = ""
-    if rc.session and rc.session.user_id:
-        current_uid = rc.session.user_id
-    elif rc.user_id:
-        current_uid = rc.user_id
+    current_uid = rc.session.user_id if rc.session else ""
 
     try:
         if name == "subagent" and agent.factory:
@@ -202,9 +198,7 @@ async def execute_subagent(agent, args: dict) -> str:
                 client=agent.client,
                 parent_agent=agent,
             )
-            user_id = _current_run().user_id or "cli:admin"
-            user_name = _current_run().user_name or "管理员"
-            r = await sub_agent.run(task, session_id=sub_sid, user_id=user_id, user_name=user_name)
+            r = await sub_agent.run(task, session_id=sub_sid)
             text = r.result if hasattr(r, 'result') else str(r)
             if args.get("keep_alive", True):
                 await agent.factory.cleanup_agent(sub_sid)
@@ -263,8 +257,9 @@ def has_token_subscribers(agent) -> bool:
 
 
 def parse_user_id() -> tuple[str, str]:
-    """解析用户 ID 为 platform 和 uid"""
-    uid = _current_run().user_id
+    """从 session 解析用户 ID 为 platform 和 uid"""
+    rc = _current_run()
+    uid = rc.session.user_id if rc.session else ""
     if ":" in uid:
         platform_, uid = uid.split(":", 1)
         return platform_, uid

@@ -46,7 +46,7 @@ class FeishuSession:
             if router:
                 result = await router.route(
                     content, channel="feishu",
-                    session_id=self.session_id,
+                    user_id=self.session_id.split(":")[-1] if ":" in self.session_id else "1",
                 )
                 return result.result if hasattr(result, "result") else str(result)
             result = await self._plugin.plugin_manager.execute(

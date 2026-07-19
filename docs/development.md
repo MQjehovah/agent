@@ -53,10 +53,10 @@
 ### 3.1 入口
 
 ```
-src/main.py          — 精简入口（~30 行），只做 dispatch
+src/main.py          — 精简入口（~30 行），解析 --agent 后 dispatch
 src/cli.py           — argparse 参数解析
 src/bootstrap.py     — 初始化链：路径/日志/settings/agent/plugin/web
-src/interactive.py   — CLI 交互模式（TUI + 事件循环）
+src/interactive.py   — CLI 交互模式（TUI + 事件循环），仅接收已解析的 Agent
 src/autonomous/runner.py — 自主模式入口
 ```
 
@@ -220,16 +220,22 @@ ToolRegistry.auto_discover()  # AST 扫描 src/tools/*.py，实例化 BuiltinToo
 
 ## 七、子代理与团队编排
 
-### 7.1 个人子代理 / 团队成员
+### 7.1 AgentFactory — 统一的 Agent 创建入口
 
-**系统中只有一种 Agent 类**，没有 Subagent 概念。个人子代理和团队成员都是 `Agent` 实例，区别仅在于 `config_dir` 指向不同的 PROMPT.md。
+**系统中只有一种 Agent 类**，没有根 Agent / 子 Agent / 团队成员之分。区别仅在于 `config_dir` 指向不同的 PROMPT.md。所有 Agent 通过 `AgentFactory` 统一管理、池化、懒加载。
 
 ```
+main.py 解析 --agent 参数:
+  args.agent 为空 → factory.get_or_create("")     → config_dir 的默认 Agent
+  args.agent=xx  → factory.get_or_create("xx")    → config_dir/agents/xx 的子 Agent
+
 AgentFactory (agent/factory.py)
-  ├─ scan() — 扫描 config/agents/ 加载所有模板
-  ├─ create(template) — 创建个人 Agent（复用活跃实例）
-  ├─ create_team_member(team, role) — 创建团队成员 Agent
-  └─ get_subagent_prompt() — 生成子代理列表提示词
+  ├─ _agent_pool: dict[str, Agent]   — 池化缓存，同名复用
+  ├─ get_or_create(name)              — 懒加载统一入口
+  ├─ scan()                           — 扫描 config/agents/ 加载所有模板
+  ├─ create(template)                 — 创建个人 Agent（子 agent 工具用）
+  ├─ create_team_member(team, role)   — 创建团队成员 Agent
+  └─ get_subagent_prompt()            — 生成子代理列表提示词
 ```
 
 ### 7.2 团队编排

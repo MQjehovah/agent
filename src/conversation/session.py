@@ -558,13 +558,14 @@ class AgentSessionManager:
         self,
         session_id: str | None = None,
         system_prompt: str = "",
-        agent_id: str = ""
+        agent_id: str = "",
+        user_id: str = "",
+        role: str = "",
     ) -> AgentSession:
         if not session_id:
             session_id = str(uuid.uuid4())
 
         async with self._lock:
-            # 如果超出限制，先清理
             if len(self.sessions) >= self.max_sessions:
                 await self._cleanup_expired_sessions()
 
@@ -577,6 +578,8 @@ class AgentSessionManager:
                 session_id=session_id,
                 agent_id=agent_id,
                 system_prompt=system_prompt,
+                user_id=user_id,
+                role=role,
             )
             self.sessions[session_id] = session
             return session

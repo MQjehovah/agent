@@ -19,8 +19,12 @@ from storage.storage import get_storage
 logger = logging.getLogger("agent.main")
 
 
-async def autonomous_mode(agent, shutdown_event: asyncio.Event, args):
+async def autonomous_mode():
     """自主模式 - 感知-规划-执行-校验循环"""
+    from channels import MessageRouter
+    agent = MessageRouter.instance().agent
+    shutdown_event = asyncio.Event()
+
     storage = get_storage()
 
     event_bus = EventBus(storage=storage)

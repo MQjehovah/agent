@@ -162,8 +162,7 @@ class AgentPool:
         agent = await self.acquire(role, team_name, client, parent_agent, max_iterations)
         try:
             from agent.context import AgentResult
-            result = await agent.run(task, session_id=session_id,
-                                      user_id="cli:admin", user_name="管理员")
+            result = await agent.run(task, session_id=session_id)
             return result.result if hasattr(result, 'result') else str(result)
         finally:
             await self.release(agent)

@@ -385,8 +385,7 @@ class AgentChatbotHandler:
                 if router:
                     result = await router.route(
                         content, channel="dingtalk",
-                        session_id=session.session_id,
-                        user_id=user_id, user_name=sender_nick,
+                        user_id=user_id or "dingtalk:1",
                     )
                     response = result.result if hasattr(result, "result") else str(result)
                 else:

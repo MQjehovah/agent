@@ -27,10 +27,8 @@ class RunContext:
     """单次 agent.run() 的执行上下文。
 
     通过 contextvars.ContextVar 绑定到当前 asyncio Task，多个并发 run()
-    各自拥有独立上下文，消除实例属性竞态。
+    各自拥有独立上下文，消除实例属性竞态。用户身份通过 session 传递。
     """
-    user_id: str = ""
-    user_name: str = ""
     session: Any = None
     consecutive_errors: int = 0
     retry_context: str = ""

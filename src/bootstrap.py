@@ -43,6 +43,7 @@ def setup_environment(caller_path: str = ""):
 
     warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed.*transport.*")
     warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed transport.*")
+    warnings.filterwarnings("ignore", category=RuntimeWarning, message="coroutine.*was never awaited")
 
     _orig_unraisable = getattr(sys, "unraisablehook", None)
 
@@ -111,56 +112,6 @@ def _resolve_path(path: str, name: str) -> str:
     return os.path.abspath(user_path)
 
 
-def _setup_target_agent(agent, config_dir, target_agent):
-    """为 --agent 标志加载团队 prompt、技能、成员"""
-    _team_dir = os.path.join(config_dir, "agents", target_agent)
-    _team_prompt = os.path.join(_team_dir, "PROMPT.md")
-    if not os.path.exists(_team_prompt):
-        return
-    from utils.frontmatter import extract_frontmatter
-    with open(_team_prompt, encoding="utf-8") as _f:
-        _content = _f.read()
-    _fm, _body = extract_frontmatter(_content)
-    if not _body:
-        return
-    agent.name = _fm.get("name", target_agent) if isinstance(_fm, dict) else target_agent
-    agent.description = _fm.get("description", "") if isinstance(_fm, dict) else ""
-    agent.system_prompt = agent.system_prompt_raw = _body
-    _team_skills_dir = os.path.join(_team_dir, "skills")
-    if os.path.exists(_team_skills_dir):
-        from skills import SkillManager
-        if not agent.skill_manager:
-            agent.skill_manager = SkillManager(_team_skills_dir)
-        else:
-            _tsm = SkillManager(_team_skills_dir)
-            for _sn in _tsm.list_skills():
-                if _sn not in agent.skill_manager.skills:
-                    _sk = _tsm.get_skill(_sn)
-                    if _sk:
-                        agent.skill_manager.skills[_sn] = _sk
-        agent.skill_manager._build_builtin_tools()
-        _skill_names = agent.skill_manager.list_skills()
-        if _skill_names:
-            _skill_guide = (
-                "\n\n## 技能工具\n"
-                "你有一个 `skill` 工具，可以加载结构化的工作流指引。\n"
-                "执行任务前，先判断是否有适用于当前工作阶段的 skill，如果有则优先调用 `skill` 工具加载。\n"
-                f"可用技能: {', '.join(_skill_names)}"
-            )
-            agent.system_prompt += _skill_guide
-            agent.system_prompt_raw += _skill_guide
-    if agent.factory:
-        _members = agent.factory.get_team_members(target_agent) or {}
-        if _members:
-            _lines = ["\n\n## 【团队成员】\n"]
-            for _mname, _minfo in _members.items():
-                _lines.append(f"名称：{_mname}\n")
-                _lines.append(f"角色：{_minfo.get('description', '')}\n")
-            _lines.append("\n团队 Leader 可根据需要将任务委派给对应成员。")
-            agent.factory.get_subagent_prompt = lambda: "\n".join(_lines)
-    agent._build_prompt()
-
-
 def _setup_plugins(agent, config_dir):
     """加载并启动所有插件"""
     src_dir = os.path.dirname(os.path.abspath(__file__))
@@ -172,13 +123,8 @@ def _setup_plugins(agent, config_dir):
     plugin_manager.router = router
 
     async def _plugin_exec(sid, c, uid="", uname=""):
-        if BOUND_PLUGIN_SESSION:
-            bsid = BOUND_PLUGIN_SESSION
-            uid = "cli:admin"
-            uname = "管理员(绑定)"
-        else:
-            bsid = sid
-        r = await router.route(c, channel="plugin", session_id=bsid, user_id=uid, user_name=uname)
+        uid = "cli:admin" if BOUND_PLUGIN_SESSION else (uid or sid or "plugin")
+        r = await router.route(c, channel="plugin", user_id=uid)
         return r.result if hasattr(r, 'result') else str(r)
 
     plugin_manager.register_executor(_plugin_exec)
@@ -247,9 +193,9 @@ async def bootstrap(args):
     agent = Agent(workspace=workspace, config_dir=config_dir, client=client)
     await agent.initialize()
 
-    target_agent = args.agent or ""
-    if target_agent:
-        _setup_target_agent(agent, config_dir, target_agent)
+    agent.factory.__class__._instance = agent.factory
+    from channels import MessageRouter
+    MessageRouter._instance = MessageRouter(agent_name=args.agent or "")
 
     plugin_manager = None
     if not args.no_plugins:
@@ -260,7 +206,7 @@ async def bootstrap(args):
     if start_web:
         web_server = _setup_web_server(agent, args.web_port)
 
-    return agent, plugin_manager, web_server, target_agent
+    return plugin_manager, web_server
 
 
 async def cleanup(plugin_manager, agent):

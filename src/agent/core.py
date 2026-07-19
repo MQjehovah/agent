@@ -467,6 +467,7 @@ class Agent:
     def _init_factory(self):
         self.factory = AgentFactory(self.config_dir, self.workspace)
         self.factory._parent_agent = self
+        self.factory._client = getattr(self, 'client', None)
         self.factory.start_cleanup_task()
         self.subagent_manager = self.factory  # 向后兼容
         logger.info(
@@ -714,7 +715,7 @@ class Agent:
 
         return tools
 
-    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "") -> AgentResult:
+    async def run(self, task: str, session_id: str = "", run_id: str = "") -> AgentResult:
         from hooks import get_run_id, reset_run_id, set_run_id
         # 顶层 agent 重置 ask_user 模式为交互模式
         if not self.parent_agent:
@@ -724,7 +725,7 @@ class Agent:
         # 顶层调用时返回空 RunContext。
         inherited = current_run()
         # 创建本次 run 的独立上下文，绑定到当前 asyncio Task —— 并发隔离的关键
-        ctx = RunContext(task=task, run_id=run_id or uuid.uuid4().hex)
+        ctx = RunContext(run_id=run_id or uuid.uuid4().hex)
         # 任务级过程目录：顶层 run 建立（时间戳+任务摘要），子代理继承父目录（同任务共享）
         if self.parent_agent and inherited.task_dir:
             ctx.task_dir = inherited.task_dir
@@ -755,10 +756,10 @@ class Agent:
 
         try:
             if self._is_team and self._team_config and self._team_members:
-                from agent.reactor import team_run_impl; return await team_run_impl(self, task, session_id, user_id, user_name)
+                from agent.reactor import team_run_impl; return await team_run_impl(self, task, session_id)
             if self.loop_mode == "reflective":
-                from agent.reactor import run_impl_reflective; return await run_impl_reflective(self, task, session_id, user_id, user_name, inherited)
-            from agent.reactor import run_impl; return await run_impl(self, task, session_id, user_id, user_name, inherited)
+                from agent.reactor import run_impl_reflective; return await run_impl_reflective(self, task, session_id, inherited)
+            from agent.reactor import run_impl; return await run_impl(self, task, session_id, inherited)
         finally:
             if not self.parent_agent:
                 reset_ask_user_mode(_ask_token)

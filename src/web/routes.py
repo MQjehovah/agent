@@ -107,13 +107,11 @@ def register_api_routes(app, ws):
         chat_session.is_streaming = True
 
         web_user_id = f"web:{auth['uid']}"
-        web_user_name = auth.get("name", "")
 
         async def _web_auto_run():
-            await router.route(message, channel="web", session_id=session_id,
-                               user_id=web_user_id, user_name=web_user_name)
+            await router.route(message, channel="web", user_id=web_user_id)
         asyncio.create_task(_web_auto_run())
-        return {"session_id": session_id, "status": "processing"}
+        return {"session_id": router.format_session_id("web", web_user_id), "status": "processing"}
 
     # ===== Chat Stream =====
     @app.post("/api/chat/stream")
@@ -135,7 +133,6 @@ def register_api_routes(app, ws):
         chat_session.is_streaming = True
 
         web_user_id = f"web:{auth['uid']}"
-        web_user_name = auth.get("name", "")
 
         stream_run_id = uuid.uuid4().hex
         agent_ref = ws.agent
@@ -188,9 +185,8 @@ def register_api_routes(app, ws):
             async def run_agent():
                 try:
                     result = await router.route(
-                        message, channel="web",
-                        session_id=session_id, run_id=stream_run_id,
-                        user_id=web_user_id, user_name=web_user_name,
+                        message, channel="web", user_id=web_user_id,
+                        run_id=stream_run_id,
                     )
                     resp_text = result.result if result and hasattr(result, "result") else ""
                     if full_response:

@@ -10,7 +10,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from utils.frontmatter import extract_frontmatter
 
@@ -37,9 +37,17 @@ class AgentFactory:
     CLEANUP_INTERVAL = 300
     AGENT_TTL = 3600
 
+    _instance: "AgentFactory | None" = None
+
+    @classmethod
+    def instance(cls) -> "AgentFactory":
+        assert cls._instance is not None, "AgentFactory 尚未初始化"
+        return cls._instance
+
     def __init__(self, config_dir: str, base_workspace: str = ""):
         self.config_dir = config_dir
         self.base_workspace = base_workspace or config_dir
+        self.workspace = base_workspace
         self.templates: dict[str, dict] = {}
         self._active_agents: dict[str, AgentInstance] = {}
         self._name_to_session: dict[str, str] = {}
@@ -50,6 +58,7 @@ class AgentFactory:
         self._parent_agent = None
         self._lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
+        self._agent_pool: dict[str, Agent] = {}
         self.scan()
 
     # ── 模板扫描 ──────────────────────────────────
@@ -162,6 +171,38 @@ class AgentFactory:
         return self._team_members.get(name)
 
     # ── 创建 Agent ────────────────────────────────
+
+    async def get_or_create(self, name: str = "") -> "Agent":
+        """按名称获取或懒加载 Agent 实例，池化复用。
+
+        name=""       → config_dir 下的默认 Agent
+        name="xx"     → config_dir/agents/xx 下的子 Agent 或团队
+        """
+        from agent.core import Agent
+
+        key = name or "__root__"
+        if key in self._agent_pool:
+            return self._agent_pool[key]
+
+        if name:
+            agent_dir = os.path.join(self.config_dir, "agents", name)
+            if not os.path.isdir(agent_dir):
+                raise ValueError(f"Agent '{name}' not found at {agent_dir}")
+        else:
+            agent_dir = self.config_dir
+
+        agent = Agent(
+            workspace=self.workspace or self.base_workspace,
+            config_dir=agent_dir,
+            client=self._client,
+            parent_agent=self._parent_agent,
+        )
+        if self._parent_agent:
+            agent.plugin_manager = self._parent_agent.plugin_manager
+
+        await agent.initialize()
+        self._agent_pool[key] = agent
+        return agent
 
     async def create(self, template: str = "", config_dir: str = "",
                      name: str = "", client=None, parent_agent=None,

@@ -263,7 +263,7 @@ class WebhookPlugin(BasePlugin):
             if router:
                 result = await router.route(
                     task.content, channel="webhook",
-                    session_id=task.session_id,
+                    user_id=task.session_id or "task",
                 )
                 result_str = result.result if hasattr(result, "result") else str(result)
             elif self.agent_executor:
