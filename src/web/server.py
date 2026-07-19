@@ -38,6 +38,11 @@ class WebServer:
     """FastAPI Web 服务"""
 
     MAX_WEB_SESSIONS = 500
+    _instance = None
+
+    @classmethod
+    def instance(cls):
+        return cls._instance
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8080, loop: asyncio.AbstractEventLoop = None):
         self.host = host

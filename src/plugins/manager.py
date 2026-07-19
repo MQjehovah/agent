@@ -10,6 +10,13 @@ logger = logging.getLogger("agent.plugins")
 
 class PluginManager:
     PLUGIN_ENTRY = "plugin"
+
+    _instance = None
+
+    @classmethod
+    def instance(cls):
+        assert cls._instance is not None, "PluginManager 尚未初始化"
+        return cls._instance
     
     def __init__(self, plugins_dir: Optional[str] = None, config_dir: Optional[str] = None):
         self.plugins_dir = plugins_dir

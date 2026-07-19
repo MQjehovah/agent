@@ -109,7 +109,7 @@ def register_api_routes(app, ws):
         web_user_id = f"web:{auth['uid']}"
 
         async def _web_auto_run():
-            await router.route(message, channel="web", user_id=web_user_id)
+            await router.publish(message, channel="web", user_id=web_user_id)
         asyncio.create_task(_web_auto_run())
         return {"session_id": router.format_session_id("web", web_user_id), "status": "processing"}
 
@@ -184,13 +184,13 @@ def register_api_routes(app, ws):
 
             async def run_agent():
                 try:
-                    result = await router.route(
-                        message, channel="web", user_id=web_user_id,
-                        run_id=stream_run_id,
-                    )
-                    resp_text = result.result if result and hasattr(result, "result") else ""
-                    if full_response:
-                        resp_text = "".join(full_response)
+                    loop = asyncio.get_running_loop()
+                    future = loop.create_future()
+                    router.on_response("web", web_user_id, future.set_result)
+                    router.publish(
+                        message, channel="web", user_id=web_user_id, run_id=stream_run_id)
+                    await future
+                    resp_text = "".join(full_response) if full_response else ""
                     await q.put(("done", resp_text))
                 except Exception as e:
                     await q.put(("error", str(e)))

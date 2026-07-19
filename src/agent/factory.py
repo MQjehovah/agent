@@ -359,8 +359,12 @@ class AgentFactory:
             agents = list(self._active_agents.values())
             self._active_agents.clear()
             self._name_to_session.clear()
+            pool_agents = list(self._agent_pool.values())
+            self._agent_pool.clear()
         for inst in agents:
             await inst.agent.cleanup()
+        for a in pool_agents:
+            await a.cleanup()
 
     def get_stats(self) -> dict:
         return {

@@ -44,11 +44,12 @@ class FeishuSession:
         try:
             router = getattr(self._plugin.plugin_manager, "router", None)
             if router:
-                result = await router.route(
-                    content, channel="feishu",
-                    user_id=self.session_id.split(":")[-1] if ":" in self.session_id else "1",
-                )
-                return result.result if hasattr(result, "result") else str(result)
+                uid = self.session_id.split(":")[-1] if ":" in self.session_id else "1"
+                loop = asyncio.get_running_loop()
+                future = loop.create_future()
+                router.on_response("feishu", uid, future.set_result)
+                router.publish(content, channel="feishu", user_id=uid)
+                return await future
             result = await self._plugin.plugin_manager.execute(
                 self.session_id, content
             )

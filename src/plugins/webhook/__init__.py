@@ -261,10 +261,12 @@ class WebhookPlugin(BasePlugin):
         try:
             router = getattr(self.plugin_manager, "router", None) if self.plugin_manager else None
             if router:
-                result = await router.route(
-                    task.content, channel="webhook",
-                    user_id=task.session_id or "task",
-                )
+                uid = task.session_id or "task"
+                loop = asyncio.get_running_loop()
+                future = loop.create_future()
+                router.on_response("webhook", uid, future.set_result)
+                router.publish(task.content, channel="webhook", user_id=uid)
+                result = await future
                 result_str = result.result if hasattr(result, "result") else str(result)
             elif self.agent_executor:
                 result = await self.agent_executor(task.session_id, task.content)

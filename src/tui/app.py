@@ -76,7 +76,7 @@ class TUIState:
 class TUIApp:
     """Full-screen chat TUI coordinator."""
 
-    def __init__(self, agent=None):
+    def __init__(self, agent=None, context: str = "", session_id: str = ""):
         self.state = TUIState()
         self.status_bar = StatusBar()
         agent_name = agent.name if agent else ""
@@ -88,30 +88,26 @@ class TUIApp:
         self._input_queue: asyncio.Queue[str] = asyncio.Queue()
         self._app_task: asyncio.Task | None = None
         self._spinner_task: asyncio.Task | None = None
-        self._context = ""
+        self._context = context
         self._branch = ""
         self._target_agent = ""
-        self._session_id = ""
+        self._session_id = session_id
         self._hook_unregisters = []
 
         self.chat.on_submit(self._on_input_submit)
         self.chat.on_cancel(lambda: self._cancel_flag.set())
         self.chat.on_exit(lambda: self._shutdown.set())
 
+        if agent:
+            self._register_hooks(agent)
+            ask_tool = agent.tool_registry.get_tool("ask_user") if agent.tool_registry else None
+            self._setup_ask_handler(ask_tool)
+
     def _on_input_submit(self, text: str):
         self.display.user_message(text)
         self._input_queue.put_nowait(text)
 
-    # ── setup ────────────────────────────────────────────────────
-
-    def setup(self, workspace_context: str, branch: str = "",
-              target_agent: str = "", session_id: str = ""):
-        self._context = workspace_context
-        self._branch = branch
-        self._target_agent = target_agent
-        self._session_id = session_id
-
-    def register_hooks(self, agent):
+    def _register_hooks(self, agent):
         from hooks import HookEvent
 
         def _on_tool_start(ctx):
@@ -238,7 +234,7 @@ class TUIApp:
             (HookEvent.AGENT_STOP, _on_agent_stop),
         ]
 
-    def setup_ask_handler(self, ask_tool):
+    def _setup_ask_handler(self, ask_tool):
         if ask_tool and hasattr(ask_tool, "set_input_handler"):
             handler = self._handle_ask_user
             ask_tool.set_input_handler(handler)
@@ -272,9 +268,23 @@ class TUIApp:
         )
         self._app_task = asyncio.create_task(self.chat.application.run_async())
 
+        import signal as _signal
+        for _sig in (_signal.SIGINT, _signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                asyncio.get_running_loop().add_signal_handler(_sig, self.shutdown)
+
     def _set_input_locked(self, locked: bool):
         self.chat.input_locked = locked
         self.chat.update_status()
+
+    def _start_spinner_bg(self):
+        if self._spinner_task is None:
+            self._spinner_task = asyncio.create_task(self.run_spinner())
+
+    def _stop_spinner_bg(self):
+        if self._spinner_task and not self._spinner_task.done():
+            self._spinner_task.cancel()
+            self._spinner_task = None
 
     def start_task(self):
         self.state.task_active = True
@@ -292,14 +302,15 @@ class TUIApp:
         self._cancel_flag.clear()
         self._set_input_locked(True)
         self._start_esc_monitor()
+        self._start_spinner_bg()
 
     def after_task(self, result_text: str = ""):
+        self._stop_spinner_bg()
         self.state.task_active = False
         elapsed = self._elapsed_str()
         self._stop_esc_monitor()
         if result_text:
             self.display.result_text(result_text, elapsed)
-        # _update_token_stats 已在 agent_stop 钩子中调用（flush 之前）
         self.status_bar.set_idle(
             context=self._context, branch=self._branch,
             ctx_tokens=self.state.ctx_tokens, tokens=self._fmt_tokens(), cost=self._fmt_cost(),
@@ -309,6 +320,7 @@ class TUIApp:
         self._set_input_locked(False)
 
     def cancel_notice(self):
+        self._stop_spinner_bg()
         self.state.task_active = False
         self._stop_esc_monitor()
         self.display.cancel_notice()
@@ -320,6 +332,7 @@ class TUIApp:
         self._set_input_locked(False)
 
     def error_notice(self, msg: str):
+        self._stop_spinner_bg()
         self.state.task_active = False
         self._stop_esc_monitor()
         self.display.error(msg)

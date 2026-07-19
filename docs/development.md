@@ -53,10 +53,10 @@
 ### 3.1 入口
 
 ```
-src/main.py          — 精简入口（~30 行），解析 --agent 后 dispatch
+src/main.py          — 精简入口（~30 行），bootstrap + dispatch
 src/cli.py           — argparse 参数解析
 src/bootstrap.py     — 初始化链：路径/日志/settings/agent/plugin/web
-src/interactive.py   — CLI 交互模式（TUI + 事件循环），仅接收已解析的 Agent
+src/interactive.py   — CLI 交互模式（TUI + 事件循环），无参数，通过全局单例获取依赖
 src/autonomous/runner.py — 自主模式入口
 ```
 
@@ -68,7 +68,25 @@ src/autonomous/runner.py — 自主模式入口
 - `config_dir` 指向含 `TEAM.md` 的目录 → `reactor.team_run_impl()` [团队编排]
 - Agent 可嵌套（父→子→孙），`contextvars` 保证并发隔离
 
-**文件**：`src/agent/core.py` (Agent 类)、`src/agent/reactor.py` (ReAct 循环 + 团队执行)、`src/agent/context.py` (RunContext)、`src/agent/factory.py` (AgentFactory)
+**文件**：`src/agent/core.py` (Agent 类)、`src/agent/reactor.py` (ReAct 循环 + 团队执行)、`src/agent/context.py` (RunContext)、`src/agent/factory.py` (AgentFactory)、`src/channels/router.py` (MessageRouter)
+
+### 3.3 全局单例模式
+
+系统核心服务通过类级 `_instance` + `classmethod instance()` 实现全局可访问，无需依赖注入：
+
+```
+AgentFactory.instance()   — bootstrap 时设置，运行时按名称懒加载 Agent
+MessageRouter.instance()  — bootstrap 时设置，业务层直接 route()
+```
+
+`MessageRouter.route(channel, user_id, content)` 负责：
+1. 从 `AgentFactory` 获取或创建目标 Agent
+2. 生成 `session_id = {channel}:{user_id}`
+3. 创建/复用 session 并注入 `user_id` / `role`
+4. 调用 `agent.run(task, session_id)`
+5. 非 CLI 渠道自动设置 `ask_user_mode=auto`
+
+**用户身份通过 session 传递**，`agent.run()` 不再接收 `user_id`/`user_name`。RBAC 从 `session.role` 读取。
 
 ### 3.2 ReAct 循环
 
@@ -168,16 +186,18 @@ AgentSession
 
 ### 5.2 Session ID 格式
 
+Session ID 由 `MessageRouter` 自动生成，格式为 `{channel}:{user_id}`：
+
 ```
-{channel}:{unique_id}
-├── cli:{uuid}
-├── dingtalk:{conv_id}:{sender_id}
-├── feishu:{chat_id}:{user_id}
-├── webhook:{task_id}
-└── web:{uuid}
+{channel}:{user_id}
+├── cli:1               — CLI 交互，用户 ID 固定为 1
+├── dingtalk:uid_xxx    — 钉钉用户
+├── web:42              — Web UI 用户
+├── webhook:task_abc    — Webhook 任务
 ```
 
-子代理调用：`{parent_session_id}:{child_name}`
+**session 创建时注入用户身份**：`create_session(session_id, user_id, role)`。
+后续权限校验从 `session.user_id` / `session.role` 读取，无需经过 `agent.run()` 参数传递。
 
 ### 5.3 持久化
 
@@ -222,20 +242,21 @@ ToolRegistry.auto_discover()  # AST 扫描 src/tools/*.py，实例化 BuiltinToo
 
 ### 7.1 AgentFactory — 统一的 Agent 创建入口
 
-**系统中只有一种 Agent 类**，没有根 Agent / 子 Agent / 团队成员之分。区别仅在于 `config_dir` 指向不同的 PROMPT.md。所有 Agent 通过 `AgentFactory` 统一管理、池化、懒加载。
+**系统中只有一种 Agent 类**，没有根 Agent / 子 Agent / 团队成员之分。区别仅在于 `config_dir` 指向不同的 PROMPT.md。所有 Agent 通过 `AgentFactory` 统一管理、池化、懒加载，全局单例 `AgentFactory.instance()`。
 
 ```
-main.py 解析 --agent 参数:
-  args.agent 为空 → factory.get_or_create("")     → config_dir 的默认 Agent
-  args.agent=xx  → factory.get_or_create("xx")    → config_dir/agents/xx 的子 Agent
+bootstrap → AgentFactory._instance = agent.factory
+main.py   → AgentFactory.instance().get_or_create(args.agent)
+router    → AgentFactory.instance().get_or_create(self.agent_name)
 
 AgentFactory (agent/factory.py)
-  ├─ _agent_pool: dict[str, Agent]   — 池化缓存，同名复用
-  ├─ get_or_create(name)              — 懒加载统一入口
-  ├─ scan()                           — 扫描 config/agents/ 加载所有模板
-  ├─ create(template)                 — 创建个人 Agent（子 agent 工具用）
-  ├─ create_team_member(team, role)   — 创建团队成员 Agent
-  └─ get_subagent_prompt()            — 生成子代理列表提示词
+  ├─ _instance                         — 全局单例
+  ├─ _agent_pool: dict[str, Agent]     — 池化缓存，同名复用
+  ├─ get_or_create(name)               — 懒加载统一入口
+  ├─ scan()                            — 扫描 config/agents/ 加载所有模板
+  ├─ create(template)                  — 创建个人 Agent（子 agent 工具用）
+  ├─ create_team_member(team, role)    — 创建团队成员 Agent
+  └─ get_subagent_prompt()             — 生成子代理列表提示词
 ```
 
 ### 7.2 团队编排

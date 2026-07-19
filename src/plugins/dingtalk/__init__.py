@@ -383,11 +383,11 @@ class AgentChatbotHandler:
             else:
                 router = getattr(self.plugin.plugin_manager, "router", None)
                 if router:
-                    result = await router.route(
-                        content, channel="dingtalk",
-                        user_id=user_id or "dingtalk:1",
-                    )
-                    response = result.result if hasattr(result, "result") else str(result)
+                    loop = asyncio.get_running_loop()
+                    future = loop.create_future()
+                    router.on_response("dingtalk", user_id or "dingtalk:1", future.set_result)
+                    router.publish(content, channel="dingtalk", user_id=user_id or "dingtalk:1")
+                    response = await future
                 else:
                     response = await self.plugin.plugin_manager.execute(
                         session_id=session.session_id,

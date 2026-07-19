@@ -124,8 +124,11 @@ def _setup_plugins(agent, config_dir):
 
     async def _plugin_exec(sid, c, uid="", uname=""):
         uid = "cli:admin" if BOUND_PLUGIN_SESSION else (uid or sid or "plugin")
-        r = await router.route(c, channel="plugin", user_id=uid)
-        return r.result if hasattr(r, 'result') else str(r)
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        router.on_response("plugin", uid, future.set_result)
+        router.publish(c, channel="plugin", user_id=uid)
+        return await future
 
     plugin_manager.register_executor(_plugin_exec)
     agent.plugin_manager = plugin_manager
@@ -138,9 +141,13 @@ def _setup_plugins(agent, config_dir):
 
     scheduler_plugin = plugin_manager.get_plugin("scheduler")
     if scheduler_plugin:
-        scheduler_plugin._agent_executor = lambda task: router.route(
-            task, channel="scheduler",
-        )
+        async def _sched_exec(task):
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            router.on_response("scheduler", "sched", future.set_result)
+            router.publish(task, channel="scheduler", user_id="sched")
+            return await future
+        scheduler_plugin._agent_executor = _sched_exec
         if not scheduler_plugin._started:
             scheduler_plugin.start()
 
@@ -197,24 +204,27 @@ async def bootstrap(args):
     from channels import MessageRouter
     MessageRouter._instance = MessageRouter(agent_name=args.agent or "")
 
-    plugin_manager = None
     if not args.no_plugins:
         plugin_manager = _setup_plugins(agent, config_dir)
+        plugin_manager.__class__._instance = plugin_manager
 
-    web_server = None
-    start_web = args.web
-    if start_web:
-        web_server = _setup_web_server(agent, args.web_port)
-
-    return plugin_manager, web_server
+    if args.web:
+        from web import WebServer
+        WebServer._instance = _setup_web_server(agent, args.web_port)
 
 
-async def cleanup(plugin_manager, agent):
-    """统一清理资源"""
+async def cleanup():
+    """统一清理资源：插件 → Agent 池 → Web 服务 → 残余任务"""
     try:
-        if plugin_manager:
-            plugin_manager.stop_all()
-        await agent.cleanup()
+        from web import WebServer
+        if WebServer._instance:
+            WebServer._instance.stop()
+        from plugins import PluginManager
+        if PluginManager._instance:
+            PluginManager._instance.stop_all()
+        from agent.factory import AgentFactory
+        if AgentFactory._instance:
+            await AgentFactory._instance.cleanup_all()
     except asyncio.CancelledError:
         logger.warning("清理过程被取消")
     except Exception as e:

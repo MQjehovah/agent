@@ -1,26 +1,23 @@
+import asyncio
+from collections.abc import Callable
 from typing import Any
-
-from tools.ask_user import reset_ask_user_mode, set_ask_user_mode
-
-
-def _default_role(user_id: str) -> str:
-    """根据 user_id 解析角色，可按需扩展"""
-    return "admin" if user_id in ("1", "cli:1", "admin") else "default"
 
 
 class MessageRouter:
-    """统一消息路由：所有渠道通过此路由器调用 agent.run()
+    """消息路由：输入输出解耦
 
-    职责：
-    - session_id = {channel}:{user_id}
-    - 创建/复用 session 并注入用户身份
-    - 非交互渠道自动设 ask_user_mode=auto
+    - publish(content, channel, user_id)      通道投递输入，立即返回
+    - poll() → (content, channel, user_id)    interactive 消费
+    - respond(channel, user_id, result)       interactive 写回结果
+    - on_response(channel, user_id, cb)       通道注册结果回调
     """
 
     _instance: "MessageRouter | None" = None
 
     def __init__(self, agent_name: str = ""):
         self.agent_name = agent_name
+        self._input_queue: asyncio.Queue = asyncio.Queue()
+        self._listeners: dict[tuple[str, str], Callable] = {}
 
     @classmethod
     def instance(cls) -> "MessageRouter":
@@ -31,28 +28,21 @@ class MessageRouter:
     def format_session_id(channel: str, user_id: str) -> str:
         return f"{channel}:{user_id}"
 
-    async def route(
-        self,
-        content: str,
-        channel: str = "cli",
-        user_id: str = "1",
-        **kwargs,
-    ) -> Any:
-        from agent.factory import AgentFactory
-        agent = await AgentFactory.instance().get_or_create(self.agent_name)
+    def on_response(self, channel: str, user_id: str, callback: Callable):
+        """通道注册结果回调"""
+        self._listeners[(channel, user_id)] = callback
 
-        session_id = self.format_session_id(channel, user_id)
+    def publish(self, content: str, channel: str = "cli", user_id: str = "1",
+                run_id: str = ""):
+        """通道投递输入，立即返回"""
+        self._input_queue.put_nowait((content, channel, user_id, run_id))
 
-        await agent.session_manager.create_session(
-            session_id, user_id=user_id, role=_default_role(user_id),
-            system_prompt=agent.system_prompt or "",
-            agent_id=agent.agent_id,
-        )
+    async def poll(self) -> tuple:
+        """interactive 消费：取下一条输入 (content, channel, user_id, run_id)"""
+        return await self._input_queue.get()
 
-        if channel != "cli":
-            token = set_ask_user_mode("auto")
-        try:
-            return await agent.run(task=content, session_id=session_id, **kwargs)
-        finally:
-            if channel != "cli":
-                reset_ask_user_mode(token)
+    def respond(self, channel: str, user_id: str, result: Any):
+        """interactive 写回结果到通道"""
+        cb = self._listeners.get((channel, user_id))
+        if cb:
+            cb(result)

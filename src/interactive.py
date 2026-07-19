@@ -1,97 +1,63 @@
 import asyncio
 import contextlib
 import logging
-import os
-import signal
-from itertools import count
+from io import StringIO
 
 from agent.factory import AgentFactory
 from channels import MessageRouter
-from commands.handler import CommandHandler
-from tui import TUIApp
+from commands.handler import CommandHandler, strip_ansi
+from tools.ask_user import reset_ask_user_mode, set_ask_user_mode
 
 logger = logging.getLogger("agent.main")
 
 
-async def _wait_cancel(tui):
-    while True:
-        await asyncio.sleep(0.3)
-        if tui.cancel_flag.is_set():
-            return
+def _default_role(user_id: str) -> str:
+    return "admin" if user_id in ("1", "cli:1", "admin") else "default"
 
 
 async def interactive_mode():
-    tui = None
+    """交互模式主循环：poll → 命令拦截 → agent.run() → respond
+
+    同时启动 CLI 通道作为生产者。
+    """
+    from channels.cli import run as cli_run
+    cli_task = asyncio.create_task(cli_run())
+
+    router = MessageRouter.instance()
     try:
-        router = MessageRouter.instance()
-        agent = await AgentFactory.instance().get_or_create(router.agent_name)
-        session_id = router.format_session_id("cli", "1")
+        while True:
+            content, channel, user_id, run_id = await router.poll()
+            try:
+                session_id = router.format_session_id(channel, user_id)
 
-        ws_context = os.path.basename(os.path.normpath(agent.workspace))
+                agent = await AgentFactory.instance().get_or_create(router.agent_name)
+                agent.session_manager.create_session(
+                    session_id, user_id=user_id, role=_default_role(user_id),
+                    system_prompt=agent.system_prompt or "",
+                    agent_id=agent.agent_id,
+                )
 
-        tui = TUIApp(agent)
-        tui.setup(ws_context, branch="", session_id=session_id)
-        tui.register_hooks(agent)
+                buf = StringIO()
+                cmd_handler = CommandHandler(agent, session_id,
+                                              output=lambda t, _b=buf: _b.write(strip_ansi(t)) if t else None)
+                if cmd_handler.is_command(content):
+                    await cmd_handler.handle(content)
+                    router.respond(channel, user_id, buf.getvalue().strip())
+                    continue
 
-        ask_tool = agent.tool_registry.get_tool("ask_user") if agent.tool_registry else None
-        tui.setup_ask_handler(ask_tool)
+                if channel != "cli":
+                    token = set_ask_user_mode("auto")
+                try:
+                    result = await agent.run(content, session_id=session_id, run_id=run_id)
+                    text = result.result if hasattr(result, "result") else str(result)
+                finally:
+                    if channel != "cli":
+                        reset_ask_user_mode(token)
 
-        cmd_handler = CommandHandler(agent, session_id, on_exit=tui.shutdown,
-                                      output=tui.chat.append_output)
-
-        await tui.start()
-
-        def handle_signal():
-            tui.shutdown()
-
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):
-                asyncio.get_running_loop().add_signal_handler(sig, handle_signal)
-
-        task_counter = count(1)
-        while not tui.is_shutdown:
-            question = await tui.get_input()
-            if question is None:
-                break
-            if not question.strip():
-                continue
-            if cmd_handler.is_command(question):
-                await cmd_handler.handle(question)
-                continue
-
-            cmd_handler.set_current_task_id(next(task_counter))
-            tui.start_task()
-            tui.start_spinner()
-
-            runner = asyncio.create_task(
-                router.route(question, channel="cli", user_id="1"))
-            watcher = asyncio.create_task(_wait_cancel(tui))
-            done, _ = await asyncio.wait([runner, watcher], return_when=asyncio.FIRST_COMPLETED)
-            watcher.cancel()
-
-            if watcher in done:
-                runner.cancel()
-                await asyncio.wait([runner])
-
-            await tui.stop_spinner()
-
-            if runner.cancelled():
-                logger.warning("任务被用户取消")
-                tui.cancel_notice()
-            elif exc := runner.exception():
-                logger.exception(f"任务执行异常: {exc}")
-                tui.error_notice(str(exc))
-            else:
-                result = runner.result()
-                text = result.result if hasattr(result, "result") else str(result)
-                tui.after_task(text)
-
-            cmd_handler.set_current_task_id(None)
-
-    except asyncio.CancelledError:
-        logger.info("任务取消")
-    except Exception as e:
-        logger.exception(f"交互模式异常: {e}")
+                router.respond(channel, user_id, text)
+            except Exception as e:
+                logger.exception(f"交互模式处理异常: {e}")
     finally:
-        if tui:
-            tui.shutdown()
+        cli_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cli_task
