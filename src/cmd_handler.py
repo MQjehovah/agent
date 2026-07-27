@@ -1,0 +1,532 @@
+"""
+交互模式命令处理器
+"""
+import logging
+import re
+from collections.abc import Callable
+
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+_ANSI_RE = re.compile(r"\033\[[0-9;]*[a-zA-Z]")
+
+def strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+logger = logging.getLogger("agent.cmd")
+
+
+class CommandHandler:
+    """命令处理器 - 处理所有以 / 开头的交互命令"""
+
+    def __init__(self, agent, session_id: str, on_exit: Callable[[], None] = None, panel=None, output=None):
+        self.agent = agent
+        self.session_id = session_id
+        self._current_task_id = None
+        self._on_exit = on_exit
+        self._panel = panel
+        self._output = output
+
+    def _print(self, *args, **kwargs):
+        """Route output through TUI if available, else fallback to self._print."""
+        if self._output is not None:
+            from io import StringIO
+            buf = StringIO()
+            c = Console(file=buf, width=80)
+            c.print(*args, **kwargs)
+            text = buf.getvalue()
+            if text.strip():
+                self._output(strip_ansi(text))
+        else:
+            self._print(*args, **kwargs)
+
+    def set_current_task_id(self, task_id: int | None):
+        self._current_task_id = task_id
+
+    def is_command(self, input_str: str) -> bool:
+        return input_str.strip().startswith("/")
+
+    async def handle(self, cmd: str):
+        """处理命令"""
+        cmd_lower = cmd.strip().lower()
+
+        if cmd_lower == "/help":
+            self._show_help()
+        elif cmd_lower == "/prompt":
+            self._show_prompt()
+        elif cmd_lower == "/tools":
+            self._show_tools()
+        elif cmd_lower == "/skills":
+            self._show_skills()
+        elif cmd_lower == "/cancel":
+            self._cancel_task()
+        elif cmd_lower == "/subagents":
+            self._show_subagents()
+        elif cmd_lower.startswith("/subagent "):
+            self._show_subagent_sessions(cmd.strip()[10:].strip())
+        elif cmd_lower == "/subagents all":
+            self._show_all_subagents()
+        elif cmd_lower == "/subagents clear":
+            await self._clear_subagents()
+        elif cmd_lower.startswith("/loglevel "):
+            self._set_loglevel(cmd.strip()[10:].strip().upper())
+        elif cmd_lower == "/cache":
+            self._show_cache()
+        elif cmd_lower == "/cache clear":
+            self._clear_cache()
+        elif cmd_lower == "/usage":
+            self._show_usage()
+        elif cmd_lower == "/panel":
+            self._show_panel()
+        elif cmd_lower.startswith("/panel add "):
+            self._add_panel_task(cmd.strip()[11:].strip())
+        elif cmd_lower.startswith("/panel rm "):
+            self._rm_panel_task(cmd.strip()[10:].strip())
+        elif cmd_lower == "/panel clear":
+            self._clear_panel()
+        elif cmd_lower == "/sessions":
+            await self._show_sessions()
+        elif cmd_lower.startswith("/session "):
+            await self._show_session(cmd.strip()[9:].strip())
+        elif cmd_lower.startswith("/messages"):
+            await self._show_messages()
+        elif cmd_lower == "/bind":
+            import sys
+            main_mod = sys.modules.get("__main__")
+            if main_mod and hasattr(main_mod, "BOUND_PLUGIN_SESSION"):
+                main_mod.BOUND_PLUGIN_SESSION = getattr(main_mod, "CLI_SESSION_ID", "")
+                cid = main_mod.CLI_SESSION_ID[:8] if getattr(main_mod, "CLI_SESSION_ID", "") else ""
+                self._print(f"[green]插件会话已绑定到 CLI ({cid}...)[/green]")
+            else:
+                self._print("[red]无法获取 CLI 会话[/red]")
+        elif cmd_lower == "/unbind":
+            import sys
+            main_mod = sys.modules.get("__main__")
+            if main_mod and hasattr(main_mod, "BOUND_PLUGIN_SESSION"):
+                main_mod.BOUND_PLUGIN_SESSION = ""
+                self._print("[yellow]插件会话已解绑[/yellow]")
+        elif cmd_lower in ["/q", "/quit", "/exit"]:
+            if self._on_exit:
+                self._on_exit()
+        else:
+            self._print(f"[red]未知命令: {cmd}[/red]")
+            self._print("[dim]输入 /help 查看可用命令[/dim]")
+
+    def _show_help(self):
+        """显示帮助信息"""
+        table = Table(title="可用命令", show_header=True,
+                      header_style="bold cyan", box=box.ROUNDED)
+        table.add_column("命令", style="yellow")
+        table.add_column("说明", style="green")
+
+        commands = [
+            ("/help", "显示帮助信息"),
+            ("/prompt", "查看系统提示词"),
+            ("/tools", "列出可用工具"),
+            ("/skills", "列出可用技能"),
+            ("/bind", "绑定插件会话到 CLI（飞书/钉钉共享上下文）"),
+            ("/unbind", "解绑插件会话"),
+            ("/tasks", "查看任务状态"),
+            ("/subagents", "列出活跃子代理"),
+            ("/subagent <模板>", "查看指定模板的子代理会话"),
+            ("/subagents all", "按模板分组显示所有子代理"),
+            ("/subagents clear", "清理所有子代理"),
+            ("/sessions", "列出所有会话"),
+            ("/session <id>", "查看指定会话详情"),
+            ("/messages", "查看当前会话消息"),
+            ("/loglevel <level>", "设置日志级别"),
+            ("/cache", "查看缓存统计"),
+            ("/cache clear", "清空缓存"),
+            ("/usage", "查看 LLM 用量统计"),
+            ("/tasks", "查看后台任务列表"),
+            ("/panel add <任务>", "添加面板任务"),
+            ("/panel rm <id>", "删除面板任务"),
+            ("/panel clear", "清空面板"),
+            ("/quit", "退出程序"),
+            ("/quit", "退出程序"),
+        ]
+        for cmd, desc in commands:
+            table.add_row(cmd, desc)
+        self._print(table)
+
+    def _show_prompt(self):
+        """显示系统提示词"""
+        self._print(Panel.fit(
+            f"[bold green]系统提示词:[/bold green]\n{self.agent.system_prompt}",
+            border_style="green", box=box.ROUNDED
+        ))
+
+    def _show_tools(self):
+        """显示工具列表"""
+        table = Table(title="工具列表", show_header=True,
+                      header_style="bold magenta", box=box.ROUNDED)
+        table.add_column("名称", style="cyan", no_wrap=True)
+        table.add_column("描述", style="green")
+        for tool in self.agent.tool_defs:
+            func = tool.get("function", {})
+            name = func.get("name", "未知")
+            desc = func.get("description", "无描述")
+            if len(desc) > 60:
+                desc = desc[:60] + "..."
+            table.add_row(name, desc)
+        self._print(table)
+
+    def _show_skills(self):
+        """显示技能列表"""
+        if self.agent.skill_manager:
+            table = Table(title="技能列表", show_header=True,
+                          header_style="bold magenta", box=box.ROUNDED)
+            table.add_column("名称", style="cyan")
+            for skill_name in self.agent.skill_manager.list_skills():
+                table.add_row(skill_name)
+            self._print(table)
+        else:
+            self._print("[yellow]无可用技能[/yellow]")
+
+    def _show_tasks(self):
+        """显示任务状态"""
+        if self._current_task_id:
+            self._print(f"[cyan]正在执行任务 #{self._current_task_id}[/cyan]")
+        else:
+            self._print("[dim]无正在执行的任务[/dim]")
+
+    def _cancel_task(self):
+        """取消当前任务"""
+        self._print("[dim]使用 Ctrl+C 中断任务[/dim]")
+
+    def _show_subagents(self):
+        """显示子代理列表"""
+        if self.agent.subagent_manager:
+            stats = self.agent.subagent_manager.get_stats()
+            active = stats["active_subagents"]
+            if active:
+                table = Table(title=f"活跃子代理 (共 {len(active)} 个)", show_header=True,
+                              header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("会话ID", style="cyan")
+                table.add_column("模板", style="yellow")
+                table.add_column("任务数", style="green", justify="right")
+                for sub in active:
+                    table.add_row(sub["session_id"], sub["template"], str(sub["task_count"]))
+                self._print(table)
+            else:
+                self._print("[yellow]暂无活跃子代理[/yellow]")
+        else:
+            self._print("[yellow]子代理管理器未初始化[/yellow]")
+
+    def _show_subagent_sessions(self, template_name: str):
+        """显示指定模板的子代理会话"""
+        if self.agent.subagent_manager:
+            sessions = self.agent.subagent_manager.get_sessions_by_template(template_name)
+            if sessions:
+                table = Table(title=f"子代理 [{template_name}] 的所有会话 (共 {len(sessions)} 个)",
+                              show_header=True, header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("会话ID", style="cyan")
+                table.add_column("任务数", style="green", justify="right")
+                table.add_column("Agent ID", style="yellow")
+                for sess in sessions:
+                    table.add_row(
+                        sess["session_id"],
+                        str(sess["task_count"]),
+                        sess["agent_id"]
+                    )
+                self._print(table)
+            else:
+                self._print(f"[yellow]子代理 [{template_name}] 暂无活跃会话[/yellow]")
+        else:
+            self._print("[yellow]子代理管理器未初始化[/yellow]")
+
+    def _show_all_subagents(self):
+        """显示所有子代理"""
+        if self.agent.subagent_manager:
+            grouped = self.agent.subagent_manager.get_all_sessions()
+            if grouped:
+                for template, sessions in grouped.items():
+                    table = Table(title=f"[{template}] ({len(sessions)} 个会话)",
+                                  show_header=True, header_style="bold blue", box=box.ROUNDED)
+                    table.add_column("会话ID", style="cyan")
+                    table.add_column("任务数", style="green", justify="right")
+                    table.add_column("Agent ID", style="yellow")
+                    for sess in sessions:
+                        table.add_row(
+                            sess["session_id"],
+                            str(sess["task_count"]),
+                            sess["agent_id"]
+                        )
+                    self._print(table)
+            else:
+                self._print("[yellow]暂无活跃子代理[/yellow]")
+        else:
+            self._print("[yellow]子代理管理器未初始化[/yellow]")
+
+    async def _clear_subagents(self):
+        """清理所有子代理"""
+        if self.agent.subagent_manager:
+            await self.agent.subagent_manager.cleanup_all()
+            self._print("[green]已清理所有子代理[/green]")
+
+    def _set_loglevel(self, level: str):
+        """设置日志级别"""
+        import logging
+        valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if level in valid_levels:
+            logging.getLogger("agent").setLevel(getattr(logging, level))
+            self._print(f"[green]日志级别已设置为: {level}[/green]")
+        else:
+            self._print(f"[red]无效的日志级别: {level}[/red]")
+            self._print(f"[yellow]有效值: {', '.join(valid_levels)}[/yellow]")
+
+    # ================================================================
+    #  任务面板
+    # ================================================================
+
+    def _show_panel(self):
+        if self._panel is None:
+            self._print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            return
+        tasks = self._panel.list_all()
+        if not tasks:
+            self._print(Panel.fit(
+                "[dim]任务面板为空[/dim]\n"
+                "使用 [cyan]/panel add <任务>[/cyan] 添加\n"
+                "启动时已根据角色自动生成，部分纯响应型角色无需主动任务",
+                border_style="dim", box=box.ROUNDED
+            ))
+            return
+        stats = self._panel.get_stats()
+        table = Table(
+            title=f"任务面板 ({stats['total']}个 | {stats['pending']}pending {stats['active']}active {stats['completed']}done)",
+            show_header=True, header_style="bold cyan", box=box.ROUNDED
+        )
+        table.add_column("ID", style="dim", width=12)
+        table.add_column("状态", style="cyan", width=8)
+        table.add_column("P", style="yellow", width=3)
+        table.add_column("源", style="magenta", width=4)
+        table.add_column("间隔", style="green", width=8)
+        table.add_column("标题", style="white")
+        for t in tasks:
+            sc = {"pending": "yellow", "active": "cyan", "completed": "green"}.get(t.status, "dim")
+            itv = f"{t.interval}s" if t.interval else "一次"
+            src = {"user": "U", "llm": "AI", "event": "E"}.get(t.source, t.source)
+            table.add_row(t.id, f"[{sc}]{t.status}[/{sc}]", str(t.priority), src, itv, t.title)
+        self._print(table)
+        self._print("[dim]/panel add <任务> | /panel rm <id> | /panel clear[/dim]")
+
+    def _add_panel_task(self, text: str):
+        if self._panel is None:
+            self._print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            return
+        if not text:
+            self._print("[red]用法: /panel add <任务标题>[/red]")
+            return
+        task = self._panel.add_task(title=text, source="user")
+        self._print(f"[green]已添加: [{task.id}] {text}[/green]")
+
+    def _rm_panel_task(self, task_id: str):
+        if self._panel is None:
+            self._print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            return
+        if self._panel.remove_task(task_id):
+            self._print(f"[green]已删除: {task_id}[/green]")
+        else:
+            self._print(f"[red]未找到: {task_id}[/red]")
+
+    def _clear_panel(self):
+        if self._panel is None:
+            self._print("[yellow]任务面板仅在自主模式下可用[/yellow]")
+            return
+        for t in list(self._panel.list_all()):
+            self._panel.remove_task(t.id)
+        self._print("[green]面板已清空[/green]")
+
+    def _show_cache(self):
+        """显示缓存统计"""
+        from cache import get_cache
+        cache = get_cache()
+        stats = cache.get_stats()
+        table = Table(title="缓存统计", show_header=True,
+                      header_style="bold magenta", box=box.ROUNDED)
+        table.add_column("指标", style="cyan")
+        table.add_column("值", style="green")
+        table.add_row("缓存大小", f"{stats['size']}/{stats['max_size']}")
+        table.add_row("总命中次数", str(stats['total_hits']))
+        self._print(table)
+
+    def _clear_cache(self):
+        """清空缓存"""
+        from cache import get_cache
+        cache = get_cache()
+        cache.clear()
+        self._print("[green]缓存已清空[/green]")
+
+    async def _show_sessions(self):
+        """显示会话列表"""
+        if self.agent.session_manager:
+            sessions = self.agent.session_manager.list_sessions()
+            if sessions:
+                table = Table(title=f"会话列表 (共 {len(sessions)} 个)", show_header=True,
+                              header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("Session ID", style="cyan")
+                table.add_column("消息数", style="green", justify="right")
+                for sid in sessions:
+                    session = await self.agent.session_manager.get_session(sid)
+                    msg_count = len(session.messages) if session else 0
+                    table.add_row(sid, str(msg_count))
+                self._print(table)
+            else:
+                self._print("[yellow]暂无会话[/yellow]")
+        else:
+            self._print("[yellow]Session Manager 未初始化[/yellow]")
+
+    async def _show_session(self, target_id: str):
+        """显示指定会话"""
+        if self.agent.session_manager:
+            session = await self.agent.session_manager.get_session(target_id)
+            if session:
+                table = Table(title=f"会话 {target_id} (共 {len(session.messages)} 条消息)",
+                              show_header=True, header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("#", style="dim", width=3)
+                table.add_column("角色", style="cyan", width=10)
+                table.add_column("内容", style="green")
+                for i, msg in enumerate(session.messages, 1):
+                    role = str(msg.get("role", "未知"))
+                    content = str(msg.get("content", "") or "")
+                    if len(content) > 100:
+                        content = content[:100] + "..."
+                    table.add_row(str(i), role, content)
+                self._print(table)
+            else:
+                self._print(f"[yellow]会话 {target_id} 不存在[/yellow]")
+        else:
+            self._print("[yellow]Session Manager 未初始化[/yellow]")
+
+    async def _show_messages(self):
+        """显示当前会话消息（含子代理消息）"""
+        from storage import get_storage
+        storage = get_storage()
+        all_msgs = []
+        # 从 memory 收集当前会话消息
+        if self.agent.session_manager:
+            sess = await self.agent.session_manager.get_session(self.session_id)
+            if sess and sess.messages:
+                for m in sess.messages:
+                    if m.get("role") != "system":
+                        all_msgs.append(("", m))
+        # 从 storage 收集子会话消息
+        if storage and self.agent.subagent_manager:
+            try:
+                recent = storage.list_recent_sessions(limit=100)
+                prefix = f"{self.session_id}:"
+                for s in recent:
+                    sid = s.get("session_id", "")
+                    if sid.startswith(prefix):
+                        label = sid.split(":", 1)[1] if ":" in sid else sid[:8]
+                        msgs = storage.get_messages(sid) or []
+                        for m in msgs:
+                            role = m.get("role", "")
+                            if role == "system":
+                                continue
+                            # 子 session 的 user 消息是 orchestrator 内部指令，不显示
+                            if label and role == "user":
+                                continue
+                            all_msgs.append((label, m))
+            except Exception as e:
+                import logging
+                logging.getLogger("agent.cmd").debug(f"读取子会话消息失败: {e}")
+        print(f"\n  [消息] 共 {len(all_msgs)} 条")
+        if all_msgs:
+            for i, (label, m) in enumerate(all_msgs[-30:], 1):
+                role = str(m.get("role", "?"))
+                content = str(m.get("content", "") or "")[:150]
+                prefix = f"[{label}] " if label else ""
+                print(f"  {i:>3}. {prefix}{role}: {content}")
+
+    def _show_usage(self):
+        """显示 LLM 用量统计"""
+        if not (hasattr(self.agent, 'client') and hasattr(self.agent.client, 'usage_tracker')):
+            self._print("[yellow]用量追踪未启用[/yellow]")
+            return
+
+        tracker = self.agent.client.usage_tracker
+        summary = tracker.get_summary()
+
+        # ── 总览 ──
+        overview = Table(title="LLM 用量统计", show_header=True,
+                         header_style="bold magenta", box=box.ROUNDED)
+        overview.add_column("指标", style="cyan")
+        overview.add_column("值", style="green")
+        overview.add_row("调用次数", str(summary["total_calls"]))
+        overview.add_row("输入 Token", f"{summary['total_prompt_tokens']:,}")
+        overview.add_row("输出 Token", f"{summary['total_completion_tokens']:,}")
+        overview.add_row("总 Token", f"{summary['total_tokens']:,}")
+        overview.add_row("总费用", f"¥{summary['total_cost_cny']}")
+
+        avg_ms = summary["avg_duration_ms"]
+        if avg_ms > 0:
+            overview.add_row("平均耗时", f"{avg_ms:,.0f} ms")
+            overview.add_row("最长耗时", f"{summary['max_duration_ms']:,.0f} ms")
+            overview.add_row("最短耗时", f"{summary['min_duration_ms']:,.0f} ms")
+            total_sec = summary["total_duration_ms"] / 1000
+            overview.add_row("总耗时", f"{total_sec:,.1f} s")
+            if summary["total_completion_tokens"] > 0 and total_sec > 0:
+                speed = summary["total_completion_tokens"] / total_sec
+                overview.add_row("输出速度", f"{speed:,.1f} tokens/s")
+        self._print(overview)
+
+        # ── 按模型分布 ──
+        per_model = tracker.get_per_model_summary()
+        if len(per_model) > 1:
+            model_table = Table(title="按模型分布", show_header=True,
+                                header_style="bold magenta", box=box.ROUNDED)
+            model_table.add_column("模型", style="cyan")
+            model_table.add_column("调用", style="green", justify="right")
+            model_table.add_column("输入", style="green", justify="right")
+            model_table.add_column("输出", style="green", justify="right")
+            model_table.add_column("总计", style="green", justify="right")
+            model_table.add_column("费用", style="yellow", justify="right")
+            model_table.add_column("耗时", style="dim", justify="right")
+            for model_name, ms in per_model.items():
+                dur_sec = ms["duration_ms"] / 1000
+                model_table.add_row(
+                    model_name,
+                    str(ms["calls"]),
+                    f"{ms['prompt_tokens']:,}",
+                    f"{ms['completion_tokens']:,}",
+                    f"{ms['prompt_tokens'] + ms['completion_tokens']:,}",
+                    f"¥{ms['cost']:.4f}",
+                    f"{dur_sec:.1f}s",
+                )
+            self._print(model_table)
+
+        # ── 上下文统计 ──
+        if hasattr(self.agent, 'tracer'):
+            ctx_stats = self.agent.tracer.get_context_stats()
+            if ctx_stats["samples"] > 0:
+                ctx_table = Table(title="上下文 Token 统计", show_header=True,
+                                  header_style="bold magenta", box=box.ROUNDED)
+                ctx_table.add_column("指标", style="cyan")
+                ctx_table.add_column("值", style="green")
+                ctx_table.add_row("采样次数", str(ctx_stats["samples"]))
+                ctx_table.add_row("峰值", f"{ctx_stats['peak']:,}")
+                ctx_table.add_row("最终值", f"{ctx_stats['final']:,}")
+                ctx_table.add_row("平均值", f"{ctx_stats['avg']:,}")
+                self._print(ctx_table)
+
+    def _show_bg_tasks(self):
+        """显示后台任务列表"""
+        if hasattr(self.agent, 'task_manager'):
+            tasks = self.agent.task_manager.list_tasks()
+            if tasks:
+                table = Table(title=f"后台任务 (共 {len(tasks)} 个)", show_header=True,
+                              header_style="bold magenta", box=box.ROUNDED)
+                table.add_column("ID", style="cyan")
+                table.add_column("描述", style="green")
+                table.add_column("状态", style="yellow")
+                table.add_column("创建时间", style="dim")
+                for t in tasks:
+                    table.add_row(t["id"], t["description"], t["status"], t["created_at"])
+                self._print(table)
+            else:
+                self._print("[dim]暂无后台任务[/dim]")
+        else:
+            self._print("[yellow]任务管理器未初始化[/yellow]")

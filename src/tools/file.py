@@ -1,0 +1,257 @@
+import json
+import logging
+import os
+
+from . import BuiltinTool
+
+logger = logging.getLogger("agent.tools")
+
+MAX_FILE_SIZE = 10 * 1024 * 1024
+DEFAULT_READ_LIMIT = 200
+MAX_READ_LIMIT = 2000
+MAX_OUTPUT_CHARS = 50000
+
+
+class FileTool(BuiltinTool):
+    @property
+    def name(self) -> str:
+        return "file_operation"
+
+    @property
+    def description(self) -> str:
+        return (
+            "文件操作工具。**每次调用必须指定 operation 参数**，可选值: read, write, append, delete, exists, list。\n"
+            "\n"
+            "【必填参数】operation 和 path 是必填的，每次调用都必须提供，不可省略。\n"
+            "\n"
+            "【操作说明】\n"
+            "- operation=read: 读取文件，默认200行，可搭配 offset(起始行号) 和 limit(行数) 分段读取\n"
+            "- operation=write: 覆盖写入文件，需提供 content 参数\n"
+            "- operation=append: 追加内容到文件末尾，需提供 content 参数\n"
+            "- operation=delete: 删除文件或目录\n"
+            "- operation=exists: 检查文件/目录是否存在\n"
+            "- operation=list: 列出目录下的文件和子目录\n"
+            "\n"
+            "【使用建议】\n"
+            "- 大文件先用 grep 找到目标行号，再用 offset+limit 精确读取\n"
+            "- 交付物（代码/单元测试/报告等最终文件）写入工作目录；过程/临时文件（草稿、中间结果、临时验证脚本）写入环境上下文里的「临时文件目录」，不要污染工作目录\n"
+            "- 多个文件并行读取时，每个 limit 控制在 50-100 行\n"
+            "- 修改文件前先 read 确认内容\n"
+            "- 写文件会覆盖原内容，如需保留原内容请用 append\n"
+            "\n"
+            "【调用示例（JSON格式）】\n"
+            '{"operation": "read", "path": "src/main.py"}\n'
+            '{"operation": "read", "path": "src/main.py", "offset": 100, "limit": 50}\n'
+            '{"operation": "write", "path": "output/result.txt", "content": "hello world"}\n'
+            '{"operation": "append", "path": "output/log.txt", "content": "new line\\n"}\n'
+            '{"operation": "list", "path": "src"}\n'
+            '{"operation": "exists", "path": "src/main.py"}\n'
+            '{"operation": "delete", "path": "output/old.txt"}'
+        )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["read", "write", "append", "delete", "exists", "list"],
+                    "description": "操作类型: read-读取文件, write-写入文件(覆盖), append-追加内容, delete-删除文件, exists-检查文件是否存在, list-列出目录内容"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "文件或目录路径，支持相对路径（基于工作目录）或绝对路径"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "要写入或追加的内容(仅用于write和append操作)"
+                },
+                "encoding": {
+                    "type": "string",
+                    "default": "utf-8",
+                    "description": "文件编码，默认utf-8"
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "读取起始行号（0-based），默认从文件开头",
+                    "default": 0
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": f"读取的行数，默认{DEFAULT_READ_LIMIT}行，最大{MAX_READ_LIMIT}行",
+                    "default": DEFAULT_READ_LIMIT
+                }
+            },
+            "required": ["operation", "path"]
+        }
+
+    async def execute(self, operation: str, path: str, content: str = None,
+                      encoding: str = "utf-8", offset: int = 0, limit: int = DEFAULT_READ_LIMIT) -> str:
+        try:
+            path = self.resolve_path(path)
+
+            if operation in ("write", "append", "delete") and not self.is_path_allowed(path):
+                return json.dumps({
+                    "success": False,
+                    "error": f"路径超出工作目录范围: {path}，工作目录: {self.workspace}"
+                }, ensure_ascii=False)
+
+            if operation == "read":
+                return self._read_file(path, encoding, offset, limit)
+            elif operation == "write":
+                return self._write_file(path, content, encoding)
+            elif operation == "append":
+                return self._append_file(path, content, encoding)
+            elif operation == "delete":
+                return self._delete_file(path)
+            elif operation == "exists":
+                return self._file_exists(path)
+            elif operation == "list":
+                return self._list_directory(path)
+            else:
+                return json.dumps({"success": False, "error": f"未知操作: {operation}"}, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+    def _read_file(self, path: str, encoding: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT) -> str:
+        if not os.path.exists(path):
+            return json.dumps({"success": False, "error": f"文件不存在: {path}"}, ensure_ascii=False)
+
+        if os.path.isdir(path):
+            return json.dumps({"success": False, "error": f"路径是目录，不是文件: {path}"}, ensure_ascii=False)
+
+        file_size = os.path.getsize(path)
+        if file_size > MAX_FILE_SIZE:
+            return json.dumps({
+                "success": False,
+                "error": f"文件过大 ({file_size // 1024 // 1024}MB)，请使用 offset/limit 分段读取"
+            }, ensure_ascii=False)
+
+        with open(path, encoding=encoding, errors="replace") as f:
+            lines = f.readlines()
+
+        total_lines = len(lines)
+
+        if limit is None or limit <= 0:
+            limit = DEFAULT_READ_LIMIT
+        limit = min(limit, MAX_READ_LIMIT)
+
+        end = min(offset + limit, total_lines)
+        selected_lines = lines[offset:end]
+
+        numbered = "\n".join(
+            f"{offset + i + 1:6d}\t{line.rstrip()}"
+            for i, line in enumerate(selected_lines)
+        )
+
+        truncated = False
+        if len(numbered) > MAX_OUTPUT_CHARS:
+            numbered = numbered[:MAX_OUTPUT_CHARS] + "\n... [输出已截断]"
+            truncated = True
+
+        has_more = end < total_lines
+        hint = ""
+        if has_more or truncated:
+            hint = f"文件共 {total_lines} 行，当前显示 {offset + 1}-{end} 行。"
+            if has_more:
+                hint += f" 使用 offset={end} 继续读取。"
+
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "total_lines": total_lines,
+            "showing": f"{offset + 1}-{end}",
+            "has_more": has_more,
+            "hint": hint if hint else None,
+            "content": numbered
+        }, ensure_ascii=False)
+
+    def _write_file(self, path: str, content: str, encoding: str) -> str:
+        if content is None:
+            return json.dumps({"success": False, "error": "缺少要写入的内容"}, ensure_ascii=False)
+
+        dir_path = os.path.dirname(path)
+        if dir_path and not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+
+        with open(path, "w", encoding=encoding) as f:
+            f.write(content)
+
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "message": f"文件已成功写入: {path}",
+            "size": len(content)
+        }, ensure_ascii=False)
+
+    def _append_file(self, path: str, content: str, encoding: str) -> str:
+        if content is None:
+            return json.dumps({"success": False, "error": "缺少要追加的内容"}, ensure_ascii=False)
+
+        dir_path = os.path.dirname(path)
+        if dir_path and not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+
+        with open(path, "a", encoding=encoding) as f:
+            f.write(content)
+
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "message": f"内容已成功追加到: {path}",
+            "appended_size": len(content)
+        }, ensure_ascii=False)
+
+    def _delete_file(self, path: str) -> str:
+        if not os.path.exists(path):
+            return json.dumps({"success": False, "error": f"文件不存在: {path}"}, ensure_ascii=False)
+
+        if os.path.isdir(path):
+            import shutil
+            shutil.rmtree(path)
+            return json.dumps({"success": True, "path": path, "message": f"目录已删除: {path}"}, ensure_ascii=False)
+        else:
+            os.remove(path)
+            return json.dumps({"success": True, "path": path, "message": f"文件已删除: {path}"}, ensure_ascii=False)
+
+    def _file_exists(self, path: str) -> str:
+        exists = os.path.exists(path)
+        is_dir = os.path.isdir(path) if exists else False
+        size = os.path.getsize(path) if exists and not is_dir else None
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "exists": exists,
+            "is_directory": is_dir,
+            "is_file": exists and not is_dir,
+            "size": size
+        }, ensure_ascii=False)
+
+    def _list_directory(self, path: str) -> str:
+        if not os.path.exists(path):
+            return json.dumps({"success": False, "error": f"目录不存在: {path}"}, ensure_ascii=False)
+
+        if not os.path.isdir(path):
+            return json.dumps({"success": False, "error": f"路径不是目录: {path}"}, ensure_ascii=False)
+
+        items = []
+        for item in os.listdir(path):
+            item_path = os.path.join(path, item)
+            try:
+                is_dir = os.path.isdir(item_path)
+                items.append({
+                    "name": item,
+                    "is_directory": is_dir,
+                    "is_file": not is_dir,
+                    "size": os.path.getsize(item_path) if not is_dir else None
+                })
+            except (OSError, PermissionError):
+                items.append({"name": item, "is_directory": False, "is_file": False, "size": None})
+
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "count": len(items),
+            "items": items
+        }, ensure_ascii=False)

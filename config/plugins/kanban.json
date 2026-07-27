@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "poll_interval": 30,
+  "max_concurrent": 3,
+  "auto_assign": true,
+  "columns": ["backlog", "todo", "in_progress", "done"]
+}

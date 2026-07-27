@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Console</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <span class="agent-name" id="agentName">Agent</span>
+            <span class="status-dot" id="statusDot"></span>
+            <span class="status-text" id="statusText">connecting</span>
+            <span class="header-spacer"></span>
+            <span class="stat-item">&#128172; <span id="statCalls">0</span></span>
+            <span class="stat-item">&#165; <span id="statCost">0</span></span>
+            <span class="stat-item">Model: <span id="infoModel">-</span></span>
+            <span class="stat-item">Tools: <span id="infoTools">0</span></span>
+        </header>
+
+        <main class="main">
+            <!-- Resizable sidebar -->
+            <aside class="panel-sidebar" id="sidebar">
+                <!-- Avatar -->
+                <div class="avatar-section">
+                    <div class="avatar-ring" id="avatarRing">
+                        <div class="avatar-face-icon">&#129302;</div>
+                    </div>
+                    <div class="avatar-label" id="avatarLabel">idle</div>
+                </div>
+
+                <!-- Info -->
+                <div class="info-section">
+                    <div class="info-row"><span>Tasks</span><span id="infoTasks">0</span></div>
+                </div>
+
+                <!-- Panel tasks -->
+                <div class="sidebar-label">KANBAN</div>
+                <div class="tasks-list" id="tasksList">
+                    <div class="empty-state">Loading...</div>
+                </div>
+                <button class="kanban-add-btn" id="kanbanAddBtn" title="Add task">+ Add Task</button>
+
+                <!-- Todos -->
+                <div class="sidebar-label">TODOS</div>
+                <div class="tasks-list" id="todoList">
+                    <div class="empty-state">Loading...</div>
+                </div>
+            </aside>
+
+            <!-- Resize handle -->
+            <div class="resize-handle" id="resizeHandle"></div>
+
+            <!-- Center: Document / Chat -->
+            <section class="panel-main">
+                <div class="main-toolbar">
+                    <div class="main-tabs">
+                        <span class="main-tab active" data-tab="chat">Chat</span>
+                        <span class="main-tab" data-tab="kanban">Kanban</span>
+                        <span class="main-tab" data-tab="sessions">Sessions</span>
+                        <span class="main-tab" data-tab="workspace">Workspace</span>
+                        <span class="main-tab" data-tab="logs">Logs</span>
+                        <span class="main-tab" data-tab="users">Users</span>
+                        <span class="main-tab" data-tab="memory">Memory</span>
+                    </div>
+                    <span class="main-path" id="mainPath"></span>
+                </div>
+
+                <!-- Workspace -->
+                <div class="main-body" id="workspaceBody" style="display:none">
+                    <div class="workspace-grid" id="workspaceGrid">
+                        <div class="ws-card">
+                            <div class="ws-card-title">Agent Status</div>
+                            <div class="ws-card-body" id="wsStatus"></div>
+                        </div>
+                        <div class="ws-card">
+                            <div class="ws-card-title">Recent File</div>
+                            <div class="ws-card-body" id="wsMemory"></div>
+                        </div>
+                        <div class="ws-card" style="grid-column: 1 / -1">
+                            <div class="ws-card-title">Agents</div>
+                            <div class="ws-card-body" id="wsAgents"><div class="empty-state">Loading...</div></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Kanban -->
+                <div class="main-body" id="kanbanBody" style="display:none">
+                    <div class="kanban-toolbar">
+                        <button class="kanban-toolbar-btn" id="kanbanRefreshBtn">Refresh</button>
+                        <button class="kanban-toolbar-btn kanban-toolbar-primary" id="kanbanNewBtn">+ New Task</button>
+                    </div>
+                    <div class="kanban-board" id="kanbanBoard">
+                        <div class="kanban-column" data-column="backlog">
+                            <div class="kanban-col-header"><span class="kanban-col-dot" style="background:var(--text-muted)"></span>Backlog <span class="kanban-col-count" id="kanbanCountBacklog">0</span></div>
+                            <div class="kanban-col-body" id="kanbanColBacklog"></div>
+                        </div>
+                        <div class="kanban-column" data-column="todo">
+                            <div class="kanban-col-header"><span class="kanban-col-dot" style="background:var(--accent-orange)"></span>Todo <span class="kanban-col-count" id="kanbanCountTodo">0</span></div>
+                            <div class="kanban-col-body" id="kanbanColTodo"></div>
+                        </div>
+                        <div class="kanban-column" data-column="in_progress">
+                            <div class="kanban-col-header"><span class="kanban-col-dot" style="background:var(--accent-blue)"></span>In Progress <span class="kanban-col-count" id="kanbanCountInProgress">0</span></div>
+                            <div class="kanban-col-body" id="kanbanColInProgress"></div>
+                        </div>
+                        <div class="kanban-column" data-column="done">
+                            <div class="kanban-col-header"><span class="kanban-col-dot" style="background:var(--accent-green)"></span>Done <span class="kanban-col-count" id="kanbanCountDone">0</span></div>
+                            <div class="kanban-col-body" id="kanbanColDone"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat -->
+                <div class="main-body" id="chatBody">
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="welcome-text">Ask the agent...</div>
+                    </div>
+                    <div class="chat-input-area">
+                        <button class="btn-new-chat" id="newChatBtn" title="New Session">
+                            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                        </button>
+                        <textarea id="chatInput" placeholder="Type a message..." rows="1"></textarea>
+                        <button class="btn-send" id="sendBtn">
+                            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Sessions -->
+                <div class="main-body" id="sessionsBody" style="display:none">
+                    <div class="sessions-layout">
+                        <div class="sessions-sidebar">
+                            <div class="sessions-sidebar-header">
+                                <span>Sessions</span>
+                                <span class="sessions-count" id="sessionsTotalCount">0</span>
+                            </div>
+                            <div class="sessions-filter">
+                                <select id="sessionAgentFilter" class="sessions-filter-select">
+                                    <option value="">全部 Agent</option>
+                                </select>
+                            </div>
+                            <div class="sessions-session-list" id="sessionsSessionList">
+                                <div class="empty-state">Loading...</div>
+                            </div>
+                        </div>
+                        <div class="sessions-detail">
+                            <div class="sessions-messages" id="sessionsMessages" style="display:none">
+                                <div class="sessions-messages-header" id="sessionMessagesHeader"></div>
+                                <div class="sessions-messages-list" id="sessionMessagesList"></div>
+                            </div>
+                            <div class="sessions-empty" id="sessionsEmpty">
+                                <div class="empty-state">Select a session to view messages</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="main-body" id="logsBody" style="display:none">
+                    <pre class="log-content" id="logContent">Loading logs...</pre>
+                </div>
+
+                <!-- Users (RBAC) -->
+                <div class="main-body" id="usersBody" style="display:none">
+                    <div class="users-layout">
+                        <div class="users-left">
+                            <div class="users-section-header">
+                                <span class="users-section-title">Roles</span>
+                                <button class="users-btn users-btn-sm" id="rbacNewRoleBtn">+ Role</button>
+                            </div>
+                            <div class="users-card-list" id="rbacRoleList">
+                                <div class="empty-state">Loading...</div>
+                            </div>
+                        </div>
+                        <div class="users-right">
+                            <div class="users-section-header">
+                                <span class="users-section-title">Users</span>
+                                <button class="users-btn users-btn-primary" id="rbacNewUserBtn">+ User</button>
+                            </div>
+                            <div class="users-table-wrap">
+                                <table class="users-table" id="rbacUserTable">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Name</th>
+                                            <th>Department</th>
+                                            <th>Role</th>
+                                            <th>Identities</th>
+                                            <th>Status</th>
+                                            <th>密码</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="rbacUserTbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Memory 管理 -->
+                <div class="main-body" id="memoryBody" style="display:none">
+                    <div class="memory-layout">
+                        <div class="memory-toolbar">
+                            <select id="memFilterScope" class="mem-input">
+                                <option value="">全部范围</option>
+                                <option value="global">global</option>
+                                <option value="user">user</option>
+                            </select>
+                            <select id="memFilterCategory" class="mem-input">
+                                <option value="">全部类别</option>
+                                <option value="preference">用户偏好</option>
+                                <option value="key_info">关键信息</option>
+                                <option value="todo">待办事项</option>
+                                <option value="failure_lesson">避坑经验</option>
+                                <option value="correction">用户纠正</option>
+                                <option value="reflection">自学习</option>
+                                <option value="knowledge">通用知识</option>
+                            </select>
+                            <input id="memFilterOwner" class="mem-input" placeholder="owner_id 筛选" />
+                            <input id="memFilterKeyword" class="mem-input" placeholder="搜索内容..." />
+                            <button class="mem-btn" id="memSearchBtn">搜索</button>
+                            <button class="mem-btn mem-btn-primary" id="memNewBtn">+ 新增记忆</button>
+                            <span class="mem-count" id="memCount">共 0 条</span>
+                        </div>
+                        <div class="memory-proposals" id="memProposalsBox" style="display:none">
+                            <div class="memory-section-title">待审提案 <span id="memPropCount"></span></div>
+                            <div id="memProposalsList"></div>
+                        </div>
+                        <div class="memory-list" id="memList">
+                            <div class="empty-state">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Agent Editor Modal -->
+        <div class="modal-overlay" id="agentEditorModal" style="display:none">
+            <div class="modal-box modal-box-lg">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span id="agentEditorTitle">Agent</span>
+                    <button class="modal-close" id="agentEditorClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="agent-editor-tabs">
+                        <span class="agent-tab active" data-agent-tab="prompt">PROMPT.md</span>
+                        <span class="agent-tab" data-agent-tab="skills">Skills</span>
+                    </div>
+                    <div id="agentPromptPanel">
+                        <div class="md-editor-toolbar">
+                            <span class="md-mode-btn active" data-mode="edit" data-target="agentPromptText">Edit</span>
+                            <span class="md-mode-btn" data-mode="split" data-target="agentPromptText">Split</span>
+                            <span class="md-mode-btn" data-mode="preview" data-target="agentPromptText">Preview</span>
+                        </div>
+                        <div class="md-editor-wrap" id="agentPromptEditorWrap">
+                            <textarea class="agent-editor-textarea" id="agentPromptText"></textarea>
+                            <div class="md-preview" id="agentPromptPreview"></div>
+                        </div>
+                        <div class="agent-editor-actions">
+                            <button class="modal-btn modal-btn-primary" id="agentPromptSave">Save</button>
+                            <span class="agent-save-status" id="agentPromptStatus"></span>
+                        </div>
+                    </div>
+                    <div id="agentSkillsPanel" style="display:none">
+                        <div class="agent-skills-toolbar">
+                            <span style="font-size:12px;color:var(--text-muted)">Skills</span>
+                            <button class="modal-btn" id="agentNewSkillBtn">+ New Skill</button>
+                        </div>
+                        <div class="agent-skills-list" id="agentSkillsList"></div>
+                        <div id="agentSkillEditor" style="display:none">
+                            <div class="agent-skill-editor-header">
+                                <span id="agentSkillEditorName" style="font-weight:700;color:var(--accent-cyan)"></span>
+                                <button class="agent-skill-del-btn" id="agentSkillDelBtn">Delete</button>
+                            </div>
+                            <div class="md-editor-toolbar">
+                                <span class="md-mode-btn active" data-mode="edit" data-target="agentSkillText">Edit</span>
+                                <span class="md-mode-btn" data-mode="split" data-target="agentSkillText">Split</span>
+                                <span class="md-mode-btn" data-mode="preview" data-target="agentSkillText">Preview</span>
+                            </div>
+                            <div class="md-editor-wrap" id="agentSkillEditorWrap">
+                                <textarea class="agent-editor-textarea" id="agentSkillText"></textarea>
+                                <div class="md-preview" id="agentSkillPreview"></div>
+                            </div>
+                            <div class="agent-editor-actions">
+                                <button class="modal-btn modal-btn-primary" id="agentSkillSave">Save</button>
+                                <span class="agent-save-status" id="agentSkillStatus"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- New Skill Modal -->
+        <div class="modal-overlay" id="newSkillModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span>New Skill</span>
+                    <button class="modal-close" id="newSkillClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <label class="modal-label">Skill Name <input id="newSkillInput" class="modal-input" placeholder="skill-name" /></label>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="newSkillCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="newSkillSubmit">Create</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kanban Add Modal -->
+        <div class="modal-overlay" id="kanbanModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header">New Task</div>
+                <div class="modal-body">
+                    <label class="modal-label">Title <input id="kanbanInputTitle" class="modal-input" placeholder="Task title" /></label>
+                    <label class="modal-label">Description <textarea id="kanbanInputDesc" class="modal-input" rows="3" placeholder="Optional description"></textarea></label>
+                    <div class="modal-row">
+                        <label class="modal-label">Priority
+                            <select id="kanbanInputPriority" class="modal-input">
+                                <option value="1">High</option>
+                                <option value="2">Medium</option>
+                                <option value="3" selected>Low</option>
+                            </select>
+                        </label>
+                        <label class="modal-label">Column
+                            <select id="kanbanInputColumn" class="modal-input">
+                                <option value="backlog">Backlog</option>
+                                <option value="todo">Todo</option>
+                            </select>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="kanbanModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="kanbanModalSubmit">Create</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RBAC User Modal -->
+        <div class="modal-overlay" id="rbacUserModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span id="rbacUserModalTitle">New User</span>
+                    <button class="modal-close" id="rbacUserModalClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="rbacUserEditId" value="" />
+                    <label class="modal-label">Name <input id="rbacUserInputName" class="modal-input" placeholder="User name" /></label>
+                    <label class="modal-label">Department <input id="rbacUserInputDept" class="modal-input" placeholder="Department" /></label>
+                    <label class="modal-label">Role
+                        <select id="rbacUserInputRole" class="modal-input"></select>
+                    </label>
+                    <label class="modal-label">密码 <span class="modal-hint">(留空不修改)</span>
+                        <input id="rbacUserInputPassword" type="password" class="modal-input" placeholder="新密码(留空不修改)" autocomplete="new-password" />
+                    </label>
+                    <div class="modal-label" style="margin-top:8px">
+                        <span style="display:flex;align-items:center;gap:6px;margin-bottom:6px">Identities <button class="users-btn users-btn-sm" id="rbacAddIdentityBtn">+ Add</button></span>
+                        <div id="rbacIdentityList"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="rbacUserModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="rbacUserModalSubmit">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RBAC Role Modal -->
+        <div class="modal-overlay" id="rbacRoleModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span id="rbacRoleModalTitle">New Role</span>
+                    <button class="modal-close" id="rbacRoleModalClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="rbacRoleEditName" value="" />
+                    <label class="modal-label">Name <input id="rbacRoleInputName" class="modal-input" placeholder="role-name" /></label>
+                    <label class="modal-label">Description <input id="rbacRoleInputDesc" class="modal-input" placeholder="Description" /></label>
+                    <label class="modal-label">Allowed Tools <input id="rbacRoleInputTools" class="modal-input" placeholder='["shell","file_operation"] or ["*"]' /></label>
+                    <label class="modal-label">Allowed Agents <input id="rbacRoleInputAgents" class="modal-input" placeholder='["设备运维"] or ["*"]' /></label>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="rbacRoleModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="rbacRoleModalSubmit">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RBAC Bind Identity Modal -->
+        <div class="modal-overlay" id="rbacBindModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span>Bind Identity</span>
+                    <button class="modal-close" id="rbacBindModalClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="rbacBindUserId" value="" />
+                    <label class="modal-label">Platform
+                        <select id="rbacBindPlatform" class="modal-input">
+                            <option value="dingtalk">DingTalk</option>
+                            <option value="feishu">Feishu</option>
+                            <option value="webhook">Webhook</option>
+                        </select>
+                    </label>
+                    <label class="modal-label">Platform User ID <input id="rbacBindUid" class="modal-input" placeholder="Platform user ID" /></label>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="rbacBindModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="rbacBindModalSubmit">Bind</button>
+                </div>
+            </div>
+        </div>
+    </div>
+        <!-- Memory 编辑 Modal -->
+        <div class="modal-overlay" id="memoryModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+                    <span id="memoryModalTitle">新增记忆</span>
+                    <button class="modal-close" id="memoryModalClose">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="memEditId" />
+                    <label class="modal-label">范围
+                        <select id="memScope" class="modal-input">
+                            <option value="global">global (全局可见)</option>
+                            <option value="user">user (私有)</option>
+                        </select>
+                    </label>
+                    <label class="modal-label">Owner ID <span class="modal-hint">(user 私有时填写，global 留空)</span>
+                        <input id="memOwner" class="modal-input" placeholder="用户ID" />
+                    </label>
+                    <label class="modal-label">类别
+                        <select id="memCategory" class="modal-input">
+                            <option value="knowledge">通用知识</option>
+                            <option value="preference">用户偏好</option>
+                            <option value="key_info">关键信息</option>
+                            <option value="todo">待办事项</option>
+                            <option value="failure_lesson">避坑经验</option>
+                            <option value="correction">用户纠正</option>
+                            <option value="reflection">自学习</option>
+                        </select>
+                    </label>
+                    <label class="modal-label">重要度 (1-5)
+                        <input id="memImportance" type="number" min="1" max="5" value="3" class="modal-input" />
+                    </label>
+                    <label class="modal-label">内容
+                        <textarea id="memContent" class="modal-input" rows="4" placeholder="记忆内容"></textarea>
+                    </label>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="memoryModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="memoryModalSave">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Auth 登录覆盖层 -->
+        <div class="auth-overlay" id="authOverlay">
+            <div class="auth-box">
+                <div class="auth-title">Agent WebUI</div>
+                <div class="auth-subtitle">登录以继续</div>
+                <input id="authUsername" class="auth-input" placeholder="用户名" autocomplete="username" autofocus />
+                <input id="authPassword" class="auth-input" type="password" placeholder="密码" autocomplete="current-password" />
+                <div class="auth-error" id="authError" style="display:none"></div>
+                <button class="auth-btn" id="authLoginBtn">登 录</button>
+                <div class="auth-footer">
+                    <span class="auth-user-info" id="authUserInfo"></span>
+                    <a class="auth-logout" id="authLogoutLink" style="display:none">退出</a>
+                </div>
+            </div>
+        </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
