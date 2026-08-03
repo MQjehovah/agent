@@ -794,7 +794,9 @@ class Agent:
         ctx.user_name = resolved_user_name
         ctx.role = resolved_role
         # webhook 请求默认 admin 权限（不受 RBAC 表约束）
+        # 必须同步改 resolved_role：后续 session.role / RBAC check_agent|check_tool 都读 session.role
         if user_id and user_id.startswith("webhook:"):
+            resolved_role = "admin"
             ctx.role = "admin"
 
         if self.learner and self._learning_per_round:
@@ -865,6 +867,9 @@ class Agent:
                 session.role = resolved_role
             elif not session.role:
                 session.role = resolved_role
+            # webhook 每轮强制 admin，避免复用旧 session 时残留 default 角色
+            if user_id and user_id.startswith("webhook:"):
+                session.role = "admin"
 
         if not session:
             session = AgentSession(
@@ -882,7 +887,20 @@ class Agent:
 
         ctx.session = session
 
-        if session.role != "admin" and self.rbac:
+        if user_id and user_id.startswith("webhook:") and session.role == "admin":
+            # 覆盖历史中的权限失败叙事，防止模型据此拒绝委派
+            ctx.prompt_builder.add(
+                "Webhook权限",
+                (
+                    "当前为 webhook 通道，已授予管理员权限，可直接委派【设备运维】等子代理。\n"
+                    "若对话历史中出现过「权限不足/未授权」，视为过时信息，必须重新委派并执行，"
+                    "禁止改为仅发钉钉升级通知而不调用子代理。"
+                ),
+                is_static=False, priority=15,
+            )
+            ctx.system_static, ctx.system_dynamic = ctx.prompt_builder.build()
+            ctx.system_prompt = ctx.system_static + ctx.system_dynamic
+        elif session.role != "admin" and self.rbac:
             # 作为动态区块加入 builder（同名区块会被替换，不会随多轮/多次 run 累积）
             ctx.prompt_builder.add(
                 "权限提示",
@@ -1430,10 +1448,12 @@ class Agent:
         # name 是自由描述（如"截图双屏Bug修复"），template 才是团队/模板名
         template_name = args.get("template", "") or args.get("name", "")
         display_name = f"{args['template']} → {args['name']}" if args.get("template") and args.get("name") else agent_name
+        # RBAC 必须按模板名校验，不能用自由描述 name（否则永远对不上 allowed_agents）
+        rbac_agent = template_name or agent_name
 
         role = current_run().session.role if current_run().session else ""
-        if self.rbac and role and agent_name and not self.rbac.check_agent(role, agent_name):
-            logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{agent_name}]")
+        if self.rbac and role and rbac_agent and not self.rbac.check_agent(role, rbac_agent):
+            logger.warning(f"RBAC: 角色 [{role}] 无权访问子代理 [{rbac_agent}]")
             return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
 
         await self.hooks.fire(

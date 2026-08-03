@@ -1,16 +1,25 @@
 """
-Device Remote Operations MCP Server
-设备远程运维 MCP 服务器
+Device Remote Operations MCP Server (remote_operation)
+
+rosiwit-cloud 云端运维（远程控制）：影子/录包/倒退/回桩/重启/重定位等。
+鉴权：cloud_common。统一 RemoteForm：{deviceId,productId,id,param}。
+工单 CRUD 见 ticket_ops；WebSocket 终端见 remote_terminal。
 """
-import os
+from __future__ import annotations
+
 import json
 import logging
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass
+import os
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
 import requests
 from mcp.server.fastmcp import FastMCP
-from rich.logging import RichHandler
 from rich.console import Console
+from rich.logging import RichHandler
+
+import cloud_common as cloud
 
 console = Console(stderr=True)
 
@@ -18,503 +27,1209 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
     datefmt="[%X]",
-    handlers=[RichHandler(console=console, rich_tracebacks=True, show_time=True, show_path=False)]
+    handlers=[RichHandler(console=console, rich_tracebacks=True, show_time=True, show_path=False)],
 )
 
 logger = logging.getLogger("device-ops-mcp")
 
 mcp = FastMCP("Device Operations MCP Server")
 
+# ==================== rosiwit-cloud ====================
+DEVICE_SHADOW_PATH = os.getenv("DEVICE_SHADOW_PATH", "/rosiwit-cloud/device/shadow")
+REMOTE_PREFIX = os.getenv("REMOTE_API_PREFIX", "/rosiwit-cloud/remote")
 
-@dataclass
-class APIConfig:
-    base_url: str = os.getenv("DEVICE_API_BASE_URL", "https://bms-cn.rosiwit.com")
-    username: Optional[str] = os.getenv("DEVICE_API_USERNAME","")
-    password: Optional[str] = os.getenv("DEVICE_API_PASSWORD","")
-    token: Optional[str] = None
-    timeout: int = 30
+_BAG_TIME_RE = re.compile(
+    r"(?P<kind>all|task)_(?P<ts>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_(?P<seq>\d+)",
+    re.IGNORECASE,
+)
+_BAG_SLICE_SECONDS = 120
+_TZ_CN = timezone(timedelta(hours=8))
+
+_ROBOT_MODE_NAME = {
+    "ROBOT_MODE_IDLE": "空闲",
+    "ROBOT_MODE_TASK": "任务中",
+    "ROBOT_MODE_PAUSE": "暂停状态",
+    "ROBOT_MODE_FAULT": "错误发生",
+    "ROBOT_MODE_MAP": "建图状态",
+    "ROBOT_MODE_OTA": "OTA状态",
+    "ROBOT_MODE_FACTORY": "工厂模式",
+}
+_CONTROL_MODE_NAME = {
+    "CONTROL_MODE_MANUAL": "手动模式",
+    "CONTROL_MODE_AUTO": "自动模式",
+    0: "手动模式",
+    1: "自动模式",
+    "0": "手动模式",
+    "1": "自动模式",
+}
+_SUPPLY_STATE_NAME = {
+    0: "空闲",
+    1: "前往工作站",
+    2: "加排水中",
+    3: "仅充电过程中",
+    4: "退桩过程中",
+    5: "手动补给",
+    6: "等待补给外设全部关闭",
+}
+_SUPPLY_ENGAGED = {1, 2, 3}
 
 
-api_config = APIConfig()
+
+def _remote_path(suffix: str) -> str:
+    return f"{REMOTE_PREFIX.rstrip('/')}/{suffix.lstrip('/')}"
 
 
-def _auto_login():
-    if not api_config.username or not api_config.password:
-        logger.warning("DEVICE_API_USERNAME 或 DEVICE_API_PASSWORD 未配置，自动登录跳过")
-        return
-    if api_config.token:
-        return
-    url = f"{api_config.base_url}/xz_robot_common/user/login"
+def _parse_param(param: Any) -> dict:
+    if param is None or param == "":
+        return {}
+    if isinstance(param, dict):
+        return param
+    if isinstance(param, str):
+        text = param.strip()
+        if not text:
+            return {}
+        try:
+            loaded = json.loads(text)
+            return loaded if isinstance(loaded, dict) else {"value": loaded}
+        except json.JSONDecodeError:
+            return {"raw": text}
+    return {"value": param}
+
+
+def _ok_result(result: Any, **extra: Any) -> dict:
+    if not isinstance(result, dict):
+        return {"success": False, "error": "响应格式异常", "raw": result, **extra}
+    ok = bool(result.get("success") or result.get("returnCode") == 200)
+    out = {
+        "success": ok,
+        "returnCode": result.get("returnCode"),
+        "returnMsg": result.get("returnMsg"),
+        "data": result.get("data"),
+        "error": None if ok else (result.get("returnMsg") or result.get("error")),
+    }
+    out.update(extra)
+    return out
+
+
+def _remote_post(
+    suffix: str,
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Optional[dict] = None,
+) -> dict:
+    """POST RemoteForm to /rosiwit-cloud/remote/..."""
+    did = str(device_id or "").strip()
+    pid = str(product_id or "").strip()
+    if not did:
+        return {"success": False, "error": "device_id 不能为空"}
+    if not pid:
+        return {"success": False, "error": "product_id 不能为空"}
+    url = f"{cloud.get_base_url()}{_remote_path(suffix)}"
+    body = {
+        "id": int(req_id or 0),
+        "deviceId": did,
+        "productId": pid,
+        "param": param if isinstance(param, dict) else {},
+    }
     try:
-        resp = requests.post(
-            url,
-            json={"username": api_config.username, "password": api_config.password, "clientType": "WEB"},
-            headers={"Content-Type": "application/json"},
-            timeout=api_config.timeout,
+        resp = cloud.request_with_reauth(
+            "POST", url, headers=cloud.auth_headers(json_body=True), json=body
         )
         resp.raise_for_status()
-        result = resp.json()
-        if result.get("success") or result.get("returnCode") == 200:
-            data = result.get("data", {})
-            token = data.get("token") if isinstance(data, dict) else None
-        else:
-            token = None
-        if token:
-            api_config.token = token
-            logger.info(f"自动登录成功 (user={api_config.username})")
-        else:
-            logger.warning(f"自动登录失败: {result.get('returnMsg', '未知错误')}")
-    except Exception as e:
-        logger.warning(f"自动登录异常: {e}")
-
-
-_auto_login()
-
-def _get_headers() -> Dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if api_config.token:
-        headers["token"] = api_config.token
-    return headers
-
-
-def _post(endpoint: str, data: Dict = None) -> Dict[str, Any]:
-    url = f"{api_config.base_url}/xz_sc50/fae{endpoint}"
-    try:
-        response = requests.post(
-            url,
-            json=data or {},
-            headers=_get_headers(),
-            timeout=api_config.timeout
-        )
-        if response.status_code == 403 and api_config.username:
-            api_config.token = None
-            _auto_login()
-            if api_config.token:
-                response = requests.post(
-                    url,
-                    json=data or {},
-                    headers=_get_headers(),
-                    timeout=api_config.timeout
-                )
-        response.raise_for_status()
-        return response.json() if response.text else {"success": True}
+        return resp.json() if resp.text else {"success": False, "error": "empty response"}
     except requests.exceptions.RequestException as e:
-        logger.error(f"API请求失败: {endpoint}, 错误: {e}")
+        logger.error("远程控制失败 %s deviceId=%s: %s", suffix, did, e)
         return {"success": False, "error": str(e)}
 
 
-# ==================== 设备信息查询 ====================
+def _remote_get(suffix: str, device_id: str, product_id: str, **extra_params: Any) -> dict:
+    did = str(device_id or "").strip()
+    pid = str(product_id or "").strip()
+    if not did:
+        return {"success": False, "error": "device_id 不能为空"}
+    if not pid:
+        return {"success": False, "error": "product_id 不能为空"}
+    url = f"{cloud.get_base_url()}{_remote_path(suffix)}"
+    params = {"deviceId": did, "productId": pid}
+    for k, v in extra_params.items():
+        if v is not None:
+            params[k] = v
+    try:
+        resp = cloud.request_with_reauth(
+            "GET", url, headers=cloud.auth_headers(), params=params
+        )
+        resp.raise_for_status()
+        return resp.json() if resp.text else {"success": False, "error": "empty response"}
+    except requests.exceptions.RequestException as e:
+        logger.error("远程查询失败 %s deviceId=%s: %s", suffix, did, e)
+        return {"success": False, "error": str(e)}
+
+
+def _extract_upload_url(result: Any) -> Optional[str]:
+    if isinstance(result, str):
+        text = result.strip()
+        return text if text.startswith("http://") or text.startswith("https://") else None
+    if not isinstance(result, dict):
+        return None
+    candidates: list[Any] = [
+        result.get("url"),
+        result.get("fileUrl"),
+        result.get("ossUrl"),
+        result.get("file_url"),
+        result.get("oss_url"),
+    ]
+    data = result.get("data")
+    if isinstance(data, str):
+        candidates.append(data)
+    elif isinstance(data, dict):
+        candidates.extend(
+            [
+                data.get("url"),
+                data.get("fileUrl"),
+                data.get("ossUrl"),
+                data.get("file_url"),
+                data.get("oss_url"),
+                data.get("filePath"),
+                data.get("path"),
+            ]
+        )
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, str) and item.startswith("http"):
+                candidates.append(item)
+            elif isinstance(item, dict):
+                candidates.extend([item.get("url"), item.get("fileUrl"), item.get("ossUrl")])
+    for item in candidates:
+        if isinstance(item, str):
+            text = item.strip()
+            if text.startswith("http://") or text.startswith("https://"):
+                return text
+    return None
+
+
+def _cloud_request_shadow(device_id: str, product_id: str) -> dict:
+    url = f"{cloud.get_base_url()}{DEVICE_SHADOW_PATH}"
+    params = {"deviceId": device_id, "productId": product_id}
+    try:
+        resp = cloud.request_with_reauth("GET", url, headers=cloud.auth_headers(), params=params)
+        resp.raise_for_status()
+        return resp.json() if resp.text else {"success": False, "error": "empty response"}
+    except requests.exceptions.RequestException as e:
+        logger.error("设备影子请求失败 deviceId=%s productId=%s: %s", device_id, product_id, e)
+        return {"success": False, "error": str(e)}
+
+
+def _cloud_request_bag_list(device_id: str, product_id: str, current: int = 1, size: int = 20) -> dict:
+    return _remote_post(
+        "bag/list",
+        device_id,
+        product_id,
+        param={"pageNo": int(current), "pageSize": int(size)},
+    )
+
+def _cloud_request_backward(device_id: str, product_id: str) -> dict:
+    return _remote_post("device/backward", device_id, product_id)
+
+
+def _cloud_request_station_back(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Optional[dict] = None,
+) -> dict:
+    return _remote_post("station/back", device_id, product_id, req_id=req_id, param=param)
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "y"):
+            return True
+        if lowered in ("false", "0", "no", "n"):
+            return False
+    return None
+
+
+def _as_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _enum_name(mapping: dict, value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if value in mapping:
+        return mapping[value]
+    if isinstance(value, str):
+        key = value.strip()
+        if key in mapping:
+            return mapping[key]
+        upper = key.upper()
+        if upper in mapping:
+            return mapping[upper]
+    try:
+        as_int = int(value)
+        if as_int in mapping:
+            return mapping[as_int]
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _summarize_fault(f: dict) -> dict:
+    return {
+        "code": f.get("code"),
+        "name": f.get("name"),
+        "level": f.get("level"),
+        "module": f.get("module"),
+        "fault_type": f.get("fault_type"),
+        "fault_desc": f.get("fault_desc") or f.get("content") or "",
+        "recovery_strategy": f.get("recovery_strategy"),
+        "happenTime": f.get("happenTime"),
+        "create_time": f.get("create_time") or f.get("createTime"),
+        "update_time": f.get("update_time") or f.get("updateTime"),
+    }
+
+
+def _summarize_shadow(data: dict) -> dict:
+    robot = data.get("cleanRobot") if isinstance(data.get("cleanRobot"), dict) else {}
+    props = data.get("properties") if isinstance(data.get("properties"), dict) else {}
+    faults_src = props.get("fault") or robot.get("currentFaults") or []
+    faults = [_summarize_fault(f) for f in faults_src if isinstance(f, dict)]
+    position = props.get("robot_position")
+    if not isinstance(position, list) or len(position) < 2:
+        position = [robot.get("x"), robot.get("y"), robot.get("theta")]
+    battery = props.get("bms_soc")
+    if battery is None:
+        battery = robot.get("battery")
+    robot_mode = (
+        props.get("robotMode")
+        or props.get("robot_mode")
+        or robot.get("robotMode")
+        or robot.get("state")
+    )
+    control_mode = props.get("control_mode")
+    if control_mode is None:
+        control_mode = props.get("controlMode") or robot.get("manual")
+    supply_state = _as_int(
+        props.get("supplyState")
+        if props.get("supplyState") is not None
+        else props.get("supply_state")
+        if props.get("supply_state") is not None
+        else robot.get("supplyState")
+    )
+    supply_engaged = supply_state in _SUPPLY_ENGAGED if supply_state is not None else None
+    return {
+        "deviceId": data.get("deviceId"),
+        "productId": data.get("productId"),
+        "isOnline": data.get("isOnline"),
+        "lastMessageTime": data.get("lastMessageTime"),
+        "battery": battery,
+        "is_charge": props.get("is_charge", robot.get("charge")),
+        "dock": props.get("dock", robot.get("dock")),
+        "supplyState": supply_state,
+        "supplyStateName": _enum_name(_SUPPLY_STATE_NAME, supply_state),
+        "supplyEngaged": supply_engaged,
+        "locate": props.get("locate", robot.get("locate")),
+        "state": robot.get("state"),
+        "robotMode": robot_mode,
+        "robotModeName": _enum_name(_ROBOT_MODE_NAME, robot_mode),
+        "robot_state": props.get("robot_state"),
+        "control_mode": control_mode,
+        "controlModeName": _enum_name(_CONTROL_MODE_NAME, control_mode),
+        "clean_mode": props.get("clean_mode"),
+        "map_name": props.get("map_name") or robot.get("currentMap"),
+        "position": position,
+        "water": robot.get("water"),
+        "sewage": robot.get("sewage"),
+        "waterSupply": robot.get("waterSupply"),
+        "taskPercent": robot.get("taskPercent"),
+        "taskPause": robot.get("taskPause"),
+        "taskMode": robot.get("taskMode"),
+        "crash": _as_bool(props.get("crash")),
+        "fall": _as_bool(props.get("fall")),
+        "enmergency": _as_bool(props.get("enmergency")),
+        "cpu_used_percent": props.get("cpu_used_percent"),
+        "memory_used_percent": props.get("memory_used_percent"),
+        "disk_space_used_percent": props.get("disk_space_used_percent"),
+        "free_disk_space": props.get("free_disk_space"),
+        "hasFault": len(faults) > 0,
+        "faultCount": len(faults),
+        "faults": faults,
+    }
+
+
+def _parse_bag_start(file_name: str) -> Optional[datetime]:
+    m = _BAG_TIME_RE.search(file_name or "")
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group("ts"), "%Y-%m-%d-%H-%M-%S").replace(tzinfo=_TZ_CN)
+    except ValueError:
+        return None
+
+
+def _parse_happen_time(value: str) -> Optional[datetime]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    normalized = raw.replace("/", "-")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_TZ_CN)
+        return dt.astimezone(_TZ_CN)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d-%H-%M-%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(normalized, fmt).replace(tzinfo=_TZ_CN)
+        except ValueError:
+            continue
+    return None
+
+
+def _summarize_bag(rec: dict) -> dict:
+    name = rec.get("file_name") or ""
+    start = _parse_bag_start(name)
+    kind = None
+    m = _BAG_TIME_RE.search(name)
+    if m:
+        kind = m.group("kind").lower()
+    end = start + timedelta(seconds=_BAG_SLICE_SECONDS) if start else None
+    return {
+        "file_name": name,
+        "file_path": rec.get("file_path"),
+        "file_size": rec.get("file_size"),
+        "modify_time": rec.get("modify_time"),
+        "kind": kind,
+        "slice_start": start.strftime("%Y-%m-%d %H:%M:%S") if start else None,
+        "slice_end": end.strftime("%Y-%m-%d %H:%M:%S") if end else None,
+        "is_active": str(name).endswith(".active"),
+    }
+
 
 @mcp.tool()
-def get_device_detail(sn: str):
-    """获取设备详情
-    
-    参数:
-    - sn: 设备编码
-    
-    返回字段包括: 在线状态(connect)、定位状态(locate)、故障信息(faultDTOList)、电量(battery)等
+def set_cloud_token(token: str):
+    """手动设置 rosiwit-cloud API token。"""
+    cloud.set_token(token)
+    if not cloud.get_token():
+        return {"success": False, "error": "token 为空"}
+    logger.info("已手动设置 cloud token")
+    return {"success": True, "message": "token 已设置"}
+
+
+@mcp.tool()
+def get_device_shadow(device_id: str, product_id: str):
+    """获取设备实时状态（rosiwit-cloud 设备影子）。
+
+    810 对桩看 supplyState∈{1,2,3} 或 supplyEngaged，不要依赖 is_charge。
     """
-    logger.info(f"获取设备详情: {sn}")
-    result = _post("/detail", {"sn": sn})
-    
-    if result.get("sn"):
-        detail = {
-            "sn": result.get("sn"),
-            "name": result.get("name"),
-            "connect": result.get("connect"),
-            "locate": result.get("locate"),
-            "hasFault": result.get("hasFault"),
-            "runState": result.get("runState"),
-            "runStateName": result.get("runStateName"),
-            "battery": result.get("battery"),
-            "position": result.get("position"),
-            "faultDTOList": result.get("faultDTOList", []),
-            "dock": result.get("dock"),
-            "isPause": result.get("isPause")
+    did = str(device_id or "").strip()
+    pid = str(product_id or "").strip()
+    if not did:
+        return {"success": False, "error": "device_id 不能为空"}
+    if not pid:
+        return {"success": False, "error": "product_id 不能为空"}
+    logger.info("获取设备影子: deviceId=%s productId=%s", did, pid)
+    result = _cloud_request_shadow(did, pid)
+    if not isinstance(result, dict):
+        return {"success": False, "error": "响应格式异常", "raw": result}
+    if result.get("success") is False and result.get("data") is None:
+        return {
+            "success": False,
+            "returnCode": result.get("returnCode"),
+            "returnMsg": result.get("returnMsg") or result.get("error"),
+            "hint": "检查 TICKET_API_BASE_URL / 账号，或 set_cloud_token",
         }
-        logger.info(f"设备状态: connect={detail['connect']}, locate={detail['locate']}, hasFault={detail['hasFault']}")
-        return detail
-    
-    return result
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return {
+            "success": False,
+            "returnCode": result.get("returnCode"),
+            "returnMsg": result.get("returnMsg", "data 为空或非对象"),
+            "raw": result,
+        }
+    summary = _summarize_shadow(data)
+    summary["success"] = True
+    summary["returnCode"] = result.get("returnCode", 200)
+    return summary
 
 
 @mcp.tool()
-def get_real_time_state(sn: str):
-    """获取设备实时数据
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取设备实时数据: {sn}")
-    return _post("/device/real_time_state", {"sn": sn})
-
-
-@mcp.tool()
-def get_clean_info(sn: str):
-    """获取设备清洁组件信息
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取清洁组件信息: {sn}")
-    return _post("/clean_info", {"sn": sn})
-
-
-@mcp.tool()
-def get_camera_info(sn: str, camera_id: int = 0):
-    """获取摄像头信息
-    
-    参数:
-    - sn: 设备编码
-    - camera_id: 摄像头ID
-    """
-    logger.info(f"获取摄像头信息: {sn}, camera_id={camera_id}")
-    return _post("/camera_information", {"sn": sn, "cameraId": camera_id})
-
-
-@mcp.tool()
-def get_chassis_info(sn: str):
-    """获取底盘底层数据
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取底盘底层数据: {sn}")
-    return _post("/driver/chassis/info", {"sn": sn})
-
-
-# ==================== 地图与点云 ====================
-
-@mcp.tool()
-def get_cost_map(sn: str):
-    """获取感知地图（Cost Map）
-
-    说明：获取实时感知图像，返回图像base64编码。图像编码后数据比较大，会被截断。大模型不适用，使用get_cost_map
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取感知地图: {sn}")
-    return _post("/cost_map", {"sn": sn})
-
-@mcp.tool()
-def upload_cost_map(sn: str):
-    """获取感知地图（Cost Map）
-
-    说明：获取实时感知图像存储在云端，返回访问路径URL
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取感知地图: {sn}")
-    return _post("/upload/costMap", {"sn": sn})
-
-
-@mcp.tool()
-def get_point_cloud(sn: str):
-    """获取点云数据
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取点云数据: {sn}")
-    return _post("/point_cloud", {"sn": sn})
-
-
-# ==================== 录包文件 ====================
-
-@mcp.tool()
-def get_bag_files(sn: str, page_no: int = 1, page_size: int = 10, from_time: str = None, to_time: str = None):
-    """获取录包文件分页数据
-    
-    参数:
-    - sn: 设备编码
-    - page_no: 页码
-    - page_size: 每页数量
-    - from_time: 开始时间（可选）
-    - to_time: 结束时间（可选）
-    """
-    logger.info(f"获取录包文件: {sn}, page={page_no}")
-    data = {"sn": sn, "pageNo": page_no, "pageSize": page_size}
-    if from_time:
-        data["fromTime"] = from_time
-    if to_time:
-        data["toTime"] = to_time
-    return _post("/bag/page", data)
-
-
-@mcp.tool()
-def upload_bag_file(sn: str, file_path: str, timestamp: int = None):
-    """上传录包文件
-
-    说明: 上传录包文件需要消耗流量和占用网盘空间，上传录包需要指定时刻上传特定录包。不要随意上传大量的bag文件
-
-    参数:
-    - sn: 设备编码
-    - file_path: 文件路径
-    - timestamp: 时间戳（可选）
-    """
-    logger.info(f"上传录包文件: {sn}, file={file_path}")
-    data = {"sn": sn, "filePath": file_path}
-    if timestamp:
-        data["timeStamp"] = timestamp
-    return _post("/upload_bag", data)
-
-
-
-# @mcp.tool()
-# def soft_restart(sn: str):
-#     """软重启设备
-    
-#     参数:
-#     - sn: 设备编码
-#     """
-#     logger.info(f"软重启设备: {sn}")
-#     result = _post("/soft_restart", {"sn": sn})
-#     logger.info(f"软重启指令已发送: {sn}")
-#     return result
-
-
-# @mcp.tool()
-# def relocate(sn: str, position: List[float]):
-#     """设备重定位
-    
-#     参数:
-#     - sn: 设备编码
-#     - position: 位姿信息 [x, y, theta]
-#     """
-#     logger.info(f"重定位设备: {sn}, position={position}")
-#     result = _post("/relocate", {"sn": sn, "position": position})
-#     logger.info(f"重定位指令已发送: {sn}")
-#     return result
-
-
-# @mcp.tool()
-# def factory_reset(sn: str):
-#     """重置设备高级工程模式参数
-    
-#     参数:
-#     - sn: 设备编码
-#     """
-#     logger.info(f"重置设备参数: {sn}")
-#     return _post("/factory_reset", {"sn": sn})
-
-
-# ==================== 设备控制 ====================
-
-@mcp.tool()
-def move_robot(sn: str, mode: int):
-    """控制设备移动
-    
-    参数:
-    - sn: 设备编码
-    - mode: 移动模式
-        - 0: 停止
-        - 1: 前进
-        - 2: 右旋带前进
-        - 3: 右旋转
-        - 4: 右旋带后退
-        - 5: 后退
-        - 6: 左旋带后退
-        - 7: 左旋转
-        - 8: 左旋带前进
-    """
-    mode_names = {
-        0: "停止", 1: "前进", 2: "右旋带前进", 3: "右旋转",
-        4: "右旋带后退", 5: "后退", 6: "左旋带后退", 7: "左旋转", 8: "左旋带前进"
+def list_device_bags(device_id: str, product_id: str, current: int = 1, size: int = 20):
+    """云端录包列表。"""
+    did = str(device_id or "").strip()
+    pid = str(product_id or "").strip()
+    if not did or not pid:
+        return {"success": False, "error": "device_id/product_id 不能为空"}
+    try:
+        page = max(1, int(current))
+        page_size = max(1, min(int(size), 100))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "current/size 无效"}
+    result = _cloud_request_bag_list(did, pid, page, page_size)
+    if not isinstance(result, dict):
+        return {"success": False, "error": "响应格式异常", "raw": result}
+    ok = bool(result.get("success") or result.get("returnCode") == 200)
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    records = data.get("records") or []
+    bags = [_summarize_bag(r) for r in records if isinstance(r, dict)]
+    return {
+        "success": ok,
+        "deviceId": did,
+        "productId": pid,
+        "current": data.get("current", page),
+        "pages": data.get("pages"),
+        "size": data.get("size", page_size),
+        "total": data.get("total"),
+        "bags": bags,
+        "returnCode": result.get("returnCode"),
+        "returnMsg": result.get("returnMsg"),
+        "error": None if ok else (result.get("returnMsg") or result.get("error")),
     }
-    logger.info(f"控制设备移动: {sn}, mode={mode}({mode_names.get(mode, '未知')})")
-    return _post("/move", {"sn": sn, "mode": mode})
 
 
 @mcp.tool()
-def stop_robot(sn: str):
-    """停止设备移动
-    
-    参数:
-    - sn: 设备编码
+def device_backward(device_id: str, product_id: str):
+    """云端倒退（碰撞脱困）。"""
+    did = str(device_id or "").strip()
+    pid = str(product_id or "").strip()
+    if not did or not pid:
+        return {"success": False, "error": "device_id/product_id 不能为空"}
+    logger.info("云端倒退: deviceId=%s productId=%s", did, pid)
+    result = _cloud_request_backward(did, pid)
+    if not isinstance(result, dict):
+        return {"success": False, "error": "响应格式异常", "raw": result}
+    ok = bool(result.get("success") or result.get("returnCode") == 200)
+    return {
+        "success": ok,
+        "deviceId": did,
+        "productId": pid,
+        "returnCode": result.get("returnCode"),
+        "returnMsg": result.get("returnMsg"),
+        "data": result.get("data"),
+        "error": None if ok else (result.get("returnMsg") or result.get("error")),
+    }
+
+
+@mcp.tool()
+def device_back_to_station(device_id: str, product_id: str, req_id: int = 0):
+    """云端回桩。
+
+    先 get_device_shadow 看 supplyState；1/2/3 已对桩则不必下发；下发后再确认 supplyState。
     """
-    logger.info(f"停止设备: {sn}")
-    return move_robot(sn, 0)
+    did = str(device_id or "").strip()
+    pid = str(product_id or "").strip()
+    if not did or not pid:
+        return {"success": False, "error": "device_id/product_id 不能为空"}
+    try:
+        rid = int(req_id or 0)
+    except (TypeError, ValueError):
+        return {"success": False, "error": "req_id 无效"}
+    logger.info("云端回桩: deviceId=%s productId=%s id=%s", did, pid, rid)
+    result = _cloud_request_station_back(did, pid, rid, {})
+    if not isinstance(result, dict):
+        return {"success": False, "error": "响应格式异常", "raw": result}
+    ok = bool(result.get("success") or result.get("returnCode") == 200)
+    return {
+        "success": ok,
+        "deviceId": did,
+        "productId": pid,
+        "id": rid,
+        "returnCode": result.get("returnCode"),
+        "returnMsg": result.get("returnMsg"),
+        "data": result.get("data"),
+        "error": None if ok else (result.get("returnMsg") or result.get("error")),
+    }
 
 
 @mcp.tool()
-def backward(sn: str):
-    """设备倒退
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"设备倒退: {sn}")
-    return _post("/backward", {"sn": sn})
-
-
-@mcp.tool()
-def forward_charge(sn: str):
-    """设备前往充电站
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"设备前往充电站: {sn}")
-    return _post("/forward_charge", {"sn": sn})
-
-
-@mcp.tool()
-def set_control_mode(sn: str, mode: int):
-    """切换设备手自动模式
-    
-    参数:
-    - sn: 设备编码
-    - mode: 0-切手动, 1-切自动
-    """
-    mode_name = "手动" if mode == 0 else "自动"
-    logger.info(f"切换设备模式: {sn} -> {mode_name}")
-    return _post("/control_mode", {"sn": sn, "mode": mode})
-
-
-# ==================== 工程模式 ====================
-
-@mcp.tool()
-def start_factory_mode(sn: str):
-    """开启高级工程模式
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"开启工程模式: {sn}")
-    return _post("/factory_mode_start", {"sn": sn})
-
-
-@mcp.tool()
-def stop_factory_mode(sn: str):
-    """退出高级工程模式
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"退出工程模式: {sn}")
-    return _post("/factory_mode_stop", {"sn": sn})
-
-
-@mcp.tool()
-def get_factory_params(sn: str):
-    """获取高级工程模式参数
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取工程模式参数: {sn}")
-    return _post("/factory_get", {"sn": sn})
-
-
-@mcp.tool()
-def set_factory_params(sn: str, params: Dict[str, Any]):
-    """设置高级工程模式参数
-    
-    参数:
-    - sn: 设备编码
-    - params: 参数字典
-    """
-    logger.info(f"设置工程模式参数: {sn}")
-    return _post("/factory_set", {"sn": sn, **params})
-
-
-# ==================== 任务管理 ====================
-
-@mcp.tool()
-def get_pending_task(sn: str):
-    """获取断点续扫任务
-    
-    参数:
-    - sn: 设备编码
-    """
-    logger.info(f"获取断点续扫任务: {sn}")
-    return _post("/pending_task_get", {"sn": sn})
-
-
-@mcp.tool()
-def resume_pending_task():
-    """开始断点续扫任务"""
-    logger.info("开始断点续扫任务")
-    return _post("/pending_task_resume")
-
-
-@mcp.tool()
-def send_task_info():
-    """发送任务数据"""
-    logger.info("发送任务数据")
-    return _post("/send_task_info")
-
-
-@mcp.tool()
-def plan_path():
-    """路径规划"""
-    logger.info("执行路径规划")
-    return _post("/path/plan")
-
-
-# ==================== OTA升级 ====================
-
-@mcp.tool()
-def start_ota(
-    sn_list: List[str],
-    name: str,
-    version: str,
-    url: str,
-    md5: str,
-    task_id: str,
-    ota_type: str = "",
-    mode: str = "",
-    description: str = "",
-    timestamp: str = ""
+def find_bags_near_time(
+    device_id: str,
+    product_id: str,
+    happen_time: str,
+    window_minutes: int = 5,
+    max_pages: int = 10,
+    prefer_kind: str = "all",
 ):
-    """开始OTA升级
-    
-    参数:
-    - sn_list: 设备编码列表
-    - name: 任务名称
-    - version: OTA版本号
-    - url: OTA版本包下载地址
-    - md5: MD5加密字符串
-    - task_id: OTA任务ID
-    - ota_type: 升级类型（可选）
-    - mode: 升级模式（可选）
-    - description: 版本描述（可选）
-    - timestamp: 时间戳（可选）
-    """
-    logger.info(f"开始OTA升级: {name} v{version}, 设备: {sn_list}")
-    data = {
-        "snList": sn_list,
-        "name": name,
-        "type": ota_type,
-        "mode": mode,
-        "description": description,
-        "version": version,
-        "md5": md5,
-        "taskId": task_id,
-        "url": url,
-        "timestamp": timestamp
+    """按时间匹配录包切片。"""
+    did = str(device_id or "").strip()
+    pid = str(product_id or "").strip()
+    if not did or not pid:
+        return {"success": False, "error": "device_id/product_id 不能为空"}
+    target = _parse_happen_time(happen_time)
+    if not target:
+        return {"success": False, "error": f"无法解析 happen_time: {happen_time}"}
+    try:
+        window = max(0, int(window_minutes))
+        pages = max(1, min(int(max_pages), 30))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "window_minutes/max_pages 无效"}
+    kind_pref = (prefer_kind or "all").strip().lower()
+    if kind_pref not in ("all", "task", "any"):
+        kind_pref = "all"
+
+    all_bags: list = []
+    seen: set = set()
+    page_meta: dict = {}
+    for page in range(1, pages + 1):
+        result = _cloud_request_bag_list(did, pid, page, 50)
+        if not isinstance(result, dict) or not (
+            result.get("success") or result.get("returnCode") == 200
+        ):
+            if page == 1:
+                return {
+                    "success": False,
+                    "error": (result or {}).get("returnMsg")
+                    or (result or {}).get("error")
+                    or "录包列表请求失败",
+                    "raw": result,
+                }
+            break
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        page_meta = {
+            "current": data.get("current"),
+            "pages": data.get("pages"),
+            "size": data.get("size"),
+            "total": data.get("total"),
+        }
+        records = data.get("records") or []
+        if not records:
+            break
+        new_count = 0
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            bag = _summarize_bag(rec)
+            key = bag.get("file_path") or bag.get("file_name") or ""
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            all_bags.append(bag)
+            new_count += 1
+        if new_count == 0:
+            break
+        try:
+            if data.get("pages") is not None and page >= int(data.get("pages")):
+                break
+        except (TypeError, ValueError):
+            pass
+
+    timed = []
+    for bag in all_bags:
+        start = _parse_bag_start(bag.get("file_name") or "")
+        if not start:
+            continue
+        end = start + timedelta(seconds=_BAG_SLICE_SECONDS)
+        if start <= target <= end:
+            distance, covers = 0.0, True
+        elif target < start:
+            distance, covers = (start - target).total_seconds(), False
+        else:
+            distance, covers = (target - end).total_seconds(), False
+        timed.append({**bag, "covers_fault": covers, "distance_seconds": int(distance)})
+
+    if not timed:
+        return {
+            "success": True,
+            "deviceId": did,
+            "productId": pid,
+            "happen_time": target.strftime("%Y-%m-%d %H:%M:%S%z"),
+            "matched": [],
+            "matched_count": 0,
+            "scanned": len(all_bags),
+            "page_meta": page_meta,
+            "hint": "未解析到任何带时间戳的录包文件名",
+        }
+
+    starts = [s for s in (_parse_bag_start(b["file_name"]) for b in timed) if s]
+    available_newest = max(starts) if starts else None
+    available_oldest = min(starts) if starts else None
+    window_sec = window * 60
+    candidates = [
+        b for b in timed if b["covers_fault"] or abs(b["distance_seconds"]) <= window_sec
+    ]
+
+    def _sort_key(b):
+        kind_rank = 0 if kind_pref == "any" or b.get("kind") == kind_pref else 1
+        return (kind_rank, 1 if b.get("is_active") else 0, abs(b["distance_seconds"]), b.get("file_name") or "")
+
+    candidates.sort(key=_sort_key)
+    by_start = {
+        _parse_bag_start(b["file_name"]): b
+        for b in timed
+        if _parse_bag_start(b["file_name"])
     }
-    return _post("/ota/start", data)
+    ordered_starts = sorted(by_start.keys())
+    expanded = []
+    seen_names: set = set()
+
+    def _add(bag):
+        if not bag:
+            return
+        name = bag.get("file_name") or ""
+        if name in seen_names:
+            return
+        if bag.get("is_active") and not bag.get("covers_fault"):
+            return
+        seen_names.add(name)
+        expanded.append(bag)
+
+    for bag in candidates[:5]:
+        _add(bag)
+        st = _parse_bag_start(bag.get("file_name") or "")
+        if not st or st not in ordered_starts:
+            continue
+        idx = ordered_starts.index(st)
+        if idx > 0:
+            _add(by_start[ordered_starts[idx - 1]])
+        if idx + 1 < len(ordered_starts):
+            _add(by_start[ordered_starts[idx + 1]])
+
+    out_of_range = False
+    hint = None
+    if available_oldest and available_newest:
+        bag_span_end = available_newest + timedelta(seconds=_BAG_SLICE_SECONDS)
+        if target < available_oldest or target > bag_span_end:
+            out_of_range = True
+            hint = (
+                f"故障时间不在当前可列出的录包范围内"
+                f"（约 {available_oldest.strftime('%Y-%m-%d %H:%M:%S')}"
+                f" ~ {bag_span_end.strftime('%Y-%m-%d %H:%M:%S')}）。"
+            )
+    if not expanded and not out_of_range:
+        nearest = sorted(timed, key=lambda b: (b.get("is_active"), abs(b["distance_seconds"])))
+        for bag in nearest[:3]:
+            _add(bag)
+        hint = hint or "窗口内无精确覆盖切片，已返回时间最近的录包"
+
+    return {
+        "success": True,
+        "deviceId": did,
+        "productId": pid,
+        "happen_time": target.strftime("%Y-%m-%d %H:%M:%S%z"),
+        "window_minutes": window,
+        "matched": expanded,
+        "matched_count": len(expanded),
+        "scanned": len(all_bags),
+        "available_newest": available_newest.strftime("%Y-%m-%d %H:%M:%S")
+        if available_newest
+        else None,
+        "available_oldest": available_oldest.strftime("%Y-%m-%d %H:%M:%S")
+        if available_oldest
+        else None,
+        "out_of_range": out_of_range,
+        "page_meta": page_meta,
+        "hint": hint,
+        "note": "当前无 bag 内容解析接口；本工具仅按文件名时间定位故障附近切片。",
+    }
 
 
-# ==================== 定时任务 ====================
+
+# ==================== 老 FAE 能力对应的云端接口 ====================
 
 @mcp.tool()
-def update_timer_task():
-    """更新定时任务"""
-    logger.info("更新定时任务")
-    return _post("/timer_task/update")
+def upload_bag_file(
+    device_id: str,
+    product_id: str,
+    file_path: str = "",
+    timestamp: int = 0,
+    param: Any = None,
+    req_id: int = 0,
+):
+    """上传录包文件（POST /remote/bag/upload）。对应原 FAE upload_bag_file。
+
+    param 默认含 filePath / timeStamp；也可直接传完整 param。
+    成功时尽量返回顶层 url 便于 create_ticket_attachment。
+    """
+    p = _parse_param(param)
+    if file_path and "filePath" not in p and "file_path" not in p:
+        p["filePath"] = file_path
+    if timestamp and "timeStamp" not in p and "timestamp" not in p:
+        p["timeStamp"] = int(timestamp)
+    logger.info("上传录包: device=%s file=%s", device_id, p.get("filePath") or file_path)
+    result = _remote_post("bag/upload", device_id, product_id, req_id=req_id, param=p)
+    out = _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+    out["url"] = _extract_upload_url(result)
+    if out["success"] and not out["url"]:
+        out["hint"] = "上传成功但未解析到 url，请检查 data 字段后再挂附件"
+    return out
 
 
 @mcp.tool()
-def delete_timer_task():
-    """删除定时任务"""
-    logger.info("删除定时任务")
-    return _post("/timer_task/delete")
+def upload_bag_list(
+    device_id: str,
+    product_id: str,
+    param: Any = None,
+    req_id: int = 0,
+):
+    """批量上传故障录包（POST /remote/bag/uploadList）。"""
+    result = _remote_post(
+        "bag/uploadList", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    out = _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+    out["url"] = _extract_upload_url(result)
+    return out
+
+
+@mcp.tool()
+def soft_restart(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """机器重启（POST /remote/device/restart）。对应原 FAE soft_restart。"""
+    logger.info("云端重启: %s / %s", device_id, product_id)
+    result = _remote_post(
+        "device/restart", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def factory_reset(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """设备恢复出厂设置（POST /remote/device/reset）。对应原 FAE factory_reset。慎用。"""
+    result = _remote_post(
+        "device/reset", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def set_control_mode(
+    device_id: str,
+    product_id: str,
+    mode: int = 0,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """切换手动/自动（POST /remote/device/manual）。对应原 FAE set_control_mode。
+
+    mode: 0=手动, 1=自动（写入 param.mode，除非 param 已提供）。
+    """
+    p = _parse_param(param)
+    if "mode" not in p:
+        p["mode"] = int(mode)
+    result = _remote_post("device/manual", device_id, product_id, req_id=req_id, param=p)
+    return _ok_result(
+        result,
+        deviceId=str(device_id).strip(),
+        productId=str(product_id).strip(),
+        mode=p.get("mode"),
+    )
+
+
+@mcp.tool()
+def relocate(
+    device_id: str,
+    product_id: str,
+    position: Any = None,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """地图重定位（POST /remote/map/relocation）。对应原 FAE relocate。
+
+    position 可为 [x,y,theta] 或写入 param。
+    """
+    p = _parse_param(param)
+    if position is not None and "position" not in p:
+        if isinstance(position, str):
+            try:
+                position = json.loads(position)
+            except json.JSONDecodeError:
+                pass
+        p["position"] = position
+    result = _remote_post("map/relocation", device_id, product_id, req_id=req_id, param=p)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def station_relocation(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """工作站重定位（POST /remote/station/relocation）。"""
+    result = _remote_post(
+        "station/relocation",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def station_dock(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """手动补给（POST /remote/station/dock）。"""
+    result = _remote_post(
+        "station/dock", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def get_clean_info(device_id: str, product_id: str):
+    """获取清洁组件信息（GET /remote/device/cleanInfo）。对应原 FAE get_clean_info。"""
+    result = _remote_get("device/cleanInfo", device_id, product_id)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def device_clean(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """设备手动清洗控制（POST /remote/device/clean）。"""
+    result = _remote_post(
+        "device/clean", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def get_camera_image(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """机器摄像头图片（POST /remote/device/camera/image）。对应原 FAE get_camera_info。"""
+    result = _remote_post(
+        "device/camera/image",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def get_point_cloud(device_id: str, product_id: str):
+    """激光雷达点云（GET /remote/point_cloud）。对应原 FAE get_point_cloud。"""
+    result = _remote_get("point_cloud", device_id, product_id)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def start_factory_mode(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """开启工程模式（POST /remote/device/factory/switch）。param 可含 enable/mode 等。"""
+    p = _parse_param(param)
+    if "enable" not in p and "mode" not in p and "switch" not in p:
+        p["enable"] = True
+    result = _remote_post("device/factory/switch", device_id, product_id, req_id=req_id, param=p)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def stop_factory_mode(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """退出工程模式（POST /remote/device/factory/switch）。"""
+    p = _parse_param(param)
+    if "enable" not in p and "mode" not in p and "switch" not in p:
+        p["enable"] = False
+    result = _remote_post("device/factory/switch", device_id, product_id, req_id=req_id, param=p)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def get_factory_params(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """获取工程模式参数（POST /remote/device/factory/setting/get）。"""
+    result = _remote_post(
+        "device/factory/setting/get",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def set_factory_params(
+    device_id: str,
+    product_id: str,
+    param: Any = None,
+    req_id: int = 0,
+):
+    """设置工程模式参数（POST /remote/device/factory/setting/set）。业务字段放 param。"""
+    result = _remote_post(
+        "device/factory/setting/set",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def reset_factory_params(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """工程模式参数重置（POST /remote/device/factory/setting/reset）。"""
+    result = _remote_post(
+        "device/factory/setting/reset",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def factory_control(
+    device_id: str,
+    product_id: str,
+    param: Any = None,
+    req_id: int = 0,
+):
+    """工程模式控制 sw50/gt（POST /remote/device/factory/control）。"""
+    result = _remote_post(
+        "device/factory/control",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def get_pending_task(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """获取断点续扫任务（POST /remote/task/pending/list）。对应原 FAE get_pending_task。"""
+    result = _remote_post(
+        "task/pending/list",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def resume_pending_task(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """开始断点续扫（POST /remote/task/pending/resume）。对应原 FAE resume_pending_task。"""
+    result = _remote_post(
+        "task/pending/resume",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def plan_path(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """路径规划（POST /remote/path/plan）。对应原 FAE plan_path。"""
+    result = _remote_post(
+        "path/plan", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def list_schedules(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """定时任务列表（POST /remote/schedule/list）。"""
+    result = _remote_post(
+        "schedule/list", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def create_schedule(
+    device_id: str,
+    product_id: str,
+    param: Any = None,
+    req_id: int = 0,
+):
+    """定时任务创建（POST /remote/schedule/create）。"""
+    result = _remote_post(
+        "schedule/create", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def update_schedule(
+    device_id: str,
+    product_id: str,
+    param: Any = None,
+    req_id: int = 0,
+):
+    """定时任务更新（POST /remote/schedule/update）。"""
+    result = _remote_post(
+        "schedule/update", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def delete_schedule(
+    device_id: str,
+    product_id: str,
+    param: Any = None,
+    req_id: int = 0,
+):
+    """定时任务删除（POST /remote/schedule/delete）。"""
+    result = _remote_post(
+        "schedule/delete", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def execute_terminal(
+    device_id: str,
+    product_id: str,
+    command: str = "",
+    req_id: int = 0,
+    param: Any = None,
+):
+    """向机器执行命令（POST /remote/device/terminal/execute）。
+
+    与 WebSocket remote_terminal 互补；command 写入 param.command（除非 param 已含）。
+    """
+    p = _parse_param(param)
+    if command and "command" not in p and "cmd" not in p:
+        p["command"] = command
+    result = _remote_post(
+        "device/terminal/execute", device_id, product_id, req_id=req_id, param=p
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def get_device_setting(
+    device_id: str,
+    product_id: str,
+):
+    """获取系统参数（GET /remote/device/setting/get）。"""
+    result = _remote_get("device/setting/get", device_id, product_id)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def set_device_setting(
+    device_id: str,
+    product_id: str,
+    param: Any = None,
+    req_id: int = 0,
+):
+    """设置系统参数（POST /remote/device/setting/set）。"""
+    result = _remote_post(
+        "device/setting/set",
+        device_id,
+        product_id,
+        req_id=req_id,
+        param=_parse_param(param),
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def list_consumables(
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """消耗品寿命列表（POST /remote/consumable/list）。"""
+    result = _remote_post(
+        "consumable/list", device_id, product_id, req_id=req_id, param=_parse_param(param)
+    )
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def remote_action(
+    action: str,
+    device_id: str,
+    product_id: str,
+    req_id: int = 0,
+    param: Any = None,
+):
+    """通用远程控制：action 为 /remote/ 后路径，如 device/garbage/switch、map/list、task/control。
+
+    用于尚未单独封装的接口；优先使用具名工具。
+    """
+    suffix = str(action or "").strip().lstrip("/")
+    if not suffix or ".." in suffix:
+        return {"success": False, "error": "action 无效"}
+    result = _remote_post(suffix, device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(
+        result,
+        action=suffix,
+        deviceId=str(device_id).strip(),
+        productId=str(product_id).strip(),
+    )
+
 
 
 if __name__ == "__main__":
-    logger.info("启动 Device Operations MCP Server")
     mcp.run()

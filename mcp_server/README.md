@@ -14,7 +14,9 @@ pip install -r requirements.txt
 设置环境变量：
 
 ```bash
-export DEVICE_API_BASE_URL="http://your-api-server:8080"
+export TICKET_API_BASE_URL="https://bms-cn.rosiwit.com"
+export DEVICE_API_USERNAME="your-user"
+export DEVICE_API_PASSWORD="your-password"
 export WS_BASE_URL="wss://your-terminal-server:10000"
 ```
 
@@ -22,7 +24,9 @@ export WS_BASE_URL="wss://your-terminal-server:10000"
 
 ```env
 OPENAI_API_KEY=your-api-key
-DEVICE_API_BASE_URL=https://bms-cn.rosiwit.com
+TICKET_API_BASE_URL=https://bms-cn.rosiwit.com
+DEVICE_API_USERNAME=your-user
+DEVICE_API_PASSWORD=your-password
 WS_BASE_URL=wss://dev.xzrobot.com:10000
 ```
 
@@ -30,8 +34,38 @@ WS_BASE_URL=wss://dev.xzrobot.com:10000
 
 ```bash
 python src/terminal.py
-python src/device_ops.py
+python src/remote_operation.py
 ```
+
+## 工单工具 (ticket_ops.py)
+
+鉴权：[`cloud_common.py`](src/cloud_common.py)。
+
+| 工具 | 说明 |
+|------|------|
+| `get_ticket` / `change_ticket_status` / `create_ticket_comment` / `create_ticket_attachment` | 工单 CRUD |
+| `list_ticket_statuses` / `set_ticket_token` | 状态枚举 / 手动 token |
+
+## 云端运维 (remote_operation.py)
+
+仅 rosiwit-cloud（**已删除全部 FAE /xz_sc50/fae 老接口**）。
+
+| 工具 | 说明 |
+|------|------|
+| `get_device_shadow` | 设备影子实时状态 |
+| `list_device_bags` / `find_bags_near_time` | 录包列表与按时间匹配 |
+| `upload_bag_file` / `upload_bag_list` | 上传录包取 OSS url |
+| `soft_restart` / `factory_reset` | 重启 / 恢复出厂 |
+| `set_control_mode` | 手动/自动 |
+| `relocate` / `station_relocation` / `station_dock` | 地图重定位 / 工作站 |
+| `device_backward` / `device_back_to_station` | 倒退 / 回桩 |
+| `get_clean_info` / `device_clean` | 清洁信息 / 清扫 |
+| `get_camera_image` / `get_point_cloud` | 相机 / 点云 |
+| `plan_path` / `get_pending_task` / `resume_pending_task` | 路径与挂起任务 |
+| `execute_terminal` / `remote_action` | 远程终端 / 通用动作 |
+| `set_cloud_token` | 手动 token |
+
+统一体 `RemoteForm`：`deviceId` + `productId` + `id` + `param`。环境：`TICKET_API_BASE_URL`（或 `CLOUD_API_BASE_URL`）+ `DEVICE_API_USERNAME` / `DEVICE_API_PASSWORD`。
 
 ## 终端工具列表 (terminal.py)
 
@@ -64,90 +98,6 @@ python src/device_ops.py
 | `clear_buffer` | 清空输出缓冲区 |
 | `get_buffer` | 获取缓冲区内容 |
 | `resize_terminal` | 调整终端窗口大小 |
-
-## 设备运维工具列表 (device_ops.py)
-
-### 认证工具
-
-| 工具 | 说明 |
-|------|------|
-| `set_api_base_url` | 设置API基础URL |
-| `set_token` | 设置认证Token |
-| `get_token` | 通过登录获取Token |
-
-### 设备信息查询
-
-| 工具 | 说明 |
-|------|------|
-| `get_device_detail` | 获取设备详情 |
-| `get_real_time_state` | 获取实时数据 |
-| `get_clean_info` | 获取清洁组件信息 |
-| `get_camera_info` | 获取摄像头信息 |
-| `get_chassis_info` | 获取底盘底层数据 |
-
-### 故障诊断与恢复
-
-| 工具 | 说明 |
-|------|------|
-| `fault_diagnose` | 故障诊断 |
-| `soft_restart` | 软重启设备 |
-| `relocate` | 设备重定位 |
-| `factory_reset` | 重置设备参数 |
-
-### 设备控制
-
-| 工具 | 说明 |
-|------|------|
-| `move_robot` | 控制设备移动 |
-| `stop_robot` | 停止设备 |
-| `backward` | 设备倒退 |
-| `forward_charge` | 前往充电站 |
-| `set_control_mode` | 切换手自动模式 |
-
-### 工程模式
-
-| 工具 | 说明 |
-|------|------|
-| `start_factory_mode` | 开启工程模式 |
-| `stop_factory_mode` | 退出工程模式 |
-| `get_factory_params` | 获取工程参数 |
-| `set_factory_params` | 设置工程参数 |
-
-### 地图与点云
-
-| 工具 | 说明 |
-|------|------|
-| `get_cost_map` | 获取感知地图 |
-| `get_point_cloud` | 获取点云数据 |
-
-### 任务管理
-
-| 工具 | 说明 |
-|------|------|
-| `get_pending_task` | 获取断点续扫任务 |
-| `resume_pending_task` | 开始断点续扫 |
-| `send_task_info` | 发送任务数据 |
-| `plan_path` | 路径规划 |
-
-### OTA升级
-
-| 工具 | 说明 |
-|------|------|
-| `start_ota` | 开始OTA升级 |
-
-### 录包文件
-
-| 工具 | 说明 |
-|------|------|
-| `get_bag_files` | 获取录包文件列表 |
-| `upload_bag_file` | 上传录包文件 |
-
-### 综合运维
-
-| 工具 | 说明 |
-|------|------|
-| `diagnose_and_recover` | 综合故障诊断与恢复 |
-| `handle_collision` | 处理设备碰撞故障 |
 
 ## 终端输出解析
 
@@ -185,11 +135,13 @@ interactive_session(sn="SN12345", commands=["cd /tmp", "ls", "pwd"])
       "command": "python",
       "args": ["mcp_server/src/terminal.py"]
     },
-    "device-ops": {
+    "remote_operation": {
       "command": "python",
-      "args": ["mcp_server/src/device_ops.py"],
+      "args": ["mcp_server/src/remote_operation.py"],
       "env": {
-        "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com"
+        "TICKET_API_BASE_URL": "https://bms-cn.rosiwit.com",
+        "DEVICE_API_USERNAME": "",
+        "DEVICE_API_PASSWORD": ""
       }
     }
   }

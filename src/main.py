@@ -394,6 +394,46 @@ async def cleanup(plugin_manager, agent):
 async def main():
     shutdown_event = asyncio.Event()
 
+    # 抑制 MCP stdio / anyio 跨 Task 关闭 cancel scope 时的未处理异常（否则 TUI 会弹 Unhandled exception）
+    loop = asyncio.get_running_loop()
+    _default_handler = loop.get_exception_handler()
+
+    def _is_mcp_cancel_scope_noise(exc: BaseException | None, message: str = "") -> bool:
+        texts = [message or ""]
+        if exc is not None:
+            texts.append(str(exc))
+            texts.append(type(exc).__name__)
+        blob = " ".join(texts).lower()
+        return (
+            "cancel scope" in blob
+            or "different task than it was entered" in blob
+            or "attempted to exit cancel scope" in blob
+        )
+
+    def _mcp_exception_handler(loop, context):
+        exc = context.get("exception")
+        msg = context.get("message") or ""
+        # ExceptionGroup / TaskGroup 里可能包着多个 cancel-scope 错误
+        if isinstance(exc, BaseExceptionGroup):
+            if all(
+                _is_mcp_cancel_scope_noise(e) for e in exc.exceptions
+            ) or _is_mcp_cancel_scope_noise(exc, msg):
+                logging.getLogger("agent.mcp").debug(
+                    "suppressed anyio cancel-scope ExceptionGroup: %s", exc
+                )
+                return
+        if _is_mcp_cancel_scope_noise(exc if isinstance(exc, BaseException) else None, msg):
+            logging.getLogger("agent.mcp").debug(
+                "suppressed anyio cancel-scope error: %s | %s", exc, msg
+            )
+            return
+        if _default_handler is not None:
+            _default_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_mcp_exception_handler)
+
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", "-c", default="config",

@@ -1,105 +1,67 @@
 ---
 name: device-pull-bag
-description: 通过运维平台 API 拉取设备录包文件，上传云端并返回下载链接
+description: |
+  通过云端 list_device_bags / find_bags_near_time（remote_operation）按时间匹配录包；
+  再用 upload_bag_file 上传取 OSS url，有 ticket_id 时 create_ticket_attachment。
 ---
+
 ## 适用场景
 
-- 设备故障后需要拉取录包进行回溯分析
-- 用户要求下载设备的运行录包或任务录包
-- 需要提取特定时间段的录包文件
+- 用户要求查看/拉取某时间点附近的运行录包或任务录包
+- 故障后需要定位故障时刻附近切片（工单 `happenTime` 或用户给出的时间）
 
 ## 前置条件
 
-- 知道设备 SN
-- 知道时间点
+- 知道 `deviceId` + `productId`
+- 知道目标时间点（可选；仅浏览列表时可不给）
 
-## 拉包流程
+## 流程
 
 ```
-查询录包列表 → 确认目标文件 → 上传云端 → 返回下载链接
+find_bags_near_time(deviceId, productId, happen_time)
+  → 得到覆盖/邻近切片（file_path / file_name）
+  → upload_bag_file(device_id, product_id, file_path=...)
+  → 取返回 url
+  → （有 ticket_id）create_ticket_attachment(ticket_id, name, url)
 ```
 
-### 第一步：查询录包列表
+### 第一步：按时间匹配
 
-调用 `get_bag_files(sn, page_no=1, page_size=20, from_time=?, to_time=?)` 获取录包文件分页列表。
-
-**参数说明：**
-
-| 参数          | 说明                               |
-| ------------- | ---------------------------------- |
-| `sn`        | 设备编码                           |
-| `page_no`   | 页码，从 1 开始                    |
-| `page_size` | 每页数量，建议 20                  |
-| `from_time` | 开始时间（可选，用于筛选时间范围） |
-| `to_time`   | 结束时间（可选）                   |
-
-**录包文件特征：**
-
-- 每 2 分钟一个切片
-- 文件名包含该切片的**开始时间点**
-- 按时间倒序排列（最新的在最前）
-
-**时间筛选建议：**
-
-- 如果用户指定了故障时间，用 `from_time` / `to_time` 缩小范围
-- 如果用户未指定时间，先查第一页（最新录包），再根据需要翻页
-
-如果第一页没找到目标文件，调整 `page_no` 翻页，或放宽 `from_time`/`to_time` 范围。
-
-### 第二步：确认目标文件
-
-从返回列表中找到需要拉取的录包文件。
-
-建议：
-
-- 如果用户明确指定了时间，精准匹配该时间段的文件
-- 如果故障时间点接近切片的边缘，**可以向前或向后多取一个切片**
-
-### 第三步：上传到云端
-
-对每个目标文件调用 `upload_bag_file(sn, file_path, timestamp)`：
-
-| 参数          | 说明                                               |
-| ------------- | -------------------------------------------------- |
-| `sn`        | 设备编码                                           |
-| `file_path` | 录包文件路径（从`get_bag_files` 返回结果中获取） |
-| `timestamp` | 时间戳（可选，从文件信息中获取）                   |
-
-**⚠️ 重要约束：**
-
-- 上传录包**消耗流量和占用网盘空间**
-- 每次只上传**必要的文件**，不要批量上传大量 bag 文件
-- 上传需要时间，等待接口返回成功后再处理下一个
-
-### 第四步：返回下载链接
-
-上传成功后，接口返回**云端路径**（网盘下载地址）。
-
-向用户返回：
-
-1. 云端下载路径
-2. 如果回复格式是 Markdown，同时给出可点击的下载链接：
-
-```markdown
-📋 设备: {sn}
-📦 拉取结果:
-  - [{文件名}]({云端下载路径})
-  - [{文件名}]({云端下载路径})
+```
+find_bags_near_time(
+  device_id=...,
+  product_id=...,
+  happen_time="2026-07-24T19:30:24+08:00",
+  window_minutes=5,
+  prefer_kind="all"
+)
 ```
 
-## 完整示例
+返回字段重点：`matched[]`、`file_name`/`file_path`、`covers_fault`、`out_of_range`、`hint`。
 
-用户说"设备 SC50-001234 昨天下午3点左右有故障，帮我拉一下录包"：
+仅浏览列表：`list_device_bags(device_id, product_id, current, size)`。
 
-1. `get_bag_files(sn="SC50-001234", page_no=1, page_size=20, from_time="昨天15:00", to_time="昨天15:10")`
-2. 从返回列表找到覆盖 15:00 时间点的 切片文件
-3. 除非必要，只获取一个录包文件
-4. 调用 `upload_bag_file(sn="SC50-001234", file_path="...")`
-5. 收集云端路径，返回 Markdown 下载链接
+### 第二步：解读匹配结果
+
+1. `matched` 非空：覆盖时刻切片及前后片为候选
+2. `out_of_range=true`：可能已滚动删除，不要假装已解析内容
+3. 当前无 bag 内容自动解析 API
+
+### 第三步：上传取链并挂附件
+
+```
+upload_bag_file(device_id, product_id, file_path=匹配到的路径)
+```
+
+成功时优先用返回的顶层 `url`。有 `ticket_id` 时：
+
+```
+create_ticket_attachment(ticket_id, name=文件名, url=OSS地址, type="")
+```
+
+上传成功但无 `url`：说明并附上 `data` 摘要，勿编造 URL。上传失败：汇报错误，可转人工从云端下载。
 
 ## 注意事项
 
-- `upload_bag_file` 会消耗设备流量和网盘空间，**每次只拉必要的文件**
-- 文件名中的时间是切片**开始时间**，2 分钟后的内容在下一个切片
-- 上传是同步的，接口返回成功代表已上传完毕，云端路径会立即可用
-- 如果 `get_bag_files` 返回空列表，可能是设备没有录包或时间范围不匹配，直接告诉用户录包文件不存在
+- 挂工单附件最多 1～3 个 bag
+- 故障过久匹配为空属正常，如实说明

@@ -13,3 +13,4 @@ python-dotenv>=1.0.0
 httpx>=0.24.0
 lark-oapi>=1.4.0
 websockets>=12.0
+nest_asyncio>=1.5.0

@@ -21,69 +21,73 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 
 ## 可用工具
 
-### 1. 运维平台 API（remote_operation MCP）
+### 0. 云端工单 + 设备能力（ticket_ops + remote_operation）
 
-通过 REST API 操作设备，所有接口基础路径: `/xz_sc50/fae`。
+**`remote_operation`**：rosiwit-cloud 云端运维（影子 / 录包 / 倒退 / 回桩）。鉴权自动走 cloud_common。  
+**`ticket_ops`**：工单读写。终端仍用 `remote_terminal`。
 
-**认证流程（每次会话必须先完成）:**
+**非工单**按意图直接加载可复用技能：
 
-1. 调用 `get_token` 获取认证令牌：`username=admin, password=123456, clientType=WEB`
-2. Token 获取成功后会自动设置，后续请求无需重复认证
+| 意图 | 加载技能 | 工具所在 MCP |
+|------|----------|--------------|
+| 查实时状态 / 影子 | `device-shadow-status` | `remote_operation` |
+| 按时间找录包 | `device-pull-bag` | `remote_operation` |
+| 回桩 / 低电回站 | `device-return-station` | `remote_operation` |
+| 碰撞脱困 / 倒退 | `device-collision-handling` | `remote_operation` |
+| 对桩失败排查 | `device-cannot-back-station` | 影子核对 + 转人工/终端 |
 
-**核心查询工具:**
+当任务包含 `ticket_id` / 工单号 / `【BMS工单AI处理】` 时：
 
-| 工具名                  | 用途             | 关键参数 |
-| ----------------------- | ---------------- | -------- |
-| `get_device_detail`   | 获取设备详情     | sn       |
-| `get_real_time_state` | 获取实时数据     | sn       |
-| `get_chassis_info`    | 获取底盘数据     | sn       |
-| `get_clean_info`      | 获取清洁组件信息 | sn       |
+1. **加载并执行**技能 `ticket-handling`（编排器：拉单/路由/评论结案）——工单是设备运维的一部分
+2. 工单读写走 **`ticket_ops`**；设备动作走 **`remote_operation`**（再加载上述 `device-*`）
+3. **设备实时状态以影子为准**（`device-shadow-status` / `get_device_shadow`）
+4. **工单要处置的对象**是 `faultList`；按 `fault-routing.md` 选型后再执行对应 device-*
+5. 结论用 `create_ticket_comment` 写回（对外口吻；少写工具名/原始字段名）
+6. 录包：`device-pull-bag` 定位 → `upload_bag_file` 取 url → `create_ticket_attachment`
+7. **`0x20200004` 低电**：委托 `device-return-station`（supplyState 确认后再评论成败；勿依赖 is_charge）
 
-**设备状态关键字段:**
+| 工具名 | 用途 | 关键参数 |
+| ------ | ---- | -------- |
+| `get_ticket` | 获取工单详情（含 faultList、status、deviceId） | ticket_id |
+| `change_ticket_status` | 变更工单状态 | ticket_id, status |
+| `create_ticket_comment` | 发表工单评论（对外自然语言，只写本工单故障结论） | ticket_id, content |
+| `create_ticket_attachment` | 挂工单附件（已有 URL） | ticket_id, name, url, type |
+| `list_ticket_statuses` | 查询状态枚举 | — |
+| `set_ticket_token` | 手动设置云端 API token（自动登录失败时） | token |
+| `get_device_shadow` | 设备实时状态（battery、supplyState、robotMode、control_mode 等） | device_id, product_id |
+| `list_device_bags` | 云端录包列表 `POST .../remote/bag/list` | device_id, product_id |
+| `find_bags_near_time` | 按故障 happenTime 匹配附近录包切片 | device_id, product_id, happen_time |
+| `device_backward` | 云端倒退（碰撞剧本） | device_id, product_id |
+| `device_back_to_station` | 云端回桩 `POST .../remote/station/back` | device_id, product_id |
+| `upload_bag_file` | 上传录包取 OSS url | device_id, product_id, file_path |
+| `soft_restart` | 云端重启 | device_id, product_id |
+| `relocate` | 地图重定位 | device_id, product_id, position |
+| `set_control_mode` | 手动/自动（mode: 0/1） | device_id, product_id, mode |
 
-| 字段                            | 类型       | 说明                                            |
-| ------------------------------- | ---------- | ----------------------------------------------- |
-| `connect`                     | boolean    | 连接状态（false=离线）                          |
-| `locate`                      | boolean    | 定位状态（false=定位丢失）                      |
-| `hasFault`                    | boolean    | 是否有故障                                      |
-| `faultDTOList`                | array      | 故障详情 [{code, level, module, name, content}] |
-| `position`                    | array      | 当前位姿 [x, y, theta]                          |
-| `battery`                     | int        | 电量百分比                                      |
-| `runState` / `runStateName` | int/string | 工作状态                                        |
-| `dock`                        | boolean    | 是否在充电桩                                    |
-| `isPause`                     | boolean    | 是否暂停                                        |
+状态：`1已创建` `2处理中` `3已完成` `4已关闭\|已拒绝` `5线上运维` `6问题分析`  
+详情：`GET .../ticket/ops/detail/{id}`；改状态：`POST .../ticket/ops/status/change`  
+评论：`POST .../ticket/ticketComment/create`（body：`ticketId`/`content`/`parentId`）  
+附件：`POST .../ticket/ticketAttachment/create`（body：`ticketId`/`name`/`type`/`url`）  
+影子：`GET .../device/shadow?deviceId=&productId=`（实时状态）  
+倒退：`POST .../remote/device/backward`（body：`deviceId`/`productId`）  
+回桩：`POST .../remote/station/back`（body：`id`/`deviceId`/`productId`/`param`）  
+上传录包：`POST .../remote/bag/upload`；重启：`POST .../remote/device/restart`；重定位：`POST .../remote/map/relocation`  
+登录：`POST /rosiwit-cloud/auth/login`（form：`userName`/`password`/`clientType`）
 
-**故障恢复工具:**
+**影子用法：** 加载 `device-shadow-status`。810 对桩看 `supplyState∈{1,2,3}`（勿看 `is_charge`）。工单对照 `faultCode` 是否仍在 `faults[]`；BMS 评论只写本单相关事实。
 
-| 工具名               | 用途       | 适用场景                       |
-| -------------------- | ---------- | ------------------------------ |
-| `soft_restart`     | 软重启设备 | 设备无响应、卡死               |
-| `relocate`         | 重定位     | 定位丢失（需要 position 参数） |
-| `fault_diagnose`   | 故障诊断   | hasFault=true 时先诊断         |
-| `factory_reset`    | 重置参数   | 参数异常类故障                 |
-| `stop_robot`       | 停止移动   | 碰撞后先停止                   |
-| `backward`         | 倒退       | 碰撞后脱离障碍物               |
-| `move_robot`       | 控制移动   | mode: 0=停止, 5=后退           |
-| `forward_charge`   | 前往充电站 | 需要设备回充时                 |
-| `set_control_mode` | 切换手自动 | mode: 0=手动, 1=自动           |
+#### 影子枚举速查（810）
 
-**工程模式工具:**
+| 字段 | 取值 | 含义 |
+|------|------|------|
+| robotMode | IDLE / TASK / PAUSE / FAULT / MAP / OTA / FACTORY | 空闲 / 任务中 / 暂停 / 错误 / 建图 / OTA / 工厂 |
+| control_mode | MANUAL / AUTO | 手动 / 自动 |
+| supplyState | 0～6 | 0空闲 1前往工作站 2加排水 3仅充电 4退桩 5手动补给 6等待外设关闭；**1/2/3=已对桩供电** |
 
-| 工具名                 | 用途             |
-| ---------------------- | ---------------- |
-| `start_factory_mode` | 开启高级工程模式 |
-| `stop_factory_mode`  | 退出高级工程模式 |
-| `get_factory_params` | 获取工程模式参数 |
-| `set_factory_params` | 设置工程模式参数 |
+非工单查实时状态：直接加载 `device-shadow-status`（需 deviceId + productId）。
 
-**综合工具:**
 
-| 工具名                   | 用途                                   |
-| ------------------------ | -------------------------------------- |
-| `diagnose_and_recover` | 一键诊断恢复（自动判断故障类型并处理） |
-| `handle_collision`     | 碰撞处理（停止→后退→停止）           |
-
-### 2. 远程终端（remote_terminal MCP）
+### 1. 远程终端（remote_terminal MCP）（remote_terminal MCP）
 
 通过 WebSocket 接入设备终端，用于执行需要命令行交互的操作。
 
@@ -110,26 +114,27 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 
 ### 工单处理通用流程（SOP）
 
+有 `ticket_id` / BMS 工单时：**优先走 `ticket-handling`**。先按 `fault-routing.md` 对工单 `faultList` 选型；**设备实时状态读 `get_device_shadow`**。
+
 ```
-接收工单信息 → 确认故障 → 执行恢复 → 验证结果 → 报告
+get_ticket → 改状态5 → get_device_shadow（实时状态）
+  → 按 faultList 路由（evidence/resource/…；碰撞/离线仅当工单本身相关）
+  → 执行对应剧本
+  → create_ticket_comment → 改状态6或3 → 汇报
 ```
 
-**详细步骤:**
+工单与非工单均可按故障类型参考下方运维技能（与路由表一致）：
 
-1. **获取设备详情**: 调用 `get_device_detail(sn)` 获取完整状态
-2. **故障分类与处理**:
+| 故障类型 | 判断条件 | 处理方式 | 对应技能 / 剧本 |
+| -------- | -------- | -------- | --------------- |
+| 碰撞 | 工单含碰撞 / 撞障 | 云端倒退 + 挂录包 | playbook-crash |
+| 设备离线 | 工单本身为离线/断连 | 影子确认 → `soft_restart` → 再读影子 | `device-offline-recovery` |
+| 定位丢失 | 定位类工单 | 影子确认 → `relocate` → 再读影子 | `device-remote-operations` |
+| 无法回站 | 回站/对桩/充电点失败 | 按现象排查 | `device-cannot-back-station` |
+| 电量/水量 | 如 `0x20200004` / 资源类名称 | 先影子确认电量与是否在桩，低电未在桩则云端回桩 | playbook-resource |
+| 定时任务等 | 如 `0x20300005` / 未命中 | 取证转人工（通常不重启/不倒退） | playbook-evidence |
 
-| 故障类型 | 判断条件                  | 处理方式                               | 对应技能                       |
-| -------- | ------------------------- | -------------------------------------- | ------------------------------ |
-| 设备离线 | connect=false             | 调用`soft_restart`，等待10秒后验证   | `device-offline-recovery`    |
-| 定位丢失 | locate=false              | 调用`relocate`（需提供 position）    | `device-remote-operations`   |
-| 碰撞故障 | faultDTOList 含 collision | 停止→后退→停止，验证故障清除         | `device-collision-handling`  |
-| 通用故障 | hasFault=true             | 先`fault_diagnose`，根据诊断结果处理 | `device-remote-operations`   |
-| 无法回站 | 报错"无法返回工作站"      | 按故障现象细分排查                     | `device-cannot-back-station` |
-
-4. **验证**: 操作后再次调用 `get_device_detail` 确认状态恢复正常
-5. **报告**: 汇报处理结果，包含设备SN、故障原因、执行操作、最终状态
-
+工单报告格式见 `ticket-handling`；非工单见下方「响应格式」。
 ## 操作规范
 
 ### 必须遵守
@@ -141,7 +146,6 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 ### 禁止操作
 
 - 不执行未经明确授权的批量变更
-- 不执行 `factory_reset` 除非故障诊断明确要求
 - 不在未查询状态的情况下直接执行恢复操作
 - 不处理非设备类问题（如软件应用、网络架构）——转回零号员工
 - 不暴露敏感设备凭据给无权限人员
@@ -150,9 +154,8 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 
 以下情况必须升级给人工运维:
 
-- 软重启后设备仍离线
-- 重定位后仍定位丢失
-- 故障诊断后无法自动恢复
+- 影子显示持续离线且无法远程恢复
+- 定位丢失且无法远程恢复
 - 设备反复出现同一故障（3次以上）
 - 不在已知故障类型中的新故障
 

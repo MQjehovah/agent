@@ -33,7 +33,7 @@ description: 处理"无法返回工作站"或"前往充电点失败"故障
 | 充电异常 | dock成功但无充电电流 | 确认工作站亮灯；检查极片氧化与接触；测量极片电压、手动充电口电压；重启工作站（GT型号）；检查电池是否故障 |
 
 **操作步骤:**
-1. 调用 `get_device_detail(sn)` 获取当前状态和故障列表
+1. 调用 `get_device_shadow(device_id, product_id)` 获取当前状态和故障列表
 2. 查看 `faultDTOList` 中具体的故障码
 3. 根据故障码对照上表定位原因
 4. 若为硬件问题（极片氧化、液位计卡住等），升级给人工运维
@@ -41,7 +41,7 @@ description: 处理"无法返回工作站"或"前往充电点失败"故障
 ### 故障现象2：不对桩
 
 **操作步骤:**
-1. 调用 `get_device_detail(sn)` 确认设备是否到达桩前点（距工作站1.5~2m）
+1. 调用 `get_device_shadow(device_id, product_id)` 确认设备是否到达桩前点（距工作站1.5~2m）
 2. 检查 Lora 预约状态：
    - 查看故障码中是否包含工作站预约失败相关信息
    - 若预约失败，检查：工作站是否被占用、Lora模块是否故障、HMI中工作站ID与嗅探ID是否一致
@@ -53,7 +53,7 @@ description: 处理"无法返回工作站"或"前往充电点失败"故障
 ### 故障现象3：未返回工作站
 
 **操作步骤:**
-1. 调用 `get_device_detail(sn)` 查看设备当前位姿 `position`
+1. 调用 `get_device_shadow(device_id, product_id)` 查看设备当前位姿 `position`
 2. 调用 `get_cost_map(sn)` 获取感知地图，检查：
    - 是否存在不合理禁行区、虚拟墙
    - 是否存在低于1.1m的门未设置窄门区
@@ -61,7 +61,7 @@ description: 处理"无法返回工作站"或"前往充电点失败"故障
 3. 若设备被困禁行区：
    - 检查设备是否在禁行区内（位置坐标 vs 禁行区范围）
    - 若在禁行区内，需人工移除禁行区或调整任务区域
-4. 尝试调用 `relocate(sn, position)` 重定位后，调用 `forward_charge(sn)` 让设备回充
+4. 尝试 `relocate(device_id, product_id, ...)` 重定位后，调用 `device_back_to_station(device_id, product_id)` 让设备回充
 
 ## 通用排查顺序
 
@@ -71,7 +71,7 @@ description: 处理"无法返回工作站"或"前往充电点失败"故障
 
 ## 必要工具与日志
 
-- `get_device_detail` — 设备状态和故障列表
+- `get_device_shadow` — 设备状态和故障列表
 - `get_chassis_info` — 底盘话题数据
 - `get_clean_info` — 清洁组件数据
 - `get_cost_map` — 感知地图

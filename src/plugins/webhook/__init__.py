@@ -182,7 +182,15 @@ class WebhookPlugin(BasePlugin):
                 }, status_code=400)
 
             task_id = data.get("task_id") or str(uuid.uuid4())
-            session_id = data.get("session_id") or f"webhook_{task_id[:8]}"
+            # 云平台常传 sticky session_id（如 ops_ticket_215264），会把历史
+            # 「权限不足」叙事带进上下文，导致模型拒绝重试子代理。
+            # 默认每任务独立会话；仅 continue_session=true 时才复用传入的 session_id。
+            continue_session = bool(data.get("continue_session"))
+            raw_session = (data.get("session_id") or "").strip()
+            if continue_session and raw_session:
+                session_id = raw_session
+            else:
+                session_id = f"webhook:{task_id}"
             callback_url = data.get("callback_url")
             sync = data.get("sync", False)
 

@@ -29,6 +29,8 @@ class MCPServerConnection:
         self._connected = False
         self._reconnect_attempts = 0
         self._health_check_task: Optional[asyncio.Task] = None
+        # anyio cancel scope 必须在进入它的同一 Task 里退出；跨 Task 关闭会炸 event loop
+        self._owner_task: Optional[asyncio.Task] = None
 
     @property
     def is_connected(self) -> bool:
@@ -41,6 +43,14 @@ class MCPServerConnection:
         command = self.config.get("command", "python")
         args = self.config.get("args", [])
         env = self.config.get("env", {})
+
+        # Windows PATH 常优先命中 WindowsApps\python.exe 桩 → 0xc0000142。
+        # MCP 统一用当前进程解释器，避开商店别名。
+        import sys
+        basename = os.path.basename(str(command)).lower()
+        if basename in {"python", "python3", "python.exe", "python3.exe", "py", "py.exe"}:
+            command = sys.executable
+            logger.debug("MCP [%s] 使用 sys.executable: %s", self.name, command)
 
         resolved_args = [os.path.join(
             self.base_dir, a) if not os.path.isabs(a) else a for a in args]
@@ -93,6 +103,7 @@ class MCPServerConnection:
 
             self._connected = True
             self._reconnect_attempts = 0
+            self._owner_task = asyncio.current_task()
             return True
 
         except asyncio.TimeoutError:
@@ -104,17 +115,40 @@ class MCPServerConnection:
             await self._safe_exit_stack_cleanup()
             return False
 
+    @staticmethod
+    def _is_cross_task_cancel_scope_error(exc: BaseException) -> bool:
+        msg = str(exc).lower()
+        return isinstance(exc, RuntimeError) and (
+            "cancel scope" in msg or "different task" in msg
+        )
+
     async def _safe_exit_stack_cleanup(self):
-        """安全清理 ExitStack"""
-        if self._exit_stack:
-            try:
-                await asyncio.shield(self._exit_stack.__aexit__(None, None, None))
-            except BaseException:
-                pass
-            finally:
-                self._exit_stack = None
-                self.session = None
-                self._connected = False
+        """安全清理 ExitStack（避免跨 Task 退出 anyio cancel scope）。"""
+        stack = self._exit_stack
+        self._exit_stack = None
+        self.session = None
+        self._connected = False
+        owner = self._owner_task
+        self._owner_task = None
+        if stack is None:
+            return
+
+        current = asyncio.current_task()
+        if owner is not None and current is not owner:
+            # owner 已结束也不能在别的 Task 里 aexit，anyio 仍会报错
+            logger.warning(
+                "MCP [%s] 跳过跨 Task 关闭 ExitStack（可能残留子进程，将在进程退出时回收）",
+                self.name,
+            )
+            return
+
+        try:
+            await stack.__aexit__(None, None, None)
+        except BaseException as e:
+            if self._is_cross_task_cancel_scope_error(e):
+                logger.debug("MCP [%s] 忽略 cancel scope 跨 Task 错误", self.name)
+            else:
+                logger.debug("MCP [%s] ExitStack 清理异常: %s", self.name, e)
 
     async def reconnect(self) -> bool:
         """重连MCP服务器"""
@@ -125,6 +159,7 @@ class MCPServerConnection:
         self._reconnect_attempts += 1
         logger.info(f"MCP [{self.name}] 尝试重连 ({self._reconnect_attempts}/{MCP_MAX_RECONNECT_ATTEMPTS})...")
 
+        # 尽量在 owner Task 关闭；否则放弃旧 stack，在当前 Task 新建连接
         await self.close()
         await asyncio.sleep(MCP_RECONNECT_DELAY)
 
@@ -303,12 +338,12 @@ class MCPManager:
             if self._closing:
                 return
             if not await server.health_check():
-                logger.warning(f"MCP [{name}] 健康检查失败，尝试重连")
-                if not await server.reconnect():
-                    logger.error(f"MCP [{name}] 重连失败")
-                else:
-                    self._refresh_tool_defs()
-
+                logger.warning(
+                    "MCP [%s] 健康检查失败，标记断开（避免跨 Task 重连触发 anyio 错误）",
+                    name,
+                )
+                # 不在健康检查 Task 里 reconnect/close，等业务侧调用工具时再连
+                server._connected = False
     def has_tool(self, name: str) -> bool:
         """检查是否有指定工具"""
         return name in self._tool_to_server
