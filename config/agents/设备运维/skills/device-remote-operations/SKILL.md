@@ -1,7 +1,7 @@
 ---
 name: device-remote-operations
 description: |
-  通用远程运维：状态以 get_device_shadow 为准；定位丢失用 relocate；其它按影子分支到专项技能。
+  通用远程运维：状态以 get_device_shadow 为准；仅执行本技能/上游剧本写明的动作，禁止私自扩调用。
 ---
 
 ## 流程
@@ -16,4 +16,5 @@ get_device_shadow(device_id, product_id)
   → 其它 → 取证（device-pull-bag）或转人工
 ```
 
-常用 `remote_operation`：`soft_restart`、`relocate`、`set_control_mode`、`device_backward`、`device_back_to_station`、`upload_bag_file`。状态一律 `get_device_shadow`。
+仅在**本技能步骤或上游 ticket-handling 剧本明确要求**时调用：`soft_restart`、`relocate`、`set_control_mode`、`device_backward`、`device_back_to_station`、`upload_bag_file`。  
+步骤未写到的接口（工程模式、`remote_action`、终端等）禁止私自调用。状态一律 `get_device_shadow`。

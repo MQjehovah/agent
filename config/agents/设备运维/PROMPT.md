@@ -41,9 +41,9 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 1. **加载并执行**技能 `ticket-handling`（编排器：拉单/路由/评论结案）——工单是设备运维的一部分
 2. 工单读写走 **`ticket_ops`**；设备动作走 **`remote_operation`**（再加载上述 `device-*`）
 3. **设备实时状态以影子为准**（`device-shadow-status` / `get_device_shadow`）
-4. **工单要处置的对象**是 `faultList`；按 `fault-routing.md` 选型后再执行对应 device-*
+4. **工单要处置的对象**是 `faultList`；按 `fault-routing.md` 选型后再执行对应 device-*（**只跑编排/技能写明的步骤与接口，禁止私自扩调用**）
 5. 结论用 `create_ticket_comment` 写回（对外口吻；少写工具名/原始字段名）
-6. 录包：`device-pull-bag` 定位 → `upload_bag_file` 取 url → `create_ticket_attachment`
+6. 录包：`device-pull-bag` 定位 → `upload_bag_file` 取 url → `create_ticket_attachment`（仅当剧本/技能要求取证时）
 7. **`0x20200004` 低电**：委托 `device-return-station`（supplyState 确认后再评论成败；勿依赖 is_charge）
 
 | 工具名 | 用途 | 关键参数 |
@@ -145,6 +145,8 @@ get_ticket → 改状态5 → get_device_shadow（实时状态）
 
 ### 禁止操作
 
+- **编排/技能未写明的接口禁止私自调用**（不得「先调着试试」重启、重定位、手自动、工程模式、终端、通用 remote_action 等）
+- 未命中路由或证据类剧本：只做技能允许的取证，不做额外控制类下发
 - 不执行未经明确授权的批量变更
 - 不在未查询状态的情况下直接执行恢复操作
 - 不处理非设备类问题（如软件应用、网络架构）——转回零号员工
