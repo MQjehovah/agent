@@ -97,10 +97,19 @@ BOUND_PLUGIN_SESSION: str = ""
 
 
 async def interactive_mode(agent: Agent, shutdown_event: asyncio.Event, target_agent: str = ""):
-    """交互模式 — target_agent 不为空时直接路由到子代理"""
+    """交互模式 — target_agent 不为空时直接路由到子代理
+
+    无 TTY（Docker -d / systemd）时降级：不启动全屏 TUI，保留
+    web / webhook / scheduler 后台运行，等待退出信号。
+    """
     from channels import MessageRouter
     router = MessageRouter(agent)
     session_id = router.format_session_id("cli", uuid.uuid4().hex[:12])
+
+    if not sys.stdin.isatty():
+        logger.info("无 TTY：交互模式降级为后台运行（web/定时任务持续服务）")
+        await shutdown_event.wait()
+        return
 
     # 工作目录上下文
     ws_context = os.path.basename(os.path.normpath(agent.workspace))
