@@ -346,11 +346,10 @@ class AgentSessionManager:
             i += 1
         return result
 
-    # 触发滑动窗口等重排级压缩的 token 预算比例。低于该比例时只做
-    # tool_collapse（裁剪过期工具输出），不做会丢中间结论的滑窗/折叠。
-    # 说明：实测网关未提供服务端 prefix cache（响应无 cache_hit 字段，
-    # 延迟随上下文线性增长），故“保持前缀稳定换缓存”无法兑现；此时
-    # 每轮上下文越小越快，tool_collapse 无条件执行以控制上下文膨胀。
+    # 触发压缩的 token 预算比例。低于该比例时完全不做任何改写（保持消息前缀
+    # 稳定，从而命中 DeepSeek 自动前缀缓存——命中部分几乎不计费不耗时）。
+    # 接近/超过该水位才执行 tool_collapse 与滑窗/折叠（此时缓存链断裂，接受
+    # 重新累积）。调高该值 = 更早压缩、缓存收益变小但上下文更小。
     COMPRESS_BUDGET_RATIO = float(os.environ.get("COMPRESS_BUDGET_RATIO", "0.6"))
 
     @staticmethod
@@ -361,25 +360,25 @@ class AgentSessionManager:
         tool_defs: list = None,
         session_id: str = "",
     ) -> list:
-        """渐进式上下文压缩（面向无 prefix cache 网关的快速路径）。
+        """渐进式上下文压缩（面向 DeepSeek 自动 prefix cache 的快速路径）。
 
-        tool_collapse 每轮无条件执行：只截断过期的原始工具输出（保留最近
-        N 条完整），这是上下文膨胀的主要来源，且基本不损失决策所需信息。
-        其余重排级压缩（滑窗/折叠/LLM 摘要）仅在接近 token 预算时执行，
-        避免丢 agent 的中间结论。
+        策略：未接近 token 预算时**完全不改写历史消息**（前缀稳定 → DeepSeek
+        自动缓存命中，命中部分几乎不计费不耗时）。仅当接近预算时才执行
+        tool_collapse / 滑窗 / 折叠（此时缓存链断裂，接受重新累积）。
         """
         max_tokens = max_tokens or AgentSessionManager.MAX_CONTEXT_TOKENS
 
-        # 清理孤儿 tool_calls（assistant(tool_calls) 后缺少对应 tool response）
-        messages = AgentSessionManager.cleanup_orphaned_tool_calls(messages)
-
-        # Layer 0: tool_collapse — 每轮截断旧工具结果（零成本，保缓存无意义下的最优解）
-        messages = AgentSessionManager.tool_collapse(messages)
-
-        # 未接近预算：保持现状，不做滑窗/折叠（不丢中间结论）
+        # 未接近预算：保持原样，不做任何压缩（不丢中间结论，也不断前缀）
         token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
         if token_count < max_tokens * AgentSessionManager.COMPRESS_BUDGET_RATIO:
             return messages
+
+        # 接近/超过预算：进入压缩（接受缓存断裂）
+        # 清理孤儿 tool_calls（assistant(tool_calls) 后缺少对应 tool response）
+        messages = AgentSessionManager.cleanup_orphaned_tool_calls(messages)
+
+        # Layer 0: tool_collapse — 截断旧工具结果（零成本，保留最近一轮完整）
+        messages = AgentSessionManager.tool_collapse(messages)
 
         # 超过预算才进入重排级压缩
         # Layer 1: sliding_window — 裁剪到窗口大小

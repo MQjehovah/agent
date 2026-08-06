@@ -69,6 +69,8 @@ class UsageRecord:
     user_id: str = "system"
     session_id: str = ""
     agent_id: str = ""
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
 
 
 @dataclass
@@ -85,6 +87,8 @@ class UsageTracker:
 
         prompt_tokens = usage.get("prompt_tokens", 0) or 0
         completion_tokens = usage.get("completion_tokens", 0) or 0
+        cache_hit = usage.get("prompt_cache_hit_tokens") or 0
+        cache_miss = usage.get("prompt_cache_miss_tokens") or 0
 
         pricing = _resolve_pricing(model)
         cost = (prompt_tokens * pricing["input"] + completion_tokens * pricing["output"]) / 1_000_000
@@ -106,6 +110,8 @@ class UsageTracker:
             user_id=user_id,
             session_id=session_id,
             agent_id=agent_id,
+            cache_hit_tokens=cache_hit,
+            cache_miss_tokens=cache_miss,
         )
         self.records.append(record)
         logger.debug(
@@ -119,12 +125,14 @@ class UsageTracker:
         total_cost = sum(r.cost for r in self.records)
         total_duration = sum(r.duration_ms for r in self.records)
         durations = [r.duration_ms for r in self.records if r.duration_ms > 0]
+        total_hit = sum(r.cache_hit_tokens for r in self.records)
 
         return {
             "total_calls": len(self.records),
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
             "total_tokens": total_prompt + total_completion,
+            "total_cache_hit_tokens": total_hit,
             "total_cost_cny": round(total_cost, 4),
             "total_duration_ms": total_duration,
             "avg_duration_ms": sum(durations) / len(durations) if durations else 0,

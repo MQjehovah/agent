@@ -134,7 +134,9 @@ class LLMClient:
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens
+                    "total_tokens": response.usage.total_tokens,
+                    "prompt_cache_hit_tokens": getattr(response.usage, "prompt_cache_hit_tokens", None),
+                    "prompt_cache_miss_tokens": getattr(response.usage, "prompt_cache_miss_tokens", None),
                 } if response.usage else None
             }
             api_logger.debug(json.dumps(log_data, ensure_ascii=False))
@@ -227,6 +229,8 @@ class LLMClient:
                             self.usage_tracker.track(model, {
                                 "prompt_tokens": response.usage.prompt_tokens,
                                 "completion_tokens": response.usage.completion_tokens,
+                                "prompt_cache_hit_tokens": getattr(response.usage, "prompt_cache_hit_tokens", None),
+                                "prompt_cache_miss_tokens": getattr(response.usage, "prompt_cache_miss_tokens", None),
                             })
                         if self.enable_cache and use_cache:
                             cache = get_cache()
