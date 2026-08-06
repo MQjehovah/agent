@@ -110,17 +110,26 @@ class AgentSessionManager:
         """轻量级压缩：将旧的工具结果截断，零成本不调用 LLM。
 
         策略：
-        - 保留最近 KEEP_RECENT_TOOL_RESULTS 条工具结果不变
+        - 最近一轮（最后一个 assistant tool_calls 之后）的工具结果全部保留完整，
+          避免并行多结果被按条数截断、agent 因缺明细而重复查询
         - 更早的工具结果截断到 TOOL_RESULT_COLLAPSE_CHARS 字符
         """
-        # 先收集所有 tool 消息的索引
         tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
 
-        if len(tool_indices) <= AgentSessionManager.KEEP_RECENT_TOOL_RESULTS:
+        if not tool_indices:
             return messages
 
-        # 需要截断的旧 tool 消息索引（排除最近 N 条）
-        old_tool_indices = tool_indices[:-AgentSessionManager.KEEP_RECENT_TOOL_RESULTS]
+        # 找到最后一个 assistant(tool_calls) 的索引，其后的 tool 结果视为"最近一轮"全部保留
+        protect_from = 0
+        for i, m in enumerate(messages):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                protect_from = i + 1
+
+        old_tool_indices = [i for i in tool_indices if i < protect_from]
+        # 兜底：即使没有 assistant(tool_calls)，也至少保留最近 N 条工具结果
+        keep_recent = AgentSessionManager.KEEP_RECENT_TOOL_RESULTS
+        if not old_tool_indices and len(tool_indices) > keep_recent:
+            old_tool_indices = tool_indices[:-keep_recent]
 
         result = list(messages)  # 浅拷贝
         modified = False
