@@ -20,9 +20,26 @@ MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 5000))
 logger = logging.getLogger("agent.agent")
 
 
+def _get_user_circuit_breaker(agent):
+    """获取当前用户的独立熔断器。
+
+    100+ 并发用户场景：熔断器按 user_id 隔离——单个用户连续工具失败
+    只熔断该用户，不影响其他用户（避免"单用户拖垮全系统"）。
+    无 user_id（如系统内部任务）时回退到 agent 级全局熔断器。
+    """
+    try:
+        uid = _current_run().user_id
+    except Exception:
+        uid = ""
+    if uid:
+        from quality.circuit_breaker import get_circuit_breaker_for
+        return get_circuit_breaker_for(uid)
+    return getattr(agent, '_circuit_breaker', None)
+
+
 async def execute_tool_safe(agent, name: str, args: dict) -> str:
     """带权限检查、沙箱拦截、钩子、熔断器和错误恢复的工具执行"""
-    cb = getattr(agent, '_circuit_breaker', None)
+    cb = _get_user_circuit_breaker(agent)
     if cb and name != "ask_user":
         if not cb.allow_request():
             logger.warning(f"熔断器开启，拒绝工具调用: {name}")
@@ -76,7 +93,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
     try:
         result = await execute_tool(agent, name, args)
 
-        cb = getattr(agent, '_circuit_breaker', None)
+        cb = _get_user_circuit_breaker(agent)
         if cb and name != "ask_user":
             cb.on_success()
 
@@ -107,7 +124,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
         return result
     except Exception as e:
         logger.error(f"工具 {name} 执行失败: {e}")
-        cb = getattr(agent, '_circuit_breaker', None)
+        cb = _get_user_circuit_breaker(agent)
         if cb and name != "ask_user":
             cb.on_failure()
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)

@@ -37,10 +37,50 @@ class CircuitState(Enum):
 
 # 全局熔断器注册表（用于统一查看和管理）
 _registry: dict[str, "CircuitBreaker"] = {}
+# per-key 熔断器（如 per-user）：防止单个用户连续失败拖垮全局
+_per_key_breakers: dict[str, "CircuitBreaker"] = {}
+_per_key_lock = None
 
 
 def get_registry() -> dict[str, "CircuitBreaker"]:
     return dict(_registry)
+
+
+def _get_key_lock():
+    """延迟初始化 per-key 熔断器的锁（模块加载早期避免竞争）"""
+    global _per_key_lock
+    if _per_key_lock is None:
+        import threading
+        _per_key_lock = threading.Lock()
+    return _per_key_lock
+
+
+def get_circuit_breaker_for(key: str, threshold: int = 5, cooldown: float = 30.0) -> "CircuitBreaker":
+    """获取指定 key（如 user_id）的独立熔断器实例。
+
+    每个用户拥有自己的熔断状态：某用户连续工具失败只熔断该用户，
+    不影响其他用户。未带 key 时回退到全局熔断器（向后兼容）。
+    """
+    if not key:
+        return None
+    cb = _per_key_breakers.get(key)
+    if cb is not None:
+        return cb
+    with _get_key_lock():
+        cb = _per_key_breakers.get(key)
+        if cb is None:
+            cb = CircuitBreaker(name=f"user:{key}", threshold=threshold, cooldown=cooldown)
+            _per_key_breakers[key] = cb
+    return cb
+
+
+def reset_circuit_breaker(key: str) -> None:
+    """手动重置某用户的熔断器（或全局）"""
+    if not key:
+        return
+    cb = _per_key_breakers.get(key)
+    if cb:
+        cb.reset()
 
 
 class CircuitBreaker:

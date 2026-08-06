@@ -14,6 +14,9 @@ _DEFAULTS = {
         "endpoints": [],
         "timeout": 300,
         "connect_timeout": 30,
+        "max_concurrency": 32,
+        "rate_limit_cooldown": 30.0,
+        "rate_limit_max_wait": 300.0,
     },
     "session": {
         "ttl_seconds": 3600,
@@ -133,6 +136,18 @@ class Settings:
     @property
     def llm_connect_timeout(self) -> float:
         return float(self.get("llm.connect_timeout", 30))
+
+    @property
+    def llm_max_concurrency(self) -> int:
+        return int(self.get("llm.max_concurrency", 32))
+
+    @property
+    def llm_rate_limit_cooldown(self) -> float:
+        return float(self.get("llm.rate_limit_cooldown", 30.0))
+
+    @property
+    def llm_rate_limit_max_wait(self) -> float:
+        return float(self.get("llm.rate_limit_max_wait", 300.0))
 
     # ---- 环境变量兼容（用于尚未迁移的模块）----
     def _env_get(self, path: str, env_key: str, default: Any = None) -> Any:

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import time
 from datetime import datetime
 from typing import Any
@@ -37,11 +38,30 @@ LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "30"))
 
 class LLMClient:
     def __init__(self, endpoints: list = None, timeout: float = 300,
-                 connect_timeout: float = 30, enable_cache: bool = True):
+                 connect_timeout: float = 30, enable_cache: bool = True,
+                 max_concurrency: int = 0):
         self.enable_cache = enable_cache
         self.usage_tracker = UsageTracker()
         self._timeout = timeout
         self._connect_timeout = connect_timeout
+        # 全局并发信号量：限制同时在途的 LLM 请求数，防止 100+ 用户并发时
+        # 全量打爆上游配额。0/None 表示不限制。
+        self._semaphore = None
+        try:
+            from settings import get_settings
+            mc = max_concurrency or get_settings().llm_max_concurrency
+        except Exception:
+            mc = max_concurrency
+        if mc and mc > 0:
+            self._semaphore = asyncio.Semaphore(int(mc))
+        # 429 退避参数
+        try:
+            from settings import get_settings
+            self._rl_cooldown = get_settings().llm_rate_limit_cooldown
+            self._rl_max_wait = get_settings().llm_rate_limit_max_wait
+        except Exception:
+            self._rl_cooldown = RATE_LIMIT_COOLDOWN
+            self._rl_max_wait = 300.0
 
         # 加载端点
         eps = endpoints or []
@@ -151,7 +171,11 @@ class LLMClient:
 
     def _calculate_retry_delay(self, attempt: int, exception: Exception) -> float:
         if isinstance(exception, RateLimitError):
-            return RATE_LIMIT_COOLDOWN
+            # 429：等待上游冷却 + 随机抖动（0.5x~1.5x），打散并发请求的同步重试，
+            # 避免所有请求同时醒来再次打爆上游（重试风暴）。
+            base = self._rl_cooldown
+            jitter = random.uniform(0.5, 1.5)
+            return min(base * jitter, self._rl_max_wait)
         if isinstance(exception, APITimeoutError):
             return min(RETRY_DELAY_BASE * (2 ** attempt) + 5, RETRY_DELAY_MAX)
         return min(RETRY_DELAY_BASE * (2 ** attempt), RETRY_DELAY_MAX)
@@ -193,6 +217,17 @@ class LLMClient:
         # 本次调用的起始时间（局部变量，并发请求各自持有，避免共享计时字段竞态）
         call_start = time.monotonic()
 
+        # 并发信号量：限制同时在途请求数，配合上游配额防打爆
+        sem = self._semaphore
+        if sem:
+            await sem.acquire()
+        try:
+            return await self._chat_inner(messages, tools, stream, use_cache, call_start)
+        finally:
+            if sem:
+                sem.release()
+
+    async def _chat_inner(self, messages, tools, stream, use_cache, call_start):
         # 每端点重试次数
         retries_per_ep = MULTI_ENDPOINT_RETRIES if self._is_multi else MAX_RETRIES_PER_ENDPOINT
         last_exception = None
@@ -306,6 +341,17 @@ class LLMClient:
 
     async def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] = None):
         """流式聊天，逐 token 返回，支持多端点 failover"""
+        sem = self._semaphore
+        if sem:
+            await sem.acquire()
+        try:
+            async for item in self._stream_chat_inner(messages, tools):
+                yield item
+        finally:
+            if sem:
+                sem.release()
+
+    async def _stream_chat_inner(self, messages, tools):
         retries_per_ep = MULTI_ENDPOINT_RETRIES if self._is_multi else MAX_RETRIES_PER_ENDPOINT
         last_exception = None
 

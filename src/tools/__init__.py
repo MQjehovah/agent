@@ -1,3 +1,7 @@
+import asyncio
+import concurrent.futures
+import contextlib
+import contextvars
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -5,6 +9,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("agent.tools")
+
+# 共享工具线程池：所有工具的执行都卸载到这里，避免每次调用新建线程。
+# 100+ 用户并发工具调用时，线程池限制 CPU/IO 占用总量，同时不阻塞主事件循环。
+_TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=int(os.environ.get("TOOL_EXECUTOR_WORKERS", "32")),
+    thread_name_prefix="tool-exec",
+)
 
 
 @dataclass
@@ -93,6 +104,8 @@ class ToolRegistry:
         self._tools: dict[str, BuiltinTool] = {}
         self._workspace: str = ""
         self._temp_dir: str = ""
+        # 工具超时（秒）：防止工具死循环/挂起卡住 worker
+        self._tool_timeout: float = 180.0
 
     @property
     def workspace(self) -> str:
@@ -144,7 +157,7 @@ class ToolRegistry:
 
         tool = self._tools[name]
         try:
-            result = await tool.execute(**args)
+            result = await self._execute_in_worker(tool, name, args)
             return result
         except TypeError as e:
             logger.error(f"工具 '{name}' 参数错误: {e}")
@@ -152,6 +165,41 @@ class ToolRegistry:
         except Exception as e:
             logger.error(f"工具 '{name}' 执行失败: {e}")
             return f"错误: 工具 '{name}' 执行失败 - {e}"
+
+    async def _execute_in_worker(self, tool: BuiltinTool, name: str, args: dict) -> str:
+        """在线程池中执行工具，避免同步阻塞卡死事件循环。
+
+        背景：多数工具（file/grep/glob/code_search/edit/batch_edit）内部是同步
+        IO/CPU 密集（整文件读入、os.walk、subprocess.run、tree-sitter 解析）。
+        若在主事件循环内直接 await，一个用户的工具操作会冻结所有用户的
+        agent.run（LLM 流式响应、其他工具全部停摆）。
+
+        方案：把 async 工具的协程连同当前 contextvars 上下文一起，丢进共享线程池的
+        独立事件循环执行。这样：
+          - 同步阻塞跑在 ThreadPoolExecutor（默认 32 线程），不占事件循环
+          - 工具内部若真正 await 网络，独立循环内照常工作
+          - contextvars（user_id/run_id/session）通过 copy_context 保留，身份不串号
+        """
+        loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
+
+        def _run_sync() -> str:
+            # 在线程内创建一个临时事件循环，运行 async 工具协程
+            inner = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(inner)
+                coro = tool.execute(**args)
+                return inner.run_until_complete(coro)
+            finally:
+                with contextlib.suppress(Exception):
+                    inner.close()
+                asyncio.set_event_loop(None)
+
+        future = loop.run_in_executor(
+            _TOOL_EXECUTOR,
+            lambda: ctx.run(_run_sync),
+        )
+        return await asyncio.wait_for(future, timeout=self._tool_timeout)
 
     def list_tools(self) -> list[str]:
         return list(self._tools.keys())

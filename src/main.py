@@ -394,8 +394,6 @@ async def cleanup(plugin_manager, agent):
 
 
 async def main():
-    shutdown_event = asyncio.Event()
-
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", "-c", default="config",
@@ -440,6 +438,15 @@ async def main():
         help="要执行的任务内容",
     )
     args = parser.parse_args()
+
+    await _main_with_args(args)
+
+
+async def _main_with_args(args):
+    """单进程主流程（main 解析参数后执行）。单端口单入口：web/webhook/钉钉
+    全部路由在同一个 FastAPI 端口上，靠单事件循环 + 工具线程池实现真并发，
+    不做多进程多端口（入口统一为 --web-port）。"""
+    shutdown_event = asyncio.Event()
 
     # ── 路径解析：当前目录 → 用户目录/agent → 自动创建 ──────────
     _user_agent_dir = os.path.join(os.path.expanduser("~"), "agent")
