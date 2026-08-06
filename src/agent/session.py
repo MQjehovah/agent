@@ -337,6 +337,13 @@ class AgentSessionManager:
             i += 1
         return result
 
+    # 触发滑动窗口等重排级压缩的 token 预算比例。低于该比例时只做
+    # tool_collapse（裁剪过期工具输出），不做会丢中间结论的滑窗/折叠。
+    # 说明：实测网关未提供服务端 prefix cache（响应无 cache_hit 字段，
+    # 延迟随上下文线性增长），故“保持前缀稳定换缓存”无法兑现；此时
+    # 每轮上下文越小越快，tool_collapse 无条件执行以控制上下文膨胀。
+    COMPRESS_BUDGET_RATIO = float(os.environ.get("COMPRESS_BUDGET_RATIO", "0.6"))
+
     @staticmethod
     async def compress_if_needed(
         messages: list,
@@ -345,26 +352,32 @@ class AgentSessionManager:
         tool_defs: list = None,
         session_id: str = "",
     ) -> list:
-        """四层渐进式上下文压缩。
+        """渐进式上下文压缩（面向无 prefix cache 网关的快速路径）。
 
-        Layer 0: sliding_window — 滑动窗口，始终裁剪到最近 N 条，零成本
-        Layer 1: tool_collapse — 截断旧工具结果，零成本（仅 tool 角色）
-        Layer 2: context_collapse — 折叠超长文本块，零成本（兜底 assistant/user 的长回复）
-        Layer 3: LLM 压缩 — 超预算时调用模型生成结构化摘要，有成本
+        tool_collapse 每轮无条件执行：只截断过期的原始工具输出（保留最近
+        N 条完整），这是上下文膨胀的主要来源，且基本不损失决策所需信息。
+        其余重排级压缩（滑窗/折叠/LLM 摘要）仅在接近 token 预算时执行，
+        避免丢 agent 的中间结论。
         """
         max_tokens = max_tokens or AgentSessionManager.MAX_CONTEXT_TOKENS
-        token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
 
         # 清理孤儿 tool_calls（assistant(tool_calls) 后缺少对应 tool response）
         messages = AgentSessionManager.cleanup_orphaned_tool_calls(messages)
 
-        # Layer 0: sliding_window — 始终裁剪到窗口大小
+        # Layer 0: tool_collapse — 每轮截断旧工具结果（零成本，保缓存无意义下的最优解）
+        messages = AgentSessionManager.tool_collapse(messages)
+
+        # 未接近预算：保持现状，不做滑窗/折叠（不丢中间结论）
+        token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
+        if token_count < max_tokens * AgentSessionManager.COMPRESS_BUDGET_RATIO:
+            return messages
+
+        # 超过预算才进入重排级压缩
+        # Layer 1: sliding_window — 裁剪到窗口大小
         non_system = [m for m in messages if m.get("role") != "system"]
         if len(non_system) > AgentSessionManager.SLIDING_WINDOW_SIZE:
             messages = AgentSessionManager.sliding_window(messages)
 
-        # Layer 1: tool_collapse — 每轮无条件截断旧工具结果
-        messages = AgentSessionManager.tool_collapse(messages)
         token_count = AgentSessionManager.estimate_tokens(messages, tool_defs)
 
         if token_count < max_tokens * 0.65:

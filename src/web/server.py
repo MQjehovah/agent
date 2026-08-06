@@ -503,7 +503,14 @@ class WebServer:
                             session_id=session_id, run_id=stream_run_id,
                             user_id=web_user_id, user_name=web_user_name,
                         )
-                        resp_text = result.result if result and hasattr(result, "result") else ""
+                        # router.route 对非 cli 渠道返回字符串（result.result），
+                        # 对 cli 渠道返回 AgentResult —— 两种情况都要兜住
+                        if isinstance(result, str):
+                            resp_text = result
+                        elif result and hasattr(result, "result"):
+                            resp_text = result.result
+                        else:
+                            resp_text = ""
                         if full_response:
                             resp_text = "".join(full_response)
                         await q.put(("done", resp_text))
