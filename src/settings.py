@@ -17,6 +17,7 @@ _DEFAULTS = {
         "max_concurrency": 32,
         "rate_limit_cooldown": 30.0,
         "rate_limit_max_wait": 300.0,
+        "reasoning_effort": "high",
     },
     "session": {
         "ttl_seconds": 3600,
@@ -148,6 +149,13 @@ class Settings:
     @property
     def llm_rate_limit_max_wait(self) -> float:
         return float(self.get("llm.rate_limit_max_wait", 300.0))
+
+    @property
+    def llm_reasoning_effort(self) -> str:
+        """DeepSeek/GLM 推理强度: high/medium/low/空(不设置)。
+        调低可显著提升生成速率(如 high ~100tok/s → low 更高)，但会削弱深度思考能力。
+        """
+        return str(self.get("llm.reasoning_effort", "high"))
 
     # ---- 环境变量兼容（用于尚未迁移的模块）----
     def _env_get(self, path: str, env_key: str, default: Any = None) -> Any:

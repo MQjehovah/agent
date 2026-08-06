@@ -59,9 +59,11 @@ class LLMClient:
             from settings import get_settings
             self._rl_cooldown = get_settings().llm_rate_limit_cooldown
             self._rl_max_wait = get_settings().llm_rate_limit_max_wait
+            self._reasoning_effort = get_settings().llm_reasoning_effort
         except Exception:
             self._rl_cooldown = RATE_LIMIT_COOLDOWN
             self._rl_max_wait = 300.0
+            self._reasoning_effort = "high"
 
         # 加载端点
         eps = endpoints or []
@@ -252,7 +254,8 @@ class LLMClient:
                 if tools:
                     params["tools"] = tools
                 if any(k in (model or "").lower() for k in ("deepseek", "glm")):
-                    params["reasoning_effort"] = "high"
+                    if self._reasoning_effort:
+                        params["reasoning_effort"] = self._reasoning_effort
                     params["extra_body"] = {"thinking": {"type": "enabled"}}
 
                 self._log_request(params)
@@ -369,6 +372,10 @@ class LLMClient:
             }
             if tools:
                 params["tools"] = tools
+            if any(k in (ep["model"] or "").lower() for k in ("deepseek", "glm")):
+                if self._reasoning_effort:
+                    params["reasoning_effort"] = self._reasoning_effort
+                params["extra_body"] = {"thinking": {"type": "enabled"}}
 
             self._log_request({**params, "model": ep["model"]})
             # 本次流式调用的起始时间（局部变量，并发隔离）
