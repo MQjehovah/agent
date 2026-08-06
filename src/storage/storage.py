@@ -158,6 +158,24 @@ class Storage:
 
                 CREATE INDEX IF NOT EXISTS idx_kanban_column ON kanban_tasks(column, priority, created_at);
 
+                CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    cron TEXT NOT NULL,
+                    task TEXT NOT NULL,
+                    user_id TEXT DEFAULT '',
+                    user_name TEXT DEFAULT '',
+                    enabled INTEGER DEFAULT 1,
+                    last_run_at TEXT,
+                    last_result TEXT,
+                    last_error TEXT,
+                    run_count INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_scheduled_user ON scheduled_tasks(user_id, enabled);
+
                 CREATE TABLE IF NOT EXISTS rbac_roles (
                     name TEXT PRIMARY KEY,
                     description TEXT DEFAULT '',

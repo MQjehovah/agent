@@ -63,6 +63,7 @@
                         <span class="main-tab" data-tab="workspace">Workspace</span>
                         <span class="main-tab" data-tab="logs">Logs</span>
                         <span class="main-tab" data-tab="users">Users</span>
+                        <span class="main-tab" data-tab="scheduler">Scheduler</span>
                         <span class="main-tab" data-tab="memory">Memory</span>
                     </div>
                     <span class="main-path" id="mainPath"></span>
@@ -83,6 +84,31 @@
                             <div class="ws-card-title">Agents</div>
                             <div class="ws-card-body" id="wsAgents"><div class="empty-state">Loading...</div></div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Scheduler -->
+                <div class="main-body" id="schedulerBody" style="display:none">
+                    <div class="kanban-toolbar">
+                        <button class="kanban-toolbar-btn" id="schedulerRefreshBtn">Refresh</button>
+                        <button class="kanban-toolbar-btn kanban-toolbar-primary" id="schedulerNewBtn">+ New Schedule</button>
+                    </div>
+                    <div class="scheduler-table-wrap">
+                        <table class="scheduler-table">
+                            <thead>
+                                <tr>
+                                    <th>名称</th>
+                                    <th>Cron</th>
+                                    <th>任务内容</th>
+                                    <th>状态</th>
+                                    <th>最近执行</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="schedulerTableBody">
+                                <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -337,6 +363,22 @@
                 <div class="modal-footer">
                     <button class="modal-btn" id="kanbanModalCancel">Cancel</button>
                     <button class="modal-btn modal-btn-primary" id="kanbanModalSubmit">Create</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scheduler Modal -->
+        <div class="modal-overlay" id="schedulerModal" style="display:none">
+            <div class="modal-box">
+                <div class="modal-header" id="schedulerModalTitle">New Schedule</div>
+                <div class="modal-body">
+                    <label class="modal-label">名称 <input id="schedulerInputName" class="modal-input" placeholder="任务名称" /></label>
+                    <label class="modal-label">Cron 表达式 <input id="schedulerInputCron" class="modal-input" placeholder="0 9 * * * (分 时 日 月 周)" /></label>
+                    <label class="modal-label">任务内容 <textarea id="schedulerInputTask" class="modal-input" rows="3" placeholder="到点执行什么任务"></textarea></label>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="schedulerModalCancel">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="schedulerModalSubmit">Create</button>
                 </div>
             </div>
         </div>

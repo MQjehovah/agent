@@ -85,6 +85,7 @@
     const sessionsBody = $('#sessionsBody');
     const kanbanBody = $('#kanbanBody');
     const usersBody = $('#usersBody');
+    const schedulerBody = $('#schedulerBody');
     const memoryBody = $('#memoryBody');
     const wsStatus = $('#wsStatus'), wsMemory = $('#wsMemory');
     const chatMsgs = $('#chatMessages'), chatIn = $('#chatInput'), btnSend = $('#sendBtn');
@@ -124,6 +125,7 @@
             t.addEventListener('click', () => switchTab(t.dataset.tab));
         });
         bindKanban();
+        bindScheduler();
     }
 
     function switchTab(tab) {
@@ -136,8 +138,10 @@
         logsBody.style.display = tab === 'logs' ? 'flex' : 'none';
         usersBody.style.display = tab === 'users' ? 'flex' : 'none';
         memoryBody.style.display = tab === 'memory' ? 'flex' : 'none';
+        schedulerBody.style.display = tab === 'scheduler' ? 'flex' : 'none';
         if (tab === 'chat') { chatIn.focus(); chatMsgs.scrollTop = chatMsgs.scrollHeight; }
         if (tab === 'kanban') { fetchKanban(); }
+        if (tab === 'scheduler') { fetchScheduler(); }
         if (tab === 'sessions') { fetchSessionAgents(); fetchAgentSessions(); }
         if (tab === 'users') { rbacFetchAll(); }
         if (tab === 'memory') { fetchMemories(); fetchMemProposals(); }
@@ -284,6 +288,122 @@
                 if (id && column) moveKanbanTask(id, column);
             });
         });
+    }
+
+    // ==================== SCHEDULER ====================
+    let schedulerEditId = null;
+
+    function bindScheduler() {
+        $('#schedulerRefreshBtn').addEventListener('click', fetchScheduler);
+        $('#schedulerNewBtn').addEventListener('click', () => showSchedulerModal(''));
+        $('#schedulerModalCancel').addEventListener('click', hideSchedulerModal);
+        $('#schedulerModalSubmit').addEventListener('click', submitScheduler);
+    }
+
+    async function fetchScheduler() {
+        const body = $('#schedulerTableBody');
+        try {
+            const r = await apiFetch(API + '/api/scheduler/tasks');
+            if (!r.ok) {
+                body.innerHTML = '<tr><td colspan="6" class="empty-state">HTTP ' + r.status + '</td></tr>';
+                return;
+            }
+            const d = await r.json();
+            const tasks = d.tasks || [];
+            if (!tasks.length) {
+                body.innerHTML = '<tr><td colspan="6" class="empty-state">No scheduled tasks</td></tr>';
+                return;
+            }
+            body.innerHTML = tasks.map(t => {
+                const on = t.enabled;
+                let h = '<tr>';
+                h += '<td>' + esc(t.name) + (t.static ? ' <span class="task-source">static</span>' : '') + '</td>';
+                h += '<td><code>' + esc(t.cron) + '</code></td>';
+                h += '<td title="' + esc(t.task) + '">' + esc((t.task || '').substring(0, 60)) + '</td>';
+                h += '<td><span class="kanban-card-priority ' + (on ? 'p1' : 'p3') + '">' + (on ? '启用' : '停用') + '</span></td>';
+                let last = t.last_run_at ? fmt(t.last_run_at) : '—';
+                if (t.last_error) last += ' <span style="color:var(--accent-red,#e5484d)">✗</span>';
+                h += '<td>' + last + (t.run_count ? ' (' + t.run_count + '次)' : '') + '</td>';
+                h += '<td class="scheduler-actions">';
+                if (!t.static) {
+                    h += '<button class="kanban-toolbar-btn" data-sched-edit="' + esc(t.id) + '" title="编辑">Edit</button>';
+                    h += '<button class="kanban-toolbar-btn" data-sched-toggle="' + esc(t.id) + '" title="启停">' + (on ? '停' : '启') + '</button>';
+                    h += '<button class="kanban-toolbar-btn" data-sched-del="' + esc(t.id) + '" title="删除">Delete</button>';
+                } else {
+                    h += '<span style="color:var(--text-muted)">配置文件任务</span>';
+                }
+                h += '</td></tr>';
+                return h;
+            }).join('');
+
+            body.querySelectorAll('[data-sched-edit]').forEach(b => {
+                b.addEventListener('click', () => {
+                    const t = tasks.find(x => x.id === b.dataset.schedEdit);
+                    if (t) showSchedulerModal(t);
+                });
+            });
+            body.querySelectorAll('[data-sched-toggle]').forEach(b => {
+                b.addEventListener('click', async () => {
+                    const t = tasks.find(x => x.id === b.dataset.schedToggle);
+                    if (!t) return;
+                    const r = await apiFetch(API + '/api/scheduler/tasks/' + t.id, {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({enabled: !t.enabled}),
+                    });
+                    if (r.ok) fetchScheduler();
+                });
+            });
+            body.querySelectorAll('[data-sched-del]').forEach(b => {
+                b.addEventListener('click', async () => {
+                    const t = tasks.find(x => x.id === b.dataset.schedDel);
+                    if (!t || !confirm('删除定时任务: ' + t.name + ' ?')) return;
+                    const r = await apiFetch(API + '/api/scheduler/tasks/' + t.id, {method: 'DELETE'});
+                    if (r.ok) fetchScheduler();
+                });
+            });
+        } catch (e) {
+            body.innerHTML = '<tr><td colspan="6" class="empty-state">Fetch failed: ' + esc(e.message) + '</td></tr>';
+        }
+    }
+
+    function showSchedulerModal(task) {
+        schedulerEditId = task ? task.id : null;
+        $('#schedulerModalTitle').textContent = task ? 'Edit Schedule' : 'New Schedule';
+        $('#schedulerInputName').value = task ? (task.name || '') : '';
+        $('#schedulerInputCron').value = task ? (task.cron || '') : '';
+        $('#schedulerInputTask').value = task ? (task.task || '') : '';
+        $('#schedulerModalSubmit').textContent = task ? 'Save' : 'Create';
+        $('#schedulerModal').style.display = 'flex';
+    }
+
+    function hideSchedulerModal() {
+        $('#schedulerModal').style.display = 'none';
+        schedulerEditId = null;
+    }
+
+    async function submitScheduler() {
+        const name = $('#schedulerInputName').value.trim();
+        const cron = $('#schedulerInputCron').value.trim();
+        const task = $('#schedulerInputTask').value.trim();
+        if (!cron || !task) { alert('Cron 与任务内容必填'); return; }
+        const payload = {name: name || '未命名', cron: cron, task: task};
+        let r;
+        if (schedulerEditId) {
+            r = await apiFetch(API + '/api/scheduler/tasks/' + schedulerEditId, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+        } else {
+            r = await apiFetch(API + '/api/scheduler/tasks', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+        }
+        if (r.ok) { hideSchedulerModal(); fetchScheduler(); }
+        else { const d = await r.json().catch(() => ({})); alert(d.error || '保存失败'); }
     }
 
     async function fetchKanban() {

@@ -682,6 +682,112 @@ class WebServer:
             ok = self._kanban.move_task(task_id, data["column"])
             return {"success": ok}
 
+        # ===== Scheduler API（定时任务管理） =====
+        def _scheduler_plugin():
+            if not self.agent or not self.agent.plugin_manager:
+                return None
+            return self.agent.plugin_manager.get_plugin("scheduler")
+
+        @self._app.get("/api/scheduler/tasks")
+        async def scheduler_tasks(request: Request):
+            sp = _scheduler_plugin()
+            if not sp:
+                return JSONResponse({"error": "Scheduler not available", "code": 503}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+                uid = f"web:{auth['uid']}"
+                db_tasks = sp.list_db_tasks(user_id=uid)
+                visible = [
+                    {"id": t.get("id", ""), "name": t.get("name", ""),
+                     "cron": t.get("cron", ""), "task": t.get("task", ""),
+                     "enabled": bool(t.get("enabled", True)), "static": t.get("static", False),
+                     "user_id": t.get("user_id", ""), "user_name": t.get("user_name", ""),
+                     "last_run_at": t.get("last_run_at"), "last_result": t.get("last_result"),
+                     "last_error": t.get("last_error"), "run_count": t.get("run_count", 0),
+                     "created_at": t.get("created_at"), "updated_at": t.get("updated_at")}
+                    for t in sp.schedules
+                ] + [
+                    {"id": t.get("id", ""), "name": t.get("name", ""),
+                     "cron": t.get("cron", ""), "task": t.get("task", ""),
+                     "enabled": bool(t.get("enabled", True)), "static": False,
+                     "user_id": t.get("user_id", ""), "user_name": t.get("user_name", ""),
+                     "last_run_at": t.get("last_run_at"), "last_result": t.get("last_result"),
+                     "last_error": t.get("last_error"), "run_count": t.get("run_count", 0),
+                     "created_at": t.get("created_at"), "updated_at": t.get("updated_at")}
+                    for t in db_tasks
+                ]
+                return {"tasks": visible}
+            except Exception as e:
+                logger.exception("Scheduler list error")
+                return JSONResponse({"error": str(e), "code": 500}, status_code=500)
+
+        @self._app.post("/api/scheduler/tasks")
+        async def scheduler_create(request: Request):
+            sp = _scheduler_plugin()
+            if not sp:
+                return JSONResponse({"error": "Scheduler not available"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+                data = await request.json()
+                if not data or not data.get("cron") or not data.get("task"):
+                    return JSONResponse({"error": "Missing cron/task"}, status_code=400)
+                rec = await sp.execute_tool("scheduler_create", {
+                    "name": data.get("name", "未命名"),
+                    "cron": data["cron"],
+                    "task": data["task"],
+                    "_local_user_id": f"web:{auth['uid']}",
+                })
+                d = json.loads(rec)
+                if not d.get("success"):
+                    return JSONResponse({"error": d.get("error", "创建失败")}, status_code=400)
+                return d
+            except Exception as e:
+                logger.exception("Scheduler create error")
+                return JSONResponse({"error": str(e), "code": 500}, status_code=500)
+
+        @self._app.patch("/api/scheduler/tasks/{task_id}")
+        async def scheduler_update(task_id: str, request: Request):
+            sp = _scheduler_plugin()
+            if not sp:
+                return JSONResponse({"error": "Scheduler not available"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+                data = await request.json()
+                payload = {"_local_user_id": f"web:{auth['uid']}", "task_id": task_id}
+                if "name" in data:
+                    payload["name"] = data["name"]
+                if "cron" in data:
+                    payload["cron"] = data["cron"]
+                if "task" in data:
+                    payload["task"] = data["task"]
+                if "enabled" in data:
+                    payload["enabled"] = bool(data["enabled"])
+                rec = await sp.execute_tool("scheduler_update", payload)
+                d = json.loads(rec)
+                if not d.get("success"):
+                    return JSONResponse({"error": d.get("error", "更新失败")}, status_code=404)
+                return d
+            except Exception as e:
+                logger.exception("Scheduler update error")
+                return JSONResponse({"error": str(e), "code": 500}, status_code=500)
+
+        @self._app.delete("/api/scheduler/tasks/{task_id}")
+        async def scheduler_delete(task_id: str, request: Request):
+            sp = _scheduler_plugin()
+            if not sp:
+                return JSONResponse({"error": "Scheduler not available"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+                rec = await sp.execute_tool("scheduler_delete", {
+                    "_local_user_id": f"web:{auth['uid']}", "task_id": task_id})
+                d = json.loads(rec)
+                if not d.get("success"):
+                    return JSONResponse({"error": "删除失败"}, status_code=404)
+                return d
+            except Exception as e:
+                logger.exception("Scheduler delete error")
+                return JSONResponse({"error": str(e), "code": 500}, status_code=500)
+
         # 兼容旧 API
         @self._app.get("/api/panel")
         async def panel_list_compat():

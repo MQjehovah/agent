@@ -326,7 +326,7 @@ async def autonomous_mode(agent: Agent, shutdown_event: asyncio.Event, args):
 
         scheduler_plugin = plugin_manager.get_plugin("scheduler")
         if scheduler_plugin:
-            async def _schedule_to_perceiver(schedule_task: str):
+            async def _schedule_to_perceiver(schedule_task: str, user_id: str = "", user_name: str = ""):
                 await perceiver.handle_schedule({"name": "定时任务", "task": schedule_task})
             scheduler_plugin._agent_executor = _schedule_to_perceiver
             scheduler_plugin.start()
@@ -617,9 +617,16 @@ async def _main_with_args(args):
 
             scheduler_plugin = plugin_manager.get_plugin("scheduler")
             if scheduler_plugin:
-                scheduler_plugin._agent_executor = lambda task: router.route(
-                    task, channel="scheduler",
-                )
+                async def _schedule_to_router(schedule_task: str, user_id: str = "", user_name: str = ""):
+                    sid = "scheduler"
+                    if user_id:
+                        sid = f"scheduler:{user_id}"
+                    return await router.route(
+                        schedule_task, channel="scheduler", session_id=sid,
+                        user_id=user_id or "scheduler:admin",
+                        user_name=user_name or "定时任务",
+                    )
+                scheduler_plugin._agent_executor = _schedule_to_router
                 if not scheduler_plugin._started:
                     scheduler_plugin.start()
 
