@@ -47,10 +47,15 @@ class HookManager:
 
         回调匹配规则：注册时 run_id 为 None（全局回调）始终执行；
         否则仅当注册 run_id 等于当前 run 作用域 run_id 时执行。
+
+        并发安全：先对事件回调列表做快照再迭代。`await` 让出事件循环期间
+        其他请求可能 register/unregister 同一列表，若直接迭代原列表会抛
+        `RuntimeError: list changed size during iteration`（100 并发流式必现）。
         """
         current_rid = get_run_id()
         context = HookContext(event=event, run_id=current_rid, **kwargs)
-        for callback, cb_run_id in self._hooks.get(event, []):
+        handlers = list(self._hooks.get(event, []))
+        for callback, cb_run_id in handlers:
             # 全局回调（cb_run_id is None）或 run_id 匹配的回调才触发
             if cb_run_id is not None and cb_run_id != current_rid:
                 continue

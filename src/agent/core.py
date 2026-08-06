@@ -822,11 +822,17 @@ class Agent:
         hook_token = set_run_id(ctx.run_id) if not get_run_id() else None
 
         # 会话管理：复用 session_id 保持历史消息
+        sess = None
+        sess_lock = None
         if session_id and self.session_manager:
             sess = await self.session_manager.create_session(
                 session_id=session_id, system_prompt=self.system_prompt or "",
                 agent_id=self.agent_id,
             )
+            # 同一 session 的并发 run 串行化：消息追加与压缩写回不允许交错
+            sess_lock = sess._lock
+            if sess_lock:
+                await sess_lock.acquire()
             if self.parent_agent:
                 if sess.messages:
                     old_count = len(sess.messages)
@@ -845,6 +851,8 @@ class Agent:
                 from agent.loop import run_impl_reflective; return await run_impl_reflective(self, task, session_id, user_id, user_name, inherited)
             from agent.loop import run_impl; return await run_impl(self, task, session_id, user_id, user_name, inherited)
         finally:
+            if sess_lock:
+                sess_lock.release()
             if not self.parent_agent:
                 reset_ask_user_mode(_ask_token)
             if hook_token is not None:

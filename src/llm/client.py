@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Any
 
@@ -189,7 +190,8 @@ class LLMClient:
                 api_logger.debug("使用缓存响应")
                 return cached_response
 
-        self.usage_tracker.start_timer()
+        # 本次调用的起始时间（局部变量，并发请求各自持有，避免共享计时字段竞态）
+        call_start = time.monotonic()
 
         # 每端点重试次数
         retries_per_ep = MULTI_ENDPOINT_RETRIES if self._is_multi else MAX_RETRIES_PER_ENDPOINT
@@ -231,7 +233,7 @@ class LLMClient:
                                 "completion_tokens": response.usage.completion_tokens,
                                 "prompt_cache_hit_tokens": getattr(response.usage, "prompt_cache_hit_tokens", None),
                                 "prompt_cache_miss_tokens": getattr(response.usage, "prompt_cache_miss_tokens", None),
-                            })
+                            }, start=call_start)
                         if self.enable_cache and use_cache:
                             cache = get_cache()
                             cache.set(messages, tools, model, response)
@@ -323,7 +325,8 @@ class LLMClient:
                 params["tools"] = tools
 
             self._log_request({**params, "model": ep["model"]})
-            self.usage_tracker.start_timer()
+            # 本次流式调用的起始时间（局部变量，并发隔离）
+            stream_start = time.monotonic()
 
             try:
                 stream, first_chunk = await self._create_stream(
@@ -360,7 +363,7 @@ class LLMClient:
                 self.usage_tracker.track(ep["model"], {
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
-                }, is_stream=True)
+                }, is_stream=True, start=stream_start)
 
             self._log_stream_response(total_tokens, chunks)
             return

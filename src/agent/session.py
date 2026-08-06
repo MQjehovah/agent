@@ -25,6 +25,9 @@ class AgentSession:
     user_id: str = ""
     user_name: str = ""
     role: str = ""
+    # 同一 session 的并发 run 串行化锁（多设备/多 tab 共用 session_id 时，
+    # 防止消息追加与压缩写回互相交错导致消息错乱）
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def __post_init__(self):
         if self.system_prompt:

@@ -76,12 +76,18 @@ class UsageRecord:
 @dataclass
 class UsageTracker:
     records: list = field(default_factory=list)
-    _call_start: float = 0.0
 
-    def start_timer(self):
-        self._call_start = time.monotonic()
+    def track(self, model: str, usage: dict, is_stream: bool = False, start: float = 0.0):
+        """记录一次用量。
 
-    def track(self, model: str, usage: dict, is_stream: bool = False):
+        Args:
+            model: 模型名
+            usage: prompt/completion/cache 统计
+            is_stream: 是否流式
+            start: 本次调用起始的 time.monotonic() 值（由调用方在 await 网络
+                请求前记录，传入此处计算耗时）。显式传入避免 LLMClient 共享
+                单值计时字段在并发请求下互相覆盖。
+        """
         if not usage:
             return
 
@@ -94,9 +100,8 @@ class UsageTracker:
         cost = (prompt_tokens * pricing["input"] + completion_tokens * pricing["output"]) / 1_000_000
 
         duration_ms = 0.0
-        if self._call_start > 0:
-            duration_ms = (time.monotonic() - self._call_start) * 1000
-            self._call_start = 0.0
+        if start > 0:
+            duration_ms = (time.monotonic() - start) * 1000
 
         user_id, session_id, agent_id = _resolve_attribution()
         record = UsageRecord(
