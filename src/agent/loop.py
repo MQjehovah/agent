@@ -13,6 +13,19 @@ from agent.executor import execute_tool_safe
 logger = logging.getLogger("agent.agent")
 
 
+def _should_stream(session) -> bool:
+    """判断当前会话渠道是否应流式返回。
+
+    web/cli（前端 SSE / TUI 实时展示）→ 流式；
+    钉钉/飞书/webhook 等只能一次性发整条消息的渠道 → 非流式返回。
+    session_id 格式为 {channel}:{id}（见 MessageRouter.format_session_id）。
+    """
+    sid = getattr(session, "session_id", "") or ""
+    channel = sid.split(":", 1)[0] if sid else ""
+    # 仅 web/cli 支持逐 token 流式推送；其余渠道（钉钉/飞书/webhook）一次返回
+    return channel in ("web", "cli", "")
+
+
 async def think(agent, messages) -> dict:
     """调用 LLM 思考（非流式）"""
     try:
@@ -318,7 +331,12 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                 except Exception:
                     pass
 
-                response = await think(agent, think_messages)
+                # 流式返回：web/cli 渠道流式（逐 token 推送 SSE/TUI），
+                # 钉钉等渠道一次返回，省流式解析开销。
+                if _should_stream(session):
+                    response = await think_stream(agent, think_messages)
+                else:
+                    response = await think(agent, think_messages)
                 agent.tracer.end_span()
 
                 msg = response.get("message", {})
@@ -535,7 +553,11 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                 except Exception:
                     pass
 
-                response = await think(agent, think_messages)
+                # 流式返回：web/cli 渠道流式，钉钉等一次返回
+                if _should_stream(session):
+                    response = await think_stream(agent, think_messages)
+                else:
+                    response = await think(agent, think_messages)
                 agent.tracer.end_span()
 
                 msg = response.get("message", {})
