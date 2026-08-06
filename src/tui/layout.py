@@ -91,6 +91,11 @@ class ChatLayout:
         # cursor offset from end; 0 = bottom, positive = scrolled up
         self._scroll_offset = 0
 
+        # Streaming buffer — appended tokens accumulate here until finalized,
+        # then flushed into _output_lines as a single block.
+        self._stream_text = ""
+        self._stream_active = False
+
         # Input — with history for ↑↓ navigation, and custom completer for / commands
         self._input_history = InMemoryHistory()
         self._input_buffer = Buffer(
@@ -243,7 +248,11 @@ class ChatLayout:
     # ── output ────────────────────────────────────────────────
 
     def _rebuild_output(self):
-        all_text = "\n".join(self._output_lines)
+        lines = list(self._output_lines)
+        if self._stream_active and self._stream_text:
+            stream_lines = self._stream_text.strip("\n").split("\n")
+            lines.extend(stream_lines)
+        all_text = "\n".join(lines)
         cursor = max(0, len(all_text) - self._scroll_offset)
         self._output_buffer.set_document(Document(all_text, cursor_position=cursor))
 
@@ -257,6 +266,24 @@ class ChatLayout:
         self._scroll_offset = 0
         self._rebuild_output()
         self._app.invalidate()
+
+    def start_stream(self):
+        self._stream_text = ""
+        self._stream_active = True
+        self._scroll_offset = 0
+
+    def append_stream_token(self, text: str):
+        self._stream_text += strip_ansi(text)
+        self._rebuild_output()
+        self._app.invalidate()
+
+    def end_stream(self):
+        if self._stream_active:
+            final = self._stream_text
+            self._stream_text = ""
+            self._stream_active = False
+            if final:
+                self.append_output(final)
 
     def update_status(self):
         self._app.invalidate()

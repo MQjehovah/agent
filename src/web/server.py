@@ -457,7 +457,11 @@ class WebServer:
                 full_response: list[str] = []
 
                 async def chat_handler(ctx):
-                    if ctx.token:
+                    if ctx.content:
+                        # 思考过程（reasoning token）：仅推送 SSE 供前端显示"正在思考"，
+                        # 不追加到最终答案
+                        await q.put(("reasoning", ctx.content))
+                    elif ctx.token:
                         full_response.append(ctx.token)
                         await q.put(("token", ctx.token))
 
@@ -540,6 +544,8 @@ class WebServer:
 
                         if event_type == "token":
                             yield _sse({"type": "token", "content": content})
+                        elif event_type == "reasoning":
+                            yield _sse({"type": "reasoning", "content": content})
                         elif event_type == "tool_event":
                             yield _sse({"type": content["event_type"], "data": content["data"]})
                         elif event_type == "done":

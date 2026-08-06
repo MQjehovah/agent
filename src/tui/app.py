@@ -71,6 +71,7 @@ class TUIState:
         self.total_prompt = 0
         self.total_completion = 0
         self.total_cost = 0.0
+        self.streamed = False
 
 
 class TUIApp:
@@ -184,11 +185,19 @@ class TUIApp:
                 getattr(self.agent, 'name', None) or "助手")
             if reasoning:
                 self.display.assistant_message(f"{agent_label} 思考", reasoning)
-            if content:
+            if content and not self.state.streamed:
                 self.display.assistant_message(agent_label, content)
+            if self.state.streamed:
+                self.chat.end_stream()
+                self.state.streamed = False
 
         def _on_chat_event(ctx):
-            pass
+            token = ctx.token or ""
+            if token:
+                if not self.state.streamed:
+                    self.chat.start_stream()
+                    self.state.streamed = True
+                self.chat.append_stream_token(token)
 
         def _on_subagent_llm_response(ctx):
             content = ctx.content or ""
@@ -207,6 +216,9 @@ class TUIApp:
 
         def _on_agent_stop(ctx):
             self.state.task_active = False
+            if self.state.streamed:
+                self.chat.end_stream()
+                self.state.streamed = False
             self._update_token_stats()
 
         agent.hooks.register(HookEvent.TOOL_START, _on_tool_start)

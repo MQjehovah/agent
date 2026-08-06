@@ -18,12 +18,15 @@ def _should_stream(session) -> bool:
 
     web/cli（前端 SSE / TUI 实时展示）→ 流式；
     钉钉/飞书/webhook 等只能一次性发整条消息的渠道 → 非流式返回。
-    session_id 格式为 {channel}:{id}（见 MessageRouter.format_session_id）。
+    session_id 格式兼容两种：'{channel}:{id}'（服务端 format_session_id）
+    与 '{channel}_{id}'（前端生成，如 web_abc123）。
     """
     sid = getattr(session, "session_id", "") or ""
-    channel = sid.split(":", 1)[0] if sid else ""
+    if not sid:
+        return True
+    channel = sid.split(":", 1)[0].split("_", 1)[0]
     # 仅 web/cli 支持逐 token 流式推送；其余渠道（钉钉/飞书/webhook）一次返回
-    return channel in ("web", "cli", "")
+    return channel in ("web", "cli")
 
 
 async def think(agent, messages) -> dict:
@@ -88,6 +91,10 @@ async def think_stream(agent, messages) -> dict:
             continue
         if delta and getattr(delta, "reasoning_content", None):
             reasoning_content += delta.reasoning_content
+            # 把思考过程也推送（DeepSeek 推理模型先思考几十秒，若只推 content，
+            # 用户会长时间无反馈）。用 content= 传 reasoning token，与正常回答的
+            # token= 区分，前端可显示"正在思考"。
+            await agent.hooks.fire(agent._hook_event.CHAT_EVENT, content=delta.reasoning_content)
         if delta and delta.content:
             content += delta.content
             await agent.hooks.fire(agent._hook_event.CHAT_EVENT, token=delta.content)

@@ -516,8 +516,26 @@
     function streamToken(tok) {
         const b = document.getElementById('streamBubble'); if (!b) return;
         const ti = b.querySelector('.typing-indicator'); if (ti) ti.remove();
+        const rt = b.querySelector('.reasoning-box'); if (rt) rt.remove();
         b.dataset.t = (b.dataset.t||'') + tok;
         b.innerHTML = md(b.dataset.t);
+        chatMsgs.scrollTop = chatMsgs.scrollHeight;
+    }
+
+    function streamReasoning(tok) {
+        // 思考过程：显示在气泡顶部的灰色小字区域（"正在思考…"），
+        // 第一个正式 token 到达时自动清除。
+        const b = document.getElementById('streamBubble'); if (!b) return;
+        const ti = b.querySelector('.typing-indicator'); if (ti) ti.remove();
+        let rt = b.querySelector('.reasoning-box');
+        if (!rt) {
+            rt = document.createElement('div');
+            rt.className = 'reasoning-box';
+            rt.textContent = '🔄 正在思考… ';
+            b.appendChild(rt);
+        }
+        rt.textContent = '🔄 正在思考… ' + ((rt.dataset.r || '') + tok);
+        rt.dataset.r = (rt.dataset.r || '') + tok;
         chatMsgs.scrollTop = chatMsgs.scrollHeight;
     }
 
@@ -526,6 +544,7 @@
         b.removeAttribute('id');
         var toolEvents = b.querySelectorAll('.tool-inline-event');
         for (var i = 0; i < toolEvents.length; i++) toolEvents[i].remove();
+        var rt = b.querySelector('.reasoning-box'); if (rt) rt.remove();
         var finalText = (text || '').trim();
         if (finalText) {
             b.innerHTML = md(finalText);
@@ -772,6 +791,7 @@
                     try {
                         const ev = JSON.parse(l.slice(6));
                         if (ev.type === 'token') { setAvatar('speaking'); streamToken(ev.content); }
+                        else if (ev.type === 'reasoning') { streamReasoning(ev.content); }
                         else if (ev.type === 'done') finishStream(ev.content);
                         else if (ev.type === 'error') finishStream('Error: ' + ev.content);
                         else if (ev.type === 'round_start') { startNewMainRound(); }
