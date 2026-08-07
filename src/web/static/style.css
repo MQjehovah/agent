@@ -1033,8 +1033,11 @@ body {
 .mem-btn-primary:hover { opacity: 0.9; background: var(--accent-blue); }
 .mem-count { color: var(--text-muted); font-size: 11px; margin-left: auto; }
 
-.memory-proposals { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
-.memory-section-title { font-weight: 700; color: var(--accent-orange); margin-bottom: 8px; font-size: 12px; }
+.memory-proposals { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; flex-shrink: 0; }
+.memory-section-title { font-weight: 700; color: var(--accent-orange); margin-bottom: 8px; font-size: 12px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+.memory-section-toggle { font-size: 10px; color: var(--text-muted); transition: transform 0.15s; }
+#memProposalsList { max-height: 220px; overflow-y: auto; }
+#memProposalsList.mem-collapsed { display: none; }
 .mem-prop { padding: 8px; background: var(--bg-tertiary); border-radius: var(--radius); margin-bottom: 6px; }
 .mem-prop:last-child { margin-bottom: 0; }
 .mem-prop-content { color: var(--text-primary); margin-bottom: 4px; white-space: pre-wrap; word-break: break-word; }

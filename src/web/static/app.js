@@ -1843,7 +1843,20 @@
                 '</div>').join('');
             memProposalsList.querySelectorAll('.mem-approve').forEach(b => b.onclick = () => memApprove(b.dataset.id));
             memProposalsList.querySelectorAll('.mem-reject').forEach(b => b.onclick = () => memReject(b.dataset.id));
+            if (items.length > 5) memToggleProposals(false);
+            else memToggleProposals(true);
         } catch {}
+    }
+
+    function memToggleProposals(expanded) {
+        const list = memProposalsList;
+        if (!list) return;
+        if (expanded === undefined) {
+            expanded = list.classList.contains('mem-collapsed');
+        }
+        list.classList.toggle('mem-collapsed', !expanded);
+        const icon = $('#memPropToggleIcon');
+        if (icon) icon.textContent = expanded ? '▾' : '▸';
     }
 
     async function memApprove(id) {
@@ -1897,6 +1910,7 @@
     $('#memSearchBtn').onclick = fetchMemories;
     $('#memFilterKeyword').addEventListener('keydown', e => { if (e.key === 'Enter') fetchMemories(); });
     $('#memNewBtn').onclick = () => openMemoryModal('');
+    $('#memProposalsToggle').onclick = () => memToggleProposals();
     $('#memoryModalClose').onclick = () => { $('#memoryModal').style.display = 'none'; };
     $('#memoryModalCancel').onclick = () => { $('#memoryModal').style.display = 'none'; };
     $('#memoryModalSave').onclick = saveMemory;
