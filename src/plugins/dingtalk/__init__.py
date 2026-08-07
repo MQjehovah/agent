@@ -172,25 +172,47 @@ class DingTalkPlugin(BasePlugin):
         logger.info("DingTalk plugin stopped")
 
     def get_tool_defs(self) -> list[dict[str, Any]]:
-        return [{
-            "type": "function",
-            "function": {
-                "name": "send_image_to_dingtalk",
-                "description": "发送本地图片到钉钉对话中。适用于需要展示图片给用户的场景，例如截图、图表等。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "image_path": {
-                            "type": "string",
-                            "description": "图片的本地文件路径，例如: /path/to/image.png 或 screenshot.png"
-                        }
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_message_to_dingtalk",
+                    "description": "发送文本消息到用户的钉钉单聊（oToMessages）。适用于定时任务完成后主动推送结果给用户。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "type": "string",
+                                "description": "要发送的文本内容",
+                            }
+                        },
+                        "required": ["text"],
                     },
-                    "required": ["image_path"]
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_image_to_dingtalk",
+                    "description": "发送本地图片到钉钉对话中。适用于需要展示图片给用户的场景，例如截图、图表等。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "image_path": {
+                                "type": "string",
+                                "description": "图片的本地文件路径，例如: /path/to/image.png 或 screenshot.png"
+                            }
+                        },
+                        "required": ["image_path"]
+                    }
                 }
             }
-        }]
+        ]
 
     async def execute_tool(self, name: str, args: dict[str, Any]) -> str:
+        if name == "send_message_to_dingtalk":
+            local_user_id = args.pop("_local_user_id", None)
+            return await self._send_text(args.get("text", ""), local_user_id)
         if name == "send_image_to_dingtalk":
             local_user_id = args.pop("_local_user_id", None)
             return await self._send_image(args.get("image_path", ""), local_user_id)
@@ -201,6 +223,11 @@ class DingTalkPlugin(BasePlugin):
         storage = get_storage()
         if not storage or not local_user_id:
             return None
+        # user_id 形如 dingtalk:{staff_id}，直接提取
+        if str(local_user_id).startswith("dingtalk:"):
+            uid = str(local_user_id).split(":", 1)[1]
+            if uid.isdigit():
+                return uid
         try:
             int(local_user_id)
         except (ValueError, TypeError):
@@ -286,6 +313,38 @@ class DingTalkPlugin(BasePlugin):
                 return f"发送图片失败: {r.text}"
         except Exception as e:
             return f"发送图片失败: {e}"
+
+    async def _send_text(self, text: str, local_user_id=None) -> str:
+        if not text:
+            return "内容为空"
+
+        staff_id = self._get_dingtalk_staff_id(local_user_id)
+        if not staff_id:
+            return "当前用户未绑定钉钉账号，无法发送消息"
+
+        access_token = await self._get_access_token()
+        if not access_token:
+            return "获取钉钉access_token失败"
+
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+                    headers={"x-acs-dingtalk-access-token": access_token},
+                    json={
+                        "robotCode": self.config.stream.client_id,
+                        "userIds": [staff_id],
+                        "msgKey": "sampleText",
+                        "msgParam": json.dumps({"content": text}),
+                    }
+                )
+                if r.status_code == 200:
+                    logger.info(f"消息已发送给用户 staff_id={staff_id}")
+                    return f"消息已发送: {text[:60]}"
+                return f"发送消息失败: {r.text}"
+        except Exception as e:
+            return f"发送消息失败: {e}"
 
     def get_session(self, conversation_id: str, sender_id: str, sender_nick: str, robot_code: str) -> DingTalkSession:
         router = getattr(self.plugin_manager, "router", None) if self.plugin_manager else None

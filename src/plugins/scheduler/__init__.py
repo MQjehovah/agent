@@ -83,7 +83,7 @@ class SchedulerPlugin(BasePlugin):
             return []
 
     def create_db_task(self, name: str, cron: str, task: str, user_id: str = "",
-                       user_name: str = "") -> dict:
+                       user_name: str = "", session_id: str = "") -> dict:
         """创建数据库定时任务。"""
         now = datetime.now().isoformat(timespec="seconds")
         task_id = uuid.uuid4().hex[:12]
@@ -94,6 +94,7 @@ class SchedulerPlugin(BasePlugin):
             "task": task,
             "user_id": user_id,
             "user_name": user_name,
+            "session_id": session_id,
             "enabled": 1,
             "last_run_at": None,
             "last_result": None,
@@ -108,14 +109,14 @@ class SchedulerPlugin(BasePlugin):
                 with db.get_connection() as conn:
                     conn.execute(
                         """INSERT INTO scheduled_tasks
-                           (id, name, cron, task, user_id, user_name, enabled,
-                            last_run_at, last_result, last_error, run_count,
+                           (id, name, cron, task, user_id, user_name, session_id,
+                            enabled, last_run_at, last_result, last_error, run_count,
                             created_at, updated_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         tuple(rec[k] for k in (
                             "id", "name", "cron", "task", "user_id", "user_name",
-                            "enabled", "last_run_at", "last_result", "last_error",
-                            "run_count", "created_at", "updated_at")),
+                            "session_id", "enabled", "last_run_at", "last_result",
+                            "last_error", "run_count", "created_at", "updated_at")),
                     )
                     conn.commit()
             except Exception as e:
@@ -181,6 +182,42 @@ class SchedulerPlugin(BasePlugin):
             logger.error(f"删除定时任务失败: {e}")
             return False
 
+    async def _push_result(self, schedule: dict, result: str):
+        """定时任务执行完成后，将结果自动推回原会话渠道。
+
+        定时任务由 cron 触发，没有 incoming_message，无法走钉钉/飞书的
+        reply 链路。这里从 session_id 解析渠道前缀，调用对应插件的主动
+        发送能力，把执行结果直接送回创建者的会话。
+        """
+        sid = schedule.get("session_id", "") or ""
+        if not sid or not result:
+            return
+        channel = sid.split(":", 1)[0]
+        pm = self.plugin_manager
+        if not pm:
+            return
+        try:
+            if channel == "dingtalk":
+                dt = pm.get_plugin("dingtalk")
+                if dt and hasattr(dt, "_send_text"):
+                    uid = schedule.get("user_id", "") or sid
+                    await dt._send_text(result[:2000], local_user_id=uid)
+                    logger.info(f"定时任务结果已推送钉钉: {sid}")
+            elif channel == "feishu":
+                fs = pm.get_plugin("feishu")
+                if fs and getattr(fs, "_client", None):
+                    parts = sid.split(":")
+                    chat_id = parts[1] if len(parts) > 1 else ""
+                    if chat_id:
+                        await fs._client.send_text_message(chat_id, result[:4000])
+                        logger.info(f"定时任务结果已推送飞书: {sid}")
+            elif channel == "web":
+                ws = pm.get_plugin("web") or pm.get_plugin("webui")
+                if ws and hasattr(ws, "push_to_user"):
+                    await ws.push_to_user(sid, result[:4000])
+        except Exception as e:
+            logger.warning(f"定时任务结果推送失败: {channel}:{sid}, {e!r}")
+
     def record_run(self, task_id: str, ok: bool, result: str):
         db = self._db()
         if not db:
@@ -209,12 +246,30 @@ class SchedulerPlugin(BasePlugin):
 
     # ── 调度器 ────────────────────────────────────────────────
 
+    def _ensure_schema(self):
+        """旧库表迁移：补充新增列（session_id）。"""
+        db = self._db()
+        if not db:
+            return
+        try:
+            with db.get_connection() as conn:
+                cols = [d[1] for d in conn.execute(
+                    "PRAGMA table_info(scheduled_tasks)")]
+                if cols and "session_id" not in cols:
+                    conn.execute(
+                        "ALTER TABLE scheduled_tasks ADD COLUMN session_id TEXT DEFAULT ''")
+                    conn.commit()
+                    logger.info("已迁移 scheduled_tasks 表：新增 session_id 列")
+        except Exception as e:
+            logger.warning(f"scheduled_tasks 表迁移跳过: {e}")
+
     def _all_tasks(self) -> list[dict]:
         """合并静态 + 数据库任务。"""
         db_tasks = self.list_db_tasks()
         return self.schedules + db_tasks
 
     def start(self):
+        self._ensure_schema()
         self.stop()
         self.scheduler = AsyncIOScheduler()
         registered = 0
@@ -273,13 +328,16 @@ class SchedulerPlugin(BasePlugin):
             return
 
         try:
-            # 以创建者身份执行：agent_executor 接受 user_id/user_name 参数恢复身份
-            result = await self._agent_executor(task, user_id=user_id, user_name=user_name)
+            # 以创建者身份 + 原会话执行：agent_executor 接受 user_id/user_name/schedule 恢复身份
+            result = await self._agent_executor(
+                task, user_id=user_id, user_name=user_name, schedule=schedule)
             ok = not (isinstance(result, str) and ("失败" in result[:200] or "错误" in result[:200]))
             if task_id:
                 self.record_run(task_id, ok, str(result))
             logger.info(f"✓ 定时任务完成: {name}")
             logger.debug(f"结果: {result}")
+            # 框架自动把结果推回原会话渠道（定时任务无 incoming_message，无法走 reply 链路）
+            await self._push_result(schedule, str(result))
         except asyncio.CancelledError:
             if task_id:
                 self.record_run(task_id, False, "任务被取消")
@@ -363,7 +421,9 @@ class SchedulerPlugin(BasePlugin):
     async def execute_tool(self, name: str, args: dict) -> str:
         # 用户隔离：_local_user_id 由 agent.executor 注入
         current_uid = args.get("_local_user_id", "")
+        current_sid = args.get("_local_session_id", "")
         args.pop("_local_user_id", None)
+        args.pop("_local_session_id", None)
 
         if name == "scheduler_create":
             cron = args.get("cron", "")
@@ -379,6 +439,7 @@ class SchedulerPlugin(BasePlugin):
                 cron=cron,
                 task=args.get("task", ""),
                 user_id=current_uid,
+                session_id=current_sid,
             )
             self.reload()
             return json.dumps({"success": True, "task": rec}, ensure_ascii=False)
@@ -399,6 +460,7 @@ class SchedulerPlugin(BasePlugin):
                         "enabled": bool(t.get("enabled", t.get("static", True))),
                         "static": t.get("static", False),
                         "user_id": t.get("user_id", ""),
+                        "session_id": t.get("session_id", ""),
                         "last_run_at": t.get("last_run_at"),
                         "last_result": t.get("last_result"),
                         "last_error": t.get("last_error"),

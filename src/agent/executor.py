@@ -138,6 +138,9 @@ async def execute_tool(agent, name: str, args: dict) -> str:
         current_uid = rc.session.user_id
     elif rc.user_id:
         current_uid = rc.user_id
+    current_sid = ""
+    if rc.session and getattr(rc.session, "session_id", ""):
+        current_sid = rc.session.session_id
 
     try:
         if name == "subagent" and agent.subagent_manager:
@@ -164,6 +167,8 @@ async def execute_tool(agent, name: str, args: dict) -> str:
                         logger.info(f"执行插件工具: {plugin.name}.{name}")
                         if current_uid:
                             args["_local_user_id"] = current_uid
+                        if current_sid:
+                            args["_local_session_id"] = current_sid
                         return await plugin.execute_tool(name, args)
 
         return f"工具 {name} 不存在"

@@ -165,6 +165,7 @@ class Storage:
                     task TEXT NOT NULL,
                     user_id TEXT DEFAULT '',
                     user_name TEXT DEFAULT '',
+                    session_id TEXT DEFAULT '',
                     enabled INTEGER DEFAULT 1,
                     last_run_at TEXT,
                     last_result TEXT,

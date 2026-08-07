@@ -98,4 +98,34 @@ class MemoryTool(BuiltinTool):
         return json.dumps({"success": True, "results": "No matching memories found"}, ensure_ascii=False)
 
     def _list(self, args: dict[str, Any]) -> str:
-        return json.dumps({"success": True, "files": [], "note": "记忆已迁移至数据库，按用户隔离"}, ensure_ascii=False)
+        user_id = args.get("_local_user_id", "")
+        memory_type = args.get("memory_type", "daily")
+
+        # daily: 返回该用户全部记忆（私有 + 全局公共）
+        # long_term: 仅返回高重要性/关键类记忆
+        storage = self.memory_manager._get_storage()
+        rows = storage.query_memories(user_id=user_id, limit=100) if storage else []
+        if memory_type == "long_term":
+            rows = [r for r in rows if r["category"] in (
+                "key_info", "preference", "correction", "reflection")
+                and r["importance"] >= 4]
+
+        if not rows:
+            return json.dumps(
+                {"success": True, "files": [], "count": 0,
+                 "note": "当前无记忆记录"},
+                ensure_ascii=False,
+            )
+
+        items = [{
+            "id": r["id"],
+            "scope": r["scope"],
+            "category": r["category"],
+            "content": r["content"],
+            "importance": r["importance"],
+            "created_at": r["created_at"],
+        } for r in rows]
+        return json.dumps(
+            {"success": True, "files": items, "count": len(items)},
+            ensure_ascii=False,
+        )
