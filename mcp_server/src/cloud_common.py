@@ -125,20 +125,92 @@ def ensure_token() -> None:
         auto_login(force=True)
 
 
+def _is_token_invalid_response(resp: requests.Response) -> bool:
+    """Detect expired/invalid cloud token (HTTP 403 or business returnCode)."""
+    if resp.status_code == 401 or resp.status_code == 403:
+        return True
+    try:
+        body = resp.json()
+    except Exception:
+        text = (resp.text or "").upper()
+        return "TOKEN" in text and ("非法" in (resp.text or "") or "INVALID" in text)
+    if not isinstance(body, dict):
+        return False
+    code = body.get("returnCode")
+    if code in (1000001, 401, 403, "1000001", "401", "403"):
+        return True
+    msg = str(body.get("returnMsg") or body.get("error") or body.get("message") or "")
+    upper = msg.upper()
+    return ("TOKEN" in upper and ("非法" in msg or "无效" in msg or "INVALID" in upper)) or (
+        "未登录" in msg or "登录失效" in msg
+    )
+
+
 def request_with_reauth(method: str, url: str, **kwargs) -> requests.Response:
-    """GET/POST；403 时强制重新登录再试一次。"""
+    """GET/POST；HTTP 403 或业务 TOKEN 非法时强制重新登录再试一次。"""
     ensure_token()
     kwargs.setdefault("timeout", TIMEOUT)
+    # Snapshot headers so retry can refresh token without losing other headers
+    headers = dict(kwargs.get("headers") or {})
+    if _token:
+        headers["token"] = _token
+    kwargs["headers"] = headers
+
     resp = requests.request(method, url, **kwargs)
-    if resp.status_code == 403 and USERNAME and PASSWORD:
+    if _is_token_invalid_response(resp) and USERNAME and PASSWORD:
+        logger.info("检测到 token 失效，强制重新登录后重试: %s %s", method, url)
         auto_login(force=True)
         if _token:
-            headers = kwargs.get("headers") or {}
-            headers = dict(headers)
+            headers = dict(kwargs.get("headers") or {})
             headers["token"] = _token
             kwargs["headers"] = headers
             resp = requests.request(method, url, **kwargs)
     return resp
+
+
+FILE_UPLOAD_PATH = os.getenv("CLOUD_FILE_UPLOAD_PATH", "/rosiwit-cloud/file/upload")
+
+
+def upload_file_bytes(
+    content: bytes,
+    filename: str,
+    content_type: str = "application/octet-stream",
+) -> dict[str, Any]:
+    """上传字节到云端 OSS（multipart POST /rosiwit-cloud/file/upload）。
+
+    成功时 data.url 为可访问地址，可供工单 create_ticket_attachment 使用。
+    """
+    import io
+
+    name = (filename or "upload.bin").strip() or "upload.bin"
+    if not content:
+        return {"success": False, "error": "上传内容为空"}
+    url = f"{get_base_url()}{FILE_UPLOAD_PATH}"
+    files = {"file": (name, io.BytesIO(content), content_type)}
+    try:
+        # 勿带 json Content-Type，否则 multipart 会失败
+        resp = request_with_reauth("POST", url, headers=auth_headers(json_body=False), files=files)
+        resp.raise_for_status()
+        result = resp.json() if resp.text else {}
+    except Exception as e:
+        logger.error("云端文件上传失败 name=%s: %s", name, e)
+        return {"success": False, "error": str(e)}
+    if not isinstance(result, dict):
+        return {"success": False, "error": "响应格式异常", "raw": result}
+    ok = bool(result.get("success") or result.get("returnCode") == 200)
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    file_url = None
+    if isinstance(data, dict):
+        file_url = data.get("url") or data.get("fileUrl") or data.get("ossUrl")
+    return {
+        "success": ok,
+        "url": file_url,
+        "name": (data or {}).get("name") if isinstance(data, dict) else name,
+        "returnCode": result.get("returnCode"),
+        "returnMsg": result.get("returnMsg"),
+        "data": data,
+        "error": None if ok else (result.get("returnMsg") or result.get("error")),
+    }
 
 
 # 模块加载时尝试登录（与原先 ticket_ops 行为一致）

@@ -35,8 +35,18 @@ get_device_shadow(device_id, product_id)
 | `robotMode` / `robotModeName` | 机器人状态 |
 | `control_mode` / `controlModeName` | 手动/自动 |
 | `supplyState` / `supplyStateName` / `supplyEngaged` | 对桩/供电 |
+| `is_charge` / `dock` | 充电中 / 是否对桩（非 810 主判据；见下） |
 
-**对桩/供电：看 `supplyState∈{1,2,3}` 或 `supplyEngaged=true`，不要看 `is_charge`（810 影子常无）。**
+**对桩/供电：看 `supplyState∈{1,2,3}` 或 `supplyEngaged=true`，不要单看 `is_charge`（810 影子常无）。**
+
+**`is_charge` + `dock` 组合（有该字段时）：**
+| is_charge | dock | 一般含义 |
+|-----------|------|----------|
+| true | true | 工作站对桩充电 |
+| true | false | **手动充电**（未对桩，插线/手动口供电） |
+| false | * | 未在充电 |
+
+勿把「`is_charge=true`」当成已回桩成功；`dock=false` 时更可能是现场手动充电。
 
 ### 影子枚举（810）
 
@@ -44,7 +54,7 @@ get_device_shadow(device_id, product_id)
 
 **control_mode**：`CONTROL_MODE_MANUAL` 手动 / `CONTROL_MODE_AUTO` 自动
 
-**supplyState**：`0` 空闲 · `1` 前往工作站 · `2` 加排水中 · `3` 仅充电 · `4` 退桩 · `5` 手动补给 · `6` 等待外设关闭；**1/2/3 = 已对桩供电**
+**supplyState**：`0` 空闲 · `1` 前往工作站 · `2` 加排水中 · `3` 仅充电 · `4` 退桩 · `5` 手动补给 · `6` 等待外设关闭；**1/2/3 = 已对桩供电**（`5` 接近手动补给/手动充电语境）
 
 ## 输出习惯
 

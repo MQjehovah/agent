@@ -1,20 +1,32 @@
 ---
 name: device-remote-operations
 description: |
-  通用远程运维：状态以 get_device_shadow 为准；仅执行本技能/上游剧本写明的动作，禁止私自扩调用。
+  定位剧本专用远程动作：get_device_shadow → relocate → 再读影子。
+  禁止当作万能工具箱；其它故障走对应 device-* 或 device-evidence-collect。
 ---
 
-## 流程
+## 适用场景
+
+- 上游 `ticket-handling` 选型为 **`playbook-locate`**
+- 非工单且用户明确要求「重定位 / 定位丢失恢复」
+
+## 定位流程（仅此）
 
 ```
 get_device_shadow(device_id, product_id)
-  → 解读 isOnline / locate / crash / battery / supplyState / faults
-  → 碰撞 → device-collision-handling
-  → 低电回桩 → device-return-station
-  → 定位丢失 → relocate(device_id, product_id, position=...) → 再读影子
-  → 离线 → device-offline-recovery
-  → 其它 → 取证（device-pull-bag）或转人工
+  → 确认在线且存在定位异常（或用户明确要求 relocate）
+  → relocate(device_id, product_id, position=...)   # position 按现场/地图需要；不明可先空 param
+  → 等待数秒 → 再 get_device_shadow
+  → locate 恢复：留下成功结论素材
+  → 仍异常：加载 device-evidence-collect（录包 + 定位日志）→ 转人工
 ```
 
-仅在**本技能步骤或上游 ticket-handling 剧本明确要求**时调用：`soft_restart`、`relocate`、`set_control_mode`、`device_backward`、`device_back_to_station`、`upload_bag_file`。  
-步骤未写到的接口（工程模式、`remote_action`、终端等）禁止私自调用。状态一律 `get_device_shadow`。
+## 允许的工具（定位场景）
+
+- `get_device_shadow`
+- `relocate`
+
+## 禁止
+
+- 禁止在本技能内调用：`soft_restart`、`device_backward`、`set_control_mode`、`factory_reset`、`remote_action`、工程模式、终端控制命令等
+- 碰撞 → `device-collision-handling`；低电回桩 → `device-return-station`；离线 → `device-offline-recovery`；无能力 → `device-evidence-collect`

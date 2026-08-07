@@ -22,7 +22,7 @@
             "DINGTALK_AGENT_ID": "4389947271",
             "DINGTALK_ROBOT_CODE": "ding3xmu1gbsy11jbks3"
         },
-        "description": "钉钉消息推送服务 - 支持工作通知、机器人单聊/群聊消息、Webhook、通讯录查询等"
+        "description": "钉钉消息推送；工单 ticket_id 场景禁止调用（评论失败不可降级钉钉）"
     },
     {
         "name": "remote_operation",

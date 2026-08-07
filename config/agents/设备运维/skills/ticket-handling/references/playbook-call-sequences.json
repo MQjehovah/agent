@@ -1,0 +1,64 @@
+{
+  "ticket_forbidden_tools": [
+    "dingtalk_send_work_notification",
+    "dingtalk_send_robot_single_message",
+    "dingtalk_send_robot_group_message",
+    "dingtalk_send_webhook_message",
+    "dingtalk_send_markdown_single",
+    "dingtalk_send_markdown_group",
+    "dingtalk_send_text_single",
+    "dingtalk_send_text_group",
+    "dingtalk_send_interactive_card"
+  ],
+  "playbooks": {
+    "playbook-crash": {
+      "success_skills": ["device-shadow-status", "device-collision-handling"],
+      "optional_success_skills": ["device-pull-bag"],
+      "failure_skills": ["device-evidence-collect"],
+      "allowed_tools": ["get_device_shadow", "device_backward", "list_device_bags", "find_bags_near_time", "upload_bag_file", "create_ticket_comment", "create_ticket_attachment", "change_ticket_status"],
+      "evidence_artifact": "bag"
+    },
+    "playbook-offline": {
+      "success_skills": ["device-shadow-status", "device-offline-recovery"],
+      "failure_skills": ["device-evidence-collect"],
+      "allowed_tools": ["get_device_shadow", "soft_restart", "create_ticket_comment", "change_ticket_status"],
+      "evidence_artifact": "log"
+    },
+    "playbook-locate": {
+      "success_skills": ["device-shadow-status", "device-remote-operations"],
+      "failure_skills": ["device-evidence-collect"],
+      "allowed_tools": ["get_device_shadow", "relocate", "create_ticket_comment", "change_ticket_status"],
+      "forbidden_tools": ["soft_restart", "device_backward", "set_control_mode", "factory_reset", "remote_action"],
+      "evidence_artifact": "bag+log"
+    },
+    "playbook-dock": {
+      "success_skills": ["device-shadow-status", "device-cannot-back-station"],
+      "failure_skills": ["device-evidence-collect"],
+      "allowed_tools": ["get_device_shadow", "get_clean_info", "relocate", "device_back_to_station", "create_ticket_comment", "change_ticket_status"],
+      "evidence_artifact": "log"
+    },
+    "playbook-resource": {
+      "success_skills": ["device-shadow-status", "device-return-station"],
+      "failure_skills": ["device-evidence-collect"],
+      "allowed_tools": ["get_device_shadow", "device_back_to_station", "create_ticket_comment", "change_ticket_status"],
+      "evidence_artifact": "log"
+    },
+    "playbook-evidence": {
+      "success_skills": ["device-shadow-status", "device-evidence-collect"],
+      "optional_success_skills": ["device-pull-bag"],
+      "failure_skills": ["device-evidence-collect"],
+      "allowed_tools": ["get_device_shadow", "get_camera_image", "list_device_bags", "find_bags_near_time", "upload_bag_file", "connect_terminal", "send_command", "interactive_session", "disconnect_terminal", "create_ticket_comment", "create_ticket_attachment", "change_ticket_status"],
+      "forbidden_tools": ["soft_restart", "device_backward", "relocate"],
+      "evidence_artifact": "log",
+      "log_attachment_forbidden": true,
+      "notes": "取证后：已恢复且影子无活跃同码 → 状态3；仍异常/需人工 → 状态6；行走/感知须查 bag（定位到则必须 upload 挂）+ 须 get_camera_image（有 url 必须挂）；bag=触发原因，相机=当前四周/障碍；禁止只建议下载或不挂图"
+    }
+  },
+  "status_rules": {
+    "complete": 3,
+    "observing": 5,
+    "escalate": 6,
+    "complete_requires_shadow_relief": true,
+    "complete_also_when_evidence_shows_recovered": true
+  }
+}

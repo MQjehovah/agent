@@ -60,7 +60,7 @@ python src/remote_operation.py
 | `relocate` / `station_relocation` / `station_dock` | 地图重定位 / 工作站 |
 | `device_backward` / `device_back_to_station` | 倒退 / 回桩 |
 | `get_clean_info` / `device_clean` | 清洁信息 / 清扫 |
-| `get_camera_image` / `get_point_cloud` | 相机 / 点云 |
+| `get_camera_image` / `get_point_cloud` | 相机实时图（方位中文；base64 自动上传 OSS 返回 url 可挂附件）/ 点云 |
 | `plan_path` / `get_pending_task` / `resume_pending_task` | 路径与挂起任务 |
 | `execute_terminal` / `remote_action` | 远程终端 / 通用动作 |
 | `set_cloud_token` | 手动 token |

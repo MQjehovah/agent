@@ -26,8 +26,9 @@ description: |
 ```
 get_device_shadow
   → 看 battery（若因低电回桩：是否仍低）
-  → 看 supplyState / supplyEngaged（勿依赖 is_charge）
+  → 看 supplyState / supplyEngaged（勿单依赖 is_charge）
        supplyState∈{1,2,3} = 前往工作站/加排水/仅充电 → 已对桩供电
+       若见 is_charge=true 且 dock=false → 一般是手动充电，不算已回桩对桩
   → 已 supplyEngaged：不下发，只说明当前电量与对桩状态
   → 未对桩：device_back_to_station(device_id, product_id)
   → 等待数秒后再次 get_device_shadow

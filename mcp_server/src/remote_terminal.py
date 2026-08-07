@@ -14,7 +14,7 @@ import json
 import time
 import logging
 import asyncio
-import nest_asyncio
+from difflib import SequenceMatcher
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -22,8 +22,6 @@ import websockets
 from mcp.server.fastmcp import FastMCP
 from rich.logging import RichHandler
 from rich.console import Console
-
-nest_asyncio.apply()
 
 console = Console(stderr=True)
 
@@ -44,7 +42,11 @@ mcp = FastMCP("Terminal MCP Server")
 
 WS_BASE_URL = os.getenv("WS_BASE_URL", "wss://dev.xzrobot.com:10000")
 DEFAULT_USERNAME = os.getenv("TERM_USERNAME", "xzrobot")
-DEFAULT_PASSWORD = os.getenv("TERM_PASSWORD", "xzyz2022!")
+# T810 现场常用 titan@810；SC50 等仍可能是 xzyz2022!，可用 TERM_PASSWORD 覆盖
+DEFAULT_PASSWORD = os.getenv("TERM_PASSWORD", "titan@810")
+# 默认加宽，避免长 grep 在 80 列换行插入 \\r 污染回显（可用 TERM_COLS 覆盖）
+DEFAULT_COLS = int(os.getenv("TERM_COLS", "256"))
+DEFAULT_ROWS = int(os.getenv("TERM_ROWS", "40"))
 
 LoginErrorOffline = 0x01
 LoginErrorBusy = 0x02
@@ -103,7 +105,7 @@ class CommandResult:
 class ANSIStripper:
     """ANSI 转义序列过滤器"""
 
-    # ANSI 转义序列正则
+    # ANSI 转义序列正则（不含 \r/\b：须先按光标语义处理，不能直接删除）
     ANSI_PATTERN = re.compile(
         r'\x1B(?:'
         r'[\[(][0-9;]*[a-zA-Z]'  # CSI 序列: ESC[...字母
@@ -114,7 +116,6 @@ class ANSIStripper:
         r')|'
         r'\x07'                  # BEL
         r'|\x1B[=>]'             # 键盘模式
-        r'|\r'                   # 回车
         r'|\x00'                 # 空字符
     )
 
@@ -124,15 +125,42 @@ class ANSIStripper:
         return cls.ANSI_PATTERN.sub('', text)
 
     @classmethod
+    def apply_cursor_controls(cls, text: str) -> str:
+        """按终端语义处理 \\r（行首覆盖）与退格，避免 log\\rgs → loggs 这类拼接污染。
+
+        窄终端换行常在回显中插入裸 \\r；若直接删掉 \\r 会把换行两侧字符拼成假路径。
+        """
+        text = text.replace("\r\n", "\n").replace("\r\x00", "\n")
+        out_lines: List[str] = []
+        for line in text.split("\n"):
+            buf: List[str] = []
+            col = 0
+            for ch in line:
+                if ch == "\r":
+                    col = 0
+                elif ch in ("\x08", "\x7f"):
+                    if col > 0:
+                        col -= 1
+                        if col < len(buf):
+                            buf.pop(col)
+                    elif buf:
+                        buf.pop()
+                else:
+                    if col < len(buf):
+                        buf[col] = ch
+                    else:
+                        buf.append(ch)
+                    col += 1
+            out_lines.append("".join(buf))
+        return "\n".join(out_lines)
+
+    @classmethod
     def clean_for_display(cls, text: str) -> str:
         """清理文本用于显示"""
-        # 移除 ANSI 序列
         text = cls.strip(text)
-        # 移除控制字符
-        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
-        # 处理退格
-        while '\x08' in text:
-            text = text.replace('\x08', '')
+        text = cls.apply_cursor_controls(text)
+        # 移除其余控制字符（保留 \n \t）
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
         return text.strip()
 
 
@@ -167,6 +195,64 @@ class TerminalParser:
         self.pending_output: List[str] = []
         self._last_output_time: float = 0
 
+    def _normalize_for_echo_match(self, text: str) -> str:
+        """去掉空白与常见噪声，便于比对被 \\r 污染的回显。"""
+        return re.sub(r"\s+", "", text.strip())
+
+    def _is_command_echo(self, line: str, command: str) -> bool:
+        """判断一行是否为命令回显（含窄终端换行导致的残缺/错位回显）。"""
+        cmd = command.strip()
+        stripped = line.strip()
+        if not cmd or not stripped:
+            return False
+
+        if stripped == cmd or stripped.startswith(cmd):
+            return True
+
+        # 真实 grep 命中行通常以「行号:」开头，勿当回显丢掉
+        if re.match(r"^\d+:", stripped):
+            return False
+
+        cmd_first = cmd.split()[0]
+        n_line = self._normalize_for_echo_match(stripped)
+        n_cmd = self._normalize_for_echo_match(cmd)
+        if len(n_line) < 8:
+            return False
+
+        # 完整或以同一命令词开头
+        if stripped.startswith(cmd_first) and (
+            cmd in stripped
+            or n_cmd in n_line
+            or n_line in n_cmd
+            or SequenceMatcher(None, n_line, n_cmd).ratio() >= 0.75
+        ):
+            return True
+
+        # 高相似：loggs / xzrobott_driver2 / 202608066 等污染回显
+        if SequenceMatcher(None, n_line, n_cmd).ratio() >= 0.82:
+            return True
+
+        # 换行截断后的片段仍是命令的子串（足够长才认）
+        if len(n_line) >= 24 and (n_line in n_cmd or n_cmd in n_line):
+            return True
+
+        # \\r 覆盖后行首被吃掉，但仍带管道/重定向等 shell 痕迹
+        shell_markers = ("2>/dev/null", "| head", "| tail", "| grep", " |head", " |tail")
+        if any(m in stripped for m in shell_markers) and SequenceMatcher(None, n_line, n_cmd).ratio() >= 0.45:
+            return True
+
+        # 以 grep/ls/head/cat 等开头且与命令共享长路径片段
+        if stripped.startswith(cmd_first) and len(n_cmd) >= 30:
+            paths = re.findall(r"/[A-Za-z0-9_./\-]+", cmd)
+            for p in sorted(paths, key=len, reverse=True)[:3]:
+                pn = self._normalize_for_echo_match(p)
+                if len(pn) >= 18 and SequenceMatcher(None, n_line, n_cmd).ratio() >= 0.55:
+                    overlap = sum(1 for c in pn if c in n_line)
+                    if overlap / len(pn) >= 0.85:
+                        return True
+
+        return False
+
     def _is_prompt(self, text: str) -> bool:
         """检查文本是否为提示符"""
         clean = ANSIStripper.clean_for_display(text).strip()
@@ -198,12 +284,10 @@ class TerminalParser:
         found_echo = False
         for line in lines:
             clean_line = line.strip()
-            if not found_echo and clean_command in clean_line:
-                # 检查是否是命令回显（通常命令在行首）
-                if clean_line.startswith(clean_command) or clean_command in clean_line:
-                    echo_lines.append(line)
-                    found_echo = True
-                    continue
+            if not found_echo and self._is_command_echo(clean_line, clean_command):
+                echo_lines.append(line)
+                found_echo = True
+                continue
             remaining_lines.append(line)
 
         return '\n'.join(echo_lines), '\n'.join(remaining_lines)
@@ -254,7 +338,7 @@ class TerminalParser:
                     raw=line
                 ))
             # 检查是否为命令回显
-            elif expect_command and expect_command.strip() in clean_line:
+            elif expect_command and self._is_command_echo(clean_line, expect_command):
                 results.append(ParsedOutput(
                     type=OutputType.COMMAND_ECHO,
                     content=clean_line.strip(),
@@ -315,8 +399,8 @@ class TerminalParser:
                 prompt_found = True
                 continue
 
-            # 检查是否为命令回显
-            if command.strip() in stripped and stripped.startswith(command.strip().split()[0]):
+            # 检查是否为命令回显（含 \\r 污染后的假路径）
+            if self._is_command_echo(stripped, command):
                 continue
 
             # 检查错误
@@ -469,8 +553,8 @@ class TerminalSession:
     output_buffer: list = field(default_factory=list)
     is_connected: bool = False
     is_logged_in: bool = False
-    cols: int = 80
-    rows: int = 24
+    cols: int = DEFAULT_COLS
+    rows: int = DEFAULT_ROWS
     unack: int = 0
     parser: TerminalParser = field(default_factory=TerminalParser)
     interactive: InteractiveTerminalSession = field(default_factory=InteractiveTerminalSession)
@@ -558,7 +642,7 @@ async def _auto_login(session: TerminalSession, username: str, password: str, ti
     return {"success": login_success, "outputs": outputs}
 
 
-async def _connect_ws(sn: str, cols: int = 80, rows: int = 24, username: str = None, password: str = None) -> TerminalSession:
+async def _connect_ws(sn: str, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS, username: str = None, password: str = None) -> TerminalSession:
     if sn in sessions and sessions[sn].is_logged_in:
         return sessions[sn]
 
@@ -659,15 +743,15 @@ async def _receive_output(sn: str, timeout: float = 2.0) -> list:
 # ============================================================================
 
 @mcp.tool()
-def connect_terminal(sn: str, cols: int = 80, rows: int = 24, username: str = DEFAULT_USERNAME, password: str = DEFAULT_PASSWORD, base_url: str = None):
+async def connect_terminal(sn: str, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS, username: str = DEFAULT_USERNAME, password: str = DEFAULT_PASSWORD, base_url: str = None):
     """连接设备终端并自动登录
 
     参数:
     - sn: 设备编码
-    - cols: 终端列数（默认80）
-    - rows: 终端行数（默认24）
+    - cols: 终端列数（默认256，避免长命令换行插入 \\r 污染回显；可用 TERM_COLS）
+    - rows: 终端行数（默认40；可用 TERM_ROWS）
     - username: 登录用户名（默认xzrobot）
-    - password: 登录密码（默认xzyz2022!）
+    - password: 登录密码（默认 titan@810，可用 TERM_PASSWORD 覆盖）
     - base_url: WebSocket基础URL（可选，默认为 wss://dev.xzrobot.com:10000）
     """
     global WS_BASE_URL
@@ -689,11 +773,10 @@ def connect_terminal(sn: str, cols: int = 80, rows: int = 24, username: str = DE
         except Exception as e:
             return {"success": False, "sn": sn, "error": str(e)}
 
-    return asyncio.get_event_loop().run_until_complete(_connect())
-
+    return await _connect()
 
 @mcp.tool()
-def disconnect_terminal(sn: str):
+async def disconnect_terminal(sn: str):
     """断开设备终端连接
 
     参数:
@@ -708,18 +791,17 @@ def disconnect_terminal(sn: str):
     if sn not in sessions:
         return {"success": True, "sn": sn, "message": "终端未连接"}
 
-    return asyncio.get_event_loop().run_until_complete(_disconnect())
-
+    return await _disconnect()
 
 @mcp.tool()
-def send_command(sn: str, command: str, wait_output: bool = True, timeout: float = 2.0, parse_output: bool = True):
+async def send_command(sn: str, command: str, wait_output: bool = True, timeout: float = 5.0, parse_output: bool = True):
     """发送命令到终端并解析响应
 
     参数:
     - sn: 设备编码
     - command: 要发送的命令（会自动添加换行符）
     - wait_output: 是否等待输出（默认True）
-    - timeout: 等待输出的超时时间（秒，默认2.0）
+    - timeout: 等待输出的超时时间（秒，默认5.0）
     - parse_output: 是否解析输出结构（默认True）
 
     返回:
@@ -787,11 +869,10 @@ def send_command(sn: str, command: str, wait_output: bool = True, timeout: float
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    return asyncio.get_event_loop().run_until_complete(_send())
-
+    return await _send()
 
 @mcp.tool()
-def send_raw(sn: str, data: str):
+async def send_raw(sn: str, data: str):
     """发送原始数据到终端（不添加换行符）
 
     参数:
@@ -809,11 +890,10 @@ def send_raw(sn: str, data: str):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    return asyncio.get_event_loop().run_until_complete(_send())
-
+    return await _send()
 
 @mcp.tool()
-def receive_output(sn: str, timeout: float = 2.0):
+async def receive_output(sn: str, timeout: float = 2.0):
     """接收终端输出
 
     参数:
@@ -831,11 +911,10 @@ def receive_output(sn: str, timeout: float = 2.0):
             "outputs": outputs
         }
 
-    return asyncio.get_event_loop().run_until_complete(_receive())
-
+    return await _receive()
 
 @mcp.tool()
-def resize_terminal(sn: str, cols: int, rows: int):
+async def resize_terminal(sn: str, cols: int, rows: int):
     """调整终端窗口大小
 
     参数:
@@ -853,8 +932,7 @@ def resize_terminal(sn: str, cols: int, rows: int):
         await _send_winsize(session)
         return {"success": True, "sn": sn, "cols": cols, "rows": rows}
 
-    return asyncio.get_event_loop().run_until_complete(_resize())
-
+    return await _resize()
 
 @mcp.tool()
 def get_session_status(sn: str = None):
@@ -929,13 +1007,13 @@ def get_buffer(sn: str, lines: int = 100):
 
 
 @mcp.tool()
-def interactive_session(sn: str, commands: list, delay: float = 0.5, parse_outputs: bool = True):
+async def interactive_session(sn: str, commands: list, delay: float = 0.8, parse_outputs: bool = True):
     """交互式会话 - 发送多个命令并收集解析后的输出
 
     参数:
     - sn: 设备编码
     - commands: 命令列表
-    - delay: 命令之间的延迟（秒，默认0.5）
+    - delay: 命令之间的延迟（秒，默认0.8）
     - parse_outputs: 是否解析输出结构（默认True）
 
     返回:
@@ -959,7 +1037,7 @@ def interactive_session(sn: str, commands: list, delay: float = 0.5, parse_outpu
                 await _send_term_data(session, cmd + "\n")
                 logger.info(f"发送命令: {cmd}")
                 await asyncio.sleep(delay)
-                outputs = await _receive_output(sn, timeout=1.0)
+                outputs = await _receive_output(sn, timeout=3.0)
 
                 raw_texts = [o["data"] for o in outputs if o["type"] == "output"]
 
@@ -992,8 +1070,7 @@ def interactive_session(sn: str, commands: list, delay: float = 0.5, parse_outpu
             "results": results
         }
 
-    return asyncio.get_event_loop().run_until_complete(_interactive())
-
+    return await _interactive()
 
 @mcp.tool()
 def set_ws_base_url(base_url: str):
@@ -1046,7 +1123,7 @@ def parse_output(outputs: list, command: str = None):
 
 
 @mcp.tool()
-def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay: float = 1.0, timeout: float = 3.0):
+async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay: float = 1.0, timeout: float = 3.0):
     """执行命令并支持失败重试
 
     参数:
@@ -1108,11 +1185,10 @@ def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay:
             "attempts": max_retries
         }
 
-    return asyncio.get_event_loop().run_until_complete(_execute_with_retry())
-
+    return await _execute_with_retry()
 
 @mcp.tool()
-def wait_for_prompt(sn: str, timeout: float = 5.0):
+async def wait_for_prompt(sn: str, timeout: float = 5.0):
     """等待终端提示符出现
 
     参数:
@@ -1146,7 +1222,8 @@ def wait_for_prompt(sn: str, timeout: float = 5.0):
 
         return {"success": False, "error": "等待提示符超时"}
 
-    return asyncio.get_event_loop().run_until_complete(_wait())
+    return await _wait()
+
 
 
 if __name__ == "__main__":

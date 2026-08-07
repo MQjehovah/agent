@@ -440,7 +440,8 @@ def set_cloud_token(token: str):
 def get_device_shadow(device_id: str, product_id: str):
     """获取设备实时状态（rosiwit-cloud 设备影子）。
 
-    810 对桩看 supplyState∈{1,2,3} 或 supplyEngaged，不要依赖 is_charge。
+    810 对桩看 supplyState∈{1,2,3} 或 supplyEngaged，不要单依赖 is_charge。
+    is_charge=true 且 dock=false 一般表示手动充电（非工作站对桩）。
     """
     did = str(device_id or "").strip()
     pid = str(product_id or "").strip()
@@ -914,18 +915,96 @@ def device_clean(
 def get_camera_image(
     device_id: str,
     product_id: str,
+    camera: str = "前",
     req_id: int = 0,
     param: Any = None,
+    upload_oss: bool = True,
 ):
-    """机器摄像头图片（POST /remote/device/camera/image）。对应原 FAE get_camera_info。"""
+    """获取机器摄像头实时图片（POST /remote/device/camera/image）。
+
+    camera 传中文方位即可（云端解码为设备侧 1/2/3/4）：
+    - SC50/SW50：前、下（对应 1、2）
+    - T810：前、后、左、右（对应 1、2、3、4）
+    也可传数字字符串 \"1\"~\"4\"。
+
+    接口通常返回 data.base64（JPEG）。默认 upload_oss=True：上传到
+    /rosiwit-cloud/file/upload，返回顶层 url，便于 create_ticket_attachment。
+    响应中不回传完整 base64，避免撑爆上下文。
+    """
+    import base64
+    from datetime import datetime
+
+    p = _parse_param(param)
+    cam = (camera or "").strip() or "前"
+    digit_to_cn = {"1": "前", "2": "下", "3": "左", "4": "右"}
+    pid = str(product_id or "").upper()
+    if cam in ("2",) and any(x in pid for x in ("TITAN", "T810", "810")):
+        cam = "后"
+    elif cam in digit_to_cn:
+        cam = digit_to_cn[cam]
+    aliases = {"前视": "前", "下视": "下", "后视": "后", "左视": "左", "右视": "右"}
+    cam = aliases.get(cam, cam)
+    if "camera" not in p:
+        p["camera"] = cam
+    logger.info("获取相机图: device=%s product=%s camera=%s", device_id, product_id, p.get("camera"))
     result = _remote_post(
         "device/camera/image",
         device_id,
         product_id,
         req_id=req_id,
-        param=_parse_param(param),
+        param=p,
     )
-    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+    out = _ok_result(
+        result,
+        deviceId=str(device_id).strip(),
+        productId=str(product_id).strip(),
+        camera=p.get("camera"),
+    )
+    out["url"] = _extract_upload_url(result)
+
+    data = result.get("data") if isinstance(result, dict) else None
+    b64 = None
+    if isinstance(data, dict):
+        b64 = data.get("base64") or data.get("imageBase64") or data.get("img")
+    elif isinstance(data, str) and len(data) > 100:
+        b64 = data
+
+    if out["success"] and not out["url"] and upload_oss and b64:
+        try:
+            raw = str(b64).strip()
+            if "," in raw and raw.lower().startswith("data:"):
+                raw = raw.split(",", 1)[1]
+            content = base64.b64decode(raw)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname = f"camera_{device_id}_{p.get('camera')}_{ts}.jpg"
+            up = cloud.upload_file_bytes(content, fname, content_type="image/jpeg")
+            if up.get("success") and up.get("url"):
+                out["url"] = up["url"]
+                out["upload"] = {"name": up.get("name"), "success": True}
+            else:
+                out["upload"] = {
+                    "success": False,
+                    "error": up.get("error") or up.get("returnMsg"),
+                }
+                out["hint"] = "相机图已取到但 OSS 上传失败，无法直接挂附件"
+        except Exception as e:
+            logger.error("相机图 OSS 上传异常: %s", e)
+            out["upload"] = {"success": False, "error": str(e)}
+            out["hint"] = "相机图 base64 解码或上传失败"
+
+    # 压缩 data：去掉巨型 base64，只保留元信息
+    if isinstance(data, dict):
+        slim = {k: v for k, v in data.items() if k not in ("base64", "imageBase64", "img")}
+        if b64:
+            slim["has_base64"] = True
+            slim["base64_len"] = len(str(b64))
+        out["data"] = slim
+    elif b64:
+        out["data"] = {"has_base64": True, "base64_len": len(str(b64))}
+
+    if out["success"] and not out["url"]:
+        out["hint"] = out.get("hint") or "获取成功但未得到可挂附件 url"
+    return out
 
 
 @mcp.tool()
