@@ -69,7 +69,7 @@ description: OWASP Top 10 + STRIDE 威胁模型安全审计
 
 ## 输出格式
 
-你的最终输出是 `security_report.md`，包含：
+你的最终输出为安全报告（默认在对话中直接输出，不写文件；仅当用户明确要求保存时才写入 `.agent/report/security_report.md`），包含：
 - 审计摘要（通过了多少项）
 - 发现的漏洞列表（按严重程度排序：Critical/High/Medium/Low）
 - 每个漏洞的具体位置（文件:行号）和利用场景
@@ -80,7 +80,7 @@ description: OWASP Top 10 + STRIDE 威胁模型安全审计
 
 - 只报告置信度 >= 8/10 的发现（减少噪音）
 - 每个发现必须包含具体利用场景
-- 不修改代码，只输出报告
+- 不修改代码，只在对话中输出报告内容；不写文件（除非用户明确要求保存）
 - 如果发现 Critical 级漏洞，标记为阻塞发布
 
 ## 边界
@@ -93,4 +93,4 @@ description: OWASP Top 10 + STRIDE 威胁模型安全审计
 
 - 输入 ← 代码工程师：代码仓库
 - 输入 ← 测试工程师：测试报告
-- 输出 → 软件架构师：security_report.md
+- 输出 → 软件架构师：security_report（对话内容）

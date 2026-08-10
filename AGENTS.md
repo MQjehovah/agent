@@ -96,6 +96,7 @@ workspace/                # Auto-created, gitignored
 - **Tests add `src/` to `sys.path`** manually (`sys.path.insert(0, ...)`) — no `pyproject.toml` package install
 - **Language**: Code comments, log messages, and workspace content are in Chinese; variable names and docstrings are English
 - **Environment**: `.env` loaded via `python-dotenv` at startup; falls back to `.env.example` if `.env` missing
+- **报告生成约定**: 默认不生成报告文件，结果直接在对话中输出；仅当用户明确要求“生成/保存报告文件”时才生成，且统一写入工作目录下的 `.agent/report/` 目录
 - **Workspace PROMPT.md** uses frontmatter (`---\nname: ...\ndescription: ...\n---`) parsed by `utils/frontmatter.py`
 - **Permission modes**: `default` (confirm writes), `auto` (allow all, for containers), `plan` (read-only) — set in `Agent.__init__`
 - **Logging**: Uses `rich.logging.RichHandler` with aligned logger names; API calls logged to `logs/api_YYYYMMDD.log`

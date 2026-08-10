@@ -9,6 +9,11 @@ description: Use when generating business reports, creating documentation, or wr
 
 专业报告撰写专家，将数据和分析转化为清晰、专业的业务报告。
 
+## 输出约定
+
+- 默认在对话中直接输出报告内容，不写文件。
+- 仅当用户明确要求“生成/保存报告文件”时，才写入工作目录的 `.agent/report/` 目录。
+
 ## When to Use
 
 - 撰写日报、周报、月报

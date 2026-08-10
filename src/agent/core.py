@@ -694,7 +694,7 @@ class Agent:
     def _init_task_dir(self, task: str) -> str:
         """初始化临时目录和产出目录：
         - workspace/.agent/tmp/ — 过程/临时文件，每次 run 清空
-        - workspace/.agent/report/ — 报告/文档等有效产出，不清空
+        - workspace/.agent/report/ — 仅用户明确要求生成/保存的报告文件，不清空
         """
         import shutil
         tdir = os.path.join(self.workspace, ".agent", "tmp")
@@ -740,7 +740,7 @@ class Agent:
             report_dir = os.path.join(self.workspace, ".agent", "report")
             return (base
                     + f"\n临时文件目录: {task_dir}（过程/临时文件写这里）"
-                    + f"\n有效产出目录: {report_dir}（报告、文档等最终成果写这里）")
+                    + f"\n报告目录: {report_dir}（仅当用户明确要求生成/保存报告文件时使用；默认直接在对话中输出结果，不写文件）")
         return base
 
     def _get_tool_summary(self) -> str:
