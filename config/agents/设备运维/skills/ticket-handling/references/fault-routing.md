@@ -3,6 +3,8 @@
 `ticket-handling` 编排参考。按**处置动作族**选型，再加载对应 `device-*` 技能。  
 下列为**优先建议**，可按现场判断微调；不要跳过选型直接乱操作。
 
+**码与名称：** 表中 `faultCode` 仅为提示；选型以工单 `faultName` / 故障域归类为准（名称命中可覆盖单码歧义）。
+
 **硬约束：**
 
 1. 只调用当前剧本 / 已加载技能写明的接口；编排未覆盖的**处置**禁止私自调用
@@ -48,7 +50,7 @@
 | `playbook-resource` | `0x20200004` 或电量/水量类 | **`device-return-station`**；无法处置 → **`device-evidence-collect`**（日志） | supplyEngaged 或电量恢复 | 未进入 1/2/3 → `6` 或保持 `5` 待观察 |
 | `playbook-evidence` | **未命中上表**、未知码、定时任务等仅分析类 | **`device-evidence-collect`**；不做倒退/重启等处置 | 取证与分析写清 | **已恢复 → `3`；否则 `6`** |
 
-### faultCode 补充（可继续扩）
+### faultCode 补充（提示用，可继续扩；与名称冲突时以 faultName/故障域为准）
 
 | faultCode / 模式 | 建议剧本 | 备注 |
 |------------------|----------|------|
@@ -63,11 +65,13 @@
 | 名称含「碰撞」「撞障」 | `playbook-crash` | |
 | 名称含「定位」 | `playbook-locate` | |
 | 名称含「离线」「断连」 | `playbook-offline` | 此时才优先软重启 |
-| 名称含「回站」「对桩」「充电点失败」「离桩超时」 | `playbook-dock` | 排查用 cannot-back；单纯回桩下发用 resource |
+| 名称含「回站」「回桩」「对桩」「充电点失败」「离桩超时」「无法回桩」「无法返回工作站」「找不到回桩点」「停靠点」 | `playbook-dock` | 排查用 cannot-back；未闭环须 evidence（happenTime）；单纯低电回桩下发用 resource |
 | 名称含「低电」「电量」「水量」 | `playbook-resource` | |
 | 名称含「急停」 | `playbook-evidence` | 取证；已恢复可 `3`，勿自行发明远程复位 |
 | 名称含「防跌落」 | `playbook-evidence` | 行走/感知类；bag + 实时相机均须挂（有则挂） |
-| **其它任意故障名/码** | **`playbook-evidence`** | **无剧本 = 取证后结案；已恢复 `3`，否则 `6`；行走/感知须查 bag 并拉相机，定位到/有 url 则必须挂** |
+| 名称含「任务暂停」「暂停超时」「定时任务」「手动模式下无法执行」 | `playbook-evidence` | **日志主查仅 app**（SC50=`xzrobot_app2`）；**不要**默认查 `xzrobot_driver2`；影子相关字段只陈述事实，勿杜撰界面操作步骤 |
+| `0x20200016`（若现场为此码） | `playbook-evidence` | 任务暂停超时：同上，主查 app |
+| **其它任意故障名/码** | **`playbook-evidence`** | **无剧本 = 取证后结案；已恢复才 `3`，否则 `6`。仅诊断/建议人工 ≠ `3`（通用于一切未消除故障）**；行走/感知须查 bag 并拉相机，定位到/有 url 则必须挂 |
 
 > 上表扩展码为编排占位：若云端实际码值不同，以工单 `faultName` 模糊匹配为准，并回写修正本表。
 
@@ -91,8 +95,8 @@ for fault in faultList:
 
 # 3) candidates 空 / 未命中处置剧本 → playbook-evidence
 # 4) 去重，按优先级串行；每条加载对应 device-*
-# 5) 失败/无能力 → device-evidence-collect → 状态 6
-# 6) 合成一条评论 → 按结案判据改状态
+# 5) 失败/无能力 → device-evidence-collect → 按结案判据改 3/5/6（已恢复→3，待观察→5，仍异常/需人工→6）
+# 6) 合成一条评论 → 再改状态（勿默认一律 6）
 ```
 
 **实践提示：**
@@ -110,6 +114,6 @@ for fault in faultList:
 
 **robotMode**：`IDLE` / `TASK` / `PAUSE` / `FAULT` / `MAP` / `OTA` / `FACTORY`  
 
-**control_mode**：`CONTROL_MODE_MANUAL` / `CONTROL_MODE_AUTO`  
+**control_mode**：`CONTROL_MODE_MANUAL` / `CONTROL_MODE_AUTO`（影子字段，只陈述事实）  
 
 **supplyState**：`0` 空闲 · `1` 前往工作站 · `2` 加排水中 · `3` 仅充电 · `4` 退桩 · `5` 手动补给 · `6` 等待外设关闭；**1/2/3 视为已对桩供电**

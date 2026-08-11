@@ -57,7 +57,14 @@ class MCPServerConnection:
 
         merged_env = dict(os.environ)
         merged_env["PYTHONUNBUFFERED"] = "1"
-        merged_env.update(env)
+        # mcp_servers.json 的 env 仅作默认值；进程/.env 已有的键不覆盖
+        for key, value in (env or {}).items():
+            if value is None:
+                continue
+            text = str(value)
+            if key in os.environ and os.environ.get(key, "") != "":
+                continue
+            merged_env[key] = text
 
         server_params = StdioServerParameters(
             command=command,

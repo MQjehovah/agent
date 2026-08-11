@@ -747,6 +747,25 @@ def find_bags_near_time(
 
 # ==================== 老 FAE 能力对应的云端接口 ====================
 
+def _extract_bag_name(result: Any, file_path: str = "") -> str:
+    """从上传响应或路径提取录包文件名。"""
+    if isinstance(result, dict):
+        data = result.get("data")
+        if isinstance(data, dict):
+            for key in ("bag_name", "file_name", "fileName", "name"):
+                val = data.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip().split("/")[-1]
+        for key in ("bag_name", "file_name", "fileName"):
+            val = result.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip().split("/")[-1]
+    path = (file_path or "").strip().replace("\\", "/")
+    if path:
+        return path.split("/")[-1]
+    return ""
+
+
 @mcp.tool()
 def upload_bag_file(
     device_id: str,
@@ -760,18 +779,57 @@ def upload_bag_file(
 
     param 默认含 filePath / timeStamp；也可直接传完整 param。
     成功时尽量返回顶层 url 便于 create_ticket_attachment。
+    若 bag/upload 无 url，自动再试一次 bag/uploadList。
+    url 仍为空时 attach_ready=false：禁止把「已定位录包」写成已挂附件。
     """
     p = _parse_param(param)
     if file_path and "filePath" not in p and "file_path" not in p:
         p["filePath"] = file_path
     if timestamp and "timeStamp" not in p and "timestamp" not in p:
         p["timeStamp"] = int(timestamp)
-    logger.info("上传录包: device=%s file=%s", device_id, p.get("filePath") or file_path)
+    resolved_path = str(p.get("filePath") or p.get("file_path") or file_path or "").strip()
+    logger.info("上传录包: device=%s file=%s", device_id, resolved_path)
     result = _remote_post("bag/upload", device_id, product_id, req_id=req_id, param=p)
     out = _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
     out["url"] = _extract_upload_url(result)
+    out["bag_name"] = _extract_bag_name(result, resolved_path)
+    out["fallback"] = None
+
+    if out["success"] and not out["url"] and resolved_path:
+        list_param = {
+            "filePath": resolved_path,
+            "filePaths": [resolved_path],
+            "files": [resolved_path],
+        }
+        logger.info("upload 无 url，回退 uploadList: %s", resolved_path)
+        result2 = _remote_post(
+            "bag/uploadList", device_id, product_id, req_id=req_id, param=list_param
+        )
+        url2 = _extract_upload_url(result2)
+        if url2:
+            out["url"] = url2
+            out["fallback"] = "uploadList"
+            if isinstance(result2, dict) and result2.get("data") is not None:
+                out["data"] = result2.get("data")
+            name2 = _extract_bag_name(result2, resolved_path)
+            if name2:
+                out["bag_name"] = name2
+        else:
+            out["uploadList"] = {
+                "returnCode": result2.get("returnCode") if isinstance(result2, dict) else None,
+                "returnMsg": result2.get("returnMsg") if isinstance(result2, dict) else None,
+                "data": result2.get("data") if isinstance(result2, dict) else None,
+            }
+
+    out["attach_ready"] = bool(out.get("url"))
     if out["success"] and not out["url"]:
-        out["hint"] = "上传成功但未解析到 url，请检查 data 字段后再挂附件"
+        bag = out.get("bag_name") or resolved_path or "(unknown)"
+        out["hint"] = (
+            f"上传接口成功但未返回可挂附件 url（bag={bag}）。"
+            f"禁止在评论「附件已挂载」中列入该录包；"
+            f"须取得 url 后 create_ticket_attachment，或评论写明"
+            f"「录包上传未返回 url，请人工挂载 {bag}」。"
+        )
     return out
 
 
@@ -781,13 +839,29 @@ def upload_bag_list(
     product_id: str,
     param: Any = None,
     req_id: int = 0,
+    file_path: str = "",
 ):
-    """批量上传故障录包（POST /remote/bag/uploadList）。"""
+    """批量上传故障录包（POST /remote/bag/uploadList）。
+
+    可传 file_path 或 param.filePath / filePaths。成功时尽量返回顶层 url。
+    """
+    p = _parse_param(param)
+    if file_path and "filePath" not in p and "file_path" not in p:
+        p["filePath"] = file_path
+        p.setdefault("filePaths", [file_path])
     result = _remote_post(
-        "bag/uploadList", device_id, product_id, req_id=req_id, param=_parse_param(param)
+        "bag/uploadList", device_id, product_id, req_id=req_id, param=p
     )
     out = _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
     out["url"] = _extract_upload_url(result)
+    path = str(p.get("filePath") or file_path or "").strip()
+    out["bag_name"] = _extract_bag_name(result, path)
+    out["attach_ready"] = bool(out.get("url"))
+    if out["success"] and not out["url"]:
+        out["hint"] = (
+            "uploadList 成功但未解析到 url；禁止把已定位录包写成已挂附件，"
+            "评论须写请人工挂载或取得 url 后再 create_ticket_attachment。"
+        )
     return out
 
 

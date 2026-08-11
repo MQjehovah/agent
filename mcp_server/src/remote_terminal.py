@@ -47,9 +47,30 @@ DEFAULT_PASSWORD = os.getenv("TERM_PASSWORD", "titan@810")
 # 默认加宽，避免长 grep 在 80 列换行插入 \\r 污染回显（可用 TERM_COLS 覆盖）
 DEFAULT_COLS = int(os.getenv("TERM_COLS", "256"))
 DEFAULT_ROWS = int(os.getenv("TERM_ROWS", "40"))
+# 空闲自动断开（秒）；<=0 关闭。默认 4 分钟，降低「会话已满」占坑
+IDLE_TTL_SECONDS = float(os.getenv("TERM_IDLE_TTL", "240"))
+# 会话已满时退避重试
+BUSY_RETRY_COUNT = int(os.getenv("TERM_BUSY_RETRIES", "3"))
+BUSY_RETRY_BASE = float(os.getenv("TERM_BUSY_RETRY_BASE", "1.0"))
+# 命令完成：收包轮询间隔；见 prompt 立即返回
+CMD_RECV_POLL = float(os.getenv("TERM_CMD_RECV_POLL", "0.4"))
+DEFAULT_CMD_TIMEOUT = float(os.getenv("TERM_CMD_TIMEOUT", "30.0"))
+LOGIN_STEP_TIMEOUT = float(os.getenv("TERM_LOGIN_STEP_TIMEOUT", "8.0"))
+# interactive_session 整批墙钟预算（须 < MCP call_tool 60s）；可用 TERM_SESSION_WALL 覆盖
+SESSION_WALL_BUDGET = float(os.getenv("TERM_SESSION_WALL", "50.0"))
+# 单次 interactive 建议命令条数上限（超出仍执行但按墙钟截断）
+SESSION_CMD_SOFT_CAP = int(os.getenv("TERM_SESSION_CMD_CAP", "4"))
 
 LoginErrorOffline = 0x01
 LoginErrorBusy = 0x02
+
+
+class SessionBusyError(Exception):
+    """rtty 返回会话已满"""
+
+
+class DeviceOfflineError(Exception):
+    """设备离线"""
 
 
 # ============================================================================
@@ -548,7 +569,7 @@ def parse_terminal_output(
 @dataclass
 class TerminalSession:
     sn: str
-    ws: Optional[websockets.WebSocketClientProtocol] = None
+    ws: Any = None
     sid: str = ""
     output_buffer: list = field(default_factory=list)
     is_connected: bool = False
@@ -558,14 +579,119 @@ class TerminalSession:
     unack: int = 0
     parser: TerminalParser = field(default_factory=TerminalParser)
     interactive: InteractiveTerminalSession = field(default_factory=InteractiveTerminalSession)
+    username: str = DEFAULT_USERNAME
+    password: str = DEFAULT_PASSWORD
+    last_activity: float = field(default_factory=time.time)
+    base_url: str = ""
 
 
 sessions: dict[str, TerminalSession] = {}
+_session_locks: dict[str, asyncio.Lock] = {}
+_idle_tasks: dict[str, asyncio.Task] = {}
 
 
 # ============================================================================
 # 内部函数
 # ============================================================================
+
+def _get_sn_lock(sn: str) -> asyncio.Lock:
+    lock = _session_locks.get(sn)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_locks[sn] = lock
+    return lock
+
+
+def _ws_is_open(ws: Any) -> bool:
+    if ws is None:
+        return False
+    state = getattr(ws, "state", None)
+    if state is not None:
+        name = getattr(state, "name", str(state))
+        return name == "OPEN" or str(state).endswith("OPEN")
+    return bool(getattr(ws, "open", False))
+
+
+def _session_alive(session: Optional[TerminalSession]) -> bool:
+    return bool(
+        session
+        and session.is_connected
+        and session.is_logged_in
+        and _ws_is_open(session.ws)
+    )
+
+
+def _cancel_idle_task(sn: str):
+    task = _idle_tasks.pop(sn, None)
+    if task and not task.done():
+        task.cancel()
+
+
+def _touch_session(session: TerminalSession):
+    session.last_activity = time.time()
+    _schedule_idle_disconnect(session.sn)
+
+
+def _schedule_idle_disconnect(sn: str):
+    _cancel_idle_task(sn)
+    if IDLE_TTL_SECONDS <= 0:
+        return
+
+    async def _idle_watch():
+        try:
+            await asyncio.sleep(IDLE_TTL_SECONDS)
+            session = sessions.get(sn)
+            if not session:
+                return
+            idle_for = time.time() - session.last_activity
+            if idle_for >= IDLE_TTL_SECONDS - 0.05:
+                logger.info(f"空闲超时断开终端: {sn} (idle={idle_for:.0f}s)")
+                await _purge_session(sn)
+        except asyncio.CancelledError:
+            return
+
+    _idle_tasks[sn] = asyncio.create_task(_idle_watch())
+
+
+async def _purge_session(sn: str):
+    """关闭并移除会话，避免僵死 is_logged_in。"""
+    _cancel_idle_task(sn)
+    session = sessions.pop(sn, None)
+    if not session:
+        return
+    session.is_connected = False
+    session.is_logged_in = False
+    ws = session.ws
+    session.ws = None
+    if ws is not None:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    logger.info(f"终端已断开: {sn}")
+
+
+def _text_ends_with_prompt(parser: TerminalParser, text: str) -> bool:
+    clean = ANSIStripper.clean_for_display(text)
+    lines = [ln.strip() for ln in clean.split("\n") if ln.strip()]
+    if not lines:
+        return False
+    last = lines[-1]
+    lower = last.lower()
+    if "password" in lower or lower.startswith("login") or "username" in lower:
+        return False
+    return parser._is_prompt(last)
+
+
+def _is_login_prompt_text(text: str) -> bool:
+    lower = ANSIStripper.clean_for_display(text).lower()
+    return any(k in lower for k in ("login:", "username:", "user name:"))
+
+
+def _is_password_prompt_text(text: str) -> bool:
+    lower = ANSIStripper.clean_for_display(text).lower()
+    return "password" in lower
+
 
 async def _send_winsize(session: TerminalSession):
     msg = {"type": "winsize", "cols": session.cols, "rows": session.rows}
@@ -581,10 +707,10 @@ async def _wait_login(session: TerminalSession, timeout: float = 10.0):
             if msg.get("type") == "login":
                 if msg.get("err") == LoginErrorOffline:
                     session.is_connected = False
-                    raise Exception("设备离线")
+                    raise DeviceOfflineError("设备离线")
                 elif msg.get("err") == LoginErrorBusy:
                     session.is_connected = False
-                    raise Exception("会话已满")
+                    raise SessionBusyError("会话已满")
 
                 session.sid = msg.get("sid", "")
                 session.is_logged_in = True
@@ -599,136 +725,72 @@ async def _wait_login(session: TerminalSession, timeout: float = 10.0):
         raise Exception("等待login超时")
 
 
-async def _auto_login(session: TerminalSession, username: str, password: str, timeout: float = 5.0):
-    logger.info(f"自动登录: {username}")
-
-    outputs = await _receive_output(session.sn, timeout=timeout)
-
-    login_prompt_found = False
-    for o in outputs:
-        if o["type"] == "output":
-            text = o["data"].lower()
-            if "login" in text or "username" in text or "user" in text:
-                login_prompt_found = True
-                break
-
-    await _send_term_data(session, username + "\n")
-    await asyncio.sleep(0.5)
-
-    outputs = await _receive_output(session.sn, timeout=timeout)
-
-    password_prompt_found = False
-    for o in outputs:
-        if o["type"] == "output":
-            text = o["data"].lower()
-            if "password" in text or "passwd" in text:
-                password_prompt_found = True
-                break
-
-    await _send_term_data(session, password + "\n")
-    await asyncio.sleep(1.0)
-
-    outputs = await _receive_output(session.sn, timeout=timeout)
-
-    login_success = False
-    for o in outputs:
-        if o["type"] == "output":
-            text = o["data"]
-            if "$" in text or "#" in text or "~" in text or "welcome" in text.lower():
-                login_success = True
-                break
-
-    logger.info(f"登录结果: success={login_success}")
-    return {"success": login_success, "outputs": outputs}
+async def _process_ws_message(session: TerminalSession, message: Any) -> List[Dict[str, Any]]:
+    """处理单条 WS 消息，返回标准化 outputs 片段。"""
+    outputs: List[Dict[str, Any]] = []
+    if isinstance(message, str):
+        msg = json.loads(message)
+        outputs.append({"type": "control", "data": msg})
+        session.output_buffer.append(msg)
+        if msg.get("type") == "sendfile":
+            outputs.append({"type": "file_download", "name": msg.get("name")})
+        elif msg.get("type") == "recvfile":
+            outputs.append({"type": "file_upload_request"})
+    else:
+        data = message
+        session.unack += len(data)
+        text = data.decode("utf-8", errors="replace")
+        outputs.append({"type": "output", "data": text})
+        session.output_buffer.append(text)
+        if session.unack > 4 * 1024:
+            ack_msg = {"type": "ack", "ack": session.unack}
+            await session.ws.send(json.dumps(ack_msg))
+            session.unack = 0
+    return outputs
 
 
-async def _connect_ws(sn: str, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS, username: str = None, password: str = None) -> TerminalSession:
-    if sn in sessions and sessions[sn].is_logged_in:
-        return sessions[sn]
+async def _receive_until(
+    sn: str,
+    *,
+    overall_timeout: float,
+    poll_timeout: float = CMD_RECV_POLL,
+    stop_when=None,
+) -> List[Dict[str, Any]]:
+    """持续收包直到 stop_when(accumulated_output_text) 为真，或 overall_timeout。
 
-    url = f"{WS_BASE_URL}/connect/{sn}"
-    logger.info(f"连接终端: {url}")
-
-    try:
-        ws = await websockets.connect(
-            url,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5
-        )
-        session = TerminalSession(sn=sn, ws=ws, is_connected=True, cols=cols, rows=rows)
-        sessions[sn] = session
-
-        await _wait_login(session)
-
-        if not session.is_logged_in:
-            raise Exception("登录失败")
-
-        if username and password:
-            await _auto_login(session, username, password)
-
-        return session
-    except Exception as e:
-        logger.error(f"终端连接失败: {e}")
-        if sn in sessions:
-            sessions[sn].is_connected = False
-        raise
-
-
-async def _disconnect_ws(sn: str):
-    if sn in sessions and sessions[sn].ws:
-        try:
-            await sessions[sn].ws.close()
-        except:
-            pass
-        sessions[sn].is_connected = False
-        sessions[sn].is_logged_in = False
-        sessions[sn].ws = None
-        logger.info(f"终端已断开: {sn}")
-
-
-async def _send_term_data(session: TerminalSession, data: str):
-    buf = bytearray([0]) + data.encode('utf-8')
-    await session.ws.send(bytes(buf))
-
-
-async def _receive_output(sn: str, timeout: float = 2.0) -> list:
-    if sn not in sessions or not sessions[sn].is_connected:
+    stop_when 为 None 时退化为「idle poll_timeout 无数据则停」（兼容旧行为）。
+    """
+    if sn not in sessions or not sessions[sn].is_connected or not _ws_is_open(sessions[sn].ws):
         return []
 
     session = sessions[sn]
-    outputs = []
+    outputs: List[Dict[str, Any]] = []
+    accumulated = ""
+    deadline = time.time() + overall_timeout
+    got_data = False
 
     try:
         while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            wait = min(poll_timeout, remaining)
             try:
-                message = await asyncio.wait_for(
-                    session.ws.recv(),
-                    timeout=timeout
-                )
-
-                if isinstance(message, str):
-                    msg = json.loads(message)
-                    outputs.append({"type": "control", "data": msg})
-                    session.output_buffer.append(msg)
-
-                    if msg.get("type") == "sendfile":
-                        outputs.append({"type": "file_download", "name": msg.get("name")})
-                    elif msg.get("type") == "recvfile":
-                        outputs.append({"type": "file_upload_request"})
-                else:
-                    data = message
-                    session.unack += len(data)
-
-                    text = data.decode('utf-8', errors='replace')
-                    outputs.append({"type": "output", "data": text})
-                    session.output_buffer.append(text)
-
-                    if session.unack > 4 * 1024:
-                        ack_msg = {"type": "ack", "ack": session.unack}
-                        await session.ws.send(json.dumps(ack_msg))
-                        session.unack = 0
+                message = await asyncio.wait_for(session.ws.recv(), timeout=wait)
             except asyncio.TimeoutError:
+                if stop_when is None:
+                    break
+                continue
+
+            chunk = await _process_ws_message(session, message)
+            outputs.extend(chunk)
+            for o in chunk:
+                if o["type"] == "output":
+                    accumulated += o["data"]
+                    got_data = True
+            _touch_session(session)
+
+            if stop_when is not None and got_data and stop_when(accumulated):
                 break
     except websockets.exceptions.ConnectionClosed:
         session.is_connected = False
@@ -736,6 +798,211 @@ async def _receive_output(sn: str, timeout: float = 2.0) -> list:
         outputs.append({"type": "error", "data": "连接已断开"})
 
     return outputs
+
+
+async def _receive_output(sn: str, timeout: float = 2.0) -> list:
+    """兼容：在 timeout 内持续收包，idle 则停。"""
+    return await _receive_until(sn, overall_timeout=timeout, poll_timeout=timeout, stop_when=None)
+
+
+async def _auto_login(session: TerminalSession, username: str, password: str, timeout: float = LOGIN_STEP_TIMEOUT):
+    """提示符驱动自动登录，无固定长 sleep。"""
+    logger.info(f"自动登录: {username}")
+    sn = session.sn
+    parser = session.parser
+
+    def shell_ready(text: str) -> bool:
+        return _text_ends_with_prompt(parser, text)
+
+    def login_or_shell(text: str) -> bool:
+        return _is_login_prompt_text(text) or shell_ready(text)
+
+    def password_ready(text: str) -> bool:
+        return _is_password_prompt_text(text) or shell_ready(text)
+
+    outputs = await _receive_until(
+        sn, overall_timeout=timeout, poll_timeout=CMD_RECV_POLL, stop_when=login_or_shell
+    )
+    initial = "".join(o["data"] for o in outputs if o["type"] == "output")
+    if shell_ready(initial):
+        logger.info("登录结果: success=True (已在 shell)")
+        return {"success": True, "outputs": outputs}
+
+    await _send_term_data(session, username + "\n")
+    _touch_session(session)
+
+    outputs = await _receive_until(
+        sn, overall_timeout=timeout, poll_timeout=CMD_RECV_POLL, stop_when=password_ready
+    )
+    mid = "".join(o["data"] for o in outputs if o["type"] == "output")
+    if shell_ready(mid):
+        logger.info("登录结果: success=True (无需密码)")
+        return {"success": True, "outputs": outputs}
+
+    await _send_term_data(session, password + "\n")
+    _touch_session(session)
+
+    outputs = await _receive_until(
+        sn, overall_timeout=timeout, poll_timeout=CMD_RECV_POLL, stop_when=shell_ready
+    )
+    final = "".join(o["data"] for o in outputs if o["type"] == "output")
+    login_success = shell_ready(final)
+    if not login_success and final:
+        clean = ANSIStripper.clean_for_display(final)
+        if "welcome" in clean.lower() and ("$" in clean or "#" in clean):
+            login_success = True
+
+    logger.info(f"登录结果: success={login_success}")
+    return {"success": login_success, "outputs": outputs}
+
+
+async def _connect_ws_once(
+    sn: str,
+    cols: int,
+    rows: int,
+    username: Optional[str],
+    password: Optional[str],
+    base_url: Optional[str] = None,
+) -> TerminalSession:
+    url_base = (base_url or WS_BASE_URL).rstrip("/")
+    url = f"{url_base}/connect/{sn}"
+    logger.info(f"连接终端: {url}")
+
+    ws = await websockets.connect(
+        url,
+        ping_interval=20,
+        ping_timeout=10,
+        close_timeout=5,
+    )
+    session = TerminalSession(
+        sn=sn,
+        ws=ws,
+        is_connected=True,
+        cols=cols,
+        rows=rows,
+        username=username or DEFAULT_USERNAME,
+        password=password or DEFAULT_PASSWORD,
+        base_url=url_base,
+    )
+    sessions[sn] = session
+
+    try:
+        await _wait_login(session)
+        if not session.is_logged_in:
+            raise Exception("登录失败")
+        if username and password:
+            await _auto_login(session, username, password)
+        _touch_session(session)
+        return session
+    except Exception:
+        await _purge_session(sn)
+        raise
+
+
+async def _connect_ws(
+    sn: str,
+    cols: int = DEFAULT_COLS,
+    rows: int = DEFAULT_ROWS,
+    username: str = None,
+    password: str = None,
+    base_url: str = None,
+) -> TerminalSession:
+    existing = sessions.get(sn)
+    if _session_alive(existing):
+        _touch_session(existing)
+        return existing
+    if existing is not None:
+        logger.info(f"复用失败，清理僵死会话后重连: {sn}")
+        await _purge_session(sn)
+
+    last_err: Optional[Exception] = None
+    for attempt in range(max(1, BUSY_RETRY_COUNT)):
+        try:
+            return await _connect_ws_once(sn, cols, rows, username, password, base_url)
+        except SessionBusyError as e:
+            last_err = e
+            delay = BUSY_RETRY_BASE * (2 ** attempt)
+            logger.warning(f"会话已满，{delay:.1f}s 后重试 ({attempt + 1}/{BUSY_RETRY_COUNT}): {sn}")
+            await _purge_session(sn)
+            await asyncio.sleep(delay)
+        except DeviceOfflineError:
+            await _purge_session(sn)
+            raise
+        except Exception as e:
+            logger.error(f"终端连接失败: {e}")
+            await _purge_session(sn)
+            raise
+
+    raise last_err or SessionBusyError("会话已满")
+
+
+async def _disconnect_ws(sn: str):
+    await _purge_session(sn)
+
+
+async def _send_term_data(session: TerminalSession, data: str):
+    buf = bytearray([0]) + data.encode("utf-8")
+    await session.ws.send(bytes(buf))
+
+
+async def _ensure_session(
+    sn: str,
+    *,
+    auto_reconnect: bool = True,
+) -> Optional[TerminalSession]:
+    """确保会话可用；断线时用缓存凭据重连一次。"""
+    session = sessions.get(sn)
+    if _session_alive(session):
+        return session
+    if not auto_reconnect or session is None:
+        return None
+    username = session.username
+    password = session.password
+    cols = session.cols
+    rows = session.rows
+    base_url = session.base_url or None
+    logger.info(f"会话失效，尝试自动重连: {sn}")
+    await _purge_session(sn)
+    try:
+        return await _connect_ws(sn, cols, rows, username, password, base_url)
+    except Exception as e:
+        logger.error(f"自动重连失败: {e}")
+        return None
+
+
+async def _run_command(
+    sn: str,
+    command: str,
+    overall_timeout: float = DEFAULT_CMD_TIMEOUT,
+) -> Tuple[List[str], CommandResult]:
+    """发送命令并等到 shell 提示符（或 overall_timeout）。"""
+    session = sessions[sn]
+    session.interactive.start_command(command)
+    await _send_term_data(session, command + "\n")
+    logger.info(f"发送命令: {command}")
+    _touch_session(session)
+
+    def done(text: str) -> bool:
+        return _text_ends_with_prompt(session.parser, text)
+
+    outputs = await _receive_until(
+        sn,
+        overall_timeout=overall_timeout,
+        poll_timeout=CMD_RECV_POLL,
+        stop_when=done,
+    )
+    raw_texts = [o["data"] for o in outputs if o["type"] == "output"]
+    result = session.interactive.parser.parse_command_response(raw_texts, command)
+    session.interactive.command_history.append({
+        "command": command,
+        "output": result.output,
+        "success": result.success,
+        "timestamp": time.time(),
+    })
+    session.interactive._current_command = ""
+    session.interactive.output_buffer = []
+    _touch_session(session)
+    return raw_texts, result
 
 
 # ============================================================================
@@ -754,13 +1021,9 @@ async def connect_terminal(sn: str, cols: int = DEFAULT_COLS, rows: int = DEFAUL
     - password: 登录密码（默认 titan@810，可用 TERM_PASSWORD 覆盖）
     - base_url: WebSocket基础URL（可选，默认为 wss://dev.xzrobot.com:10000）
     """
-    global WS_BASE_URL
-    if base_url:
-        WS_BASE_URL = base_url.rstrip("/")
-
-    async def _connect():
+    async with _get_sn_lock(sn):
         try:
-            session = await _connect_ws(sn, cols, rows, username, password)
+            session = await _connect_ws(sn, cols, rows, username, password, base_url)
             return {
                 "success": True,
                 "sn": sn,
@@ -773,7 +1036,6 @@ async def connect_terminal(sn: str, cols: int = DEFAULT_COLS, rows: int = DEFAUL
         except Exception as e:
             return {"success": False, "sn": sn, "error": str(e)}
 
-    return await _connect()
 
 @mcp.tool()
 async def disconnect_terminal(sn: str):
@@ -782,26 +1044,22 @@ async def disconnect_terminal(sn: str):
     参数:
     - sn: 设备编码
     """
-    async def _disconnect():
+    async with _get_sn_lock(sn):
+        if sn not in sessions:
+            return {"success": True, "sn": sn, "message": "终端未连接"}
         await _disconnect_ws(sn)
-        if sn in sessions:
-            del sessions[sn]
         return {"success": True, "sn": sn, "message": "终端已断开"}
 
-    if sn not in sessions:
-        return {"success": True, "sn": sn, "message": "终端未连接"}
-
-    return await _disconnect()
 
 @mcp.tool()
-async def send_command(sn: str, command: str, wait_output: bool = True, timeout: float = 5.0, parse_output: bool = True):
+async def send_command(sn: str, command: str, wait_output: bool = True, timeout: float = DEFAULT_CMD_TIMEOUT, parse_output: bool = True):
     """发送命令到终端并解析响应
 
     参数:
     - sn: 设备编码
-    - command: 要发送的命令（会自动添加换行符）
+    - command: 要发送的命令（会自动添加换行符）。大日志请用 `grep … | head -n 20`；禁止裸 `tail`/`cat` 冒充时间窗证据
     - wait_output: 是否等待输出（默认True）
-    - timeout: 等待输出的超时时间（秒，默认5.0）
+    - timeout: 等待命令完成的总超时（秒，默认见提示符即返回；可用 TERM_CMD_TIMEOUT）
     - parse_output: 是否解析输出结构（默认True）
 
     返回:
@@ -811,65 +1069,49 @@ async def send_command(sn: str, command: str, wait_output: bool = True, timeout:
     - raw_outputs: 原始输出列表
     - parsed: 解析后的结构化输出（当parse_output=True时）
     """
-    if sn not in sessions or not sessions[sn].is_logged_in:
-        return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
+    async with _get_sn_lock(sn):
+        session = await _ensure_session(sn, auto_reconnect=True)
+        if not session:
+            return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
 
-    async def _send():
         try:
-            session = sessions[sn]
+            if not wait_output:
+                await _send_term_data(session, command + "\n")
+                _touch_session(session)
+                return {"success": True, "sn": sn, "command": command}
 
-            # 记录开始执行命令
-            session.interactive.start_command(command)
-
-            await _send_term_data(session, command + "\n")
-            logger.info(f"发送命令: {command}")
-
-            if wait_output:
-                outputs = await _receive_output(sn, timeout)
-
-                # 收集原始输出文本
-                raw_texts = []
-                for o in outputs:
-                    if o["type"] == "output":
-                        raw_texts.append(o["data"])
-
-                # 解析命令响应
-                result = session.interactive.parser.parse_command_response(raw_texts, command)
-
-                if parse_output:
-                    # 返回解析后的结构化输出
-                    return {
-                        "success": True,
-                        "sn": sn,
-                        "command": command,
-                        "output": result.output,
-                        "command_success": result.success,
-                        "error": result.error if not result.success else "",
-                        "raw_outputs": raw_texts,
-                        "parsed": {
-                            "lines": result.output.split('\n') if result.output else [],
-                            "line_count": len(result.output.split('\n')) if result.output else 0
-                        }
-                    }
-                else:
-                    # 返回简化输出
-                    return {
-                        "success": True,
-                        "sn": sn,
-                        "command": command,
-                        "output": result.output,
-                        "raw_outputs": raw_texts
-                    }
-
-            return {"success": True, "sn": sn, "command": command}
+            raw_texts, result = await _run_command(sn, command, overall_timeout=timeout)
+            if parse_output:
+                return {
+                    "success": True,
+                    "sn": sn,
+                    "command": command,
+                    "output": result.output,
+                    "command_success": result.success,
+                    "error": result.error if not result.success else "",
+                    "raw_outputs": raw_texts,
+                    "parsed": {
+                        "lines": result.output.split("\n") if result.output else [],
+                        "line_count": len(result.output.split("\n")) if result.output else 0,
+                    },
+                }
+            return {
+                "success": True,
+                "sn": sn,
+                "command": command,
+                "output": result.output,
+                "raw_outputs": raw_texts,
+            }
         except websockets.exceptions.ConnectionClosed:
-            sessions[sn].is_connected = False
-            sessions[sn].is_logged_in = False
+            dead = sessions.get(sn)
+            if dead:
+                dead.is_connected = False
+                dead.is_logged_in = False
+                dead.ws = None
             return {"success": False, "error": "连接已断开"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    return await _send()
 
 @mcp.tool()
 async def send_raw(sn: str, data: str):
@@ -879,18 +1121,17 @@ async def send_raw(sn: str, data: str):
     - sn: 设备编码
     - data: 原始数据字符串
     """
-    if sn not in sessions or not sessions[sn].is_logged_in:
-        return {"success": False, "error": "终端未连接"}
-
-    async def _send():
+    async with _get_sn_lock(sn):
+        if not _session_alive(sessions.get(sn)):
+            return {"success": False, "error": "终端未连接"}
         try:
             session = sessions[sn]
             await _send_term_data(session, data)
+            _touch_session(session)
             return {"success": True, "sn": sn, "data": data}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    return await _send()
 
 @mcp.tool()
 async def receive_output(sn: str, timeout: float = 2.0):
@@ -900,18 +1141,14 @@ async def receive_output(sn: str, timeout: float = 2.0):
     - sn: 设备编码
     - timeout: 等待输出的超时时间（秒，默认2.0）
     """
-    if sn not in sessions or not sessions[sn].is_connected:
-        return {"success": False, "error": "终端未连接"}
-
-    async def _receive():
+    async with _get_sn_lock(sn):
+        if sn not in sessions or not sessions[sn].is_connected:
+            return {"success": False, "error": "终端未连接"}
         outputs = await _receive_output(sn, timeout)
-        return {
-            "success": True,
-            "sn": sn,
-            "outputs": outputs
-        }
+        if sn in sessions:
+            _touch_session(sessions[sn])
+        return {"success": True, "sn": sn, "outputs": outputs}
 
-    return await _receive()
 
 @mcp.tool()
 async def resize_terminal(sn: str, cols: int, rows: int):
@@ -922,17 +1159,16 @@ async def resize_terminal(sn: str, cols: int, rows: int):
     - cols: 列数
     - rows: 行数
     """
-    if sn not in sessions or not sessions[sn].is_logged_in:
-        return {"success": False, "error": "终端未连接"}
-
-    async def _resize():
+    async with _get_sn_lock(sn):
+        if not _session_alive(sessions.get(sn)):
+            return {"success": False, "error": "终端未连接"}
         session = sessions[sn]
         session.cols = cols
         session.rows = rows
         await _send_winsize(session)
+        _touch_session(session)
         return {"success": True, "sn": sn, "cols": cols, "rows": rows}
 
-    return await _resize()
 
 @mcp.tool()
 def get_session_status(sn: str = None):
@@ -947,11 +1183,13 @@ def get_session_status(sn: str = None):
             return {
                 "sn": sn,
                 "sid": session.sid,
-                "is_connected": session.is_connected,
-                "is_logged_in": session.is_logged_in,
+                "is_connected": session.is_connected and _ws_is_open(session.ws),
+                "is_logged_in": session.is_logged_in and _ws_is_open(session.ws),
                 "cols": session.cols,
                 "rows": session.rows,
-                "buffer_size": len(session.output_buffer)
+                "buffer_size": len(session.output_buffer),
+                "last_activity": session.last_activity,
+                "idle_ttl": IDLE_TTL_SECONDS,
             }
         return {"sn": sn, "is_connected": False, "is_logged_in": False}
 
@@ -960,11 +1198,12 @@ def get_session_status(sn: str = None):
         all_sessions.append({
             "sn": ssn,
             "sid": session.sid,
-            "is_connected": session.is_connected,
-            "is_logged_in": session.is_logged_in,
+            "is_connected": session.is_connected and _ws_is_open(session.ws),
+            "is_logged_in": session.is_logged_in and _ws_is_open(session.ws),
             "cols": session.cols,
             "rows": session.rows,
-            "buffer_size": len(session.output_buffer)
+            "buffer_size": len(session.output_buffer),
+            "last_activity": session.last_activity,
         })
     return {"sessions": all_sessions}
 
@@ -1007,14 +1246,15 @@ def get_buffer(sn: str, lines: int = 100):
 
 
 @mcp.tool()
-async def interactive_session(sn: str, commands: list, delay: float = 0.8, parse_outputs: bool = True):
+async def interactive_session(sn: str, commands: list, delay: float = 0.0, parse_outputs: bool = True, timeout: float = DEFAULT_CMD_TIMEOUT):
     """交互式会话 - 发送多个命令并收集解析后的输出
 
     参数:
     - sn: 设备编码
-    - commands: 命令列表
-    - delay: 命令之间的延迟（秒，默认0.8）
+    - commands: 命令列表（建议 ≤4 条；大日志须 `grep … | head -n 20`，禁止裸 tail/cat/无 head 全日 grep）
+    - delay: 命令之间的额外延迟（秒，默认0；完成检测已按提示符，一般无需延迟）
     - parse_outputs: 是否解析输出结构（默认True）
+    - timeout: 单条命令超时上限（秒）；整批另受墙钟预算 TERM_SESSION_WALL（默认50s，对齐 MCP 60s）约束
 
     返回:
     - success: 整体是否成功
@@ -1023,54 +1263,75 @@ async def interactive_session(sn: str, commands: list, delay: float = 0.8, parse
         - output: 清理后的输出
         - success: 命令是否成功
         - error: 错误信息（如有）
+    - wall_budget_seconds: 本批墙钟预算
+    - truncated: 是否因墙钟预算未跑完全部命令
     """
-    if sn not in sessions or not sessions[sn].is_logged_in:
-        return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
+    async with _get_sn_lock(sn):
+        session = await _ensure_session(sn, auto_reconnect=True)
+        if not session:
+            return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
 
-    async def _interactive():
+        cmd_list = list(commands or [])
         results = []
-        session = sessions[sn]
-
-        for cmd in commands:
+        wall = max(1.0, SESSION_WALL_BUDGET)
+        deadline = time.time() + wall
+        truncated = False
+        for idx, cmd in enumerate(cmd_list):
+            remaining = deadline - time.time()
+            if remaining <= 0.5:
+                truncated = True
+                for skipped in cmd_list[idx:]:
+                    results.append({
+                        "command": skipped,
+                        "output": "",
+                        "success": False,
+                        "error": f"interactive_session 墙钟预算 {wall}s 已用尽，未执行",
+                    })
+                break
             try:
-                session.interactive.start_command(cmd)
-                await _send_term_data(session, cmd + "\n")
-                logger.info(f"发送命令: {cmd}")
-                await asyncio.sleep(delay)
-                outputs = await _receive_output(sn, timeout=3.0)
-
-                raw_texts = [o["data"] for o in outputs if o["type"] == "output"]
-
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                per_timeout = min(float(timeout), remaining)
+                raw_texts, result = await _run_command(
+                    sn, cmd, overall_timeout=per_timeout
+                )
                 if parse_outputs:
-                    result = session.interactive.parser.parse_command_response(raw_texts, cmd)
                     results.append({
                         "command": cmd,
                         "output": result.output,
                         "success": result.success,
-                        "error": result.error if not result.success else ""
+                        "error": result.error if not result.success else "",
                     })
                 else:
                     results.append({
                         "command": cmd,
-                        "output": '\n'.join(raw_texts),
-                        "success": True
+                        "output": "\n".join(raw_texts),
+                        "success": True,
                     })
             except Exception as e:
                 results.append({
                     "command": cmd,
                     "output": "",
                     "success": False,
-                    "error": str(e)
+                    "error": str(e),
                 })
+
+        if len(cmd_list) > SESSION_CMD_SOFT_CAP and not truncated:
+            logger.info(
+                "interactive_session 命令数 %s 超过建议上限 %s（仍已执行；请拆批）",
+                len(cmd_list),
+                SESSION_CMD_SOFT_CAP,
+            )
 
         return {
             "success": True,
             "sn": sn,
-            "total_commands": len(commands),
-            "results": results
+            "total_commands": len(cmd_list),
+            "results": results,
+            "wall_budget_seconds": wall,
+            "truncated": truncated,
         }
 
-    return await _interactive()
 
 @mcp.tool()
 def set_ws_base_url(base_url: str):
@@ -1123,7 +1384,7 @@ def parse_output(outputs: list, command: str = None):
 
 
 @mcp.tool()
-async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay: float = 1.0, timeout: float = 3.0):
+async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay: float = 1.0, timeout: float = DEFAULT_CMD_TIMEOUT):
     """执行命令并支持失败重试
 
     参数:
@@ -1131,30 +1392,20 @@ async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_
     - command: 要执行的命令
     - max_retries: 最大重试次数（默认3）
     - retry_delay: 重试延迟（秒，默认1.0）
-    - timeout: 每次执行的超时时间（秒，默认3.0）
+    - timeout: 每次执行的超时时间（秒）
 
     返回:
     - 命令执行结果
     """
-    if sn not in sessions or not sessions[sn].is_logged_in:
-        return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
+    async with _get_sn_lock(sn):
+        session = await _ensure_session(sn, auto_reconnect=True)
+        if not session:
+            return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
 
-    async def _execute_with_retry():
-        session = sessions[sn]
         last_error = None
-
         for attempt in range(max_retries):
             try:
-                session.interactive.start_command(command)
-                await _send_term_data(session, command + "\n")
-                logger.info(f"发送命令 (尝试 {attempt + 1}/{max_retries}): {command}")
-
-                await asyncio.sleep(0.5)
-                outputs = await _receive_output(sn, timeout)
-
-                raw_texts = [o["data"] for o in outputs if o["type"] == "output"]
-                result = session.interactive.parser.parse_command_response(raw_texts, command)
-
+                raw_texts, result = await _run_command(sn, command, overall_timeout=timeout)
                 if result.success or attempt == max_retries - 1:
                     return {
                         "success": True,
@@ -1164,13 +1415,10 @@ async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_
                         "command_success": result.success,
                         "error": result.error if not result.success else "",
                         "attempts": attempt + 1,
-                        "raw_outputs": raw_texts
+                        "raw_outputs": raw_texts,
                     }
-
-                # 命令执行失败，准备重试
                 logger.warning(f"命令执行失败，准备重试: {result.error}")
                 await asyncio.sleep(retry_delay)
-
             except Exception as e:
                 last_error = str(e)
                 logger.error(f"命令执行异常 (尝试 {attempt + 1}): {e}")
@@ -1182,10 +1430,9 @@ async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_
             "sn": sn,
             "command": command,
             "error": last_error or "命令执行失败",
-            "attempts": max_retries
+            "attempts": max_retries,
         }
 
-    return await _execute_with_retry()
 
 @mcp.tool()
 async def wait_for_prompt(sn: str, timeout: float = 5.0):
@@ -1198,32 +1445,24 @@ async def wait_for_prompt(sn: str, timeout: float = 5.0):
     返回:
     - 是否成功等到提示符
     """
-    if sn not in sessions or not sessions[sn].is_connected:
-        return {"success": False, "error": "终端未连接"}
+    async with _get_sn_lock(sn):
+        if sn not in sessions or not sessions[sn].is_connected:
+            return {"success": False, "error": "终端未连接"}
 
-    async def _wait():
         session = sessions[sn]
-        start_time = time.time()
 
-        while time.time() - start_time < timeout:
-            try:
-                outputs = await _receive_output(sn, timeout=1.0)
-                for o in outputs:
-                    if o["type"] == "output":
-                        clean = ANSIStripper.clean_for_display(o["data"])
-                        if session.parser._is_prompt(clean):
-                            return {
-                                "success": True,
-                                "sn": sn,
-                                "prompt": clean.strip()
-                            }
-            except Exception as e:
-                logger.error(f"等待提示符异常: {e}")
+        def done(text: str) -> bool:
+            return _text_ends_with_prompt(session.parser, text)
 
+        outputs = await _receive_until(
+            sn, overall_timeout=timeout, poll_timeout=CMD_RECV_POLL, stop_when=done
+        )
+        accumulated = "".join(o["data"] for o in outputs if o["type"] == "output")
+        if done(accumulated):
+            clean = ANSIStripper.clean_for_display(accumulated)
+            lines = [ln.strip() for ln in clean.split("\n") if ln.strip()]
+            return {"success": True, "sn": sn, "prompt": lines[-1] if lines else clean.strip()}
         return {"success": False, "error": "等待提示符超时"}
-
-    return await _wait()
-
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Optional
 
 import requests
@@ -42,6 +43,10 @@ TICKET_STATUS_CHANGE_PATH = os.getenv(
 TICKET_COMMENT_CREATE_PATH = os.getenv(
     "TICKET_COMMENT_CREATE_PATH",
     "/rosiwit-cloud/ticket/ticketComment/create",
+)
+TICKET_COMMENT_PAGE_PATH = os.getenv(
+    "TICKET_COMMENT_PAGE_PATH",
+    "/rosiwit-cloud/ticket/ticketComment/page",
 )
 TICKET_ATTACHMENT_CREATE_PATH = os.getenv(
     "TICKET_ATTACHMENT_CREATE_PATH",
@@ -101,6 +106,122 @@ def _create_comment(
     except requests.exceptions.RequestException as e:
         logger.error("工单发表评论失败 ticket_id=%s: %s", ticket_id, e)
         return {"success": False, "error": str(e)}
+
+
+def _normalize_comment_text(text: str) -> str:
+    """Normalize whitespace for comment matching."""
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _comment_content_matches(expected: str, actual: str) -> bool:
+    """True if page record content covers the submitted comment.
+
+    Prefer exact / normalized equality. Allow submitted text as substring of
+    page content (page may wrap). Do NOT treat page content as substring of
+    expected — that false-positives against older shorter comments.
+    """
+    exp = _normalize_comment_text(expected)
+    act = _normalize_comment_text(actual)
+    if not exp or not act:
+        return False
+    if exp == act:
+        return True
+    if exp in act:
+        return True
+    # Long comments: first 120 chars of submitted appear in page (truncation)
+    if len(exp) > 120 and exp[:120] in act:
+        return True
+    return False
+
+
+def _list_comments(
+    ticket_id: str, current: int = 1, size: int = 10
+) -> dict[str, Any]:
+    """POST /ticket/ticketComment/page — GET 会 500，须 POST + ticketId。"""
+    url = f"{cloud.get_base_url().rstrip('/')}{TICKET_COMMENT_PAGE_PATH}"
+    body: dict[str, Any] = {
+        "current": int(current),
+        "size": int(size),
+        "ticketId": str(ticket_id),
+    }
+    try:
+        resp = cloud.request_with_reauth(
+            "POST", url, headers=cloud.auth_headers(json_body=True), json=body
+        )
+        resp.raise_for_status()
+        return resp.json() if resp.text else {"success": False, "error": "empty response"}
+    except requests.exceptions.RequestException as e:
+        logger.error("工单评论分页失败 ticket_id=%s: %s", ticket_id, e)
+        return {"success": False, "error": str(e)}
+
+
+def _summarize_comment_records(records: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        content = r.get("content")
+        content_s = str(content) if content is not None else ""
+        out.append(
+            {
+                "id": r.get("id"),
+                "ticketId": r.get("ticketId"),
+                "content": content_s,
+                "contentPreview": content_s[:200],
+                "createTime": r.get("createTime"),
+                "createUser": r.get("createUser") or r.get("createUserName"),
+                "parentId": r.get("parentId"),
+            }
+        )
+    return out
+
+
+def _find_matching_comment(
+    content: str, records: list[Any]
+) -> Optional[dict[str, Any]]:
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        if _comment_content_matches(content, str(r.get("content") or "")):
+            return {
+                "id": r.get("id"),
+                "createTime": r.get("createTime"),
+                "contentPreview": str(r.get("content") or "")[:200],
+            }
+    return None
+
+
+def _verify_comment_on_page(
+    ticket_id: str, content: str, *, size: int = 20
+) -> dict[str, Any]:
+    """After create, confirm comment appears on ticketComment/page."""
+    page = _list_comments(ticket_id, current=1, size=size)
+    if not isinstance(page, dict):
+        return {
+            "verified": False,
+            "verifyError": "分页响应格式异常",
+            "raw": page,
+        }
+    ok = bool(page.get("success") or page.get("returnCode") == 200)
+    data = page.get("data") if isinstance(page.get("data"), dict) else {}
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        records = []
+    if not ok:
+        return {
+            "verified": False,
+            "verifyError": page.get("returnMsg") or page.get("error") or "分页查询失败",
+            "returnCode": page.get("returnCode"),
+            "total": data.get("total") if isinstance(data, dict) else None,
+        }
+    match = _find_matching_comment(content, records)
+    return {
+        "verified": match is not None,
+        "verifyError": None if match else "page 未找到与本次 content 匹配的评论",
+        "returnCode": page.get("returnCode"),
+        "total": data.get("total"),
+        "matchedComment": match,
+    }
 
 
 def _create_attachment(
@@ -225,6 +346,9 @@ def change_ticket_status(ticket_id: str, status: int):
     tid = str(ticket_id).strip()
     if not tid:
         return {"success": False, "error": "ticket_id 不能为空"}
+    bound = cloud.bind_ticket_cloud(tid)
+    if not bound.get("success"):
+        return bound
     try:
         status_int = int(status)
     except (TypeError, ValueError):
@@ -258,11 +382,101 @@ def change_ticket_status(ticket_id: str, status: int):
     }
 
 @mcp.tool()
+def list_ticket_comments(ticket_id: str, current: int = 1, size: int = 10):
+    """分页查询 BMS 工单评论（写评后核对是否落库）。
+
+    对应接口: POST /rosiwit-cloud/ticket/ticketComment/page
+    Body: {"current": 1, "size": 10, "ticketId": "<id>"}
+    注意: GET ?current=&size= 会业务 500；必须 POST 且带 ticketId。
+
+    参数:
+    - ticket_id: 工单 ID，如 215363
+    - current: 页码，默认 1
+    - size: 每页条数，默认 10
+    """
+    tid = str(ticket_id).strip()
+    if not tid:
+        return {"success": False, "error": "ticket_id 不能为空"}
+    bound = cloud.bind_ticket_cloud(tid)
+    if not bound.get("success"):
+        return bound
+    try:
+        cur = max(1, int(current))
+        sz = max(1, min(100, int(size)))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "current/size 无效"}
+
+    logger.info("查询工单评论: ticketId=%s current=%s size=%s", tid, cur, sz)
+    result = _list_comments(tid, current=cur, size=sz)
+    if not isinstance(result, dict):
+        return {"success": False, "error": "响应格式异常", "raw": result}
+
+    ok = bool(result.get("success") or result.get("returnCode") == 200)
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        records = []
+    return {
+        "success": ok,
+        "ticketId": tid,
+        "current": data.get("current", cur) if isinstance(data, dict) else cur,
+        "size": data.get("size", sz) if isinstance(data, dict) else sz,
+        "total": data.get("total") if isinstance(data, dict) else None,
+        "pages": data.get("pages") if isinstance(data, dict) else None,
+        "comments": _summarize_comment_records(records),
+        "returnCode": result.get("returnCode"),
+        "returnMsg": result.get("returnMsg"),
+        "error": None if ok else (result.get("returnMsg") or result.get("error")),
+    }
+
+
+_AI_COMMENT_MARKERS = (
+    "【AI",
+    "【故障",
+    "【根因",
+    "【诊断",
+    "【处置",
+    "【验证",
+)
+
+
+def _looks_like_ai_comment(content: str) -> bool:
+    text = (content or "").strip()
+    if len(text) < 20:
+        return False
+    head = text[:40]
+    return any(m in head for m in _AI_COMMENT_MARKERS)
+
+
+def _find_existing_ai_comment(records: list[Any]) -> Optional[dict[str, Any]]:
+    """在评论分页中找已有 AI 诊断类评论（防跨会话双发）。"""
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        content = str(r.get("content") or "")
+        if _looks_like_ai_comment(content):
+            return {
+                "id": r.get("id"),
+                "createTime": r.get("createTime"),
+                "contentPreview": content[:200],
+                "content": content,
+            }
+    return None
+
+
+@mcp.tool()
 def create_ticket_comment(ticket_id: str, content: str, parent_id: str = ""):
     """在 BMS 工单下发表评论（AI 分析结论/处理备注写回）。
 
     对应接口: POST /rosiwit-cloud/ticket/ticketComment/create
     Body: {"ticketId": "<id>", "content": "<text>", "parentId": null}
+
+    写评后会自动 POST ticketComment/page 核对是否落库；
+    success=true 仅当 page 能匹配到本次 content（verified=true）。
+    对内汇报「💬 评论: 已写回」必须以 verified=true 为依据。
+
+    同一工单若 page 上已有 AI 诊断类评论：不再新建（防双发），返回
+    reused_existing=true / verified=true，请只改状态或对内汇报。
 
     参数:
     - ticket_id: 工单 ID，如 215261
@@ -275,9 +489,56 @@ def create_ticket_comment(ticket_id: str, content: str, parent_id: str = ""):
         return {"success": False, "error": "ticket_id 不能为空"}
     if not text:
         return {"success": False, "error": "content 不能为空"}
+    bound = cloud.bind_ticket_cloud(tid)
+    if not bound.get("success"):
+        return bound
 
     pid_raw = (parent_id or "").strip()
     parent: Optional[str] = pid_raw if pid_raw else None
+
+    # 跨会话防双发：page 已有 AI 评论则不落第二条
+    page_before = _list_comments(tid, current=1, size=20)
+    pre_records: list[Any] = []
+    if isinstance(page_before, dict):
+        pre_data = page_before.get("data") if isinstance(page_before.get("data"), dict) else {}
+        raw = pre_data.get("records") if isinstance(pre_data, dict) else None
+        if isinstance(raw, list):
+            pre_records = raw
+    existing_ai = _find_existing_ai_comment(pre_records)
+    if existing_ai is not None:
+        existing_body = str(existing_ai.get("content") or "")
+        same = _comment_content_matches(text, existing_body)
+        logger.warning(
+            "工单已有 AI 评论，跳过再次 create ticketId=%s same=%s existingId=%s",
+            tid,
+            same,
+            existing_ai.get("id"),
+        )
+        return {
+            "success": True,
+            "verified": True,
+            "reused_existing": True,
+            "blocked_new_write": not same,
+            "apiSuccess": False,
+            "ticketId": tid,
+            "parentId": parent,
+            "matchedComment": {
+                "id": existing_ai.get("id"),
+                "createTime": existing_ai.get("createTime"),
+                "contentPreview": existing_ai.get("contentPreview"),
+            },
+            "existingComment": {
+                "id": existing_ai.get("id"),
+                "createTime": existing_ai.get("createTime"),
+                "contentPreview": existing_ai.get("contentPreview"),
+            },
+            "hint": (
+                "本工单已有 AI 诊断评论，未再次写入（防双发）。"
+                "禁止再调 create_ticket_comment；若尚未结案请仅 change_ticket_status；"
+                "对内汇报「💬 评论: 已写回」（沿用已有）。"
+            ),
+            "error": None,
+        }
 
     logger.info(
         "发表工单评论: ticketId=%s parentId=%s len=%d",
@@ -289,16 +550,82 @@ def create_ticket_comment(ticket_id: str, content: str, parent_id: str = ""):
     if not isinstance(result, dict):
         return {"success": False, "error": "响应格式异常", "raw": result}
 
-    ok = bool(result.get("success") or result.get("returnCode") == 200)
-    return {
-        "success": ok,
+    api_ok = bool(result.get("success") or result.get("returnCode") == 200)
+    code = result.get("returnCode")
+    msg = result.get("returnMsg") or result.get("error") or ""
+    # 云端偶发：评论已落库仍返回 500「服务器业务异常」；同文重试易双写
+    ambiguous_500 = (not api_ok) and (
+        code == 500
+        or code == "500"
+        or ("业务异常" in str(msg))
+    )
+
+    verify = _verify_comment_on_page(tid, text)
+    verified = bool(verify.get("verified"))
+
+    # 以 page 核对为准：API 成功但未落库 → 不算成功；API 500 但已落库 → 算成功
+    success = verified
+    out: dict[str, Any] = {
+        "success": success,
+        "verified": verified,
+        "apiSuccess": api_ok,
         "ticketId": tid,
         "parentId": parent,
-        "returnCode": result.get("returnCode"),
+        "returnCode": code,
         "returnMsg": result.get("returnMsg"),
         "data": result.get("data"),
-        "error": None if ok else (result.get("returnMsg") or result.get("error")),
+        "matchedComment": verify.get("matchedComment"),
+        "commentTotal": verify.get("total"),
+        "error": None,
     }
+    if verify.get("verifyError") and not verified:
+        out["verifyError"] = verify.get("verifyError")
+
+    if success:
+        out["error"] = None
+        if ambiguous_500:
+            out["hint"] = (
+                "create 接口曾返回失败，但 ticketComment/page 已核对到本条评论，"
+                "视为写评成功。禁止再用相同 content 重试。"
+            )
+            logger.warning(
+                "发表评论 API 失败但 page 已核实 ticketId=%s returnCode=%s",
+                tid,
+                code,
+            )
+        return out
+
+    # 未核实到落库
+    if ambiguous_500:
+        out["possible_persisted"] = False
+        out["error"] = msg or "服务器业务异常"
+        out["hint"] = (
+            "create 返回失败，且 ticketComment/page 未匹配到本次 content。"
+            "禁止立刻用相同 content 重试前，可再调 list_ticket_comments 人工核对；"
+            "若仍无该条，再考虑重试一次或对内汇报失败。"
+        )
+        logger.warning(
+            "发表评论失败且 page 未核实 ticketId=%s returnCode=%s returnMsg=%s",
+            tid,
+            code,
+            msg,
+        )
+    elif api_ok:
+        out["error"] = (
+            verify.get("verifyError")
+            or "create 返回成功但 page 未找到本条评论"
+        )
+        out["hint"] = (
+            "禁止立刻用相同 content 重试（可能延迟落库或双写）；"
+            "请先 list_ticket_comments 核对后再决定。"
+        )
+        logger.warning(
+            "发表评论 API 成功但 page 未匹配 ticketId=%s",
+            tid,
+        )
+    else:
+        out["error"] = msg or result.get("error") or "发表评论失败"
+    return out
 
 @mcp.tool()
 def create_ticket_attachment(
@@ -331,6 +658,9 @@ def create_ticket_attachment(
         return {"success": False, "error": "name 不能为空"}
     if not file_url:
         return {"success": False, "error": "url 不能为空"}
+    bound = cloud.bind_ticket_cloud(tid)
+    if not bound.get("success"):
+        return bound
 
     logger.info(
         "挂工单附件: ticketId=%s name=%s type=%s",
@@ -370,6 +700,10 @@ def get_ticket(ticket_id: str):
     tid = str(ticket_id).strip()
     if not tid:
         return {"success": False, "error": "ticket_id 不能为空"}
+
+    bound = cloud.bind_ticket_cloud(tid)
+    if not bound.get("success"):
+        return bound
 
     logger.info("获取工单详情: %s (base=%s)", tid, cloud.get_base_url())
     result = _request_ticket(tid)

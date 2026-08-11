@@ -80,7 +80,10 @@ def _compress_generic_json(data: dict, budget: int, tool_name: str) -> str:
 
     keep_keys = {"success", "status", "error", "path", "count", "total_matches",
                  "total_lines", "showing", "has_more", "return_code", "agent_id",
-                 "query", "pattern"}
+                 "query", "pattern", "verified", "ticketId", "ticket_id",
+                 "apiSuccess", "hint", "verifyError", "matchedComment",
+                 "statusName", "blocked_by", "reused_existing", "blocked_new_write",
+                 "existingComment", "ticket_evidence"}
     content_keys = {"content", "stdout", "stderr", "matches", "results", "files", "result"}
 
     parts = []

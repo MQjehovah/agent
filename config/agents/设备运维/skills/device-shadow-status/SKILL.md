@@ -33,7 +33,7 @@ get_device_shadow(device_id, product_id)
 | `crash` | 是否碰撞中 |
 | `faults[]` | 当前故障列表 |
 | `robotMode` / `robotModeName` | 机器人状态 |
-| `control_mode` / `controlModeName` | 手动/自动 |
+| `control_mode` / `controlModeName` | 手动/自动（影子字段） |
 | `supplyState` / `supplyStateName` / `supplyEngaged` | 对桩/供电 |
 | `is_charge` / `dock` | 充电中 / 是否对桩（非 810 主判据；见下） |
 
@@ -52,7 +52,9 @@ get_device_shadow(device_id, product_id)
 
 **robotMode**：`IDLE` 空闲 / `TASK` 任务中 / `PAUSE` 暂停 / `FAULT` 错误 / `MAP` 建图 / `OTA` / `FACTORY` 工厂
 
-**control_mode**：`CONTROL_MODE_MANUAL` 手动 / `CONTROL_MODE_AUTO` 自动
+**control_mode**：`CONTROL_MODE_MANUAL` 手动 / `CONTROL_MODE_AUTO` 自动  
+
+只陈述影子事实。需要改变模式时：仅当当前剧本**明确允许**且已调用对应工具（如 `set_control_mode`）并拿到成功回执，才可写「已切换」；取证剧本通常禁止切模式。否则请现场按产品实际界面处理；**禁止**无工具回执却写「已远程下发切 AUTO」。
 
 **supplyState**：`0` 空闲 · `1` 前往工作站 · `2` 加排水中 · `3` 仅充电 · `4` 退桩 · `5` 手动补给 · `6` 等待外设关闭；**1/2/3 = 已对桩供电**（`5` 接近手动补给/手动充电语境）
 

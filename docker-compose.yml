@@ -1,0 +1,25 @@
+# 单 Agent：BMS 统一 POST http://<host>:8081/webhook/execute
+# content 只需【BMS工单AI处理】ticket_id=…；云地址由下方 TICKET_API_BASE_URLS 自动探测
+
+services:
+  agent:
+    build: .
+    container_name: agent
+    env_file:
+      - .env
+    environment:
+      WS_BASE_URL: ${WS_BASE_URL:-wss://dev.xzrobot.com:10000}
+      DEVICE_API_USERNAME: ${DEVICE_API_USERNAME:-rosiwit_robot}
+      DEVICE_API_PASSWORD: ${DEVICE_API_PASSWORD:-}
+      TICKET_API_USERNAME: ${TICKET_API_USERNAME:-${DEVICE_API_USERNAME:-rosiwit_robot}}
+      TICKET_API_PASSWORD: ${TICKET_API_PASSWORD:-${DEVICE_API_PASSWORD:-}}
+      TICKET_API_BASE_URLS: ${TICKET_API_BASE_URLS:-https://test.rosiwit.com,https://bms-cn.xzrobot.com,https://bms-eu.rosiwit.com,https://bms-na.rosiwit.com}
+      TICKET_API_BASE_URL: ${TICKET_API_BASE_URL:-https://test.rosiwit.com}
+      CLOUD_API_BASE_URL: ${CLOUD_API_BASE_URL:-${TICKET_API_BASE_URL:-https://test.rosiwit.com}}
+    ports:
+      - "8081:8081"
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config
+      - ./workspace:/app/workspace
+    restart: unless-stopped

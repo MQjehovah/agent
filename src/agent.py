@@ -19,6 +19,16 @@ from openai.types.chat import ChatCompletionMessageParam
 from learning import Learner
 from prompt import PromptBuilder
 from subagent_manager import SubagentManager
+from ticket_completion_gate import (
+    MAX_TICKET_GATE_INJECTS,
+    deny_tool_in_ticket_mode,
+    evaluate_ticket_completion_gate,
+    extract_ticket_evidence_from_messages,
+    extract_ticket_id_from_text,
+    has_comment_tool_unavailable,
+    is_ticket_mode,
+    subagent_comment_claim_unverified,
+)
 from utils.frontmatter import extract_frontmatter
 
 if TYPE_CHECKING:
@@ -73,6 +83,8 @@ class RunContext:
     system_dynamic: str = ""
     # 本次任务的过程文件目录（顶层 run 建立，子代理继承）；临时文件写这里，交付物写 workspace
     task_dir: str = ""
+    # 工单评论硬门禁：同一 run 已注入重试次数
+    ticket_gate_injects: int = 0
 
 
 # 模块级 ContextVar：run() 内 set()，协程任意位置 get() 取回“当前 run”的上下文。
@@ -699,6 +711,18 @@ class Agent:
 
         return tools
 
+    @staticmethod
+    def _user_task_for_session(task: str) -> str:
+        """工单任务附加运行时锚点，避免模型误走非工单/仅采集。"""
+        if not is_ticket_mode(task):
+            return task
+        return (
+            task.rstrip()
+            + "\n\n【运行时】已识别为 BMS 工单模式（含 ticket_id / 【BMS工单AI处理】）。"
+            "禁止自称「非工单场景/仅采集」；须走 ticket-handling（取证可加载 device-evidence-collect），"
+            "写评+改状态后用「📋 工单」格式汇报。"
+        )
+
     async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "") -> AgentResult:
         from hooks import get_run_id, reset_run_id, set_run_id
         # 读取调用方（父级 run）上下文：子代理在同 Task 内 await 执行，可继承父级身份；
@@ -813,12 +837,13 @@ class Agent:
 
         from agent_session import AgentSession, AgentSessionManager
         session = None
+        user_task = self._user_task_for_session(task)
 
         if self.session_manager:
             if session_id:
                 session = await self.session_manager.get_session(session_id)
                 if session:
-                    session.add_message("user", task)
+                    session.add_message("user", user_task)
                     logger.info(
                         f"Agent [{self.name}] 复用session: {session_id}, 消息数: {len(session.messages)}")
                 else:
@@ -849,7 +874,7 @@ class Agent:
                                 list[ChatCompletionMessageParam], messages)
                             logger.info(
                                 f"[{self.name}] 从存储恢复session: {session_id}, 消息数: {len(session.messages)}")
-                    session.add_message("user", task)
+                    session.add_message("user", user_task)
                     logger.debug(
                         f"Agent [{self.name}] 创建新session: {session_id}")
             else:
@@ -858,7 +883,7 @@ class Agent:
                     system_prompt=ctx.system_prompt,
                 )
                 session_id = session.session_id
-                session.add_message("user", task)
+                session.add_message("user", user_task)
                 logger.info(f"Agent [{self.name}] 创建随机session: {session_id}")
 
             if user_id and not session.user_id:
@@ -880,7 +905,7 @@ class Agent:
                 user_name=resolved_user_name,
                 role=resolved_role,
             )
-            session.add_message("user", task)
+            session.add_message("user", user_task)
 
         logger.info(
             f"[{self.name}] [{session.session_id}] 用户={session.user_name}({session.role}) 任务开始: {task}...")
@@ -990,8 +1015,49 @@ class Agent:
                         continue
 
                     if msg.get("content"):
+                        final_text = msg.get("content") or ""
+                        gate = evaluate_ticket_completion_gate(
+                            task=ctx.task or task,
+                            messages=session.messages,
+                            final_content=final_text,
+                        )
+                        if gate.applicable and not gate.ok:
+                            # 父代理无写评 MCP：注入 1 次要求重派后仍未解决 → 立刻失败，禁止 3 轮自调空转
+                            unavailable = has_comment_tool_unavailable(
+                                session.messages
+                            )
+                            inject_cap = (
+                                1 if unavailable else MAX_TICKET_GATE_INJECTS
+                            )
+                            if ctx.ticket_gate_injects < inject_cap:
+                                ctx.ticket_gate_injects += 1
+                                ctx.retry_context = gate.retry_message
+                                logger.warning(
+                                    "Agent [%s] 工单评论硬门禁拦截收工 ticket_id=%s "
+                                    "inject=%s/%s reason=%s",
+                                    self.name,
+                                    gate.ticket_id,
+                                    ctx.ticket_gate_injects,
+                                    inject_cap,
+                                    gate.reason,
+                                )
+                                continue
+                            # 达上限：标记失败，禁止伪完成
+                            logger.warning(
+                                "Agent [%s] 工单评论硬门禁达上限仍未核实 ticket_id=%s reason=%s",
+                                self.name,
+                                gate.ticket_id,
+                                gate.reason,
+                            )
+                            ctx.status = "failed"
+                            ctx.result = (
+                                f"【工单评论未核实写回】ticket_id={gate.ticket_id}；"
+                                f"{gate.reason}\n\n{final_text}"
+                            )
+                            ctx.retry_context = ""
+                            break
                         ctx.status = "completed"
-                        ctx.result = msg.get("content")
+                        ctx.result = final_text
                         ctx.retry_context = ""
                         break
 
@@ -1138,6 +1204,27 @@ class Agent:
 
     async def _execute_tool_safe(self, name: str, args: dict) -> str:
         """带权限检查、沙箱拦截、钩子和错误恢复的工具执行"""
+        # 工单模式运行时工具闸（钉钉 / 技能 forbid / 双评 / 写错单）
+        run_ctx = current_run()
+        session = run_ctx.session
+        messages = list(session.messages) if session and getattr(session, "messages", None) else []
+        active_skills: list[str] = []
+        if self.skill_manager and getattr(self.skill_manager, "_active_skills", None):
+            active_skills = list(self.skill_manager._active_skills.keys())
+        deny_msg = deny_tool_in_ticket_mode(
+            tool_name=name,
+            tool_args=args or {},
+            task=run_ctx.task or "",
+            messages=messages,
+            active_skills=active_skills,
+        )
+        if deny_msg:
+            logger.warning("工单工具闸拦截: %s — %s", name, deny_msg)
+            return json.dumps(
+                {"success": False, "error": deny_msg, "blocked_by": "ticket_completion_gate"},
+                ensure_ascii=False,
+            )
+
         # 权限检查
         perm_result = self.permission.check(name, args)
         if not perm_result:
@@ -1505,10 +1592,20 @@ class Agent:
                 )
                 # 注册子代理事件转发钩子
                 self._register_subagent_hooks(instance.agent, display_name)
+                sub_messages: list = []
                 try:
-                    result = await instance.agent.run(task)
+                    result = await instance.agent.run(
+                        task, session_id=instance.session_id
+                    )
                     instance.task_count += 1
                     instance.last_used = time.time()
+                    # 读取子会话工具回执，供评论核实门禁
+                    if instance.agent.session_manager:
+                        sub_sess = await instance.agent.session_manager.get_session(
+                            instance.session_id
+                        )
+                        if sub_sess and getattr(sub_sess, "messages", None):
+                            sub_messages = list(sub_sess.messages)
                 except Exception as e:
                     result = AgentResult(
                         agent_id=instance.agent.agent_id,
@@ -1534,18 +1631,44 @@ class Agent:
         if len(result_preview) > 500:
             result_preview = result_preview[:500] + "..."
 
+        success = result.status == "completed"
+        error = None
+        # 团队路径可能未填充 sub_messages；仅个人子代理有会话工具记录
+        if "sub_messages" not in locals():
+            sub_messages = []
+
+        if success and subagent_comment_claim_unverified(
+            task=task or "",
+            result_text=result.result or "",
+            messages=sub_messages,
+        ):
+            success = False
+            error = (
+                "评论未核实或未结案：子代理声称「评论已写回」但无对本 ticket_id 的 "
+                "verified create_ticket_comment，或写评后缺少 change_ticket_status(3/5/6)"
+            )
+            logger.warning("子代理 [%s] %s", display_name, error)
+
         await self.hooks.fire(
             self._hook_event.SUBAGENT_RESULT,
             metadata={"name": display_name, "status": result.status, "result": result_preview},
         )
 
-        return json.dumps({
-            "success": result.status == "completed",
+        out = {
+            "success": success,
             "agent_id": result.agent_id,
             "status": result.status,
             "result": result.result,
             "active_subagents": stats.get("active_count", 0),
-        }, ensure_ascii=False)
+        }
+        if error:
+            out["error"] = error
+        # 把子代理会话内的写评/改状态回执带回父会话，避免父门禁看不见而重派「再写一条」
+        tid = extract_ticket_id_from_text(task or "")
+        evidence = extract_ticket_evidence_from_messages(sub_messages, tid)
+        if evidence:
+            out["ticket_evidence"] = evidence
+        return json.dumps(out, ensure_ascii=False)
 
     def _register_subagent_hooks(self, sub_agent, agent_name: str):
         """在子代理上注册事件转发钩子，将子代理的中间事件转发到父代理的 SUBAGENT_* 事件。"""

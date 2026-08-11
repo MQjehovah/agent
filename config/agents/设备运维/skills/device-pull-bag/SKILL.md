@@ -53,13 +53,13 @@ find_bags_near_time(
 upload_bag_file(device_id, product_id, file_path=匹配到的路径)
 ```
 
-成功时优先用返回的顶层 `url`。有 `ticket_id` 时：
+上传成功时优先用返回的顶层 `url`（`attach_ready=true`）。有 `ticket_id` 时：
 
 ```
-create_ticket_attachment(ticket_id, name=文件名, url=OSS地址, type="")
+create_ticket_attachment(ticket_id, name=文件名.bag, url=OSS地址, type="")
 ```
 
-上传成功但无 `url`：说明并附上 `data` 摘要，勿编造 URL。上传失败：汇报错误，可转人工从云端下载。
+上传成功但无 `url`（`attach_ready=false`）：**禁止**把该 bag 列入「附件已挂载」；评论写明文件名并请人工挂载。上传失败：汇报错误，可转人工从云端下载。
 
 ## 注意事项
 

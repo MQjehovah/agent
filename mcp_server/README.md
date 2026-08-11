@@ -43,7 +43,7 @@ python src/remote_operation.py
 
 | 工具 | 说明 |
 |------|------|
-| `get_ticket` / `change_ticket_status` / `create_ticket_comment` / `create_ticket_attachment` | 工单 CRUD |
+| `get_ticket` / `change_ticket_status` / `create_ticket_comment` / `list_ticket_comments` / `create_ticket_attachment` | 工单 CRUD（写评后自动 page 核对 `verified`） |
 | `list_ticket_statuses` / `set_ticket_token` | 状态枚举 / 手动 token |
 
 ## 云端运维 (remote_operation.py)

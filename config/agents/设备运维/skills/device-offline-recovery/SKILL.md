@@ -19,4 +19,6 @@ get_device_shadow(device_id, product_id)
   → 恢复：汇报；仍离线：评论/转人工；必要时 connect_terminal
 ```
 
-取证类工单（如定时任务）不要「顺便重启看看」。低电且在线时可转 `device-return-station`。
+取证类工单（如定时/任务类）不要「顺便重启看看」。低电且在线时可转 `device-return-station`。
+
+**结论边界：** 离线只说明未联网/关机/链路不通等连通性；**禁止**在无终端日志原文时写模块崩溃、驱动异常等根因。
