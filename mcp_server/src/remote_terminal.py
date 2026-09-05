@@ -475,6 +475,12 @@ class TerminalSession:
     parser: TerminalParser = field(default_factory=TerminalParser)
     interactive: InteractiveTerminalSession = field(default_factory=InteractiveTerminalSession)
 
+    # 并发安全: 用单一后台 reader 协程持续 recv 写入队列, 工具调用只从队列取,
+    # 避免多个协程在同一 ws 上同时 recv 触发 websockets 的 "another coroutine is already running recv".
+    rx_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    reader_task: Optional[asyncio.Task] = None
+    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
 
 sessions: dict[str, TerminalSession] = {}
 
@@ -483,17 +489,55 @@ sessions: dict[str, TerminalSession] = {}
 # 内部函数
 # ============================================================================
 
+async def _reader_loop(session: TerminalSession):
+    """单一后台 reader: 持续 recv, 把消息放入队列, 处理流控 ack.
+    这是该 ws 连接上唯一的 recv 点, 彻底消除并发 recv 冲突."""
+    try:
+        while True:
+            try:
+                message = await session.ws.recv()
+            except websockets.exceptions.ConnectionClosed:
+                break
+            except Exception:
+                break
+
+            if isinstance(message, str):
+                await session.rx_queue.put(("control", message))
+            else:
+                session.unack += len(message)
+                text = message.decode('utf-8', errors='replace')
+                await session.rx_queue.put(("output", text))
+                if session.unack > 4 * 1024:
+                    ack_msg = {"type": "ack", "ack": session.unack}
+                    try:
+                        async with session.write_lock:
+                            await session.ws.send(json.dumps(ack_msg))
+                        session.unack = 0
+                    except Exception:
+                        break
+    except asyncio.CancelledError:
+        pass
+    finally:
+        session.is_connected = False
+        session.is_logged_in = False
+        try:
+            session.rx_queue.put_nowait(("error", "连接已断开"))
+        except Exception:
+            pass
+
+
 async def _send_winsize(session: TerminalSession):
     msg = {"type": "winsize", "cols": session.cols, "rows": session.rows}
-    await session.ws.send(json.dumps(msg))
+    async with session.write_lock:
+        await session.ws.send(json.dumps(msg))
     logger.info(f"发送窗口大小: {session.cols}x{session.rows}")
 
 
 async def _wait_login(session: TerminalSession, timeout: float = 10.0):
     try:
-        message = await asyncio.wait_for(session.ws.recv(), timeout=timeout)
-        if isinstance(message, str):
-            msg = json.loads(message)
+        kind, data = await asyncio.wait_for(session.rx_queue.get(), timeout=timeout)
+        if kind == "control":
+            msg = json.loads(data)
             if msg.get("type") == "login":
                 if msg.get("err") == LoginErrorOffline:
                     session.is_connected = False
@@ -575,6 +619,9 @@ async def _connect_ws(sn: str, cols: int = 80, rows: int = 24, username: str = N
         session = TerminalSession(sn=sn, ws=ws, is_connected=True, cols=cols, rows=rows)
         sessions[sn] = session
 
+        # 启动后台 reader (登录前就绪, 后续所有 recv 都走队列)
+        session.reader_task = asyncio.create_task(_reader_loop(session))
+
         await _wait_login(session)
 
         if not session.is_logged_in:
@@ -588,24 +635,32 @@ async def _connect_ws(sn: str, cols: int = 80, rows: int = 24, username: str = N
         logger.error(f"终端连接失败: {e}")
         if sn in sessions:
             sessions[sn].is_connected = False
+            if sessions[sn].reader_task and not sessions[sn].reader_task.done():
+                sessions[sn].reader_task.cancel()
         raise
 
 
 async def _disconnect_ws(sn: str):
-    if sn in sessions and sessions[sn].ws:
-        try:
-            await sessions[sn].ws.close()
-        except:
-            pass
-        sessions[sn].is_connected = False
-        sessions[sn].is_logged_in = False
-        sessions[sn].ws = None
+    if sn in sessions:
+        s = sessions[sn]
+        # 先取消后台 reader, 避免其 recv 阻塞 close
+        if s.reader_task and not s.reader_task.done():
+            s.reader_task.cancel()
+        if s.ws:
+            try:
+                await asyncio.wait_for(s.ws.close(), timeout=3)
+            except Exception:
+                pass
+        s.is_connected = False
+        s.is_logged_in = False
+        s.ws = None
         logger.info(f"终端已断开: {sn}")
 
 
 async def _send_term_data(session: TerminalSession, data: str):
     buf = bytearray([0]) + data.encode('utf-8')
-    await session.ws.send(bytes(buf))
+    async with session.write_lock:
+        await session.ws.send(bytes(buf))
 
 
 async def _receive_output(sn: str, timeout: float = 2.0) -> list:
@@ -615,41 +670,27 @@ async def _receive_output(sn: str, timeout: float = 2.0) -> list:
     session = sessions[sn]
     outputs = []
 
-    try:
-        while True:
-            try:
-                message = await asyncio.wait_for(
-                    session.ws.recv(),
-                    timeout=timeout
-                )
+    while True:
+        try:
+            kind, data = await asyncio.wait_for(session.rx_queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            break
 
-                if isinstance(message, str):
-                    msg = json.loads(message)
-                    outputs.append({"type": "control", "data": msg})
-                    session.output_buffer.append(msg)
+        if kind == "error":
+            outputs.append({"type": "error", "data": data})
+            break
+        elif kind == "control":
+            msg = json.loads(data)
+            outputs.append({"type": "control", "data": msg})
+            session.output_buffer.append(msg)
 
-                    if msg.get("type") == "sendfile":
-                        outputs.append({"type": "file_download", "name": msg.get("name")})
-                    elif msg.get("type") == "recvfile":
-                        outputs.append({"type": "file_upload_request"})
-                else:
-                    data = message
-                    session.unack += len(data)
-
-                    text = data.decode('utf-8', errors='replace')
-                    outputs.append({"type": "output", "data": text})
-                    session.output_buffer.append(text)
-
-                    if session.unack > 4 * 1024:
-                        ack_msg = {"type": "ack", "ack": session.unack}
-                        await session.ws.send(json.dumps(ack_msg))
-                        session.unack = 0
-            except asyncio.TimeoutError:
-                break
-    except websockets.exceptions.ConnectionClosed:
-        session.is_connected = False
-        session.is_logged_in = False
-        outputs.append({"type": "error", "data": "连接已断开"})
+            if msg.get("type") == "sendfile":
+                outputs.append({"type": "file_download", "name": msg.get("name")})
+            elif msg.get("type") == "recvfile":
+                outputs.append({"type": "file_upload_request"})
+        elif kind == "output":
+            outputs.append({"type": "output", "data": data})
+            session.output_buffer.append(data)
 
     return outputs
 
