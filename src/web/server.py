@@ -1161,7 +1161,10 @@ class WebServer:
 
             sessions = []
             try:
+                # 对话优先: 仅列出“对话根”(main agent 会话; 子代理内部 thread 归其对话)
                 for sid, sess in list(self.agent.session_manager.sessions.items()):
+                    if "#" in sid:
+                        continue  # 子代理内部线程,不单独呈现
                     if not _own(sess):
                         continue
                     sessions.append({
@@ -1172,31 +1175,6 @@ class WebServer:
                     })
             except Exception as e:
                 logger.warning(f"[Sessions API] 读取主agent sessions失败: {e}")
-
-            if self.agent.subagent_manager:
-                try:
-                    active = list(self.agent.subagent_manager._active_subagents.values())
-                    for inst in active:
-                        sub_agent = inst.agent
-                        if not sub_agent or not sub_agent.session_manager:
-                            continue
-                        agent_name = sub_agent.name or sub_agent.agent_id or inst.template or "sub"
-                        try:
-                            sub_sessions = list(sub_agent.session_manager.sessions.items())
-                        except Exception as e:
-                            logger.warning(f"[Sessions API] 读取子代理 {agent_name} sessions失败: {e}")
-                            continue
-                        for ssid, sess in sub_sessions:
-                            if not _own(sess):
-                                continue
-                            sessions.append({
-                                "id": ssid,
-                                "agent_id": agent_name,
-                                "messages": len(sess.messages),
-                                "last_accessed": sess.last_accessed.isoformat(),
-                            })
-                except Exception as e:
-                    logger.warning(f"[Sessions API] 遍历子代理失败: {e}")
 
             return {"total": len(sessions), "sessions": sessions}
 
@@ -1211,8 +1189,8 @@ class WebServer:
         @self._app.get("/api/agent/sessions/history")
         async def agent_sessions_history(limit: int = Query(20), agent_id: str = Query(""),
                                          request: Request = None):
-            """从数据库查询最近 N 个会话（不依赖内存活跃 session，重启后仍可见）。
-            普通用户仅能看到自己归属的会话；admin 可见全部。"""
+            """对话优先：最近 N 个“对话根”（主会话，不含子代理内部 thread）。
+            普通用户仅能看到自己归属的对话；admin 可见全部。"""
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
@@ -1226,13 +1204,14 @@ class WebServer:
                     admin = True
             if not admin and not tag:
                 return {"total": 0, "sessions": []}
-            rows = storage.list_recent_sessions(
-                min(max(limit, 1), 200), agent_id=agent_id, user_id="" if admin else tag)
+            rows = storage.list_conversations(
+                min(max(limit, 1), 200), user_id="" if admin else tag)
             sessions = [{
-                "id": r["session_id"],
+                "id": r["conversation_id"],
                 "agent_id": r.get("agent_id") or "",
                 "user_id": r.get("user_id") or "",
                 "messages": r["msg_count"],
+                "thread_count": r.get("thread_count") or 0,
                 "last_accessed": r["last_at"],
                 "first_accessed": r["first_at"],
             } for r in rows]
@@ -1852,20 +1831,31 @@ class WebServer:
             live = _web_live_sessions() if scope in ("all", "live") else []
             history: list[dict] = []
             if storage and scope in ("all", "history"):
-                rows = storage.list_recent_sessions(min(max(limit, 1), 500))
+                rows = storage.list_conversations(min(max(limit, 1), 500))
                 for r in rows:
                     tag = r.get("user_id") or ""
                     history.append({
-                        "id": r["session_id"],
+                        "id": r["conversation_id"],
                         "agent_id": r.get("agent_id") or "",
                         "owner": self._user_display_name(tag) if tag else "",
                         "uid": tag[4:] if tag.startswith("web:") else tag,
                         "tag": tag,
                         "messages": r["msg_count"],
+                        "thread_count": r.get("thread_count") or 0,
                         "last_accessed": r["last_at"],
                         "first_accessed": r["first_at"],
                     })
             return {"live": live, "history": history}
+
+        @self._app.get("/api/admin/sessions/{session_id}/threads")
+        async def admin_session_threads(session_id: str, request: Request = None):
+            """某对话下的子代理内部 thread 清单(审计下钻)。"""
+            await _get_admin(request)
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            threads = storage.conversation_threads(session_id)
+            return {"conversation_id": session_id, "threads": threads, "count": len(threads)}
 
         @self._app.get("/api/admin/sessions/{session_id}/messages")
         async def admin_session_messages(session_id: str, request: Request = None):

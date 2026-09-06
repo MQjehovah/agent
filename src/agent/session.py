@@ -18,6 +18,7 @@ logger = logging.getLogger("agent.session")
 class AgentSession:
     agent_id: str = ""
     session_id: str = ""
+    conversation_id: str = ""
     system_prompt: str = ""
     messages: list[ChatCompletionMessageParam] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
@@ -51,6 +52,7 @@ class AgentSession:
                 storage.save_message(
                     agent_id=self.agent_id,
                     session_id=self.session_id,
+                    conversation_id=getattr(self, "conversation_id", "") or self.session_id,
                     role=role,
                     content=content or "",
                     tool_calls=kwargs.get("tool_calls"),

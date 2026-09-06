@@ -101,6 +101,7 @@ class Storage:
                     reasoning_content TEXT,
                     user_id TEXT DEFAULT '',
                     channel TEXT DEFAULT '',
+                    conversation_id TEXT DEFAULT '',
                     created_at TEXT
                 );
 
@@ -294,6 +295,7 @@ class Storage:
             _add_col("messages", "reasoning_content TEXT")
             _add_col("messages", "user_id TEXT DEFAULT ''")
             _add_col("messages", "channel TEXT DEFAULT ''")
+            _add_col("messages", "conversation_id TEXT DEFAULT ''")
             _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
             for _col in ("duration_ms REAL DEFAULT 0",
                          "cache_hit_tokens INTEGER DEFAULT 0",
@@ -301,6 +303,7 @@ class Storage:
                 _add_col("usage_records", _col)
             with suppress(sqlite3.OperationalError):
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id)")
             # 回填历史消息的 channel / user_id（web 命名空间前缀形如 web:{uid}:...）
             with suppress(sqlite3.OperationalError):
                 conn.execute("""
@@ -311,6 +314,11 @@ class Storage:
                     UPDATE messages SET user_id = 'web:' || substr(
                         session_id, 6, instr(substr(session_id, 6), ':') - 1)
                     WHERE user_id = '' AND session_id LIKE 'web:%:%'
+                """)
+                # 老数据无对话归属：以自身 session 为对话根
+                conn.execute("""
+                    UPDATE messages SET conversation_id = session_id
+                    WHERE conversation_id = '' AND session_id IS NOT NULL AND session_id != ''
                 """)
                 conn.commit()
 
@@ -449,8 +457,8 @@ class Storage:
 
         with self._write_lock, self._get_connection() as conn:
             conn.executemany("""
-                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, conversation_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     item['agent_id'],
@@ -463,6 +471,7 @@ class Storage:
                     item.get('reasoning_content', ''),
                     item.get('user_id', ''),
                     item.get('channel', ''),
+                    item.get('conversation_id') or item['session_id'],
                     item['created_at']
                 )
                 for item in batch
@@ -474,7 +483,7 @@ class Storage:
     def save_message(self, agent_id: str, session_id: str, role: str, content: str,
                      tool_calls: list | None = None,
                      tool_call_id: str = "", name: str = "", reasoning_content: str = "",
-                     user_id: str = "", channel: str = ""):
+                     user_id: str = "", channel: str = "", conversation_id: str = ""):
         """保存消息到写入队列（异步写入）"""
         self._write_queue.put({
             'agent_id': agent_id,
@@ -487,23 +496,25 @@ class Storage:
             'reasoning_content': reasoning_content or "",
             'user_id': user_id or "",
             'channel': channel or (session_id.split(':', 1)[0] if ':' in session_id else ""),
+            'conversation_id': conversation_id or session_id,
             'created_at': datetime.now().isoformat()
         })
 
     def save_message_sync(self, agent_id: str, session_id: str, role: str, content: str,
                           tool_calls: list | None = None,
                           tool_call_id: str = "", name: str = "", reasoning_content: str = "",
-                          user_id: str = "", channel: str = ""):
+                          user_id: str = "", channel: str = "", conversation_id: str = ""):
         """同步保存消息（立即写入）"""
         with self._write_lock, self._get_connection() as conn:
             conn.execute("""
-                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, conversation_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent_id, session_id, role, content or "",
                 json.dumps(tool_calls) if tool_calls else None,
                 tool_call_id, name, reasoning_content or "",
                 user_id or "", channel or (session_id.split(':', 1)[0] if ':' in session_id else ""),
+                conversation_id or session_id,
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -580,6 +591,51 @@ class Storage:
         args.append(max(1, min(int(limit), 500)))
         with self._get_connection() as conn:
             rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_conversations(self, limit: int = 50, user_id: str = "", channel: str = "") -> list[dict[str, Any]]:
+        """对话优先视图：按 conversation_id 聚合“对话根”，排除子代理内部 thread。
+
+        返回每个对话: {conversation_id, agent_id, user_id, msg_count(主对话条数),
+        thread_count(内部子会话数), first_at, last_at}。user_id/channel 过滤用于普通用户自见。
+        """
+        sql = (
+            "SELECT m.conversation_id AS conversation_id, MAX(m.agent_id) AS agent_id, "
+            "MAX(m.user_id) AS user_id, COUNT(*) AS msg_count, "
+            "(SELECT COUNT(DISTINCT x.session_id) FROM messages x "
+            "  WHERE x.conversation_id = m.conversation_id "
+            "    AND x.session_id != m.conversation_id) AS thread_count, "
+            "MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at "
+            "FROM messages m "
+            "WHERE m.conversation_id IS NOT NULL AND m.conversation_id != '' "
+            "  AND m.session_id = m.conversation_id"
+        )
+        args: list[Any] = []
+        if channel:
+            sql += " AND m.session_id LIKE ?"
+            args.append(channel + ":%")
+        elif user_id:
+            sql += " AND (m.user_id = ? OR m.session_id LIKE ?)"
+            args += [user_id, user_id + ":%"]
+        sql += " GROUP BY m.conversation_id ORDER BY MAX(m.created_at) DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        out = []
+        for r in rows:
+            item = dict(r)
+            item["thread_count"] = item.get("thread_count") or 0
+            out.append(item)
+        return out
+
+    def conversation_threads(self, conversation_id: str) -> list[dict[str, Any]]:
+        """某对话内部的子代理 thread（session != conversation）及条数，供审计下钻。"""
+        sql = ("SELECT session_id AS session_id, MAX(agent_id) AS agent_id, "
+               "COUNT(*) AS msg_count, MAX(created_at) AS last_at "
+               "FROM messages WHERE conversation_id = ? AND session_id != conversation_id "
+               "GROUP BY session_id ORDER BY MAX(created_at)")
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, (conversation_id,)).fetchall()
         return [dict(r) for r in rows]
 
     def get_messages_by_date(self, date_str: str, agent_id: str | None = None) -> list[dict[str, Any]]:

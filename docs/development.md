@@ -174,6 +174,11 @@ AgentSession
 > 归属: web 会话的 `messages.user_id` 落 `web:{uid}`; 进程重启 / worker 回收后由
 > `Agent._restore_db_session_history()` 从 DB 回填续聊上下文。
 
+**对话优先(Conversation-first)**：`conversation_id` 是“一个用户对话”的一级实体。
+顶层 run 的 `session_id` = 对话根；子代理/团队成员运行继承同一 `conversation_id`，
+其内部上下文用确定性线程 `session_id = <对话>#<agent>` 与主对话分离、归属可下钻。
+列表/续聊/审计按对话聚合(`storage.list_conversations()`), 与 agent 运行时上下文解耦。
+
 子代理调用：`{parent_session_id}:{child_name}`
 
 ### 5.3 持久化
@@ -446,7 +451,7 @@ Storage (src/storage/storage.py) — 统一 SQLite
 ├── config/data.db (单文件, WAL)
 ├── 连接池 + 批量写队列
 ├── 表:
-│   ├── messages            (对话历史; 含 user_id/channel 审计列)
+│   ├── messages            (对话历史; 含 user_id/channel/conversation_id 审计列)
 │   ├── eventbus_events     (事件总线)
 │   ├── autonomous_goals    (自主任务)
 │   ├── kanban_tasks        (看板任务)
@@ -513,7 +518,8 @@ WebServer (src/web/server.py) — FastAPI, 与 agent 同一 asyncio 事件循环
 ├── 记忆: /api/memories, /api/memory/proposals
 ├── RBAC: /api/rbac/roles|users|identities
 ├── 个人用量: GET /api/usage            (仅本人 user_id 统计)
-├── 管理可观测: GET /api/admin/stats|usage|sessions|sessions/{id}/messages(GET 查看 / POST 导出)
+├── 管理可观测: GET /api/admin/stats|usage|sessions|sessions/{id}/messages(GET 查看 / POST 导出)|sessions/{id}/threads(内部线程下钻)
+├── 会话列表: GET /api/sessions(内存) | GET /api/agent/sessions/history(DB) —— 均按“对话”聚合(对话根 + thread_count), 不含内部碎片
 ├── 工作区文件: GET /api/workspace/files (admin)
 ├── 日志流: SSE /api/logs/stream
 └── JWT 认证(除 /api/auth/*); webhook 同端口(/webhook/*)

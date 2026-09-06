@@ -209,10 +209,27 @@ async def execute_subagent(agent, args: dict) -> str:
             # AgentResult dataclass → 字符串
             result = team_result.result if hasattr(team_result, 'result') else str(team_result)
         else:
+            # 确定性子线程 id：<当前上下文线程>#<agent>，使同一对话内子代理上下文连续、
+            # 且按(对话, agent)天然隔离（不同对话/用户不复用同一实例）。
+            _rc = _current_run()
+            _base_sess = getattr(_rc, "session", None)
+            _base_sid = ""
+            if _base_sess is not None and getattr(_base_sess, "session_id", ""):
+                _base_sid = _base_sess.session_id
+            elif getattr(_rc, "conversation_id", ""):
+                _base_sid = _rc.conversation_id
+            _req_sid = (args.get("session_id") or "").strip()
+            _label = (args.get("name") or args.get("template") or "sub").strip()
+            if _req_sid:
+                thread_id = _req_sid
+            elif _base_sid:
+                thread_id = f"{_base_sid}#{_label}"
+            else:
+                thread_id = ""
             instance, _ = await agent.subagent_manager.get_or_create_subagent(
                 template=args.get("template", ""),
                 name=args.get("name", ""),
-                session_id=args.get("session_id", ""),
+                session_id=thread_id,
                 system_prompt=args.get("system_prompt", ""),
                 tools=args.get("tools"),
                 mcp_servers=args.get("mcp_servers"),

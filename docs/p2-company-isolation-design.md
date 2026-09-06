@@ -81,7 +81,22 @@ AGENT_WEB_POOL_SIZE=16  # >0 时启用；建议 4~32，按内存评估
   升级自动完成，无需手工步骤；
 - 存量历史数据：`messages` 的 `user_id/channel` 启动时自动回填一次。
 
-## 七、遗留（非本次范围）
+## 七、会话模型：对话优先(Conversation-first)
+
+原实现里“会话”被挂在每个 Agent 实例上(main + 各子代理各自一套 session)，同一次用户对话
+被拆成多个碎片、且混入无主的随机子会话。重构为一等实体 **conversation**：
+
+- `messages.conversation_id`：一个用户对话。顶层 run 的 `session_id` 即对话根
+  (`web:{uid}:{rand}`)；**子代理/团队成员运行继承同一 conversation_id**
+  （`RunContext.conversation_id` 由 `core.py` 顶层下发）。
+- 内部上下文线程：`session_id = <对话根>#<agent>`（确定性命名，同一对话内复用保持连续，
+  不同对话/用户不再互相串用 —— `SubagentInstance.conversation_id` + 对话级模板复用判定）。
+- 展示/审计按对话聚合：`storage.list_conversations()`(主对话条数 + `thread_count`)；
+  普通用户/管理端历史列表都不再出现内部碎片；admin 可用
+  `/api/admin/sessions/{conv}/threads` 下钻溯源。
+- 老数据迁移：无 `conversation_id` 的行以自身 `session_id` 兜底为对话根（幂等，启动自动执行）。
+
+## 八、遗留（非本次范围）
 
 - 若启用 Worker 池，插件（钉钉/飞书）仍走 root 实例，多用户插件渠道隔离需插件层按
   user 维度收敛（P3）；

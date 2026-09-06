@@ -73,6 +73,8 @@ class RunContext:
     system_dynamic: str = ""
     # 本次任务的过程文件目录（顶层 run 建立，子代理继承）；临时文件写这里，交付物写 workspace
     task_dir: str = ""
+    # 逻辑对话 id：顶层 run 建立(=session_id)，子代理/团队成员运行继承同一对话归属
+    conversation_id: str = ""
     # 会话对象（复用 session_id 时保留历史消息）
     session: Any = None
 
@@ -817,6 +819,8 @@ class Agent:
             task=task, run_id=run_id or uuid.uuid4().hex,
             user_id=eff_user, user_name=eff_name, role=eff_role,
         )
+        # 对话归属: 顶层 run 以自身 session 为对话; 子代理/成员运行继承父对话
+        ctx.conversation_id = getattr(inherited, "conversation_id", "") or (session_id or "")
         # 任务级过程目录：顶层 run 建立（时间戳+任务摘要），子代理继承父目录（同任务共享）
         if self.parent_agent and inherited.task_dir:
             ctx.task_dir = inherited.task_dir
@@ -853,6 +857,7 @@ class Agent:
                 sess.user_id, sess.user_name, sess.role = eff_user, eff_name, eff_role
             # 新进程/worker 首次承接已有会话时，从 DB 恢复历史上下文
             self._restore_db_session_history(sess)
+            sess.conversation_id = ctx.conversation_id
             sess.add_message("user", task)
             ctx.session = sess
 

@@ -18,6 +18,8 @@ const auditLoading = ref(false)
 const detailVisible = ref(false)
 const detailId = ref('')
 const detailMsgs = ref<any[]>([])
+const threadsVisible = ref(false)
+const threads = ref<any[]>([])
 
 let timer: number | undefined
 let clock: number | undefined
@@ -81,6 +83,32 @@ async function openDetail(row: any) {
   } catch (e) {
     ElMessage.error((e as Error).message)
   }
+}
+
+async function openThreads(row: any) {
+  detailId.value = row.id
+  try {
+    const d = await api<any>(`/api/admin/sessions/${encodeURIComponent(row.id)}/threads`)
+    threads.value = d.threads ?? []
+    threadsVisible.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+function viewThread(sessionId: string) {
+  threadsVisible.value = false
+  detailId.value = sessionId
+  detailVisible.value = true
+  detailMsgs.value = []
+  void (async () => {
+    try {
+      const d = await api<any>(`/api/admin/sessions/${encodeURIComponent(sessionId)}/messages`)
+      detailMsgs.value = d.messages ?? []
+    } catch (e) {
+      ElMessage.error((e as Error).message)
+    }
+  })()
 }
 
 async function exportSession(row: any) {
@@ -257,13 +285,19 @@ onBeforeUnmount(() => {
           <template #default="{ row }">{{ row.owner || row.uid || '(匿名/系统)' }}</template>
         </el-table-column>
         <el-table-column prop="agent_id" label="Agent" width="140" show-overflow-tooltip />
-        <el-table-column prop="messages" label="消息数" width="90" align="center" />
+        <el-table-column prop="messages" label="主消息" width="90" align="center">
+          <template #default="{ row }">
+            {{ row.messages }}
+            <span v-if="row.thread_count" style="font-size:11px;opacity:.65;color:var(--el-color-warning)">(+{{ row.thread_count }}线程)</span>
+          </template>
+        </el-table-column>
         <el-table-column label="最后活跃" width="170">
           <template #default="{ row }">{{ new Date(row.last_accessed).toLocaleString() }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="150" align="center">
+        <el-table-column label="操作" width="190" align="center">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="openDetail(row)">查看</el-button>
+            <el-button v-if="row.thread_count" size="small" text type="success" @click="openThreads(row)">线程</el-button>
             <el-button size="small" text type="warning" @click="exportSession(row)">导出</el-button>
           </template>
         </el-table-column>
@@ -287,6 +321,20 @@ onBeforeUnmount(() => {
         <el-button type="primary" @click="exportSession({ id: detailId })">导出 JSON</el-button>
         <el-button @click="detailVisible = false">关闭</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="threadsVisible" :title="`对话 ${detailId} 的子代理线程`" width="640px" top="8vh">
+      <el-table :data="threads" size="small" empty-text="无内部线程">
+        <el-table-column prop="session_id" label="线程 ID" min-width="220" class-name="mono" show-overflow-tooltip />
+        <el-table-column prop="agent_id" label="Agent" width="160" show-overflow-tooltip />
+        <el-table-column prop="msg_count" label="消息数" width="90" align="center" />
+        <el-table-column label="操作" width="90" align="center">
+          <template #default="{ row }">
+            <el-button size="small" text type="primary" @click="viewThread(row.session_id)">查看</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer><el-button @click="threadsVisible = false">关闭</el-button></template>
     </el-dialog>
   </div>
 </template>

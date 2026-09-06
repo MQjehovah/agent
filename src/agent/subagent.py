@@ -29,6 +29,7 @@ class SubagentInstance:
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
     task_count: int = 0
+    conversation_id: str = ""  # 所属逻辑对话(顶层会话),用于跨对话隔离
 
 
 class SubagentManager:
@@ -535,6 +536,15 @@ class SubagentManager:
         if parent_agent:
             self._parent_agent = parent_agent
 
+        # 当前逻辑对话（顶层会话根），用于按对话隔离模板复用
+        _conv = ""
+        try:
+            from agent.core import current_run
+            _rc = current_run()
+            _conv = getattr(_rc, "conversation_id", "") or ""
+        except Exception:
+            _conv = ""
+
         # 优先通过 session_id 查找
         async with self._lock:
             if session_id and session_id in self._active_subagents:
@@ -543,16 +553,21 @@ class SubagentManager:
                 logger.info(f"复用子代理: template={instance.template}, session={session_id}")
                 return instance, False
 
-        # 通过模板名查找
+        # 通过模板名查找（仅同属一个对话时复用，避免跨对话/跨用户串上下文）
         template_name = template or name
         async with self._lock:
             if template_name and template_name in self._name_to_session:
                 existing_session = self._name_to_session[template_name]
                 if existing_session in self._active_subagents:
                     instance = self._active_subagents[existing_session]
-                    instance.last_used = time.time()
-                    logger.info(f"复用子代理: template={template_name}, session={existing_session}")
-                    return instance, False
+                    if not _conv or not getattr(instance, "conversation_id", "") \
+                            or instance.conversation_id == _conv:
+                        instance.last_used = time.time()
+                        instance.conversation_id = _conv or instance.conversation_id
+                        logger.info(f"复用子代理: template={template_name}, session={existing_session}")
+                        return instance, False
+                    # 命中不同对话的实例 → 忽略，创建本对话自己的实例
+                    logger.info(f"模板 {template_name} 已被另一对话占用({instance.conversation_id})，新建隔离实例")
 
         # 创建新的子代理（不持锁，因为初始化耗时）
         template_data = self.templates.get(template_name)
@@ -591,12 +606,15 @@ class SubagentManager:
         # 注入事件回调（用于 Web UI 展示工具调用和流式输出）
         self._forward_hooks(agent, template_name=template_name, agent_type="subagent")
 
-        # 创建实例并注册（持锁）
+        # 创建实例并注册（持锁）。无显式 session 时, 对话内默认 <conv>#<agent> 确定性线程 id
+        if not session_id and _conv and template_name:
+            session_id = f"{_conv}#{template_name}"
         new_session_id = session_id or str(uuid.uuid4())[:8]
         instance = SubagentInstance(
             agent=agent,
             template=template_name,
-            session_id=new_session_id
+            session_id=new_session_id,
+            conversation_id=_conv,
         )
 
         async with self._lock:
