@@ -25,13 +25,24 @@ import time
 logger = logging.getLogger("agent.web.pool")
 
 
+class PoolBusyError(RuntimeError):
+    """worker 池已达上限且无可回收空闲实例（用于向请求端返回 503/提示重试）。"""
+
+
 class WebUserWorkerPool:
     def __init__(self, root_agent, max_workers: int = 0, idle_ttl: float = 3600.0,
-                 sweep_interval: float = 300.0):
+                 sweep_interval: float = 300.0, overflow: int | None = None,
+                 acquire_timeout: float = 20.0):
         self.root = root_agent
         self.max_workers = max(0, int(max_workers))
         self.idle_ttl = idle_ttl
         self.sweep_interval = sweep_interval
+        # 允许的临时扩容上限(超出 max_workers 的部分)。
+        # None=默认 max_workers(硬顶 2x)；0=不许溢出(硬顶=max_workers)
+        self.overflow = int(overflow) if overflow is not None else self.max_workers
+        if self.overflow < 0:
+            self.overflow = 0
+        self.acquire_timeout = acquire_timeout
         # tag("web:3") -> info
         self._workers: dict[str, dict] = {}
         self._lock = asyncio.Lock()
@@ -47,39 +58,60 @@ class WebUserWorkerPool:
         return re.sub(r"[^0-9A-Za-z_-]", "_", str(uid)) or "x"
 
     async def acquire(self, tag: str, uid: str, name: str = ""):
-        """为某个用户获取 worker（池未启用时返回 root）。"""
+        """为某个用户获取 worker（池未启用时返回 root）。饱和时短暂等待，仍无空闲则抛 PoolBusyError。"""
         if not self.enabled:
             return self.root
         safe = WebUserWorkerPool._safe_dir(uid)
         ws_dir = os.path.join(self.root.workspace, "users", f"u_{safe}")
+
+        # 1) 已有该用户 worker：直接复用（同用户多会话可共用一个实例）
         async with self._lock:
             info = self._workers.get(tag)
-            if info is None:
-                if len(self._workers) >= self.max_workers:
-                    evicted = self._evict_one_idle_locked()
-                    if not evicted:
-                        logger.warning(
-                            f"[pool] 达到容量 {self.max_workers} 且全部忙碌，临时扩容(溢出)")
-                agent = await self._create_worker(tag, ws_dir)
-                info = {
-                    "agent": agent,
-                    "ws": ws_dir,
-                    "created": time.time(),
-                    "last": time.time(),
-                    "busy": 0,
-                }
-                self._workers[tag] = info
-                self._total_created += 1
-                logger.info(f"[pool] 为用户 {tag} 创建独立 worker (总 {self._total_created})")
-            else:
-                agent = info["agent"]
-                if info["busy"] == 0 and info["agent"] is None:
-                    # 理论不会发生；保险：重建
-                    agent = await self._create_worker(tag, ws_dir)
-                    info["agent"] = agent
-            info["busy"] += 1
-            info["last"] = time.time()
+            if info is not None and info.get("agent") is not None:
+                info["busy"] += 1
+                info["last"] = time.time()
+                return info["agent"]
+
+        # 2) 需要新建：先确保容量(等待可回收/空闲)，避免无界扩容撑爆内存
+        if not await self._ensure_slot():
+            raise PoolBusyError(
+                f"系统繁忙: 并发 worker 已达上限 {self.max_workers}(可溢出 {self.overflow})，请稍后重试")
+
+        # 3) 锁外做重量级初始化，避免阻塞其它用户的 release/acquire
+        agent = await self._create_worker(tag, ws_dir)
+        async with self._lock:
+            info = self._workers.get(tag)
+            if info is not None and info.get("agent") is not None:
+                # 极端竞争(同 tag 双请求)下复用已建实例
+                info["busy"] += 1
+                info["last"] = time.time()
+                return info["agent"]
+            self._workers[tag] = {
+                "agent": agent,
+                "ws": ws_dir,
+                "created": time.time(),
+                "last": time.time(),
+                "busy": 1,
+            }
+            self._total_created += 1
+            logger.info(f"[pool] 为用户 {tag} 创建独立 worker (总 {self._total_created})")
         return agent
+
+    async def _ensure_slot(self) -> bool:
+        """容量检查：未到硬顶或可回收空闲 worker 则放行；否则等待 release 通知，超时返回 False。"""
+        deadline = time.monotonic() + self.acquire_timeout
+        while True:
+            async with self._lock:
+                if len(self._workers) < self.max_workers + self.overflow:
+                    return True
+                if self._evict_one_idle_locked():
+                    return True
+                all_busy = all(i["busy"] > 0 for i in self._workers.values())
+                if not all_busy:
+                    return True
+                if time.monotonic() >= deadline:
+                    return False
+            await asyncio.sleep(0.2)
 
     def release(self, tag: str):
         if not self.enabled:
@@ -181,6 +213,8 @@ class WebUserWorkerPool:
         return {
             "enabled": self.enabled,
             "capacity": self.max_workers,
+            "overflow": self.overflow,
+            "hard_cap": self.max_workers + self.overflow,
             "active": len(self._workers),
             "busy": sum(1 for i in self._workers.values() if i["busy"] > 0),
             "total_created": self._total_created,

@@ -23,6 +23,11 @@ _DEFAULTS = {
         "ttl_seconds": 3600,
         "max_sessions": 100,
     },
+    "web": {
+        "pool_size": 0,
+        "pool_overflow": 0,
+        "pool_acquire_timeout": 20,
+    },
     "cache": {
         "max_size": 1000,
         "ttl_seconds": 3600,

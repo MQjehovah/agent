@@ -179,16 +179,30 @@ class WebServer:
 
     def set_agent(self, agent):
         self.agent = agent
-        # 多用户隔离 worker 池：AGENT_WEB_POOL_SIZE>0 时每个用户独立 Agent/workspace
+        # 多用户隔离 worker 池：AGENT_WEB_POOL_SIZE>0 时每个用户独立 Agent/workspace。
+        # 优先级: env AGENT_WEB_POOL_SIZE > config.json web.pool_size > 0(关闭)
         try:
-            _size = int(os.environ.get("AGENT_WEB_POOL_SIZE", "0") or "0")
+            _size_env = os.environ.get("AGENT_WEB_POOL_SIZE", "")
+            if _size_env == "":
+                try:
+                    from settings import get_settings
+                    _size = int(get_settings().get("web.pool_size", 0) or 0)
+                except Exception:
+                    _size = 0
+            else:
+                _size = int(_size_env)
         except (TypeError, ValueError):
             _size = 0
         if agent is not None and _size > 0:
             try:
                 from web.worker_pool import WebUserWorkerPool
-                self._pool = WebUserWorkerPool(agent, max_workers=_size)
-                logger.info(f"Web 多用户 Worker 池启用: 容量={_size}，按用户隔离 workspace/上下文")
+                _ov_env = os.environ.get("AGENT_WEB_POOL_OVERFLOW", "").strip()
+                _overflow = int(_ov_env) if _ov_env else None  # None=默认翻倍
+                _timeout = float(os.environ.get("AGENT_WEB_POOL_ACQUIRE_TIMEOUT", "20") or "20")
+                self._pool = WebUserWorkerPool(
+                    agent, max_workers=_size, overflow=_overflow, acquire_timeout=_timeout)
+                logger.info(f"Web 多用户 Worker 池启用: 容量={_size}，"
+                            f"overflow={self._pool.overflow}，按用户隔离 workspace/上下文")
             except Exception as e:
                 logger.error(f"Web Worker 池初始化失败，回退单实例: {e}")
                 self._pool = None
@@ -196,7 +210,7 @@ class WebServer:
             self._pool = None
 
     async def _agent_for_web(self, auth: dict):
-        """返回 (执行 agent, 释放tag)；池启用时按用户分配独立 worker。"""
+        """返回 (执行 agent, 释放tag)；池启用时按用户分配独立 worker。饱和抛 PoolBusyError。"""
         pool = getattr(self, "_pool", None)
         if pool is not None and pool.enabled:
             uid = str(auth.get("uid", "anon"))
@@ -205,6 +219,8 @@ class WebServer:
                 agent = await pool.acquire(tag, uid, auth.get("name", ""))
                 return agent, tag
             except Exception as e:
+                if type(e).__name__ == "PoolBusyError":
+                    raise
                 logger.error(f"Web Worker 分配失败({tag}): {e}")
                 return self.agent, ""
         return self.agent, ""
@@ -622,7 +638,12 @@ class WebServer:
 
             # 非流式：后台执行，立即返回 session_id
             async def _web_auto_run():
-                agent, rel_tag = await self._agent_for_web(auth)
+                try:
+                    agent, rel_tag = await self._agent_for_web(auth)
+                except Exception as e:
+                    logger.warning(f"非流式任务 worker 分配失败: {e}")
+                    chat_session.stop_stream()
+                    return
                 try:
                     router = MessageRouter(agent)
                     await router.route(message, channel="web", session_id=session_id,
@@ -672,7 +693,12 @@ class WebServer:
             # 本次流式请求的唯一 run_id，把流式事件限定在本请求内，杜绝并发串流
             stream_run_id = uuid.uuid4().hex
             # 执行 agent：池启用时按用户分配独立 worker（隔离上下文/workspace），否则用 root
-            agent_ref, rel_tag = await self._agent_for_web(auth)
+            try:
+                agent_ref, rel_tag = await self._agent_for_web(auth)
+            except Exception as e:
+                chat_session.stop_stream()
+                return JSONResponse({"error": f"系统繁忙，请稍后重试（{type(e).__name__}）"},
+                                    status_code=503)
             if agent_ref is None:
                 chat_session.stop_stream()
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)

@@ -23,6 +23,8 @@ python src/main.py --config ./cfg       # Config directory (default: ./config)
 # Web 多用户在线模式(公司共用)
 python src/main.py --web                # Web UI on :8080(默认单实例)
 AGENT_WEB_POOL_SIZE=16 python src/main.py --web   # >0: 启用按用户隔离的 Worker 池
+# 可选: 容量/溢出(默认=容量)、获取等待秒数、也可写 config.json web.pool_size
+AGENT_WEB_POOL_OVERFLOW=0 AGENT_WEB_POOL_ACQUIRE_TIMEOUT=15 python src/main.py --web
 ```
 
 ## Lint & Test
@@ -122,7 +124,9 @@ workspace/                # Auto-created, gitignored
 - **审计落盘**: `messages` 表带 `user_id/channel/conversation_id` 列; 会话内容全部落库,admin 可经 `/api/admin/sessions/{id}/messages` 查看/导出
 - **用量/性能**: LLM 调用写入 `usage_records`(含 `duration_ms`, 供 P50/P95); 个人用 `GET /api/usage`,管理端用 `/api/admin/usage`
 - **内存/文件隔离**: 记忆按 `owner_id` DB 隔离; worker 池启用后文件按 `workspace/users/u_{uid}` 隔离
-- **Worker 池**: `AGENT_WEB_POOL_SIZE>0` 启用(每用户独立 Agent), 详见 `docs/p2-company-isolation-design.md`
+- **Worker 池**: `AGENT_WEB_POOL_SIZE>0` 启用(每用户独立 Agent), 容量守护: 溢出上限
+  `AGENT_WEB_POOL_OVERFLOW`(默认=容量, 硬顶2x; 0=不许溢出), 饱和时短暂等待
+  `AGENT_WEB_POOL_ACQUIRE_TIMEOUT` 后返回 503(不再无界扩容); 详见 `docs/refactor-blueprint.md`
 - **文档同步**: 改动代码需同步维护本文件与 `docs/`、`frontend/README.md`
 
 ## Skill Lifecycle — Automatic Routing
