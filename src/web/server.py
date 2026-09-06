@@ -146,6 +146,7 @@ class WebServer:
         self._app: FastAPI = FastAPI(title="Agent Web UI", docs_url="/api/docs")
         self._server: uvicorn.Server | None = None
         self._sessions: dict[str, ChatSession] = {}
+        self._session_owners: dict[str, str] = {}  # session_id -> uid(创建者)
         self._session_lock = threading.Lock()
         # 日志流 handler：把 agent 日志广播给 /api/logs/stream 订阅者
         self._log_handler = LogStreamHandler()
@@ -234,6 +235,16 @@ class WebServer:
         register_webhook_routes(self._app, lambda: self.agent)
 
         # ===== Auth 中间件：所有 /api/* 需有效 token（auth 端点、OPTIONS、或 DISABLE_AUTH 除外） =====
+        MAX_BODY = 2 * 1024 * 1024  # 2MB(JSON API 足够)
+
+        @self._app.middleware("http")
+        async def body_limit_middleware(request: Request, call_next):
+            if request.method in ("POST", "PUT", "PATCH"):
+                cl = request.headers.get("content-length")
+                if cl and cl.isdigit() and int(cl) > MAX_BODY:
+                    return JSONResponse({"error": "Payload too large"}, status_code=413)
+            return await call_next(request)
+
         @self._app.middleware("http")
         async def auth_middleware(request: Request, call_next):
             if request.method == "OPTIONS":
@@ -241,6 +252,10 @@ class WebServer:
             if os.environ.get("WEBUI_DISABLE_AUTH") == "1":
                 return await call_next(request)
             if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/auth/"):
+                # 服务间专用凭证旁路(网关等可信服务自动开号)
+                _svc = os.environ.get("AGENT_SERVICE_TOKEN", "")
+                if _svc and request.headers.get("X-Service-Token") == _svc:
+                    return await call_next(request)
                 h = request.headers.get("Authorization", "")
                 if not h.startswith("Bearer "):
                     return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -261,15 +276,34 @@ class WebServer:
             except Exception as e:
                 raise HTTPException(status_code=401, detail="Unauthorized") from e
 
+        _service_token = os.environ.get("AGENT_SERVICE_TOKEN", "")
+
+        def _is_service_request(request: Request) -> bool:
+            """服务间专用凭证(X-Service-Token):仅用于网关等可信服务的自动开号,不替代用户登录。"""
+            return bool(_service_token) and request.headers.get("X-Service-Token") == _service_token
+
         async def _get_admin(request: Request) -> dict[str, Any]:
+            if _is_service_request(request):
+                return {"uid": 0, "name": "service", "role": "admin"}
             u = await _get_auth(request)
             if u.get("role") != "admin":
                 raise HTTPException(403, "Admin required")
             return u
 
         # ===== Auth API =====
+        _login_attempts: dict[str, list[float]] = {}
+
         @self._app.post("/api/auth/login")
         async def auth_login(request: Request):
+            # 每 IP 登录限流:10 次/分钟(防爆破)
+            ip = request.client.host if request.client else "unknown"
+            import time as _time
+            now = _time.time()
+            window = [t for t in _login_attempts.get(ip, []) if now - t < 60]
+            if len(window) >= 10:
+                return JSONResponse({"error": "尝试过于频繁,请 1 分钟后再试"}, status_code=429)
+            window.append(now)
+            _login_attempts[ip] = window
             data = await request.json()
             username = (data.get("username") or "").strip()
             password = data.get("password", "")
@@ -424,6 +458,8 @@ class WebServer:
             chat_session = self._get_or_create_session(session_id)
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
+            self._session_owners.setdefault(session_id, str(auth.get("uid")))
+            self._session_owners.setdefault(session_id, str(auth.get("uid")))
 
             web_user_id = f"web:{auth['uid']}"
             web_user_name = auth.get("name", "")
@@ -431,6 +467,7 @@ class WebServer:
             # 非流式：后台执行，立即返回 session_id
             async def _web_auto_run():
                 await router.route(message, channel="web", session_id=session_id,
+                                   role=auth.get("role", "default"),
                                    user_id=web_user_id, user_name=web_user_name)
             asyncio.create_task(_web_auto_run())
             return {"session_id": session_id, "status": "processing"}
@@ -454,6 +491,7 @@ class WebServer:
             chat_session = self._get_or_create_session(session_id)
             chat_session.add_message("user", message)
             chat_session.is_streaming = True
+            self._session_owners.setdefault(session_id, str(auth.get("uid")))
 
             web_user_id = f"web:{auth['uid']}"
             web_user_name = auth.get("name", "")
@@ -517,6 +555,7 @@ class WebServer:
                             message, channel="web",
                             session_id=session_id, run_id=stream_run_id,
                             user_id=web_user_id, user_name=web_user_name,
+                            role=auth.get("role", "default"),
                         )
                         # router.route 对非 cli 渠道返回字符串（result.result），
                         # 对 cli 渠道返回 AgentResult —— 两种情况都要兜住
@@ -606,17 +645,31 @@ class WebServer:
             return {"success": success, "task_id": task_id}
 
         @self._app.get("/api/sessions")
-        async def list_sessions():
+        async def list_sessions(request: Request):
+            owner_uid, admin = "", True
+            try:
+                u = await _get_auth(request)
+                admin = u.get("role") == "admin"
+                owner_uid = str(u.get("uid"))
+            except Exception:
+                pass  # DISABLE_AUTH 场景视为 admin
             with self._session_lock:
                 sessions = [{
                     "id": sid, "created_at": s.created_at,
                     "message_count": s.message_count(),
                     "is_streaming": s.is_streaming,
-                } for sid, s in self._sessions.items()]
+                } for sid, s in self._sessions.items()
+                if admin or self._session_owners.get(sid) == owner_uid]
             return {"sessions": sessions}
 
         @self._app.get("/api/sessions/{session_id}/messages")
-        async def session_messages(session_id: str):
+        async def session_messages(session_id: str, request: Request):
+            try:
+                u = await _get_auth(request)
+                if u.get("role") != "admin" and self._session_owners.get(session_id, str(u.get("uid"))) != str(u.get("uid")):
+                    return JSONResponse({"error": "Session not found"}, status_code=404)
+            except Exception:
+                pass  # DISABLE_AUTH 场景放行
             with self._session_lock:
                 chat_session = self._sessions.get(session_id)
             if not chat_session:
@@ -624,19 +677,28 @@ class WebServer:
             return {"messages": chat_session.snapshot()}
 
         @self._app.delete("/api/sessions/{session_id}")
-        async def delete_session(session_id: str):
+        async def delete_session(session_id: str, request: Request):
+            try:
+                u = await _get_auth(request)
+                if u.get("role") != "admin" and self._session_owners.get(session_id, str(u.get("uid"))) != str(u.get("uid")):
+                    return JSONResponse({"error": "Session not found"}, status_code=404)
+            except Exception:
+                pass
             with self._session_lock:
                 self._sessions.pop(session_id, None)
             return {"success": True}
 
         # ===== 看板 API =====
         @self._app.get("/api/kanban")
-        async def kanban_list():
+        async def kanban_list(request: Request):
             if not self._kanban:
                 return JSONResponse({"error": "Kanban not available", "code": 503}, status_code=503)
             try:
+                auth = await _get_auth(request)
+                admin = auth.get("role") == "admin"
+                uid = str(auth.get("uid"))
                 stats = self._kanban.get_stats()
-                tasks = self._kanban.list_tasks()
+                tasks = self._kanban.list_tasks(user_id=None if admin else uid)
                 return {"stats": stats, "tasks": [t.to_dict() for t in tasks]}
             except Exception as e:
                 logger.exception("Kanban API error")
@@ -646,6 +708,7 @@ class WebServer:
         async def kanban_add(request: Request):
             if not self._kanban:
                 return JSONResponse({"error": "Kanban not available"}, status_code=503)
+            auth = await _get_auth(request)
             data = await request.json()
             if not data or "title" not in data:
                 return JSONResponse({"error": "Missing title"}, status_code=400)
@@ -657,6 +720,7 @@ class WebServer:
                 source="user",
                 tags=data.get("tags"),
                 interval=data.get("interval"),
+                user_id=str(auth.get("uid")),
             )
             return {"task": task.to_dict()}
 
@@ -664,22 +728,28 @@ class WebServer:
         async def kanban_update(task_id: str, request: Request):
             if not self._kanban:
                 return JSONResponse({"error": "Kanban not available"}, status_code=503)
+            auth = await _get_auth(request)
+            admin = auth.get("role") == "admin"
+            uid = str(auth.get("uid"))
+            owner = None if admin else uid
             data = await request.json()
             if not data:
                 return JSONResponse({"error": "Missing body"}, status_code=400)
             if "column" in data:
-                self._kanban.move_task(task_id, data["column"], data.get("assignee"))
+                self._kanban.move_task(task_id, data["column"], data.get("assignee"), user_id=owner)
             if "assignee" in data and "column" not in data:
-                task = self._kanban.get_task(task_id)
+                task = self._kanban.get_task(task_id, user_id=owner)
                 if task:
-                    self._kanban.move_task(task_id, task.column, assignee=data["assignee"])
+                    self._kanban.move_task(task_id, task.column, assignee=data["assignee"], user_id=owner)
             return {"success": True}
 
         @self._app.delete("/api/kanban/{task_id}")
         async def kanban_remove(task_id: str):
             if not self._kanban:
                 return JSONResponse({"error": "Kanban not available"}, status_code=503)
-            if self._kanban.remove_task(task_id):
+            auth = await _get_auth(request)
+            owner = None if auth.get("role") == "admin" else str(auth.get("uid"))
+            if self._kanban.remove_task(task_id, user_id=owner):
                 return {"success": True}
             return JSONResponse({"error": "Task not found"}, status_code=404)
 
@@ -687,10 +757,12 @@ class WebServer:
         async def kanban_move(task_id: str, request: Request):
             if not self._kanban:
                 return JSONResponse({"error": "Kanban not available"}, status_code=503)
+            auth = await _get_auth(request)
             data = await request.json()
             if not data or "column" not in data:
                 return JSONResponse({"error": "Missing column"}, status_code=400)
-            ok = self._kanban.move_task(task_id, data["column"])
+            owner = None if auth.get("role") == "admin" else str(auth.get("uid"))
+            ok = self._kanban.move_task(task_id, data["column"], user_id=owner)
             return {"success": ok}
 
         # ===== Scheduler API（定时任务管理） =====
@@ -1165,7 +1237,8 @@ class WebServer:
             return {"success": True}
 
         @self._app.get("/api/rbac/users")
-        async def rbac_list_users():
+        async def rbac_list_users(request: Request):
+            await _get_admin(request)
             rbac = _require_rbac()
             users = rbac.list_users_with_password_flag()
             for u in users:
@@ -1222,12 +1295,14 @@ class WebServer:
             return {"success": True}
 
         @self._app.delete("/api/rbac/users/{user_id}")
-        async def rbac_delete_user(user_id: int):
+        async def rbac_delete_user(user_id: int, request: Request):
+            await _get_admin(request)
             _require_rbac().delete_user(user_id)
             return {"success": True}
 
         @self._app.post("/api/rbac/users/{user_id}/toggle")
-        async def rbac_toggle_user(user_id: int):
+        async def rbac_toggle_user(user_id: int, request: Request):
+            await _get_admin(request)
             rbac = _require_rbac()
             user = rbac.get_user(user_id)
             if not user:

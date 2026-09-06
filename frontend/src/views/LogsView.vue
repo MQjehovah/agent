@@ -24,14 +24,14 @@ onBeforeUnmount(() => es?.close())
 <template>
   <div class="page" style="display: flex; flex-direction: column">
     <div class="page-head">
-      <h2>运行日志</h2>
+      <div><h2>运行日志</h2><div class="sub">实时推送(每 5s 心跳保持)</div></div>
       <div style="display: flex; align-items: center; gap: 8px">
         <el-tag :type="connected ? 'success' : 'danger'" size="small">{{ connected ? '已连接' : '未连接' }}</el-tag>
         <el-button size="small" @click="lines = []">清空</el-button>
       </div>
     </div>
     <div style="flex: 1; overflow-y: auto; background: #111; border-radius: 8px; padding: 10px 12px; font-family: Consolas, monospace; font-size: 12px; line-height: 1.7; color: #d0d0d0">
-      <div v-for="(l, i) in lines" :key="i" style="white-space: pre-wrap; word-break: break-all">{{ l }}</div>
+      <div v-for="(l, i) in lines" :key="i" class="log-line" :class="{ err: /error|exception|traceback/i.test(l), warn: /warn/i.test(l) }">{{ l }}</div>
       <div v-if="lines.length === 0" style="color: #666">等待日志输出…</div>
     </div>
   </div>

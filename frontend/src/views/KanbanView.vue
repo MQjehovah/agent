@@ -23,6 +23,7 @@ const COLUMNS = [
 
 const tasks = ref<Task[]>([])
 const loading = ref(false)
+const dragId = ref('')
 const addVisible = ref(false)
 const form = ref({ title: '', description: '', priority: 3, column: 'backlog' })
 
@@ -67,6 +68,16 @@ async function move(task: Task, column: string) {
   }
 }
 
+function onDragStart(task: Task) {
+  dragId.value = task.id
+}
+
+function onDrop(column: string) {
+  const task = tasks.value.find(t => t.id === dragId.value)
+  dragId.value = ''
+  if (task && task.column !== column) void move(task, column)
+}
+
 async function remove(task: Task) {
   try {
     await ElMessageBox.confirm(`删除任务「${task.title}」?`, '确认', { type: 'warning' })
@@ -93,13 +104,15 @@ onMounted(load)
     </div>
 
     <div style="display: flex; gap: 12px; flex: 1; min-height: 0">
-      <div v-for="c in COLUMNS" :key="c.key" style="flex: 1; background: var(--el-bg-color-page); border-radius: 10px; padding: 10px; overflow-y: auto">
+      <div v-for="c in COLUMNS" :key="c.key" class="board-col"
+           @dragover.prevent="true" @drop.prevent="onDrop(c.key)">
         <div style="font-weight: 600; margin-bottom: 8px">{{ c.title }} <el-tag size="small">{{ (byColumn[c.key] ?? []).length }}</el-tag></div>
-        <div v-for="t in byColumn[c.key]" :key="t.id" style="background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px">
+        <div v-for="t in byColumn[c.key]" :key="t.id" class="k-card" draggable="true" @dragstart="onDragStart(t)">
           <div style="font-weight: 600">{{ t.title }}</div>
           <div v-if="t.description" style="font-size: 12px; color: var(--el-text-color-secondary); margin: 4px 0">{{ t.description }}</div>
           <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px">
             <el-tag size="small" :type="t.priority <= 1 ? 'danger' : t.priority === 2 ? 'warning' : 'info'">P{{ t.priority }}</el-tag>
+            <el-tag v-if="t.source" size="small" type="info" effect="plain">{{ t.source }}</el-tag>
             <span v-if="t.assignee" style="font-size: 12px; color: var(--el-text-color-secondary)">{{ t.assignee }}</span>
             <el-dropdown trigger="click" size="small" @command="(col: string) => move(t, col)">
               <el-button size="small" text type="primary">移动</el-button>

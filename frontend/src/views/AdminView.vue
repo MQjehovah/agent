@@ -70,7 +70,7 @@ onMounted(load)
 <template>
   <div class="page">
     <div class="page-head">
-      <h2>用户管理(RBAC)</h2>
+      <div><h2>用户管理</h2><div class="sub">基于角色的访问控制(admin 可见)</div></div>
       <el-button type="primary" @click="dialog = true">新建用户</el-button>
     </div>
 

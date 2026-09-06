@@ -18,6 +18,7 @@ class KanbanTask:
     id: str
     title: str
     description: str = ""
+    user_id: str | None = None
     priority: int = 3
     column: str = "backlog"
     assignee: str | None = None
@@ -52,6 +53,7 @@ class KanbanTask:
             "updated_at": self.updated_at,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
+            "user_id": self.user_id,
         }
 
     @classmethod
@@ -77,6 +79,7 @@ class KanbanTask:
             updated_at=row.get("updated_at", datetime.now().isoformat()),
             started_at=row.get("started_at"),
             completed_at=row.get("completed_at"),
+            user_id=row.get("user_id"),
         )
 
     @property
@@ -97,12 +100,28 @@ class KanbanBoard:
         if not storage:
             self._init_db()
 
+    _uid_col_checked = False
+
+    def _ensure_uid_column(self):
+        """属主隔离迁移:user_id 列(幂等,仅首次连接执行)。"""
+        if KanbanBoard._uid_col_checked:
+            return
+        KanbanBoard._uid_col_checked = True
+        try:
+            with self._get_conn() as conn:
+                conn.execute("ALTER TABLE kanban_tasks ADD COLUMN user_id TEXT")
+                conn.commit()
+        except Exception:
+            pass  # 列已存在或其他原因,后续 INSERT 有明确报错
+
     @contextmanager
     def _get_conn(self):
         if self._storage:
+            self._ensure_uid_column()
             with self._storage.get_connection() as conn:
                 yield conn
         else:
+            self._ensure_uid_column()
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
@@ -139,6 +158,11 @@ class KanbanBoard:
                 "CREATE INDEX IF NOT EXISTS idx_kanban_column "
                 "ON kanban_tasks(column, priority, created_at)"
             )
+            # 属主隔离迁移(2026-09-06): user_id 为空 = 历史共享任务
+            try:
+                conn.execute("ALTER TABLE kanban_tasks ADD COLUMN user_id TEXT")
+            except Exception:
+                pass  # 列已存在
             conn.commit()
 
     def add_task(
@@ -151,6 +175,7 @@ class KanbanBoard:
         tags: list | None = None,
         parent_id: str | None = None,
         interval: int | None = None,
+        user_id: str | None = None,
     ) -> KanbanTask:
         task = KanbanTask(
             id=uuid.uuid4().hex[:12],
@@ -162,20 +187,21 @@ class KanbanBoard:
             tags=tags or [],
             parent_id=parent_id,
             interval=interval,
+            user_id=user_id,
         )
         now = datetime.now().isoformat()
         with self._get_conn() as conn:
             conn.execute(
                 """INSERT INTO kanban_tasks
                    (id, title, description, priority, column, source,
-                    tags, parent_id, interval,
+                    tags, parent_id, interval, user_id,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     task.id, task.title, task.description, task.priority,
                     task.column, task.source,
                     json.dumps(task.tags, ensure_ascii=False),
-                    task.parent_id, task.interval,
+                    task.parent_id, task.interval, task.user_id,
                     now, now,
                 ),
             )
@@ -183,17 +209,26 @@ class KanbanBoard:
         logger.info("看板任务已创建: [%s] %s → %s", source, title, column)
         return task
 
-    def remove_task(self, task_id: str) -> bool:
+    def remove_task(self, task_id: str, user_id: str | None = None) -> bool:
         with self._get_conn() as conn:
-            cursor = conn.execute("DELETE FROM kanban_tasks WHERE id = ?", (task_id,))
+            if user_id:
+                cursor = conn.execute(
+                    "DELETE FROM kanban_tasks WHERE id = ? AND (user_id = ? OR user_id IS NULL)",
+                    (task_id, user_id))
+            else:
+                cursor = conn.execute("DELETE FROM kanban_tasks WHERE id = ?", (task_id,))
             conn.commit()
             return cursor.rowcount > 0
 
-    def get_task(self, task_id: str) -> KanbanTask | None:
+    def get_task(self, task_id: str, user_id: str | None = None) -> KanbanTask | None:
         with self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM kanban_tasks WHERE id = ?", (task_id,)
-            ).fetchone()
+            if user_id:
+                row = conn.execute(
+                    "SELECT * FROM kanban_tasks WHERE id = ? AND (user_id = ? OR user_id IS NULL)",
+                    (task_id, user_id)).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM kanban_tasks WHERE id = ?", (task_id,)).fetchone()
         if row:
             return KanbanTask.from_row(dict(row))
         return None
@@ -203,6 +238,7 @@ class KanbanBoard:
         column: str | None = None,
         source: str | None = None,
         assignee: str | None = None,
+        user_id: str | None = None,
     ) -> list[KanbanTask]:
         clauses = []
         params: list = []
@@ -218,6 +254,10 @@ class KanbanBoard:
             else:
                 clauses.append("assignee = ?")
                 params.append(assignee)
+        if user_id:
+            # 属主隔离: 本人任务 + 历史共享任务(user_id 为空)
+            clauses.append("(user_id = ? OR user_id IS NULL)")
+            params.append(user_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._get_conn() as conn:
             rows = conn.execute(
@@ -239,9 +279,12 @@ class KanbanBoard:
             sets.append("assignee = ?")
             params.append(assignee)
         params.append(task_id)
+        owner_clause = " AND (user_id = ? OR user_id IS NULL)" if user_id else ""
+        if user_id:
+            params.append(user_id)
         with self._get_conn() as conn:
             conn.execute(
-                f"UPDATE kanban_tasks SET {', '.join(sets)} WHERE id = ?", params
+                f"UPDATE kanban_tasks SET {', '.join(sets)} WHERE id = ?{owner_clause}", params
             )
             conn.commit()
         return True

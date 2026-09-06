@@ -119,6 +119,7 @@ def register_webhook_routes(app: FastAPI, agent_provider: Callable[[], Any]) -> 
             result = await router.route(
                 task.content, channel="webhook",
                 session_id=task.session_id,
+                user_name="webhook",
             )
             result_str = result.result if hasattr(result, "result") else str(result)
             async with task_lock:

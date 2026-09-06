@@ -7,6 +7,8 @@ import App from './App.vue'
 import './style.css'
 
 import LoginView from './views/LoginView.vue'
+import DashboardView from './views/DashboardView.vue'
+import WebhookView from './views/WebhookView.vue'
 import ChatView from './views/ChatView.vue'
 import SessionsView from './views/SessionsView.vue'
 import KanbanView from './views/KanbanView.vue'
@@ -23,14 +25,16 @@ const router = createRouter({
     {
       path: '/',
       component: () => import('./views/Layout.vue'),
-      redirect: '/chat',
+      redirect: '/dashboard',
       children: [
+        { path: 'dashboard', component: DashboardView, meta: { title: '总览' } },
         { path: 'chat', component: ChatView, meta: { title: '对话' } },
         { path: 'sessions', component: SessionsView, meta: { title: '会话' } },
         { path: 'kanban', component: KanbanView, meta: { title: '看板' } },
         { path: 'scheduler', component: SchedulerView, meta: { title: '定时任务' } },
         { path: 'memories', component: MemoriesView, meta: { title: '记忆' } },
         { path: 'logs', component: LogsView, meta: { title: '日志' } },
+        { path: 'webhook', component: WebhookView, meta: { title: 'Webhook' } },
         { path: 'admin', component: AdminView, meta: { title: '用户管理' } },
         { path: 'settings', component: SettingsView, meta: { title: '设置' } }
       ]

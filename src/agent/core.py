@@ -799,7 +799,7 @@ class Agent:
 
         return tools
 
-    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "") -> AgentResult:
+    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "", role: str = "") -> AgentResult:
         from hooks import get_run_id, reset_run_id, set_run_id
         # 顶层 agent 重置 ask_user 模式为交互模式
         if not self.parent_agent:
@@ -809,7 +809,14 @@ class Agent:
         # 顶层调用时返回空 RunContext。
         inherited = current_run()
         # 创建本次 run 的独立上下文，绑定到当前 asyncio Task —— 并发隔离的关键
-        ctx = RunContext(task=task, run_id=run_id or uuid.uuid4().hex)
+        # 身份三要素:优先显式入参,子代理继承父级(顶层 run 由渠道层传入真实用户身份)
+        eff_user = user_id or inherited.user_id
+        eff_name = user_name or inherited.user_name
+        eff_role = role or inherited.role or "default"
+        ctx = RunContext(
+            task=task, run_id=run_id or uuid.uuid4().hex,
+            user_id=eff_user, user_name=eff_name, role=eff_role,
+        )
         # 任务级过程目录：顶层 run 建立（时间戳+任务摘要），子代理继承父目录（同任务共享）
         if self.parent_agent and inherited.task_dir:
             ctx.task_dir = inherited.task_dir
@@ -843,6 +850,8 @@ class Agent:
                 sess.reset()
             sess.add_message("user", task)
             ctx.session = sess
+            if eff_user:
+                sess.user_id, sess.user_name, sess.role = eff_user, eff_name, eff_role
 
         try:
             if self._is_team and self._team_config and self._team_members:

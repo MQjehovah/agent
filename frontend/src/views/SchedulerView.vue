@@ -85,7 +85,7 @@ onMounted(load)
 <template>
   <div class="page">
     <div class="page-head">
-      <h2>定时任务</h2>
+      <div><h2>定时任务</h2><div class="sub">按 Cron 周期自动执行的任务(仅显示本人可见任务)</div></div>
       <div>
         <el-button @click="load">刷新</el-button>
         <el-button type="primary" @click="openAdd">新建</el-button>

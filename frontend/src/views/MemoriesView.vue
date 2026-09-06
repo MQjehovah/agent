@@ -58,7 +58,7 @@ onMounted(load)
 <template>
   <div class="page">
     <div class="page-head">
-      <h2>记忆(共 {{ total }} 条)</h2>
+      <div><h2>记忆</h2><div class="sub">长期记忆条目与提案审批</div></div>
       <div style="display: flex; gap: 8px">
         <el-input v-model="keyword" placeholder="搜索记忆" clearable style="width: 240px" @keyup.enter="load" />
         <el-button @click="load">搜索</el-button>

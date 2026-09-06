@@ -54,7 +54,7 @@ onMounted(load)
 <template>
   <div class="page">
     <div class="page-head">
-      <h2>会话</h2>
+      <div><h2>会话</h2><div class="sub">与 agent 的历史对话记录</div></div>
       <el-button @click="load">刷新</el-button>
     </div>
     <el-table :data="sessions" v-loading="loading" empty-text="暂无会话">

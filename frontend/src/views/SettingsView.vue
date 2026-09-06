@@ -37,7 +37,7 @@ async function checkStatus() {
 
 <template>
   <div class="page" style="max-width: 640px">
-    <div class="page-head"><h2>设置</h2></div>
+    <div class="page-head"><div><h2>设置</h2><div class="sub">账号与系统</div></div></div>
 
     <section style="border: 1px solid var(--el-border-color-lighter); border-radius: 10px; padding: 14px 18px; margin-bottom: 14px">
       <h3 style="font-size: 14px; margin: 0 0 12px">修改密码</h3>

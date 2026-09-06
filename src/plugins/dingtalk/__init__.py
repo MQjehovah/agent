@@ -437,6 +437,26 @@ class AgentChatbotHandler:
 
             user_id = f"dingtalk:{sender_staff_id}"
 
+            # 身份解析:rbac_user_identities 绑定表(staff_id → agent 用户/角色)
+            try:
+                from security.rbac import RBACManager
+                from storage.storage import get_storage
+                _st = get_storage()
+                if _st:
+                    _rbac = RBACManager(_st)
+                    _info = _rbac.resolve_user("dingtalk", sender_staff_id,
+                                               fallback_name=sender_nick)
+                    role = _info.get("role") or "default"
+                    if _info.get("user_id") is None and _info.get("user_name"):
+                        role = "default"
+                    self.logger.debug(
+                        f"身份解析: staff={sender_staff_id} -> role={role}")
+                else:
+                    role = "default"
+            except Exception as e:
+                self.logger.warning(f"身份解析失败,使用 default: {e}")
+                role = "default"
+
             if not self.plugin.plugin_manager:
                 response = "执行器未注册，请稍后再试"
             else:
@@ -446,6 +466,7 @@ class AgentChatbotHandler:
                         content, channel="dingtalk",
                         session_id=session.session_id,
                         user_id=user_id, user_name=sender_nick,
+                        role=role,
                     )
                     response = result.result if hasattr(result, "result") else str(result)
                 else:
