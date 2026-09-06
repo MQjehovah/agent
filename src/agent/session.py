@@ -55,7 +55,8 @@ class AgentSession:
                     content=content or "",
                     tool_calls=kwargs.get("tool_calls"),
                     tool_call_id=kwargs.get("tool_call_id"),
-                    name=kwargs.get("name")
+                    name=kwargs.get("name"),
+                    user_id=getattr(self, "user_id", "") or "",
                 )
         except ImportError:
             pass

@@ -3,7 +3,16 @@ import { onMounted, ref } from 'vue'
 import { api, del } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-interface SessionRow { id: string; created_at: string; message_count: number; is_streaming: boolean }
+interface SessionRow {
+  id: string
+  created_at?: string
+  first_accessed?: string
+  last_accessed?: string
+  message_count?: number
+  messages?: number
+  is_streaming?: boolean
+  source?: 'live' | 'history'
+}
 interface HistoryMsg { role: string; content: string }
 
 const sessions = ref<SessionRow[]>([])
@@ -15,8 +24,27 @@ const viewMessages = ref<HistoryMsg[]>([])
 async function load() {
   loading.value = true
   try {
-    const d = await api<{ sessions: SessionRow[] }>('/api/sessions')
-    sessions.value = d.sessions ?? []
+    const [live, hist] = await Promise.all([
+      api<{ sessions: SessionRow[] }>('/api/sessions').catch(() => ({ sessions: [] as SessionRow[] })),
+      api<{ sessions: SessionRow[] }>('/api/agent/sessions/history?limit=200').catch(() => ({ sessions: [] as SessionRow[] }))
+    ])
+    const map = new Map<string, SessionRow>()
+    for (const s of hist.sessions ?? []) {
+      if (s.id) {
+        map.set(s.id, {
+          id: s.id,
+          created_at: s.first_accessed,
+          last_accessed: s.last_accessed,
+          message_count: s.messages,
+          source: 'history'
+        } as SessionRow)
+      }
+    }
+    for (const s of live.sessions ?? []) {
+      if (s.id) map.set(s.id, { ...s, source: 'live' })
+    }
+    sessions.value = Array.from(map.values()).sort((a, b) =>
+      (b.last_accessed || b.created_at || '').localeCompare(a.last_accessed || a.created_at || ''))
   } catch (e) {
     ElMessage.error((e as Error).message)
   } finally {
@@ -27,12 +55,22 @@ async function load() {
 async function view(row: SessionRow) {
   viewId.value = row.id
   viewVisible.value = true
+  viewMessages.value = []
+  let msgs: HistoryMsg[] = []
   try {
     const d = await api<{ messages: HistoryMsg[] }>(`/api/sessions/${encodeURIComponent(row.id)}/messages`)
-    viewMessages.value = d.messages ?? []
-  } catch (e) {
-    ElMessage.error((e as Error).message)
+    msgs = d.messages ?? []
+  } catch {
+    /* 内存会话不存在则回退 DB 历史 */
+    try {
+      const d = await api<{ messages: HistoryMsg[] }>(`/api/agent/sessions/messages?session_id=${encodeURIComponent(row.id)}`)
+      msgs = d.messages ?? []
+    } catch (e) {
+      ElMessage.error((e as Error).message)
+      return
+    }
   }
+  viewMessages.value = msgs
 }
 
 async function remove(row: SessionRow) {
@@ -54,13 +92,22 @@ onMounted(load)
 <template>
   <div class="page">
     <div class="page-head">
-      <div><h2>会话</h2><div class="sub">与 agent 的历史对话记录</div></div>
+      <div><h2>会话</h2><div class="sub">我的历史对话记录(含已落盘内容)</div></div>
       <el-button @click="load">刷新</el-button>
     </div>
     <el-table :data="sessions" v-loading="loading" empty-text="暂无会话">
-      <el-table-column prop="id" label="会话 ID" min-width="220" show-overflow-tooltip />
-      <el-table-column label="创建时间" width="180">
-        <template #default="{ row }">{{ new Date(row.created_at).toLocaleString() }}</template>
+      <el-table-column prop="id" label="会话 ID" min-width="200" show-overflow-tooltip class-name="mono" />
+      <el-table-column label="来源" width="90" align="center">
+        <template #default="{ row }">
+          <el-tag :type="row.source === 'live' ? 'warning' : 'info'" size="small">
+            {{ row.source === 'live' ? '活跃' : '历史' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="最近活跃" width="180">
+        <template #default="{ row }">
+          {{ new Date(row.last_accessed || row.created_at).toLocaleString() }}
+        </template>
       </el-table-column>
       <el-table-column prop="message_count" label="消息数" width="90" align="center" />
       <el-table-column label="状态" width="100" align="center">

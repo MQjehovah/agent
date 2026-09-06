@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { post, setToken } from '../api'
+import { post, setToken, setRole } from '../api'
 
 const router = useRouter()
 const username = ref('')
@@ -14,11 +14,12 @@ async function submit() {
   loading.value = true
   error.value = ''
   try {
-    const data = await post<{ token: string }>('/api/auth/login', {
+    const data = await post<{ token: string; user?: { role?: string } }>('/api/auth/login', {
       username: username.value.trim(),
       password: password.value
     })
     setToken(data.token)
+    setRole(data.user?.role ?? '')
     router.push('/chat')
   } catch (err) {
     error.value = (err as Error).message

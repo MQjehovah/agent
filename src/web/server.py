@@ -55,6 +55,14 @@ def decode_jwt(token: str) -> dict:
     return jwt.decode(token, _load_jwt_secret(), algorithms=["HS256"])
 
 
+def _uptime_s(started_at_iso: str) -> int:
+    """返回自 started_at_iso 起经过的秒数。"""
+    try:
+        return int((datetime.now() - datetime.fromisoformat(started_at_iso)).total_seconds())
+    except Exception:
+        return 0
+
+
 def _sse(payload: dict) -> str:
     """格式化一条 SSE 事件"""
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -110,6 +118,7 @@ class ChatSession:
         self.session_id = session_id
         self.created_at = datetime.now().isoformat()
         self.is_streaming = False
+        self.stream_started_at: str | None = None
         self.messages: list[dict[str, Any]] = []
         # 保护 messages 列表：并发请求下 append/读取会竞态（迭代时被修改报错）
         self._lock = threading.Lock()
@@ -117,6 +126,16 @@ class ChatSession:
     def add_message(self, role: str, content: str):
         with self._lock:
             self.messages.append({"role": role, "content": content, "time": datetime.now().isoformat()})
+
+    def start_stream(self):
+        with self._lock:
+            self.is_streaming = True
+            self.stream_started_at = datetime.now().isoformat()
+
+    def stop_stream(self):
+        with self._lock:
+            self.is_streaming = False
+            self.stream_started_at = None
 
     def message_count(self) -> int:
         with self._lock:
@@ -146,8 +165,11 @@ class WebServer:
         self._app: FastAPI = FastAPI(title="Agent Web UI", docs_url="/api/docs")
         self._server: uvicorn.Server | None = None
         self._sessions: dict[str, ChatSession] = {}
-        self._session_owners: dict[str, str] = {}  # session_id -> uid(创建者)
+        self._session_owners: dict[str, str] = {}  # session_id -> 归属 tag(web:{uid})
+        self._session_owner_names: dict[str, str] = {}  # session_id -> 归属人姓名
         self._session_lock = threading.Lock()
+        self._started_at = datetime.now().isoformat()
+        self._pool = None  # 可选: 多用户 Worker 池(AGENT_WEB_POOL_SIZE>0 启用)
         # 日志流 handler：把 agent 日志广播给 /api/logs/stream 订阅者
         self._log_handler = LogStreamHandler()
         self._log_handler.setFormatter(
@@ -157,12 +179,127 @@ class WebServer:
 
     def set_agent(self, agent):
         self.agent = agent
+        # 多用户隔离 worker 池：AGENT_WEB_POOL_SIZE>0 时每个用户独立 Agent/workspace
+        try:
+            _size = int(os.environ.get("AGENT_WEB_POOL_SIZE", "0") or "0")
+        except (TypeError, ValueError):
+            _size = 0
+        if agent is not None and _size > 0:
+            try:
+                from web.worker_pool import WebUserWorkerPool
+                self._pool = WebUserWorkerPool(agent, max_workers=_size)
+                logger.info(f"Web 多用户 Worker 池启用: 容量={_size}，按用户隔离 workspace/上下文")
+            except Exception as e:
+                logger.error(f"Web Worker 池初始化失败，回退单实例: {e}")
+                self._pool = None
+        else:
+            self._pool = None
+
+    async def _agent_for_web(self, auth: dict):
+        """返回 (执行 agent, 释放tag)；池启用时按用户分配独立 worker。"""
+        pool = getattr(self, "_pool", None)
+        if pool is not None and pool.enabled:
+            uid = str(auth.get("uid", "anon"))
+            tag = WebServer._owner_tag(uid)
+            try:
+                agent = await pool.acquire(tag, uid, auth.get("name", ""))
+                return agent, tag
+            except Exception as e:
+                logger.error(f"Web Worker 分配失败({tag}): {e}")
+                return self.agent, ""
+        return self.agent, ""
+
+    def _release_web_agent(self, tag: str):
+        pool = getattr(self, "_pool", None)
+        if pool is not None and tag:
+            try:
+                pool.release(tag)
+            except Exception as e:
+                logger.warning(f"Web Worker 释放失败({tag}): {e}")
 
     def set_panel(self, panel):
         self._kanban = panel
 
     def set_kanban(self, kanban_board):
         self._kanban = kanban_board
+
+    # ------------------------------------------------------------------ #
+    #  会话所有权辅助（web 命名空间 + 审计归属）
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _owner_tag(uid) -> str:
+        """web 渠道会话归属 tag（与 messages.user_id 一致）: web:{uid}"""
+        return f"web:{uid}"
+
+    @staticmethod
+    def _same_owner(a: str, b: str) -> bool:
+        """比较两个归属标识是否同一人（容忍 web: 前缀/数字两种形态）。"""
+        def _strip(x: str) -> str:
+            return x[4:] if x.startswith("web:") else x
+        return bool(a) and bool(b) and _strip(str(a)) == _strip(str(b))
+
+    @staticmethod
+    def _owner_name_for(uid: str, name: str = "") -> str:
+        return name or uid
+
+    def _record_owner(self, session_id: str, tag: str, name: str = ""):
+        with self._session_lock:
+            if self._session_owners.get(session_id) is None:
+                self._session_owners[session_id] = tag
+            if session_id not in self._session_owner_names:
+                self._session_owner_names[session_id] = name or tag
+
+    def _session_access(self, session_id: str, tag: str, admin: bool) -> str:
+        """返回该会话对当前用户的访问级别: allow / deny（admin 恒 allow 只读语义由调用方掌握）。"""
+        with self._session_lock:
+            mem_owner = self._session_owners.get(session_id)
+        if mem_owner is not None:
+            if admin or WebServer._same_owner(mem_owner, tag):
+                return "allow"
+            return "deny"
+        try:
+            from storage.storage import get_storage
+            storage = get_storage()
+            db_owner = storage.get_message_owner(session_id) if storage else ""
+        except Exception:
+            db_owner = ""
+        if db_owner:
+            return "allow" if (admin or WebServer._same_owner(db_owner, tag)) else "deny"
+        # 无任何归属记录：允许当前用户认领（会话尚为新建或纯旧数据）
+        return "allow"
+
+    def _owner_display(self, session_id: str, tag: str) -> dict:
+        """解析会话归属展示信息 {uid, name}。tag 形如 web:{uid}。"""
+        uid = tag[4:] if tag.startswith("web:") else tag
+        name = self._session_owner_names.get(session_id, "")
+        if not name:
+            try:
+                from storage.storage import get_storage
+                storage = get_storage()
+                if storage and uid.isdigit():
+                    with storage.get_connection() as conn:
+                        row = conn.execute(
+                            "SELECT name FROM rbac_users WHERE id = ?", (int(uid),)).fetchone()
+                    name = row["name"] if row else ""
+            except Exception:
+                name = ""
+        return {"uid": uid, "tag": tag, "name": name or uid}
+
+    def _user_display_name(self, tag: str) -> str:
+        """按归属 tag 查询用户姓名（用于管理端展示）。"""
+        uid = tag[4:] if tag.startswith("web:") else tag
+        try:
+            from storage.storage import get_storage
+            storage = get_storage()
+            if storage and str(uid).isdigit():
+                with storage.get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT name FROM rbac_users WHERE id = ?", (int(uid),)).fetchone()
+                return row["name"] if row else tag
+        except Exception:
+            pass
+        return tag
 
     def _get_or_create_session(self, session_id: str) -> ChatSession:
         """获取或创建 Web 会话，带线程安全与上限淘汰（防止内存无限增长）。"""
@@ -188,10 +325,20 @@ class WebServer:
         self._log_handler.set_loop(loop)
         logging.getLogger("agent").addHandler(self._log_handler)
         self._ensure_admin_user()
+        if self._pool is not None and self._pool.enabled:
+            try:
+                loop.create_task(self._pool.start())
+            except Exception as e:
+                logger.warning(f"Web Worker 池启动失败: {e}")
         loop.create_task(self._server.serve())
         logger.info(f"Web UI (FastAPI/uvicorn) started at http://{self.host}:{self.port}")
 
     def stop(self):
+        if self._pool is not None and self._pool.enabled:
+            try:
+                asyncio.get_event_loop().create_task(self._pool.stop())
+            except Exception:
+                pass
         if self._server is not None:
             self._server.should_exit = True
         logger.info("WebServer stopped")
@@ -452,23 +599,38 @@ class WebServer:
                 return JSONResponse({"error": "Empty message"}, status_code=400)
 
             from channels import MessageRouter
-            router = MessageRouter(self.agent)
 
-            session_id = data.get("session_id") or router.format_session_id("web", uuid.uuid4().hex[:8])
+            uid = str(auth.get("uid", "anon"))
+            tag = WebServer._owner_tag(uid)
+            is_admin = auth.get("role") == "admin"
+            req_sid = (data.get("session_id") or "").strip()
+            if req_sid:
+                if self._session_access(req_sid, tag, is_admin) == "deny":
+                    return JSONResponse({"error": "Session not found"}, status_code=404)
+                session_id = req_sid
+            else:
+                session_id = MessageRouter.format_session_id("web", uid, uuid.uuid4().hex[:8])
             chat_session = self._get_or_create_session(session_id)
+            if chat_session.is_streaming:
+                return JSONResponse({"error": "会话正在处理中,请稍后再试"}, status_code=409)
             chat_session.add_message("user", message)
-            chat_session.is_streaming = True
-            self._session_owners.setdefault(session_id, str(auth.get("uid")))
-            self._session_owners.setdefault(session_id, str(auth.get("uid")))
+            chat_session.start_stream()
+            self._record_owner(session_id, tag, auth.get("name", ""))
 
-            web_user_id = f"web:{auth['uid']}"
+            web_user_id = tag
             web_user_name = auth.get("name", "")
 
             # 非流式：后台执行，立即返回 session_id
             async def _web_auto_run():
-                await router.route(message, channel="web", session_id=session_id,
-                                   role=auth.get("role", "default"),
-                                   user_id=web_user_id, user_name=web_user_name)
+                agent, rel_tag = await self._agent_for_web(auth)
+                try:
+                    router = MessageRouter(agent)
+                    await router.route(message, channel="web", session_id=session_id,
+                                       role=auth.get("role", "default"),
+                                       user_id=web_user_id, user_name=web_user_name)
+                finally:
+                    self._release_web_agent(rel_tag)
+                    chat_session.stop_stream()
             asyncio.create_task(_web_auto_run())
             return {"session_id": session_id, "status": "processing"}
 
@@ -486,24 +648,40 @@ class WebServer:
 
             message = data["message"].strip()
             from channels import MessageRouter
-            router = MessageRouter(self.agent)
-            session_id = data.get("session_id") or router.format_session_id("web", uuid.uuid4().hex[:8])
-            chat_session = self._get_or_create_session(session_id)
-            chat_session.add_message("user", message)
-            chat_session.is_streaming = True
-            self._session_owners.setdefault(session_id, str(auth.get("uid")))
 
-            web_user_id = f"web:{auth['uid']}"
+            uid = str(auth.get("uid", "anon"))
+            tag = WebServer._owner_tag(uid)
+            is_admin = auth.get("role") == "admin"
+            req_sid = (data.get("session_id") or "").strip()
+            if req_sid:
+                if self._session_access(req_sid, tag, is_admin) == "deny":
+                    return JSONResponse({"error": "Session not found"}, status_code=404)
+                session_id = req_sid
+            else:
+                session_id = MessageRouter.format_session_id("web", uid, uuid.uuid4().hex[:8])
+            chat_session = self._get_or_create_session(session_id)
+            if chat_session.is_streaming:
+                return JSONResponse({"error": "会话正在处理中,请稍后再试"}, status_code=409)
+            chat_session.add_message("user", message)
+            chat_session.start_stream()
+            self._record_owner(session_id, tag, auth.get("name", ""))
+
+            web_user_id = tag
             web_user_name = auth.get("name", "")
 
             # 本次流式请求的唯一 run_id，把流式事件限定在本请求内，杜绝并发串流
             stream_run_id = uuid.uuid4().hex
-            agent_ref = self.agent
+            # 执行 agent：池启用时按用户分配独立 worker（隔离上下文/workspace），否则用 root
+            agent_ref, rel_tag = await self._agent_for_web(auth)
+            if agent_ref is None:
+                chat_session.stop_stream()
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
 
             async def event_stream():
                 from hooks import HookEvent
                 q: asyncio.Queue = asyncio.Queue()
                 full_response: list[str] = []
+                agent_task: asyncio.Task | None = None
 
                 async def chat_handler(ctx):
                     if ctx.content:
@@ -551,6 +729,7 @@ class WebServer:
 
                 async def run_agent():
                     try:
+                        router = MessageRouter(agent_ref)
                         result = await router.route(
                             message, channel="web",
                             session_id=session_id, run_id=stream_run_id,
@@ -576,10 +755,10 @@ class WebServer:
                                 evt,
                                 chat_handler if evt == HookEvent.CHAT_EVENT else event_handler,
                             )
-                        chat_session.is_streaming = False
+                        chat_session.stop_stream()
 
-                agent_task = asyncio.create_task(run_agent())
                 try:
+                    agent_task = asyncio.create_task(run_agent())
                     while True:
                         try:
                             event_type, content = await asyncio.wait_for(q.get(), timeout=15.0)
@@ -607,9 +786,10 @@ class WebServer:
                             yield _sse({"type": "error", "content": content})
                             break
                 finally:
-                    if not agent_task.done():
+                    if agent_task is not None and not agent_task.done():
                         agent_task.cancel()
-                    chat_session.is_streaming = False
+                    chat_session.stop_stream()
+                    self._release_web_agent(rel_tag)
 
             return StreamingResponse(
                 event_stream(),
@@ -646,30 +826,52 @@ class WebServer:
 
         @self._app.get("/api/sessions")
         async def list_sessions(request: Request):
-            owner_uid, admin = "", True
+            admin = True
+            tag = ""
             try:
                 u = await _get_auth(request)
                 admin = u.get("role") == "admin"
-                owner_uid = str(u.get("uid"))
+                tag = WebServer._owner_tag(str(u.get("uid")))
             except Exception:
                 pass  # DISABLE_AUTH 场景视为 admin
+            now = datetime.now()
+            out = []
             with self._session_lock:
-                sessions = [{
+                items = list(self._sessions.items())
+            for sid, s in items:
+                owner_tag = self._session_owners.get(sid, "")
+                if not admin and not WebServer._same_owner(owner_tag, tag):
+                    continue
+                duration_s = 0
+                if s.is_streaming and s.stream_started_at:
+                    try:
+                        duration_s = int((now - datetime.fromisoformat(s.stream_started_at)).total_seconds())
+                    except Exception:
+                        duration_s = 0
+                item = {
                     "id": sid, "created_at": s.created_at,
                     "message_count": s.message_count(),
                     "is_streaming": s.is_streaming,
-                } for sid, s in self._sessions.items()
-                if admin or self._session_owners.get(sid) == owner_uid]
-            return {"sessions": sessions}
+                    "duration_s": duration_s,
+                }
+                if admin:
+                    info = self._owner_display(sid, owner_tag or tag)
+                    item.update({"user_id": info["uid"], "owner": info["name"], "tag": info["tag"]})
+                out.append(item)
+            out.sort(key=lambda x: x["created_at"], reverse=True)
+            return {"sessions": out}
 
         @self._app.get("/api/sessions/{session_id}/messages")
         async def session_messages(session_id: str, request: Request):
+            tag, admin = "", False
             try:
                 u = await _get_auth(request)
-                if u.get("role") != "admin" and self._session_owners.get(session_id, str(u.get("uid"))) != str(u.get("uid")):
-                    return JSONResponse({"error": "Session not found"}, status_code=404)
+                admin = u.get("role") == "admin"
+                tag = WebServer._owner_tag(str(u.get("uid")))
             except Exception:
                 pass  # DISABLE_AUTH 场景放行
+            if not admin and self._session_access(session_id, tag, admin) == "deny":
+                return JSONResponse({"error": "Session not found"}, status_code=404)
             with self._session_lock:
                 chat_session = self._sessions.get(session_id)
             if not chat_session:
@@ -678,14 +880,19 @@ class WebServer:
 
         @self._app.delete("/api/sessions/{session_id}")
         async def delete_session(session_id: str, request: Request):
+            tag, admin = "", False
             try:
                 u = await _get_auth(request)
-                if u.get("role") != "admin" and self._session_owners.get(session_id, str(u.get("uid"))) != str(u.get("uid")):
-                    return JSONResponse({"error": "Session not found"}, status_code=404)
+                admin = u.get("role") == "admin"
+                tag = WebServer._owner_tag(str(u.get("uid")))
             except Exception:
                 pass
+            if not admin and self._session_access(session_id, tag, admin) == "deny":
+                return JSONResponse({"error": "Session not found"}, status_code=404)
             with self._session_lock:
                 self._sessions.pop(session_id, None)
+                self._session_owners.pop(session_id, None)
+                self._session_owner_names.pop(session_id, None)
             return {"success": True}
 
         # ===== 看板 API =====
@@ -934,13 +1141,29 @@ class WebServer:
 
         # Agent Sessions API (in-memory)
         @self._app.get("/api/agent/sessions")
-        async def agent_sessions_list():
+        async def agent_sessions_list(request: Request):
             if not self.agent or not self.agent.session_manager:
                 return JSONResponse({"error": "Session manager not initialized"}, status_code=503)
+            tag, admin = "", False
+            try:
+                u = await _get_auth(request)
+                admin = u.get("role") == "admin"
+                tag = WebServer._owner_tag(str(u.get("uid")))
+            except Exception:
+                admin = True  # DISABLE_AUTH 场景视为 admin
+
+            def _own(sess) -> bool:
+                if admin:
+                    return True
+                uid = getattr(sess, "user_id", "") or ""
+                sid = getattr(sess, "session_id", "") or ""
+                return WebServer._same_owner(uid, tag) or sid.startswith(tag + ":")
 
             sessions = []
             try:
                 for sid, sess in list(self.agent.session_manager.sessions.items()):
+                    if not _own(sess):
+                        continue
                     sessions.append({
                         "id": sid,
                         "agent_id": self.agent.name or "main",
@@ -964,6 +1187,8 @@ class WebServer:
                             logger.warning(f"[Sessions API] 读取子代理 {agent_name} sessions失败: {e}")
                             continue
                         for ssid, sess in sub_sessions:
+                            if not _own(sess):
+                                continue
                             sessions.append({
                                 "id": ssid,
                                 "agent_id": agent_name,
@@ -984,15 +1209,29 @@ class WebServer:
             return {"agents": storage.list_session_agents()}
 
         @self._app.get("/api/agent/sessions/history")
-        async def agent_sessions_history(limit: int = Query(20), agent_id: str = Query("")):
-            """从数据库查询最近 N 个会话（不依赖内存活跃 session，重启后仍可见）"""
+        async def agent_sessions_history(limit: int = Query(20), agent_id: str = Query(""),
+                                         request: Request = None):
+            """从数据库查询最近 N 个会话（不依赖内存活跃 session，重启后仍可见）。
+            普通用户仅能看到自己归属的会话；admin 可见全部。"""
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            rows = storage.list_recent_sessions(min(max(limit, 1), 200), agent_id=agent_id)
+            tag, admin = "", False
+            if request is not None:
+                try:
+                    u = await _get_auth(request)
+                    admin = u.get("role") == "admin"
+                    tag = WebServer._owner_tag(str(u.get("uid")))
+                except Exception:
+                    admin = True
+            if not admin and not tag:
+                return {"total": 0, "sessions": []}
+            rows = storage.list_recent_sessions(
+                min(max(limit, 1), 200), agent_id=agent_id, user_id="" if admin else tag)
             sessions = [{
                 "id": r["session_id"],
                 "agent_id": r.get("agent_id") or "",
+                "user_id": r.get("user_id") or "",
                 "messages": r["msg_count"],
                 "last_accessed": r["last_at"],
                 "first_accessed": r["first_at"],
@@ -1000,9 +1239,20 @@ class WebServer:
             return {"total": len(sessions), "sessions": sessions}
 
         @self._app.get("/api/agent/sessions/messages")
-        async def agent_session_messages(session_id: str = Query(...)):
+        async def agent_session_messages(session_id: str = Query(...), request: Request = None):
             if not self.agent or not self.agent.session_manager:
                 return JSONResponse({"error": "Session manager not initialized"}, status_code=503)
+            tag, admin = "", False
+            if request is not None:
+                try:
+                    u = await _get_auth(request)
+                    admin = u.get("role") == "admin"
+                    tag = WebServer._owner_tag(str(u.get("uid")))
+                except Exception:
+                    admin = True
+            # 访问控制：非 admin 仅限本人会话（内存归属或 DB 归属均校验）
+            if not admin and self._session_access(session_id, tag, admin) == "deny":
+                return JSONResponse({"error": "Session not found"}, status_code=404)
 
             session = self.agent.session_manager.sessions.get(session_id)
             agent_name = self.agent.name or "main"
@@ -1430,9 +1680,229 @@ class WebServer:
             storage.update_proposal_status(pid, "rejected", "admin")
             return {"success": True}
 
-        # ===== 工作区文件列表 =====
+        # ===== 管理端可观测 API（admin，会话 / token 用量 / 性能）=====
+
+        def _web_live_sessions() -> list[dict]:
+            """内存态 Web 会话快照（含运行时长 / 归属），供管理端实时观测。"""
+            now = datetime.now()
+            out = []
+            with self._session_lock:
+                items = list(self._sessions.items())
+            for sid, cs in items:
+                owner_tag = self._session_owners.get(sid, "")
+                dur = 0
+                if cs.is_streaming and cs.stream_started_at:
+                    try:
+                        dur = int((now - datetime.fromisoformat(cs.stream_started_at)).total_seconds())
+                    except Exception:
+                        dur = 0
+                info = self._owner_display(sid, owner_tag)
+                out.append({
+                    "id": sid, "is_streaming": cs.is_streaming,
+                    "created_at": cs.created_at, "duration_s": dur,
+                    "message_count": cs.message_count(),
+                    "uid": info["uid"], "owner": info["name"], "tag": info["tag"],
+                })
+            out.sort(key=lambda x: x["created_at"], reverse=True)
+            return out
+
+        @self._app.get("/api/admin/stats")
+        async def admin_stats(request: Request):
+            await _get_admin(request)
+            storage = get_storage()
+            live = _web_live_sessions()
+            running = [s for s in live if s["is_streaming"]]
+
+            agent_active_sessions, running_agents, task_counts = 0, 0, {}
+            subagent_active = 0
+            if self.agent:
+                sm = getattr(self.agent, "session_manager", None)
+                if sm:
+                    agent_active_sessions = sm.get_session_count()
+                sm2 = getattr(self.agent, "subagent_manager", None)
+                if sm2:
+                    try:
+                        subagent_active = len(sm2._active_subagents)
+                    except Exception:
+                        subagent_active = 0
+                task_mgr = getattr(self.agent, "task_manager", None)
+                try:
+                    tasks = task_mgr.list_tasks() if task_mgr else []
+                    task_counts = {"pending": 0, "running": 0, "completed": 0,
+                                   "failed": 0, "cancelled": 0}
+                    for t in tasks:
+                        s = t.get("status", "pending")
+                        if s in task_counts:
+                            task_counts[s] += 1
+                    running_agents = task_counts.get("running", 0)
+                except Exception:
+                    pass
+            else:
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+
+            usage_today = {}
+            online = {"count": 0, "users": []}
+            if storage:
+                try:
+                    usage_today = storage.usage_totals(days=1)
+                    rows = storage.query_usage(limit=200)
+                except Exception:
+                    rows = []
+                try:
+                    recent_uids: set[str] = set()
+                    for r in rows:
+                        if r.get("user_id") and r["user_id"] != "system":
+                            recent_uids.add(str(r["user_id"]))
+                    for s in running:
+                        if s.get("tag"):
+                            recent_uids.add(s["tag"])
+                    online["users"] = [
+                        {"uid": t, "name": self._user_display_name(t)}
+                        for t in recent_uids
+                    ]
+                    online["count"] = len(online["users"])
+                except Exception:
+                    pass
+
+            status = getattr(self.agent, "status", "")
+            client = getattr(self.agent, "client", None)
+            return {
+                "now": datetime.now().isoformat(),
+                "uptime_s": _uptime_s(self._started_at),
+                "agent": {
+                    "name": getattr(self.agent, "name", "") or "Agent",
+                    "status": status,
+                    "model": getattr(client, "model", "") if client else "",
+                },
+                "concurrency": {
+                    "web_sessions": len(live),
+                    "running_streams": len(running),
+                    "agent_active_sessions": agent_active_sessions,
+                    "subagent_active": subagent_active,
+                    "running_tasks": running_agents,
+                    "task_counts": task_counts,
+                },
+                "pool": self._pool.stats() if (self._pool is not None and self._pool.enabled)
+                        else {"enabled": False, "capacity": 0, "active": 0, "busy": 0,
+                              "total_created": 0, "users": []},
+                "usage_today": usage_today,
+                "perf_today": {k: v for k, v in (usage_today or {}).items()
+                               if "duration_ms" in k or k == "calls"},
+                "online": online,
+                "live_sessions": live,
+            }
+
+        @self._app.get("/api/admin/usage")
+        async def admin_usage(days: int = Query(7), group: str = Query("day"),
+                              model: str = Query(""), user: str = Query(""),
+                              request: Request = None):
+            await _get_admin(request)
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            days = max(1, min(days, 90))
+            if group not in ("day", "user", "model", "session"):
+                group = "day"
+            totals = storage.usage_totals(days=days, user_id=user, model=model)
+            breakdown = storage.summarize_usage(group_by=group, days=days,
+                                                user_id=user, model=model)
+            recent = storage.query_usage(user_id=user, limit=100)
+            return {
+                "days": days, "group": group,
+                "totals": totals,
+                "breakdown": breakdown,
+                "recent": recent,
+            }
+
+        # ===== 个人用量（每个登录用户查看自己的 token / 成本 / 性能）=====
+        @self._app.get("/api/usage")
+        async def my_usage(days: int = Query(7), request: Request = None):
+            u = await _get_auth(request)
+            raw_uid = str(u.get("uid", ""))
+            if not raw_uid or raw_uid in ("anon", "0", "None"):
+                return {"enabled": False, "reason": "no_identity"}
+            tag = WebServer._owner_tag(raw_uid)
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            days = max(1, min(days, 90))
+            try:
+                totals = storage.usage_totals(days=days, user_id=tag)
+                by_day = storage.summarize_usage("day", days=days, user_id=tag)
+                by_model = storage.summarize_usage("model", days=days, user_id=tag)
+                recent = storage.query_usage(user_id=tag, limit=30)
+            except Exception as e:
+                logger.warning(f"[usage/mine] 查询失败: {e}")
+                totals, by_day, by_model, recent = {}, [], [], []
+            return {
+                "user": u.get("name", raw_uid),
+                "tag": tag,
+                "days": days,
+                "totals": totals,
+                "by_day": by_day,
+                "by_model": by_model,
+                "recent": recent,
+            }
+
+        @self._app.get("/api/admin/sessions")
+        async def admin_sessions(limit: int = Query(30), scope: str = Query("all"),
+                                 request: Request = None):
+            await _get_admin(request)
+            storage = get_storage()
+            live = _web_live_sessions() if scope in ("all", "live") else []
+            history: list[dict] = []
+            if storage and scope in ("all", "history"):
+                rows = storage.list_recent_sessions(min(max(limit, 1), 500))
+                for r in rows:
+                    tag = r.get("user_id") or ""
+                    history.append({
+                        "id": r["session_id"],
+                        "agent_id": r.get("agent_id") or "",
+                        "owner": self._user_display_name(tag) if tag else "",
+                        "uid": tag[4:] if tag.startswith("web:") else tag,
+                        "tag": tag,
+                        "messages": r["msg_count"],
+                        "last_accessed": r["last_at"],
+                        "first_accessed": r["first_at"],
+                    })
+            return {"live": live, "history": history}
+
+        @self._app.get("/api/admin/sessions/{session_id}/messages")
+        async def admin_session_messages(session_id: str, request: Request = None):
+            await _get_admin(request)
+            storage = get_storage()
+            if storage:
+                msgs = storage.get_messages_with_meta(session_id, limit=0)
+                if msgs:
+                    return {"session_id": session_id, "source": "db", "messages": msgs,
+                            "count": len(msgs)}
+            with self._session_lock:
+                cs = self._sessions.get(session_id)
+            if cs:
+                return {"session_id": session_id, "source": "memory", "messages": cs.snapshot(),
+                        "count": len(cs.snapshot())}
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+
+        @self._app.post("/api/admin/sessions/{session_id}/messages")
+        async def admin_session_export(session_id: str, request: Request = None):
+            """审计导出：返回全部消息的 JSON（含元数据），由管理端保存为审计文件。"""
+            await _get_admin(request)
+            storage = get_storage()
+            if storage:
+                msgs = storage.get_messages_with_meta(session_id)
+                if msgs:
+                    return {
+                        "session_id": session_id,
+                        "exported_at": datetime.now().isoformat(),
+                        "messages": msgs,
+                        "count": len(msgs),
+                    }
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+
+        # ===== 工作区文件列表（服务端共享目录，仅 admin 可见）=====
         @self._app.get("/api/workspace/files")
-        async def workspace_files():
+        async def workspace_files(request: Request):
+            await _get_admin(request)
             if not self.agent:
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
             ws = self.agent.workspace

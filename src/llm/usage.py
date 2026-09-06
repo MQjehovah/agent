@@ -198,7 +198,9 @@ class UsageTracker:
             "user_id": r.user_id, "session_id": r.session_id, "agent_id": r.agent_id,
             "model": r.model, "prompt_tokens": r.prompt_tokens,
             "completion_tokens": r.completion_tokens, "cost": r.cost,
-            "is_stream": r.is_stream, "ts": r.timestamp.isoformat(),
+            "is_stream": r.is_stream, "duration_ms": r.duration_ms,
+            "cache_hit_tokens": r.cache_hit_tokens, "cache_miss_tokens": r.cache_miss_tokens,
+            "ts": r.timestamp.isoformat(),
         } for r in self.records]
         try:
             written = storage.save_usage_batch(batch)

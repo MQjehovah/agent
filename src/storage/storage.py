@@ -3,7 +3,7 @@ import logging
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
@@ -99,6 +99,8 @@ class Storage:
                     tool_call_id TEXT,
                     name TEXT,
                     reasoning_content TEXT,
+                    user_id TEXT DEFAULT '',
+                    channel TEXT DEFAULT '',
                     created_at TEXT
                 );
 
@@ -257,10 +259,15 @@ class Storage:
                     completion_tokens INTEGER DEFAULT 0,
                     cost REAL DEFAULT 0,
                     is_stream INTEGER DEFAULT 0,
+                    duration_ms REAL DEFAULT 0,
+                    cache_hit_tokens INTEGER DEFAULT 0,
+                    cache_miss_tokens INTEGER DEFAULT 0,
                     created_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_records(user_id);
                 CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_records(created_at);
+                CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_records(session_id);
+                CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_records(model);
 
                 CREATE TABLE IF NOT EXISTS session_meta (
                     session_id TEXT PRIMARY KEY,
@@ -279,16 +286,33 @@ class Storage:
                 VALUES ('admin', '管理员-全部权限', '["*"]', '["*"]', datetime('now'))
             """)
             conn.commit()
-            # migration: add reasoning_content column if missing
-            try:
-                conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")
-            except sqlite3.OperationalError:
-                pass
-            # migration: add password_hash column for webui login
-            try:
-                conn.execute("ALTER TABLE rbac_users ADD COLUMN password_hash TEXT DEFAULT ''")
-            except sqlite3.OperationalError:
-                pass
+            # migration: add columns 若缺失则补上（新库已在 CREATE TABLE 定义）
+            def _add_col(table: str, col_def: str):
+                with suppress(sqlite3.OperationalError):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+
+            _add_col("messages", "reasoning_content TEXT")
+            _add_col("messages", "user_id TEXT DEFAULT ''")
+            _add_col("messages", "channel TEXT DEFAULT ''")
+            _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
+            for _col in ("duration_ms REAL DEFAULT 0",
+                         "cache_hit_tokens INTEGER DEFAULT 0",
+                         "cache_miss_tokens INTEGER DEFAULT 0"):
+                _add_col("usage_records", _col)
+            with suppress(sqlite3.OperationalError):
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)")
+            # 回填历史消息的 channel / user_id（web 命名空间前缀形如 web:{uid}:...）
+            with suppress(sqlite3.OperationalError):
+                conn.execute("""
+                    UPDATE messages SET channel = substr(session_id, 1, instr(session_id, ':') - 1)
+                    WHERE channel = '' AND instr(session_id, ':') > 0
+                """)
+                conn.execute("""
+                    UPDATE messages SET user_id = 'web:' || substr(
+                        session_id, 6, instr(substr(session_id, 6), ':') - 1)
+                    WHERE user_id = '' AND session_id LIKE 'web:%:%'
+                """)
+                conn.commit()
 
     def _new_connection(self) -> sqlite3.Connection:
         """创建一个设置了并发保护参数的 SQLite 连接
@@ -425,8 +449,8 @@ class Storage:
 
         with self._write_lock, self._get_connection() as conn:
             conn.executemany("""
-                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     item['agent_id'],
@@ -437,6 +461,8 @@ class Storage:
                     item.get('tool_call_id', ''),
                     item.get('name', ''),
                     item.get('reasoning_content', ''),
+                    item.get('user_id', ''),
+                    item.get('channel', ''),
                     item['created_at']
                 )
                 for item in batch
@@ -447,7 +473,8 @@ class Storage:
 
     def save_message(self, agent_id: str, session_id: str, role: str, content: str,
                      tool_calls: list | None = None,
-                     tool_call_id: str = "", name: str = "", reasoning_content: str = ""):
+                     tool_call_id: str = "", name: str = "", reasoning_content: str = "",
+                     user_id: str = "", channel: str = ""):
         """保存消息到写入队列（异步写入）"""
         self._write_queue.put({
             'agent_id': agent_id,
@@ -458,21 +485,26 @@ class Storage:
             'tool_call_id': tool_call_id,
             'name': name,
             'reasoning_content': reasoning_content or "",
+            'user_id': user_id or "",
+            'channel': channel or (session_id.split(':', 1)[0] if ':' in session_id else ""),
             'created_at': datetime.now().isoformat()
         })
 
     def save_message_sync(self, agent_id: str, session_id: str, role: str, content: str,
                           tool_calls: list | None = None,
-                          tool_call_id: str = "", name: str = "", reasoning_content: str = ""):
+                          tool_call_id: str = "", name: str = "", reasoning_content: str = "",
+                          user_id: str = "", channel: str = ""):
         """同步保存消息（立即写入）"""
         with self._write_lock, self._get_connection() as conn:
             conn.execute("""
-                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent_id, session_id, role, content or "",
                 json.dumps(tool_calls) if tool_calls else None,
-                tool_call_id, name, reasoning_content or "", datetime.now().isoformat()
+                tool_call_id, name, reasoning_content or "",
+                user_id or "", channel or (session_id.split(':', 1)[0] if ':' in session_id else ""),
+                datetime.now().isoformat()
             ))
             conn.commit()
 
@@ -496,6 +528,59 @@ class Storage:
                 msg["reasoning_content"] = row["reasoning_content"]
             messages.append(msg)
         return messages
+
+    def get_messages_with_meta(self, session_id: str, limit: int = 0) -> list[dict[str, Any]]:
+        """带审计元数据的消息明细（user_id / channel / created_at），供管理端审计浏览。"""
+        sql = ("SELECT id, session_id, agent_id, role, content, tool_calls, tool_call_id, "
+               "name, reasoning_content, user_id, channel, created_at "
+               "FROM messages WHERE session_id = ? ORDER BY id")
+        args: list[Any] = [session_id]
+        if limit > 0:
+            sql += " DESC LIMIT ?"
+            args.append(limit)
+            with self._get_connection() as conn:
+                rows = conn.execute(sql, args).fetchall()
+            rows = list(reversed(rows))
+        else:
+            with self._get_connection() as conn:
+                rows = conn.execute(sql, args).fetchall()
+        out = []
+        for row in rows:
+            m = dict(row)
+            if m.get("tool_calls"):
+                try:
+                    m["tool_calls"] = json.loads(m["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    m["tool_calls"] = []
+            out.append(m)
+        return out
+
+    def get_message_owner(self, session_id: str) -> str:
+        """返回该会话最近归属的 user_id（空串表示无归属，如 cli/system 或旧数据）。"""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT MAX(user_id) AS owner FROM messages WHERE session_id = ? AND user_id != ''",
+                (session_id,)).fetchone()
+        return (row["owner"] or "") if row else ""
+
+    def list_user_sessions(self, user_id: str, limit: int = 50, channel: str = "") -> list[dict[str, Any]]:
+        """某用户（归属 tag 如 "web:3"，或 channel 前缀）拥有的历史会话，按最后活跃倒序。"""
+        sql = ("SELECT session_id, MAX(agent_id) AS agent_id, COUNT(*) AS msg_count, "
+               "MAX(user_id) AS user_id, MIN(created_at) AS first_at, MAX(created_at) AS last_at "
+               "FROM messages "
+               "WHERE session_id IS NOT NULL AND session_id != '' AND session_id != 'temp'")
+        args: list[Any] = []
+        if channel:
+            sql += " AND session_id LIKE ?"
+            args.append(channel + ":%:%")
+        elif user_id:
+            sql += " AND (user_id = ? OR session_id LIKE ?)"
+            args += [user_id, user_id + ":%"]
+        sql += " GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
 
     def get_messages_by_date(self, date_str: str, agent_id: str | None = None) -> list[dict[str, Any]]:
         with self._get_connection() as conn:
@@ -535,19 +620,24 @@ class Storage:
             """).fetchall()
         return [row[0] for row in rows]
 
-    def list_recent_sessions(self, limit: int = 20, agent_id: str = "") -> list[dict[str, Any]]:
+    def list_recent_sessions(self, limit: int = 20, agent_id: str = "", user_id: str = "") -> list[dict[str, Any]]:
         """从 messages 表聚合最近 N 个会话（按最后活跃时间倒序）。
 
         内存中的 session_manager 仅保留活跃会话，重启即丢失；此方法基于
         持久化的 messages 表，可展示全部历史会话。agent_id 非空时仅返回该 agent 的会话。
+        user_id 非空时仅返回该用户拥有（messages.user_id 或 web:{uid}: 前缀）的会话。
         """
         sql = ("SELECT session_id, MAX(agent_id) AS agent_id, COUNT(*) AS msg_count, "
+               "MAX(user_id) AS user_id, "
                "MIN(created_at) AS first_at, MAX(created_at) AS last_at "
                "FROM messages "
                "WHERE session_id IS NOT NULL AND session_id != '' AND session_id != 'temp'")
         args: list[Any] = []
         if agent_id:
             sql += " AND agent_id = ?"; args.append(agent_id)
+        if user_id:
+            sql += " AND (user_id = ? OR session_id LIKE ?)"
+            args += [user_id, user_id + ":%"]
         sql += " GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT ?"
         args.append(limit)
         with self._get_connection() as conn:
@@ -600,7 +690,8 @@ class Storage:
         """批量写入用量记录，返回写入条数。
 
         records 元素字段：user_id, session_id, agent_id, model, prompt_tokens,
-        completion_tokens, cost, is_stream, ts(ISO 字符串)。
+        completion_tokens, cost, is_stream, duration_ms, cache_hit_tokens,
+        cache_miss_tokens, ts(ISO 字符串)。
         走写锁 + 连接池直写（镜像 save_memory 模式，不经消息批量队列）。
         """
         if not records:
@@ -608,13 +699,18 @@ class Storage:
         rows = [(
             r.get("user_id", "system"), r.get("session_id", ""), r.get("agent_id", ""),
             r["model"], r.get("prompt_tokens", 0), r.get("completion_tokens", 0),
-            r.get("cost", 0.0), 1 if r.get("is_stream") else 0, r.get("ts"),
+            r.get("cost", 0.0), 1 if r.get("is_stream") else 0,
+            r.get("duration_ms", 0.0) or 0.0,
+            r.get("cache_hit_tokens", 0) or 0,
+            r.get("cache_miss_tokens", 0) or 0,
+            r.get("ts"),
         ) for r in records]
         with self._write_lock, self._get_connection() as conn:
             conn.executemany("""
                 INSERT INTO usage_records (user_id, session_id, agent_id, model,
-                    prompt_tokens, completion_tokens, cost, is_stream, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    prompt_tokens, completion_tokens, cost, is_stream,
+                    duration_ms, cache_hit_tokens, cache_miss_tokens, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, rows)
             conn.commit()
         return len(rows)
@@ -622,7 +718,8 @@ class Storage:
     def query_usage(self, user_id: str = "", limit: int = 100) -> list[dict[str, Any]]:
         """查询用量记录（按 id 倒序）；user_id 为空时查全部。"""
         sql = ("SELECT user_id, session_id, agent_id, model, prompt_tokens, "
-               "completion_tokens, cost, is_stream, created_at FROM usage_records")
+               "completion_tokens, cost, is_stream, duration_ms, "
+               "cache_hit_tokens, cache_miss_tokens, created_at FROM usage_records")
         args: list[Any] = []
         if user_id:
             sql += " WHERE user_id = ?"
@@ -632,6 +729,105 @@ class Storage:
         with self._get_connection() as conn:
             rows = conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
+
+    def summarize_usage(
+        self,
+        group_by: str = "day",
+        days: int = 7,
+        user_id: str = "",
+        model: str = "",
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """用量聚合，供管理端大盘/图表使用。
+
+        group_by: day | user | model | session
+        返回每个分组: {key, calls, prompt_tokens, completion_tokens, total_tokens,
+        cache_hit_tokens, cost, avg_duration_ms, max_duration_ms}
+        """
+        group_by = group_by if group_by in ("day", "user", "model", "session") else "day"
+        select_key = {
+            "day": "DATE(created_at)",
+            "user": "user_id",
+            "model": "model",
+            "session": "session_id",
+        }[group_by]
+        sql = (
+            f"SELECT {select_key} AS key, COUNT(*) AS calls, "
+            "SUM(prompt_tokens) AS prompt_tokens, SUM(completion_tokens) AS completion_tokens, "
+            "SUM(prompt_tokens + completion_tokens) AS total_tokens, "
+            "SUM(cache_hit_tokens) AS cache_hit_tokens, SUM(cost) AS cost, "
+            "AVG(duration_ms) AS avg_duration_ms, MAX(duration_ms) AS max_duration_ms "
+            "FROM usage_records WHERE 1=1"
+        )
+        args: list[Any] = []
+        if days and days > 0:
+            sql += " AND created_at >= datetime('now', ?)"
+            args.append(f"-{int(days)} days")
+        if user_id:
+            sql += " AND user_id = ?"
+            args.append(user_id)
+        if model:
+            sql += " AND model = ?"
+            args.append(model)
+        sql += f" GROUP BY {select_key} ORDER BY calls DESC, key DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def usage_totals(self, days: int = 7, user_id: str = "", model: str = "") -> dict[str, Any]:
+        """聚合总量（含今日）与常用性能分位统计。"""
+        sql = ("SELECT COUNT(*) AS calls, SUM(prompt_tokens) AS prompt_tokens, "
+               "SUM(completion_tokens) AS completion_tokens, "
+               "SUM(prompt_tokens + completion_tokens) AS total_tokens, "
+               "SUM(cache_hit_tokens) AS cache_hit_tokens, SUM(cost) AS cost, "
+               "AVG(duration_ms) AS avg_duration_ms, MAX(duration_ms) AS max_duration_ms "
+               "FROM usage_records WHERE 1=1")
+        args: list[Any] = []
+        if days and days > 0:
+            sql += " AND created_at >= datetime('now', ?)"
+            args.append(f"-{int(days)} days")
+        if user_id:
+            sql += " AND user_id = ?"
+            args.append(user_id)
+        if model:
+            sql += " AND model = ?"
+            args.append(model)
+        with self._get_connection() as conn:
+            row = conn.execute(sql, args).fetchone()
+        result = dict(row) if row else {}
+        # P50 / P95 延迟分位
+        pct_sql = ("SELECT duration_ms FROM usage_records "
+                   "WHERE duration_ms > 0 AND created_at >= datetime('now', ?)")
+        pct_args: list[Any] = [f"-{int(days)} days"] if days and days > 0 else []
+        if days and days > 0:
+            if user_id:
+                pct_sql += " AND user_id = ?"
+                pct_args.append(user_id)
+            if model:
+                pct_sql += " AND model = ?"
+                pct_args.append(model)
+        with self._get_connection() as conn:
+            dur_rows = conn.execute(pct_sql, pct_args).fetchall()
+        durations = sorted(float(r["duration_ms"]) for r in dur_rows)
+        if durations:
+            n = len(durations)
+            result["p50_duration_ms"] = durations[int(n * 0.50)]
+            result["p95_duration_ms"] = durations[int(n * 0.95)]
+            result["min_duration_ms"] = durations[0]
+            result["samples_duration"] = n
+        else:
+            result["p50_duration_ms"] = 0
+            result["p95_duration_ms"] = 0
+            result["min_duration_ms"] = 0
+            result["samples_duration"] = 0
+        for k in ("calls", "prompt_tokens", "completion_tokens", "total_tokens",
+                  "cache_hit_tokens"):
+            result[k] = result.get(k) or 0
+        result["cost"] = round(result.get("cost") or 0, 4)
+        result["avg_duration_ms"] = round(result.get("avg_duration_ms") or 0, 1)
+        result["max_duration_ms"] = round(result.get("max_duration_ms") or 0, 1)
+        return result
 
     # ---------------- 会话元状态（P4c：压缩摘要持久化与重建）----------------
 

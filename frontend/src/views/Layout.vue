@@ -2,16 +2,18 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../theme'
-import { api, clearToken } from '../api'
+import { api, clearToken, isAdmin } from '../api'
 import {
-  Monitor, ChatDotRound, Clock, DataBoard, Timer, Coin, Document,
-  Connection, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton
+  Monitor, ChatDotRound, Clock, DataBoard, Timer, Coin, Document, DataLine,
+  Connection, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
+  Odometer
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const { theme, toggle } = useTheme()
 const collapsed = ref(false)
+const admin = isAdmin()
 
 const groups = [
   {
@@ -20,6 +22,7 @@ const groups = [
       { path: '/dashboard', title: '总览', icon: Monitor },
       { path: '/chat', title: '对话', icon: ChatDotRound },
       { path: '/sessions', title: '会话', icon: Clock },
+      { path: '/usage', title: '用量', icon: DataLine },
       { path: '/kanban', title: '看板', icon: DataBoard },
       { path: '/scheduler', title: '定时任务', icon: Timer },
       { path: '/memories', title: '记忆', icon: Coin }
@@ -28,13 +31,21 @@ const groups = [
   {
     title: '运维与管理',
     items: [
+      { path: '/monitor', title: '运行监控', icon: Odometer, adminOnly: true },
       { path: '/logs', title: '日志', icon: Document },
       { path: '/webhook', title: 'Webhook', icon: Connection },
-      { path: '/admin', title: '用户管理', icon: User },
+      { path: '/admin', title: '用户管理', icon: User, adminOnly: true },
       { path: '/settings', title: '设置', icon: Setting }
     ]
   }
 ]
+
+const visibleGroups = computed(() =>
+  groups.map(g => ({
+    ...g,
+    items: g.items.filter(i => !i.adminOnly || admin)
+  })).filter(g => g.items.length > 0)
+)
 
 const currentTitle = computed(() => (route.meta.title as string) ?? '')
 
@@ -50,7 +61,7 @@ async function logout() {
     <aside class="sider">
       <div class="brand"><span class="logo">零</span><span class="side-label">零号员工</span></div>
       <nav>
-        <template v-for="g in groups" :key="g.title">
+        <template v-for="g in visibleGroups" :key="g.title">
           <div class="side-group-title">{{ g.title }}</div>
           <a v-for="item in g.items" :key="item.path" :href="'#' + item.path"
              :class="{ 'router-link-active': route.path.startsWith(item.path) }">

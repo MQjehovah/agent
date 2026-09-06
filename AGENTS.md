@@ -19,6 +19,10 @@ python src/main.py --no-plugins          # Skip plugin loading
 python src/main.py --no-scheduler       # Skip scheduled tasks
 python src/main.py --workspace ./ws     # Agent working directory (default: ./workspace)
 python src/main.py --config ./cfg       # Config directory (default: ./config)
+
+# Web 多用户在线模式(公司共用)
+python src/main.py --web                # Web UI on :8080(默认单实例)
+AGENT_WEB_POOL_SIZE=16 python src/main.py --web   # >0: 启用按用户隔离的 Worker 池
 ```
 
 ## Lint & Test
@@ -45,11 +49,14 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **Agent core**: `src/agent.py` — `Agent` class, tool-call loop with `max_iterations=100`
 - **LLM client**: `src/llm.py` — `LLMClient` wrapping `AsyncOpenAI`, handles retry/streaming/usage tracking
 - **Prompt builder**: `src/prompt.py` — `PromptBuilder` assembles system prompt in static + dynamic sections (static section is cacheable)
-- **Session management**: `src/agent_session.py` — `AgentSession` dataclass, message history with TTL-based expiry
+- **Session management**: `src/agent/session.py` — `AgentSession` dataclass, message history with TTL-based expiry
+- **会话续聊恢复**: `Agent._restore_db_session_history()` — 进程重启 / worker 回收后首次承接旧会话时从 `messages` 表按序回填上下文(不重复落盘)
+- **Web 多用户 Worker 池**: `src/web/worker_pool.py` — `AGENT_WEB_POOL_SIZE>0` 时每个用户独立 Agent worker(`workspace/users/u_{uid}` + 独立 tracer/session/subagent), 隔离用户间实例/文件/记忆上下文; LRU 容量回收 + 空闲 TTL 清理
+- **管理可观测 API**(admin): `/api/admin/stats|usage|sessions|sessions/{id}/messages`(查看/导出)、个人用量 `/api/usage`
 - **Sub-agents**: `src/subagent_manager.py` — loads sub-agent templates from `config/agents/*/PROMPT.md`, reuses sessions by name
-- **Memory**: `src/memory/manager.py` — daily memory files + long-term `memory.md` + `shared_knowledge.md`
+- **Memory**: `src/memory/manager.py` — DB 记忆按 `owner_id` 隔离(user 私有 + global 公共)
 - **Learning**: `src/learning/learner.py` — self-learning module that triggers pattern extraction and skill creation
-- **Storage**: `src/storage.py` — unified SQLite with connection pool; `Storage` manages all tables (messages, eventbus_events, autonomous_goals, kanban_tasks) in a single `data.db`; singleton initialized via `init_storage(workspace, config_dir)`
+- **Storage**: `src/storage/storage.py` — unified SQLite with connection pool; single `config/data.db`; singleton via `init_storage(workspace, config_dir)`. 表: `messages`(含 `user_id/channel` 审计列)、`eventbus_events`、`autonomous_goals`、`kanban_tasks`、`scheduled_tasks`、`rbac_roles/users/user_identities`、`memories/memory_proposals`、`web_tokens`、`usage_records`(含 `duration_ms/cache_*`, 聚合 `summarize_usage/usage_totals`)、`session_meta`。启动自动做幂等 `ALTER` 迁移
 - **Plugins**: `src/plugins/` — `BasePlugin` ABC; plugins loaded from `src/plugins/` dir, provide extra tools to agents
 - **MCP servers**: `src/mcps/manager.py` — launches external MCP tool servers defined in `config/mcp_servers.json`
 - **Commands**: `src/cmd_handler.py` — `/` commands in interactive mode (e.g. `/help`, `/agents`)
@@ -88,7 +95,10 @@ Agent working directory where file operations, shell commands, and artifacts are
 
 ```
 workspace/                # Auto-created, gitignored
+└── users/                # Worker 池启用后按用户隔离: users/u_{uid}/(各用户独立工作区)
 ```
+
+> 非 worker 模式(默认)所有渠道共享 `workspace/`, 该服务端共享目录仅 admin 可见(`GET /api/workspace/files`)。
 
 ## Key Conventions
 
@@ -102,6 +112,15 @@ workspace/                # Auto-created, gitignored
 - **Logging**: Uses `rich.logging.RichHandler` with aligned logger names; API calls logged to `logs/api_YYYYMMDD.log`
 - **Sandbox**: Optional sandbox via `config/sandbox.json` (process or Docker mode). Intercepted at `Agent._sandbox_intercept()` — tools remain unaware of sandboxing
 - **Team pipeline**: `TeamOrchestrator` supports `default`/`feedback`/`auto` modes. `feedback` mode enables dev↔test feedback loops with automatic retry. `auto` mode uses LLM to dynamically generate pipeline stages
+
+## 多用户隔离与审计(公司级在线 Agent)
+
+- **会话命名空间**: web 渠道 session_id 服务端强制 `web:{uid}:{rand}`; 非属主访问一律 404
+- **审计落盘**: `messages` 表带 `user_id/channel` 列; 会话内容全部落库,admin 可经 `/api/admin/sessions/{id}/messages` 查看/导出
+- **用量/性能**: LLM 调用写入 `usage_records`(含 `duration_ms`, 供 P50/P95); 个人用 `GET /api/usage`,管理端用 `/api/admin/usage`
+- **内存/文件隔离**: 记忆按 `owner_id` DB 隔离; worker 池启用后文件按 `workspace/users/u_{uid}` 隔离
+- **Worker 池**: `AGENT_WEB_POOL_SIZE>0` 启用(每用户独立 Agent), 详见 `docs/p2-company-isolation-design.md`
+- **文档同步**: 改动代码需同步维护本文件与 `docs/`、`frontend/README.md`
 
 ## Skill Lifecycle — Automatic Routing
 
@@ -163,3 +182,6 @@ Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py
 - **`max_retries=0` on OpenAI client** — all retries are handled by our application-level retry logic in `LLMClient`, not by the httpx SDK
 - **LLM timeout is configurable**: `LLM_TIMEOUT` (default 300s, read timeout) and `LLM_CONNECT_TIMEOUT` (default 30s, connection timeout)
 - **MCP servers in `mcp_servers.json` are disabled by default** (`"enabled": false`) — must be explicitly enabled
+- **`AGENT_WEB_POOL_SIZE` 默认 0** — 多用户部署需显式设 >0; 启用后每个用户首次请求会触发 worker 冷初始化; 回滚/单实例直接置 0
+- **DB 迁移幂等自愈** — `messages.user_id/channel`、`usage_records.duration_ms/cache_*` 由启动时 `ALTER` 自动补齐并回填一次历史(web:{uid}); 无需手工
+- **会话隔离依赖命名空间** — 非 web 前缀的旧会话无法回填归属, 对非 admin 普通用户不可见(安全优先), admin 仍可审计

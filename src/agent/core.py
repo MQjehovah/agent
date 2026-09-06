@@ -840,7 +840,8 @@ class Agent:
             sess_lock = sess._lock
             if sess_lock:
                 await sess_lock.acquire()
-            if self.parent_agent:
+            # 子代理/每次新建会话默认清历史；web 常驻 worker（persist_session）不清
+            if self.parent_agent and not getattr(self, "persist_session", False):
                 if sess.messages:
                     old_count = len(sess.messages)
                     sess.messages = [m for m in sess.messages if m.get("role") == "system"]
@@ -848,10 +849,12 @@ class Agent:
                         logger.debug(f"清除了 {old_count - len(sess.messages)} 条旧消息 (session={session_id[:16]}...)")
             if not sess.messages and self.system_prompt:
                 sess.reset()
-            sess.add_message("user", task)
-            ctx.session = sess
             if eff_user:
                 sess.user_id, sess.user_name, sess.role = eff_user, eff_name, eff_role
+            # 新进程/worker 首次承接已有会话时，从 DB 恢复历史上下文
+            self._restore_db_session_history(sess)
+            sess.add_message("user", task)
+            ctx.session = sess
 
         try:
             if self._is_team and self._team_config and self._team_members:
@@ -867,6 +870,44 @@ class Agent:
             if hook_token is not None:
                 reset_run_id(hook_token)
             _current_run.reset(run_token)
+
+    def _restore_db_session_history(self, session) -> int:
+        """进程重启 / worker 回收后，首次承接既有会话时从 DB 恢复上下文。
+
+        仅在会话刚创建（仅含 system 消息）且 DB 中确有该会话历史时执行；
+        直接回填 messages（不重复落盘），随后会话自身消息会增量持久化。
+        """
+        if session is None or not getattr(session, "session_id", ""):
+            return 0
+        if len(getattr(session, "messages", [])) != 1:
+            return 0  # 非空会话（既有内存上下文）或新会话
+        session_id = session.session_id
+        try:
+            storage = self.storage
+            if storage is None:
+                from storage.storage import get_storage
+                storage = get_storage()
+            if storage is None:
+                return 0
+            rows = storage.get_messages(session_id)
+            if not rows:
+                return 0
+            for m in rows:
+                item: dict = {"role": m["role"], "content": m.get("content") or ""}
+                if m.get("tool_calls"):
+                    item["tool_calls"] = m["tool_calls"]
+                if m.get("tool_call_id"):
+                    item["tool_call_id"] = m["tool_call_id"]
+                if m.get("name"):
+                    item["name"] = m["name"]
+                if m.get("reasoning_content"):
+                    item["reasoning_content"] = m["reasoning_content"]
+                session.messages.append(item)
+            logger.info(f"从 DB 恢复会话 {session_id[:24]} 共 {len(rows)} 条消息")
+            return len(rows)
+        except Exception as e:
+            logger.warning(f"会话历史恢复失败 {getattr(session, 'session_id', '')}: {e}")
+            return 0
 
     async def cleanup(self):
         for task in list(self._background_tasks):

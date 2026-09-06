@@ -1,6 +1,7 @@
 /** API 传输层:统一 Bearer 注入 + SSE 流解析 */
 
 const TOKEN_KEY = 'agent_jwt'
+const ROLE_KEY = 'agent_role'
 
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? ''
@@ -10,8 +11,21 @@ export function setToken(t: string) {
   localStorage.setItem(TOKEN_KEY, t)
 }
 
+export function getRole(): string {
+  return localStorage.getItem(ROLE_KEY) ?? ''
+}
+
+export function setRole(role: string) {
+  localStorage.setItem(ROLE_KEY, role)
+}
+
+export function isAdmin(): boolean {
+  return getRole() === 'admin'
+}
+
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(ROLE_KEY)
 }
 
 export class ApiError extends Error {

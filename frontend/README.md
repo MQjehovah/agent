@@ -24,10 +24,15 @@ npm run build      # 产物输出到 ../src/web/static_vue,FastAPI 自动优先�
 | ---- | ---- |
 | /login | 登录(JWT) |
 | /chat | 对话(SSE 流式,工具调用过程可见) |
-| /sessions | 会话历史(查看/删除) |
+| /sessions | 会话历史(活跃+落盘历史合并,查看/删除) |
+| /usage | 我的用量(token/成本/耗时,登录用户可见) |
 | /kanban | 任务看板(四列,移动/删除) |
 | /scheduler | 定时任务(CRUD/启停) |
 | /memories | 记忆(搜索/删除/提案审批) |
+| /monitor | 运行监控(admin:实时会话/token大盘/性能/会话审计导出) |
 | /logs | 运行日志(SSE 实时流) |
 | /admin | 用户管理(RBAC,admin 角色) |
 | /settings | 改密码 / 状态检查 |
+
+> 鉴权：`/monitor`、`/admin` 为 admin 专属(导航与路由守卫按登录角色 `agent_role` 隐藏/拦截)。
+> 普通用户会话/用量接口自动按身份(`web:{uid}`)隔离。

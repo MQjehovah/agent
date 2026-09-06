@@ -1,5 +1,9 @@
 # AI Agent 开发设计文档
 
+> 维护提示：本文早期版本描述的扁平结构(`src/agent.py`、`src/llm.py`、`src/storage.py` 等)
+> 已迁移为 `src/<模块>/` 组织(`src/agent/core.py`、`src/llm/client.py`、`src/storage/storage.py`、`src/web/server.py`)。
+> 本文仍可用于理解设计意图；**权威入口、命令与最新架构以根目录 `AGENTS.md` 为准**，改动代码请同步两处。
+
 ## 一、项目概述
 
 多渠道 AI Agent 系统，支持 CLI / Web UI / 钉钉 / 飞书 / Webhook / 定时任务 6 种接入方式。核心能力：ReAct 推理循环、子代理委派、团队流水线编排、知识库检索、自主任务执行、技能工作流、插件扩展。
@@ -164,8 +168,11 @@ AgentSession
 ├── dingtalk:{conv_id}:{sender_id}
 ├── feishu:{chat_id}:{user_id}
 ├── webhook:{task_id}
-└── web:{uuid}
+└── web:{uid}:{rand}      # 服务端强制命名空间, 归属 rbac 用户 id(多用户隔离/审计)
 ```
+
+> 归属: web 会话的 `messages.user_id` 落 `web:{uid}`; 进程重启 / worker 回收后由
+> `Agent._restore_db_session_history()` 从 DB 回填续聊上下文。
 
 子代理调用：`{parent_session_id}:{child_name}`
 
@@ -435,19 +442,23 @@ SandboxMiddleware (sandbox/__init__.py)
 ## 十六、存储层
 
 ```
-Storage (storage.py) — 统一 SQLite
-├── data.db (单文件)
-├── 连接池
+Storage (src/storage/storage.py) — 统一 SQLite
+├── config/data.db (单文件, WAL)
+├── 连接池 + 批量写队列
 ├── 表:
-│   ├── messages          (对话历史)
-│   ├── eventbus_events   (事件总线)
-│   ├── autonomous_goals  (自主任务)
-│   ├── kanban_tasks      (看板任务)
-│   └── memories          (记忆)
-└── 单例: init_storage(workspace, config_dir)
+│   ├── messages            (对话历史; 含 user_id/channel 审计列)
+│   ├── eventbus_events     (事件总线)
+│   ├── autonomous_goals    (自主任务)
+│   ├── kanban_tasks        (看板任务)
+│   ├── scheduled_tasks     (定时任务)
+│   ├── rbac_roles/users/user_identities (权限)
+│   ├── memories/memory_proposals
+│   ├── web_tokens / session_meta
+│   └── usage_records       (用量: tokens/cost/duration_ms/cache, 聚合 summarize_usage/usage_totals)
+└── 单例: init_storage(workspace, config_dir); 启动幂等 ALTER 迁移 + 历史回填(web:{uid})
 ```
 
-**文件**：`src/storage.py` (762 行)
+管理/审计 API(见 19 节): `/api/admin/*`(admin)与个人 `/api/usage`。
 
 ## 十七、接入层
 
@@ -491,22 +502,32 @@ AutonomousLoop (autonomous/loop.py)
 
 **文件**：`src/autonomous/` (10 个文件)
 
-## 十九、Web UI
+## 十九、Web UI 与多用户
 
 ```
-WebServer (web/server.py) — FastAPI
-├── 对话: POST /api/chat (流式 SSE)
-├── 会话: GET/DELETE /api/sessions
-├── 任务: CRUD /api/tasks
-├── 看板: CRUD /api/kanban
-├── 记忆: CRUD /api/memory
-├── RBAC: 角色/用户/身份管理
-├── Agent 编辑: /api/agents (技能/子代理配置)
+WebServer (src/web/server.py) — FastAPI, 与 agent 同一 asyncio 事件循环
+├── 对话: POST /api/chat | POST /api/chat/stream (SSE)
+├── 会话: GET/DELETE /api/sessions (命名空间 web:{uid}:…, owner/admin 隔离)
+│         GET /api/agent/sessions(/history/messages) — 归属过滤 + DB 历史
+├── 任务: CRUD /api/tasks | 看板 /api/kanban | 定时 /api/scheduler/tasks
+├── 记忆: /api/memories, /api/memory/proposals
+├── RBAC: /api/rbac/roles|users|identities
+├── 个人用量: GET /api/usage            (仅本人 user_id 统计)
+├── 管理可观测: GET /api/admin/stats|usage|sessions|sessions/{id}/messages(GET 查看 / POST 导出)
+├── 工作区文件: GET /api/workspace/files (admin)
 ├── 日志流: SSE /api/logs/stream
-└── JWT 认证
+└── JWT 认证(除 /api/auth/*); webhook 同端口(/webhook/*)
 ```
 
-前端：Vue 3 + UnoCSS，`src/web/static/`
+多用户 Worker 池(`src/web/worker_pool.py`):
+
+- `AGENT_WEB_POOL_SIZE=N`(默认 0 = 单实例)启用; 每用户独立 Agent worker
+  (`workspace/users/u_{uid}` + 独立 tracer/session/subagent), 继承 root 的 storage/LLM/插件;
+- LRU 容量回收 + 空闲 TTL 清理; `/api/admin/stats` 暴露 `pool` 现场。
+
+前端: Vue 3 + Vite + Element Plus,源码在 `frontend/`,构建产物输出到 `src/web/static_vue/`
+(FastAPI 优先托管); 旧版单页 `src/web/static/` 通过 `/legacy` 回退。
+路由含 `/usage`(个人用量)与 `/monitor`(admin 运行监控)。详见 `frontend/README.md`。
 
 ## 二十、Token 优化
 
