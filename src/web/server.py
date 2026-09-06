@@ -11,7 +11,7 @@ from typing import Any
 import jwt
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("agent.web")
@@ -228,6 +228,11 @@ class WebServer:
     def _setup_routes(self):
         from storage.storage import get_storage
 
+        # ===== Webhook 接入(原独立 8081 插件的承接,与主服务同端口) =====
+        from web.webhook_api import register_webhook_routes
+
+        register_webhook_routes(self._app, lambda: self.agent)
+
         # ===== Auth 中间件：所有 /api/* 需有效 token（auth 端点、OPTIONS、或 DISABLE_AUTH 除外） =====
         @self._app.middleware("http")
         async def auth_middleware(request: Request, call_next):
@@ -251,7 +256,10 @@ class WebServer:
             if os.environ.get("WEBUI_DISABLE_AUTH") == "1":
                 return {"uid": 1, "name": "test", "role": "admin"}
             h = request.headers.get("Authorization", "")
-            return decode_jwt(h[7:])
+            try:
+                return decode_jwt(h[7:])
+            except Exception as e:
+                raise HTTPException(status_code=401, detail="Unauthorized") from e
 
         async def _get_admin(request: Request) -> dict[str, Any]:
             u = await _get_auth(request)
@@ -330,11 +338,15 @@ class WebServer:
         if os.path.isdir(STATIC_DIR):
             self._app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-        # 首页：注入静态资源版本号（基于 mtime），避免浏览器缓存旧版 app.js / style.css
+            logger.info("Web UI:Vue3 SPA(static_vue)")
+        else:
+            logger.info("Web UI:旧版单页(static)- 未发现 Vue 构建产物")
+
+        # ===== 旧版单页(回退用)=====
         _index_cache: dict = {}
 
-        @self._app.get("/")
-        async def index():
+        @self._app.get("/legacy")
+        async def legacy_index():
             idx = os.path.join(STATIC_DIR, "index.html")
             if not os.path.isfile(idx):
                 raise HTTPException(404, "index.html not found")
@@ -344,7 +356,6 @@ class WebServer:
                 return HTMLResponse(cached)
             with open(idx, encoding="utf-8") as f:
                 html = f.read()
-            # 给静态资源加 ?v=mtime，文件一变浏览器自动重新拉取
             for name in ("app.js", "style.css"):
                 p = os.path.join(STATIC_DIR, name)
                 if os.path.isfile(p):
@@ -1386,3 +1397,28 @@ class WebServer:
                 gen(), media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
             )
+
+
+        # ===== Vue3 SPA(static_vue,由 frontend/ 构建产出)优先;旧版单页回退 =====
+        VUE_DIR = os.path.join(os.path.dirname(STATIC_DIR), "static_vue")
+        vue_index = os.path.join(VUE_DIR, "index.html")
+
+        if os.path.isfile(vue_index):
+            self._app.mount("/assets", StaticFiles(directory=os.path.join(VUE_DIR, "assets")), name="vue-assets")
+
+            @self._app.get("/favicon.svg", include_in_schema=False)
+            async def favicon_svg():
+                path = os.path.join(VUE_DIR, "favicon.svg")
+                if os.path.isfile(path):
+                    return FileResponse(path)
+                raise HTTPException(404, "not found")
+
+            # SPA 首页 + 前端路由回退(除 /api、/webhook、/static、/assets 外全部回 index)
+            @self._app.get("/{full_path:path}", include_in_schema=False)
+            async def spa(full_path: str):
+                if full_path.startswith(("api/", "webhook", "static/", "assets/", "docs")):
+                    raise HTTPException(404, "Not Found")
+                candidate = os.path.join(VUE_DIR, full_path)
+                if full_path and os.path.isfile(candidate):
+                    return FileResponse(candidate)
+                return FileResponse(vue_index, headers={"Cache-Control": "no-cache"})

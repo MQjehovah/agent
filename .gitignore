@@ -42,3 +42,6 @@ log/
 dist/
 
 .agent/
+
+
+node_modules/

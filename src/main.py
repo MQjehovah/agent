@@ -611,10 +611,6 @@ async def _main_with_args(args):
 
             plugin_manager.start_all()
 
-            webhook_plugin = plugin_manager.get_plugin("webhook")
-            if webhook_plugin:
-                pass  # webhook 现在直接使用 plugin_manager.router
-
             scheduler_plugin = plugin_manager.get_plugin("scheduler")
             if scheduler_plugin:
                 async def _schedule_to_router(schedule_task: str, user_id: str = "",
