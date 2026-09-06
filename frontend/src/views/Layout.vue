@@ -90,7 +90,11 @@ async function logout() {
         </button>
       </div>
       <div class="content">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <keep-alive include="ChatView">
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
       </div>
     </main>
   </div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+defineOptions({ name: 'ChatView' })
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, streamChat, getToken } from '../api'
 import MarkdownIt from 'markdown-it'
@@ -6,8 +7,9 @@ import { Promotion, VideoPause, Plus, Delete } from '@element-plus/icons-vue'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
-interface ToolTrace { name: string; done: boolean }
-interface Msg { role: 'user' | 'assistant'; content: string; reasoning: string; tools: ToolTrace[]; error: string }
+interface ToolTrace { name: string; done: boolean; args?: string; result?: string }
+interface AgentAct { name: string; done: boolean; content: string; tools: ToolTrace[] }
+interface Msg { role: 'user' | 'assistant'; content: string; reasoning: string; tools: ToolTrace[]; agents: AgentAct[]; error: string }
 interface SessionRow { id: string; created_at: string; message_count: number; is_streaming: boolean }
 
 const messages = ref<Msg[]>([])
@@ -44,7 +46,7 @@ async function openSession(row: SessionRow) {
     sessionId.value = row.id
     messages.value = (d.messages ?? []).map(m => ({
       role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content, reasoning: '', tools: [], error: ''
+      content: m.content, reasoning: '', tools: [], agents: [], error: ''
     }))
     scrollBottom()
   } catch (e) {
@@ -68,32 +70,66 @@ function send() {
   const text = input.value.trim()
   if (!text || streaming.value) return
   input.value = ''
-  messages.value.push({ role: 'user', content: text, reasoning: '', tools: [], error: '' })
-  const reply: Msg = { role: 'assistant', content: '', reasoning: '', tools: [], error: '' }
+  messages.value.push({ role: 'user', content: text, reasoning: '', tools: [], agents: [], error: '' })
+  const reply: Msg = { role: 'assistant', content: '', reasoning: '', tools: [], agents: [], error: '' }
   messages.value.push(reply)
   streaming.value = true
   scrollBottom()
+
+  function markToolDone(list: ToolTrace[], name: string) {
+    const hit = [...list].reverse().find(t => t.name === name && !t.done)
+    if (hit) hit.done = true
+  }
 
   abort = new AbortController()
   streamChat(
     { message: text, session_id: sessionId.value || undefined },
     (ev) => {
+      const data = (ev.data ?? {}) as Record<string, any>
       switch (ev.type) {
         case 'token': reply.content += ev.content ?? ''; break
         case 'reasoning': reply.reasoning += ev.content ?? ''; break
         case 'tool_start':
-        case 'subagent_tool_start':
-          reply.tools.push({ name: String(ev.data?.name || ev.data?.agent_name || 'tool'), done: false })
+          reply.tools.push({ name: String(data.name || data.agent_name || 'tool'), done: false, args: data.arguments })
           break
-        case 'tool_result':
-        case 'subagent_tool_result': {
-          const name = String(ev.data?.name || ev.data?.agent_name || 'tool')
+        case 'tool_result': {
+          const name = String(data.name || 'tool')
           const hit = [...reply.tools].reverse().find(t => t.name === name && !t.done)
-          if (hit) hit.done = true
+          if (hit) { hit.done = true; hit.result = data.result }
+          break
+        }
+        case 'subagent_start': {
+          const name = String(data.agent_name || 'subagent')
+          reply.agents.push({ name, done: false, content: '', tools: [] })
+          break
+        }
+        case 'subagent_token': {
+          const act = reply.agents[reply.agents.length - 1]
+          if (act && !act.done) act.content += data.content ?? ev.content ?? ''
+          break
+        }
+        case 'subagent_tool_start': {
+          const act = reply.agents[reply.agents.length - 1]
+          if (act) act.tools.push({ name: String(data.name || 'tool'), done: false, args: data.arguments })
+          break
+        }
+        case 'subagent_tool_result': {
+          const act = reply.agents[reply.agents.length - 1]
+          if (act) {
+            const hit = [...act.tools].reverse().find(t => t.name === String(data.name || 'tool') && !t.done)
+            if (hit) { hit.done = true; hit.result = data.result }
+          }
+          break
+        }
+        case 'subagent_result': {
+          const act = reply.agents[reply.agents.length - 1]
+          if (act) act.done = true
           break
         }
         case 'done':
           if (ev.content) reply.content = ev.content
+          for (const act of reply.agents) act.done = true
+          for (const t of reply.tools) t.done = true
           break
         case 'error': reply.error = ev.content ?? '未知错误'; break
       }
@@ -154,11 +190,36 @@ onBeforeUnmount(() => {
               <summary style="font-size: 12px; color: var(--text-2); cursor: pointer">思考过程</summary>
               <div style="font-size: 12px; color: var(--text-2); white-space: pre-wrap; margin-top: 4px">{{ m.reasoning }}</div>
             </details>
+
             <div v-if="m.tools.length" class="tools">
-              <el-tag v-for="(t, ti) in m.tools" :key="ti" size="small" :type="t.done ? 'success' : 'warning'">
-                {{ t.name + (t.done ? ' ✓' : ' …') }}
-              </el-tag>
+              <el-tooltip v-for="(t, ti) in m.tools" :key="ti" placement="top"
+                          :content="t.result ? ('结果: ' + t.result.slice(0, 120)) : (t.args || t.name)">
+                <el-tag size="small" :type="t.done ? 'success' : 'warning'" class="tool-tag">
+                  {{ t.name }} {{ t.done ? '✓' : '…' }}
+                </el-tag>
+              </el-tooltip>
             </div>
+
+            <div v-if="m.agents.length" class="agent-list">
+              <div v-for="(a, ai) in m.agents" :key="ai" class="agent-card">
+                <div class="agent-head">
+                  <span class="agent-name">{{ a.name }}</span>
+                  <el-tag size="small" :type="a.done ? 'success' : 'warning'">
+                    {{ a.done ? '完成' : '执行中' }}
+                  </el-tag>
+                </div>
+                <div v-if="a.content" class="agent-stream">{{ a.content }}</div>
+                <div v-if="a.tools.length" class="tools" style="margin-top: 6px">
+                  <el-tooltip v-for="(t, tj) in a.tools" :key="tj" placement="top"
+                              :content="t.result ? ('结果: ' + t.result.slice(0, 120)) : (t.args || t.name)">
+                    <el-tag size="small" :type="t.done ? 'success' : 'info'" class="tool-tag">
+                      {{ t.name }} {{ t.done ? '✓' : '…' }}
+                    </el-tag>
+                  </el-tooltip>
+                </div>
+              </div>
+            </div>
+
             <div v-if="m.role === 'user'">{{ m.content }}</div>
             <div v-else-if="m.content" class="md" v-html="render(m.content)" />
             <div v-else-if="streaming && i === messages.length - 1" style="color: var(--text-2); font-size: 13px">
@@ -184,3 +245,29 @@ onBeforeUnmount(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.tool-tag { cursor: default; }
+.agent-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.agent-card {
+  border: 1px solid var(--border, #e5e7eb);
+  border-left: 3px solid #409eff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--fill, #f7f8fa);
+}
+.agent-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.agent-name { font-size: 13px; font-weight: 600; }
+.agent-stream {
+  font-size: 12px;
+  color: var(--text-2, #555);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  max-height: 180px;
+  overflow-y: auto;
+  border-left: 2px solid #d0d7de;
+  padding-left: 8px;
+  margin-top: 4px;
+}
+</style>

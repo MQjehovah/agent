@@ -692,21 +692,42 @@ class WebServer:
                         full_response.append(ctx.token)
                         await q.put(("token", ctx.token))
 
+                # 后端事件 → 前端 SSE type 映射(统一、可读)
+                _ui_types = {
+                    HookEvent.TOOL_START: "tool_start",
+                    HookEvent.TOOL_RESULT: "tool_result",
+                    HookEvent.ROUND_START: "round_start",
+                    HookEvent.SUBAGENT_START: "subagent_start",
+                    HookEvent.SUBAGENT_RESULT: "subagent_result",
+                    HookEvent.SUBAGENT_CHAT_EVENT: "subagent_token",
+                    HookEvent.SUBAGENT_TOOL_START: "subagent_tool_start",
+                    HookEvent.SUBAGENT_TOOL_RESULT: "subagent_tool_result",
+                    HookEvent.SUBAGENT_ROUND_START: "subagent_round",
+                }
+
                 async def event_handler(ctx):
+                    etype = _ui_types.get(ctx.event, ctx.event.value)
                     d: dict[str, Any] = {}
                     if ctx.token:
                         d["content"] = ctx.token
+                    elif ctx.content:
+                        d["content"] = ctx.content
                     if ctx.tool_name:
                         d["name"] = ctx.tool_name
+                    if ctx.arguments:
+                        a = str(ctx.arguments)
+                        d["arguments"] = a[:300] + ("…" if len(a) > 300 else "")
                     if ctx.result:
-                        d["result"] = ctx.result
+                        r = str(ctx.result)
+                        d["result"] = r[:500] + ("…" if len(r) > 500 else "")
                     if ctx.agent_name:
                         d["agent_name"] = ctx.agent_name
                     if ctx.agent_type:
                         d["agent_type"] = ctx.agent_type
                     if ctx.metadata:
-                        d.update(ctx.metadata)
-                    await q.put(("tool_event", {"event_type": ctx.event.value, "data": d}))
+                        d.update({k: v for k, v in ctx.metadata.items()
+                                  if isinstance(v, (str, int, float, bool))})
+                    await q.put(("sse", (etype, d)))
 
                 hook_events = [
                     HookEvent.CHAT_EVENT,
@@ -775,8 +796,9 @@ class WebServer:
                             yield _sse({"type": "token", "content": content})
                         elif event_type == "reasoning":
                             yield _sse({"type": "reasoning", "content": content})
-                        elif event_type == "tool_event":
-                            yield _sse({"type": content["event_type"], "data": content["data"]})
+                        elif event_type == "sse":
+                            et, payload = content
+                            yield _sse({"type": et, "data": payload})
                         elif event_type == "done":
                             chat_session.add_message("assistant", content)
                             yield _sse({"type": "done", "content": content})

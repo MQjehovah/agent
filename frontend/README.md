@@ -23,7 +23,7 @@ npm run build      # 产物输出到 ../src/web/static_vue,FastAPI 自动优先�
 | 路由 | 功能 |
 | ---- | ---- |
 | /login | 登录(JWT) |
-| /chat | 对话(SSE 流式,工具调用过程可见) |
+| /chat | 对话(SSE 流式 token;工具调用动态状态;子代理执行过程实时显示;切换页面不断流,keep-alive 保活) |
 | /sessions | 会话历史(活跃+落盘历史合并,查看/删除) |
 | /usage | 我的用量(token/成本/耗时,登录用户可见) |
 | /kanban | 任务看板(四列,移动/删除) |

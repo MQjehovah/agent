@@ -535,6 +535,20 @@ WebServer (src/web/server.py) — FastAPI, 与 agent 同一 asyncio 事件循环
 (FastAPI 优先托管); 旧版单页 `src/web/static/` 通过 `/legacy` 回退。
 路由含 `/usage`(个人用量)与 `/monitor`(admin 运行监控)。详见 `frontend/README.md`。
 
+**SSE 事件协议**(`/api/chat/stream` data 帧):
+
+| type | 语义 |
+|---|---|
+| `token` / `reasoning` | 主 agent 回复 token / 思考过程 |
+| `tool_start` / `tool_result` | 主 agent 工具开始(含 arguments)/ 结束(含 result 摘要) |
+| `subagent_start` / `subagent_result` | 子 agent 开始/结束 |
+| `subagent_token` | 子 agent 正在流式输出的内容(显示其实际执行) |
+| `subagent_tool_start` / `subagent_tool_result` | 子 agent 内部工具调用过程 |
+| `done` / `error` / `heartbeat` | 结束/异常/心跳 |
+
+前端 `ChatView` 对 token 逐字追加、对工具与子代理实时渲染状态卡(子代理内容折叠可展开);
+对话页以 `keep-alive` 保活，切走页面/路由不会中断流。
+
 ## 二十、Token 优化
 
 ### 20.1 问题
