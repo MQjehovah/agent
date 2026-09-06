@@ -38,6 +38,9 @@
 - 验收：多用户并发不崩、饱和时优雅拒绝、监控可看 pool 现场。
 
 ### Wave B · 模块化重构（域拆分 + 语义收敛）
+> 进度：Step1 ✅（2026-09）——`web/security.py`(统一鉴权) + `web/routers/admin.py`
+> (admin/usage/个人用量 迁出)，server.py 从 1960→~1800 行；接口不变、烟测通过。
+> 待：Step2 conversations/chat/workbench 域、Step3 `RunDispatcher` 收敛 run 分支。
 - 把 `web/server.py`(1960) 拆成 FastAPI Routers：`auth`/`chat_sse`/`conversations`/
   `admin`/`usage`/`workbench`/`webhook`；共享一个轻量 `WebRuntime`(会话表/归属/pending-asks/pool)。
 - 抽出领域服务：`ConversationService`(列表/明细/恢复/审计)、`RunDispatcher`(顶层/worker/子代理/团队 收敛 core.run 分支)。

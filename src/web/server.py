@@ -55,14 +55,6 @@ def decode_jwt(token: str) -> dict:
     return jwt.decode(token, _load_jwt_secret(), algorithms=["HS256"])
 
 
-def _uptime_s(started_at_iso: str) -> int:
-    """返回自 started_at_iso 起经过的秒数。"""
-    try:
-        return int((datetime.now() - datetime.fromisoformat(started_at_iso)).total_seconds())
-    except Exception:
-        return 0
-
-
 def _sse(payload: dict) -> str:
     """格式化一条 SSE 事件"""
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -316,6 +308,30 @@ class WebServer:
         except Exception:
             pass
         return tag
+
+    def live_sessions_snapshot(self) -> list[dict]:
+        """内存态 Web 会话快照(含运行时长/归属)，供管理端实时观测。"""
+        now = datetime.now()
+        out = []
+        with self._session_lock:
+            items = list(self._sessions.items())
+        for sid, cs in items:
+            owner_tag = self._session_owners.get(sid, "")
+            dur = 0
+            if cs.is_streaming and cs.stream_started_at:
+                try:
+                    dur = int((now - datetime.fromisoformat(cs.stream_started_at)).total_seconds())
+                except Exception:
+                    dur = 0
+            info = self._owner_display(sid, owner_tag)
+            out.append({
+                "id": sid, "is_streaming": cs.is_streaming,
+                "created_at": cs.created_at, "duration_s": dur,
+                "message_count": cs.message_count(),
+                "uid": info["uid"], "owner": info["name"], "tag": info["tag"],
+            })
+        out.sort(key=lambda x: x["created_at"], reverse=True)
+        return out
 
     def _get_or_create_session(self, session_id: str) -> ChatSession:
         """获取或创建 Web 会话，带线程安全与上限淘汰（防止内存无限增长）。"""
@@ -1707,235 +1723,9 @@ class WebServer:
             storage.update_proposal_status(pid, "rejected", "admin")
             return {"success": True}
 
-        # ===== 管理端可观测 API（admin，会话 / token 用量 / 性能）=====
-
-        def _web_live_sessions() -> list[dict]:
-            """内存态 Web 会话快照（含运行时长 / 归属），供管理端实时观测。"""
-            now = datetime.now()
-            out = []
-            with self._session_lock:
-                items = list(self._sessions.items())
-            for sid, cs in items:
-                owner_tag = self._session_owners.get(sid, "")
-                dur = 0
-                if cs.is_streaming and cs.stream_started_at:
-                    try:
-                        dur = int((now - datetime.fromisoformat(cs.stream_started_at)).total_seconds())
-                    except Exception:
-                        dur = 0
-                info = self._owner_display(sid, owner_tag)
-                out.append({
-                    "id": sid, "is_streaming": cs.is_streaming,
-                    "created_at": cs.created_at, "duration_s": dur,
-                    "message_count": cs.message_count(),
-                    "uid": info["uid"], "owner": info["name"], "tag": info["tag"],
-                })
-            out.sort(key=lambda x: x["created_at"], reverse=True)
-            return out
-
-        @self._app.get("/api/admin/stats")
-        async def admin_stats(request: Request):
-            await _get_admin(request)
-            storage = get_storage()
-            live = _web_live_sessions()
-            running = [s for s in live if s["is_streaming"]]
-
-            agent_active_sessions, running_agents, task_counts = 0, 0, {}
-            subagent_active = 0
-            if self.agent:
-                sm = getattr(self.agent, "session_manager", None)
-                if sm:
-                    agent_active_sessions = sm.get_session_count()
-                sm2 = getattr(self.agent, "subagent_manager", None)
-                if sm2:
-                    try:
-                        subagent_active = len(sm2._active_subagents)
-                    except Exception:
-                        subagent_active = 0
-                task_mgr = getattr(self.agent, "task_manager", None)
-                try:
-                    tasks = task_mgr.list_tasks() if task_mgr else []
-                    task_counts = {"pending": 0, "running": 0, "completed": 0,
-                                   "failed": 0, "cancelled": 0}
-                    for t in tasks:
-                        s = t.get("status", "pending")
-                        if s in task_counts:
-                            task_counts[s] += 1
-                    running_agents = task_counts.get("running", 0)
-                except Exception:
-                    pass
-            else:
-                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
-
-            usage_today = {}
-            online = {"count": 0, "users": []}
-            if storage:
-                try:
-                    usage_today = storage.usage_totals(days=1)
-                    rows = storage.query_usage(limit=200)
-                except Exception:
-                    rows = []
-                try:
-                    recent_uids: set[str] = set()
-                    for r in rows:
-                        if r.get("user_id") and r["user_id"] != "system":
-                            recent_uids.add(str(r["user_id"]))
-                    for s in running:
-                        if s.get("tag"):
-                            recent_uids.add(s["tag"])
-                    online["users"] = [
-                        {"uid": t, "name": self._user_display_name(t)}
-                        for t in recent_uids
-                    ]
-                    online["count"] = len(online["users"])
-                except Exception:
-                    pass
-
-            status = getattr(self.agent, "status", "")
-            client = getattr(self.agent, "client", None)
-            return {
-                "now": datetime.now().isoformat(),
-                "uptime_s": _uptime_s(self._started_at),
-                "agent": {
-                    "name": getattr(self.agent, "name", "") or "Agent",
-                    "status": status,
-                    "model": getattr(client, "model", "") if client else "",
-                },
-                "concurrency": {
-                    "web_sessions": len(live),
-                    "running_streams": len(running),
-                    "agent_active_sessions": agent_active_sessions,
-                    "subagent_active": subagent_active,
-                    "running_tasks": running_agents,
-                    "task_counts": task_counts,
-                },
-                "pool": self._pool.stats() if (self._pool is not None and self._pool.enabled)
-                        else {"enabled": False, "capacity": 0, "active": 0, "busy": 0,
-                              "total_created": 0, "users": []},
-                "usage_today": usage_today,
-                "perf_today": {k: v for k, v in (usage_today or {}).items()
-                               if "duration_ms" in k or k == "calls"},
-                "online": online,
-                "live_sessions": live,
-            }
-
-        @self._app.get("/api/admin/usage")
-        async def admin_usage(days: int = Query(7), group: str = Query("day"),
-                              model: str = Query(""), user: str = Query(""),
-                              request: Request = None):
-            await _get_admin(request)
-            storage = get_storage()
-            if not storage:
-                return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            days = max(1, min(days, 90))
-            if group not in ("day", "user", "model", "session"):
-                group = "day"
-            totals = storage.usage_totals(days=days, user_id=user, model=model)
-            breakdown = storage.summarize_usage(group_by=group, days=days,
-                                                user_id=user, model=model)
-            recent = storage.query_usage(user_id=user, limit=100)
-            return {
-                "days": days, "group": group,
-                "totals": totals,
-                "breakdown": breakdown,
-                "recent": recent,
-            }
-
-        # ===== 个人用量（每个登录用户查看自己的 token / 成本 / 性能）=====
-        @self._app.get("/api/usage")
-        async def my_usage(days: int = Query(7), request: Request = None):
-            u = await _get_auth(request)
-            raw_uid = str(u.get("uid", ""))
-            if not raw_uid or raw_uid in ("anon", "0", "None"):
-                return {"enabled": False, "reason": "no_identity"}
-            tag = WebServer._owner_tag(raw_uid)
-            storage = get_storage()
-            if not storage:
-                return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            days = max(1, min(days, 90))
-            try:
-                totals = storage.usage_totals(days=days, user_id=tag)
-                by_day = storage.summarize_usage("day", days=days, user_id=tag)
-                by_model = storage.summarize_usage("model", days=days, user_id=tag)
-                recent = storage.query_usage(user_id=tag, limit=30)
-            except Exception as e:
-                logger.warning(f"[usage/mine] 查询失败: {e}")
-                totals, by_day, by_model, recent = {}, [], [], []
-            return {
-                "user": u.get("name", raw_uid),
-                "tag": tag,
-                "days": days,
-                "totals": totals,
-                "by_day": by_day,
-                "by_model": by_model,
-                "recent": recent,
-            }
-
-        @self._app.get("/api/admin/sessions")
-        async def admin_sessions(limit: int = Query(30), scope: str = Query("all"),
-                                 request: Request = None):
-            await _get_admin(request)
-            storage = get_storage()
-            live = _web_live_sessions() if scope in ("all", "live") else []
-            history: list[dict] = []
-            if storage and scope in ("all", "history"):
-                rows = storage.list_conversations(min(max(limit, 1), 500))
-                for r in rows:
-                    tag = r.get("user_id") or ""
-                    history.append({
-                        "id": r["conversation_id"],
-                        "agent_id": r.get("agent_id") or "",
-                        "owner": self._user_display_name(tag) if tag else "",
-                        "uid": tag[4:] if tag.startswith("web:") else tag,
-                        "tag": tag,
-                        "messages": r["msg_count"],
-                        "thread_count": r.get("thread_count") or 0,
-                        "last_accessed": r["last_at"],
-                        "first_accessed": r["first_at"],
-                    })
-            return {"live": live, "history": history}
-
-        @self._app.get("/api/admin/sessions/{session_id}/threads")
-        async def admin_session_threads(session_id: str, request: Request = None):
-            """某对话下的子代理内部 thread 清单(审计下钻)。"""
-            await _get_admin(request)
-            storage = get_storage()
-            if not storage:
-                return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            threads = storage.conversation_threads(session_id)
-            return {"conversation_id": session_id, "threads": threads, "count": len(threads)}
-
-        @self._app.get("/api/admin/sessions/{session_id}/messages")
-        async def admin_session_messages(session_id: str, request: Request = None):
-            await _get_admin(request)
-            storage = get_storage()
-            if storage:
-                msgs = storage.get_messages_with_meta(session_id, limit=0)
-                if msgs:
-                    return {"session_id": session_id, "source": "db", "messages": msgs,
-                            "count": len(msgs)}
-            with self._session_lock:
-                cs = self._sessions.get(session_id)
-            if cs:
-                return {"session_id": session_id, "source": "memory", "messages": cs.snapshot(),
-                        "count": len(cs.snapshot())}
-            return JSONResponse({"error": "Session not found"}, status_code=404)
-
-        @self._app.post("/api/admin/sessions/{session_id}/messages")
-        async def admin_session_export(session_id: str, request: Request = None):
-            """审计导出：返回全部消息的 JSON（含元数据），由管理端保存为审计文件。"""
-            await _get_admin(request)
-            storage = get_storage()
-            if storage:
-                msgs = storage.get_messages_with_meta(session_id)
-                if msgs:
-                    return {
-                        "session_id": session_id,
-                        "exported_at": datetime.now().isoformat(),
-                        "messages": msgs,
-                        "count": len(msgs),
-                    }
-            return JSONResponse({"error": "Session not found"}, status_code=404)
+        # ===== 管理/用量域 Router（Wave B：从 server.py 拆出）=====
+        from web.routers.admin import build_admin_router
+        self._app.include_router(build_admin_router(self))
 
         # ===== 工作区文件列表（服务端共享目录，仅 admin 可见）=====
         @self._app.get("/api/workspace/files")
