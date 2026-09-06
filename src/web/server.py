@@ -162,6 +162,8 @@ class WebServer:
         self._session_lock = threading.Lock()
         self._started_at = datetime.now().isoformat()
         self._pool = None  # 可选: 多用户 Worker 池(AGENT_WEB_POOL_SIZE>0 启用)
+        # SSE 双向追问: ask_id -> {"future", "tag", "question"}
+        self._pending_asks: dict[str, dict] = {}
         # 日志流 handler：把 agent 日志广播给 /api/logs/stream 订阅者
         self._log_handler = LogStreamHandler()
         self._log_handler.setFormatter(
@@ -790,7 +792,35 @@ class WebServer:
                         run_id=stream_run_id,
                     )
 
+                # SSE 双向追问：agent 调 ask_user 时暂停并等前端回答
+                def make_ask_bridge():
+                    _timeout = float(os.environ.get("AGENT_WEB_ASK_TIMEOUT", "300") or "300")
+
+                    async def bridge(question: str, options: list, default: str):
+                        ask_id = uuid.uuid4().hex
+                        fut = asyncio.get_event_loop().create_future()
+                        self._pending_asks[ask_id] = {
+                            "future": fut, "tag": web_user_id,
+                            "question": str(question)[:200],
+                        }
+                        try:
+                            await q.put(("sse", ("ask", {
+                                "ask_id": ask_id, "question": question,
+                                "options": list(options or []), "default": default or "",
+                            })))
+                            try:
+                                return await asyncio.wait_for(fut, timeout=_timeout)
+                            except asyncio.TimeoutError:
+                                logger.warning(f"ask {ask_id[:8]} 等待回答超时，使用默认值")
+                                return default or ""
+                        finally:
+                            self._pending_asks.pop(ask_id, None)
+
+                    return bridge
+
                 async def run_agent():
+                    from tools.ask_user import reset_ask_bridge, set_ask_bridge
+                    _bt = set_ask_bridge(make_ask_bridge())
                     try:
                         router = MessageRouter(agent_ref)
                         result = await router.route(
@@ -813,6 +843,7 @@ class WebServer:
                     except Exception as e:
                         await q.put(("error", str(e)))
                     finally:
+                        reset_ask_bridge(_bt)
                         for evt in hook_events:
                             agent_ref.hooks.unregister(
                                 evt,
@@ -860,6 +891,27 @@ class WebServer:
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
             )
+
+        @self._app.post("/api/chat/answer")
+        async def chat_answer(request: Request):
+            """回复运行中的追问(ask)：把答案交回被挂起的 run 继续执行。"""
+            try:
+                u = await _get_auth(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            data = await request.json()
+            ask_id = (data.get("ask_id") or "").strip()
+            answer = data.get("answer")
+            info = self._pending_asks.get(ask_id)
+            if not info:
+                return JSONResponse({"error": "该问题已过期或不存在"}, status_code=404)
+            tag = WebServer._owner_tag(str(u.get("uid")))
+            if u.get("role") != "admin" and not WebServer._same_owner(info.get("tag", ""), tag):
+                return JSONResponse({"error": "无权回答该问题"}, status_code=403)
+            fut = info.get("future")
+            if fut is not None and not fut.done():
+                fut.set_result("" if answer is None else str(answer))
+            return {"success": True}
 
         @self._app.get("/api/tasks")
         async def list_tasks():

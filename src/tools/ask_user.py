@@ -13,6 +13,8 @@ logger = logging.getLogger("agent.tools")
 # "interactive" — 调用 _input_handler 或 _console_input 等待用户
 # "auto" — 直接返回默认值（webhook 用）
 _ask_mode: contextvars.ContextVar[str] = contextvars.ContextVar("ask_user_mode", default="interactive")
+# 每个 asyncio Task 独立的“追问桥”：Web 等渠道用 SSE 把问题发给用户并等待回答
+_ask_bridge: contextvars.ContextVar = contextvars.ContextVar("ask_user_bridge", default=None)
 
 
 def set_ask_user_mode(mode: str):
@@ -22,6 +24,15 @@ def set_ask_user_mode(mode: str):
 
 def reset_ask_user_mode(token):
     _ask_mode.reset(token)
+
+
+def set_ask_bridge(bridge):
+    """设置当前 Task 的追问桥（async (question, options, default) -> answer），返回 reset token"""
+    return _ask_bridge.set(bridge)
+
+
+def reset_ask_bridge(token):
+    _ask_bridge.reset(token)
 
 
 class AskUserTool(BuiltinTool):
@@ -77,6 +88,29 @@ class AskUserTool(BuiltinTool):
 
         if not question:
             return json.dumps({"success": False, "error": "问题不能为空"}, ensure_ascii=False)
+
+        # 优先级: 追问桥(Web SSE 双向) > mode=auto > _input_handler > _console_input
+        bridge = _ask_bridge.get()
+        if bridge is not None:
+            try:
+                answer = await bridge(question, options, default)
+                return json.dumps({
+                    "success": True,
+                    "question": question,
+                    "answer": answer or "",
+                    "auto": False,
+                }, ensure_ascii=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"ask_user: 追问桥异常({e})，使用默认值")
+                return json.dumps({
+                    "success": True,
+                    "question": question,
+                    "answer": default or "",
+                    "auto": True,
+                    "note": f"追问不可用，使用默认值: {e}"
+                }, ensure_ascii=False)
 
         # 按优先级决定如何处理：mode=auto > _input_handler > _console_input
         mode = _ask_mode.get()

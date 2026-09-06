@@ -1,9 +1,10 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatView' })
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { api, streamChat, getToken } from '../api'
+import { api, post, streamChat, getToken } from '../api'
 import MarkdownIt from 'markdown-it'
 import { Promotion, VideoPause, Plus, Delete } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
@@ -16,6 +17,9 @@ const messages = ref<Msg[]>([])
 const input = ref('')
 const streaming = ref(false)
 const procTip = ref('')
+const ask = ref<any>(null)
+const askSel = ref('')
+const askText = ref('')
 const sessionId = ref('')
 const sessions = ref<SessionRow[]>([])
 const scrollRef = ref<HTMLElement | null>(null)
@@ -102,6 +106,11 @@ function send() {
         case 'round_start':
           procTip.value = `第 ${data.iteration ?? ''} 轮`
           break
+        case 'ask':
+          ask.value = ev.data ?? null
+          if (ask.value) { askSel.value = ask.value.default ?? ''; askText.value = '' }
+          procTip.value = '需要你确认/回答…'
+          break
         case 'tool_start':
           reply.tools.push({ name: String(data.name || 'tool'), done: false, args: data.arguments })
           procTip.value = `正在调用工具：${String(data.name || 'tool')}`
@@ -149,9 +158,10 @@ function send() {
           if (ev.content) reply.content = ev.content
           for (const act of reply.agents) act.done = true
           for (const t of reply.tools) t.done = true
+          ask.value = null
           procTip.value = ''
           break
-        case 'error': reply.error = ev.content ?? '未知错误'; procTip.value = ''; break
+        case 'error': reply.error = ev.content ?? '未知错误'; ask.value = null; procTip.value = ''; break
       }
       scrollBottom()
     },
@@ -170,6 +180,29 @@ function send() {
 }
 
 function stop() { abort?.abort() }
+
+async function submitAsk() {
+  if (!ask.value) return
+  const ans = (ask.value.options && ask.value.options.length) ? askSel.value : askText.value
+  try {
+    await post('/api/chat/answer', { ask_id: ask.value.ask_id, answer: ans })
+    ask.value = null
+    askSel.value = ''
+    askText.value = ''
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+async function cancelAsk() {
+  if (!ask.value) return
+  try {
+    await post('/api/chat/answer', { ask_id: ask.value.ask_id, answer: ask.value.default ?? '' })
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+  ask.value = null
+}
 
 let pollTimer: number | undefined
 onMounted(() => {
@@ -264,6 +297,19 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="composer">
+        <div v-if="ask" class="ask-bar">
+          <div class="ask-q"><el-tag size="small" type="warning" effect="plain">需你确认</el-tag> {{ ask.question }}</div>
+          <div v-if="ask.options && ask.options.length" style="margin-top: 6px">
+            <el-radio-group v-model="askSel">
+              <el-radio v-for="op in ask.options" :key="op" :value="op">{{ op }}</el-radio>
+            </el-radio-group>
+          </div>
+          <el-input v-else v-model="askText" size="small" placeholder="输入回答后回车…" @keyup.enter="submitAsk" style="margin-top:6px" />
+          <div style="margin-top: 8px; display: flex; gap: 8px">
+            <el-button type="primary" size="small" @click="submitAsk">提交</el-button>
+            <el-button size="small" @click="cancelAsk">默认/取消</el-button>
+          </div>
+        </div>
         <el-input
           v-model="input"
           type="textarea"
@@ -280,6 +326,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.ask-bar {
+  border: 1px solid #f0c36d;
+  background: #fffbe8;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.ask-q { display: flex; align-items: center; gap: 8px; color: #7a5c00; }
 .tool-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
 .tool-row {
   border: 1px solid var(--border, #e5e7eb);

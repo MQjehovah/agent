@@ -81,7 +81,7 @@
 | F3 | 思考过程展示 | R-A3 | ✅ reasoning 事件+折叠 | web/server · ChatView | P1 |
 | F4 | 工具调用过程可见(名称/参数/结果) | R-A3 | ✅ tool_start/result+卡片 | web/server · ChatView | P0 |
 | F5 | 子代理执行过程可见(流式+内部工具) | R-A3 | ✅ 顶层子代理卡片(深层受限) | subagent 转发 · ChatView | P0 |
-| F6 | 运行中追问/回答(ask 双向) | R-A4 | 🕐 开发中(SSE ask + answer) | tools/ask_user、web | P1 |
+| F6 | 运行中追问/回答(ask 双向) | R-A4 | ✅ SSE ask + /api/chat/answer(后端 e2e 通过,前端问答栏) | tools/ask_user、web | P1 |
 | F7 | 危险操作审批(权限确认) | R-A4/R-C3 | 🕐 | 权限层+前端 | P1 |
 | F8 | 多任务执行(工具/技能/子代理/团队) | R-A5 | ✅ | tools/skills/subagent/team | P0 |
 | F9 | 定时任务/自主执行 | R-A5 | ✅ | plugins/scheduler、autonomous | P1 |
