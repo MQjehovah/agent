@@ -888,76 +888,9 @@ class WebServer:
             success = await self.agent.task_manager.cancel_task(task_id)
             return {"success": success, "task_id": task_id}
 
-        @self._app.get("/api/sessions")
-        async def list_sessions(request: Request):
-            admin = True
-            tag = ""
-            try:
-                u = await _get_auth(request)
-                admin = u.get("role") == "admin"
-                tag = WebServer._owner_tag(str(u.get("uid")))
-            except Exception:
-                pass  # DISABLE_AUTH 场景视为 admin
-            now = datetime.now()
-            out = []
-            with self._session_lock:
-                items = list(self._sessions.items())
-            for sid, s in items:
-                owner_tag = self._session_owners.get(sid, "")
-                if not admin and not WebServer._same_owner(owner_tag, tag):
-                    continue
-                duration_s = 0
-                if s.is_streaming and s.stream_started_at:
-                    try:
-                        duration_s = int((now - datetime.fromisoformat(s.stream_started_at)).total_seconds())
-                    except Exception:
-                        duration_s = 0
-                item = {
-                    "id": sid, "created_at": s.created_at,
-                    "message_count": s.message_count(),
-                    "is_streaming": s.is_streaming,
-                    "duration_s": duration_s,
-                }
-                if admin:
-                    info = self._owner_display(sid, owner_tag or tag)
-                    item.update({"user_id": info["uid"], "owner": info["name"], "tag": info["tag"]})
-                out.append(item)
-            out.sort(key=lambda x: x["created_at"], reverse=True)
-            return {"sessions": out}
-
-        @self._app.get("/api/sessions/{session_id}/messages")
-        async def session_messages(session_id: str, request: Request):
-            tag, admin = "", False
-            try:
-                u = await _get_auth(request)
-                admin = u.get("role") == "admin"
-                tag = WebServer._owner_tag(str(u.get("uid")))
-            except Exception:
-                pass  # DISABLE_AUTH 场景放行
-            if not admin and self._session_access(session_id, tag, admin) == "deny":
-                return JSONResponse({"error": "Session not found"}, status_code=404)
-            with self._session_lock:
-                chat_session = self._sessions.get(session_id)
-            if not chat_session:
-                return JSONResponse({"error": "Session not found"}, status_code=404)
-            return {"messages": chat_session.snapshot()}
-
-        @self._app.delete("/api/sessions/{session_id}")
-        async def delete_session(session_id: str, request: Request):
-            tag, admin = "", False
-            try:
-                u = await _get_auth(request)
-                admin = u.get("role") == "admin"
-                tag = WebServer._owner_tag(str(u.get("uid")))
-            except Exception:
-                pass
-            if not admin and self._session_access(session_id, tag, admin) == "deny":
-                return JSONResponse({"error": "Session not found"}, status_code=404)
-            with self._session_lock:
-                self._sessions.pop(session_id, None)
-                self._session_owners.pop(session_id, None)
-                self._session_owner_names.pop(session_id, None)
-            return {"success": True}
+        # ===== 会话域 Router（Wave B：从 server.py 拆出）=====
+        from web.routers.sessions import build_sessions_router
+        self._app.include_router(build_sessions_router(self))
 
         # ===== 看板 API =====
         @self._app.get("/api/kanban")
