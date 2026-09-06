@@ -53,6 +53,7 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **Prompt builder**: `src/prompt.py` — `PromptBuilder` assembles system prompt in static + dynamic sections (static section is cacheable)
 - **Session management**: `src/agent/session.py` — `AgentSession` dataclass, message history with TTL-based expiry
 - **会话续聊恢复**: `Agent._restore_db_session_history()` — 进程重启 / worker 回收后首次承接旧会话时从 `messages` 表按序回填上下文(不重复落盘)
+- **RunDispatcher**: `src/agent/runner.py` — 把 `Agent.run()` 的 团队/reflective/ReAct 三路选择收敛为单一分发入口(`agent/core.py` 不再堆叠形态 if/else)
 - **Web 多用户 Worker 池**: `src/web/worker_pool.py` — `AGENT_WEB_POOL_SIZE>0` 时每个用户独立 Agent worker(`workspace/users/u_{uid}` + 独立 tracer/session/subagent), 隔离用户间实例/文件/记忆上下文; LRU 容量回收 + 空闲 TTL 清理
 - **管理可观测 API**(admin): `/api/admin/stats|usage|sessions|sessions/{id}/messages`(查看/导出)、个人用量 `/api/usage`
 - **Sub-agents**: `src/subagent_manager.py` — loads sub-agent templates from `config/agents/*/PROMPT.md`, reuses sessions by name

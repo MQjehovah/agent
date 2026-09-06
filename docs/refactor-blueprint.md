@@ -41,7 +41,8 @@
 > 进度：Step1 ✅（2026-09）——`web/security.py`(统一鉴权) + `web/routers/admin.py`
 > (admin/usage/个人用量 迁出)，server.py 从 1960→~1800 行；接口不变、烟测通过。
 > Step2 进行中：`web/routers/sessions.py`(会话域迁出，server.py→~1730 行)；
-> 待 chat SSE / workbench / RunDispatcher。
+> Step3 ✅：`agent/runner.py` RunDispatcher 收敛 run 形态选择(core.run 不再堆 if/else)。
+> 待：chat SSE 域化与 workbench 域、loop 内 react/reflective/team 去重。
 - 把 `web/server.py`(1960) 拆成 FastAPI Routers：`auth`/`chat_sse`/`conversations`/
   `admin`/`usage`/`workbench`/`webhook`；共享一个轻量 `WebRuntime`(会话表/归属/pending-asks/pool)。
 - 抽出领域服务：`ConversationService`(列表/明细/恢复/审计)、`RunDispatcher`(顶层/worker/子代理/团队 收敛 core.run 分支)。
