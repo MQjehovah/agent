@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../theme'
 import { api, clearToken, isAdmin } from '../api'
 import {
-  Monitor, ChatDotRound, Clock, DataBoard, Timer, Coin, Document, DataLine,
+  Monitor, ChatDotRound, Clock, DataBoard, Timer, Coin, Document,
   Connection, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
   Odometer
 } from '@element-plus/icons-vue'
@@ -21,30 +21,27 @@ const groups = [
     items: [
       { path: '/dashboard', title: '总览', icon: Monitor },
       { path: '/chat', title: '对话', icon: ChatDotRound },
-      { path: '/sessions', title: '会话', icon: Clock },
-      { path: '/usage', title: '用量', icon: DataLine },
-      { path: '/kanban', title: '看板', icon: DataBoard },
       { path: '/scheduler', title: '定时任务', icon: Timer },
       { path: '/memories', title: '记忆', icon: Coin }
     ]
   },
   {
     title: '运维与管理',
+    adminOnly: true,
     items: [
-      { path: '/monitor', title: '运行监控', icon: Odometer, adminOnly: true },
+      { path: '/sessions', title: '会话管理', icon: Clock },
+      { path: '/monitor', title: '运行监控', icon: Odometer },
       { path: '/logs', title: '日志', icon: Document },
       { path: '/webhook', title: 'Webhook', icon: Connection },
-      { path: '/admin', title: '用户管理', icon: User, adminOnly: true },
+      { path: '/kanban', title: '看板', icon: DataBoard },
+      { path: '/admin', title: '用户管理', icon: User },
       { path: '/settings', title: '设置', icon: Setting }
     ]
   }
 ]
 
 const visibleGroups = computed(() =>
-  groups.map(g => ({
-    ...g,
-    items: g.items.filter(i => !i.adminOnly || admin)
-  })).filter(g => g.items.length > 0)
+  groups.filter(g => !g.adminOnly || admin)
 )
 
 const currentTitle = computed(() => (route.meta.title as string) ?? '')

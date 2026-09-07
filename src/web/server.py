@@ -1674,6 +1674,46 @@ class WebServer:
             sessions = self.running_sessions_snapshot(admin=admin, tag=tag)
             return {"total": len(sessions), "sessions": sessions}
 
+        @self._app.get("/api/my/overview")
+        async def my_overview(request: Request = None):
+            """个人工作台聚合：当前登录用户本人跨渠道数据（与角色无关，admin 亦只看自己）。
+
+            返回 {user, sessions:{total,running}, memory:{mine,global}}，供 Dashboard「总览」
+            卡片使用；不依赖会随角色切为全局口径的 /api/sessions、/api/agent/sessions/history。
+            """
+            u: dict[str, Any] = {}
+            if request is not None:
+                try:
+                    u = await _get_auth(request)
+                except Exception:
+                    u = {}
+            uid = str(u.get("uid", "")) or ""
+            tag = WebServer._owner_tag(uid) if uid and uid not in ("anon", "0", "None") else ""
+            storage = get_storage()
+            sessions_total, running = 0, []
+            if tag and storage:
+                try:
+                    sessions_total = len(storage.list_conversations_for_agent_user(uid, 500))
+                except Exception as e:
+                    logger.warning(f"[my/overview] 会话统计失败: {e}")
+                try:
+                    running = self.running_sessions_snapshot(admin=False, tag=tag)
+                except Exception as e:
+                    logger.warning(f"[my/overview] 运行中统计失败: {e}")
+            mem_mine = mem_global = 0
+            if storage:
+                try:
+                    mem_mine = storage.count_memories(scope="user", owner_id=tag) if tag else 0
+                    mem_global = storage.count_memories(scope="global")
+                except Exception as e:
+                    logger.warning(f"[my/overview] 记忆统计失败: {e}")
+            return {
+                "user": {"uid": uid, "name": u.get("name", "") or uid,
+                         "role": u.get("role", "")},
+                "sessions": {"total": sessions_total, "running": len(running)},
+                "memory": {"mine": mem_mine, "global": mem_global},
+            }
+
         @self._app.get("/api/agent/sessions/messages")
         async def agent_session_messages(session_id: str = Query(...), request: Request = None):
             if not self.agent or not self.agent.session_manager:

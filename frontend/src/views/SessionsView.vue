@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="page">
     <div class="page-head">
-      <div><h2>会话</h2><div class="sub">我的历史对话记录(含已落盘内容)</div></div>
+      <div><h2>会话管理</h2><div class="sub">全部用户的历史会话记录与运行中会话</div></div>
       <el-button @click="refresh">刷新</el-button>
     </div>
 
@@ -182,7 +182,7 @@ onBeforeUnmount(() => {
           运行中
           <el-tag type="warning" effect="light" size="small" round>{{ running.length }}</el-tag>
         </div>
-        <div class="run-sub">{{ admin ? '全部用户的正在执行会话(占用 Agent worker)' : '我的正在执行会话' }}</div>
+        <div class="run-sub">全部用户的正在执行会话(占用 Agent worker)</div>
       </div>
       <el-table :data="running" size="small" empty-text="当前无运行中" :show-header="running.length > 0">
         <el-table-column label="会话 ID" min-width="210" show-overflow-tooltip class-name="mono">

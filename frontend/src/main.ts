@@ -16,7 +16,6 @@ import SchedulerView from './views/SchedulerView.vue'
 import MemoriesView from './views/MemoriesView.vue'
 import AdminView from './views/AdminView.vue'
 import MonitorView from './views/MonitorView.vue'
-import UsageView from './views/UsageView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
 
@@ -31,16 +30,15 @@ const router = createRouter({
       children: [
         { path: 'dashboard', component: DashboardView, meta: { title: '总览' } },
         { path: 'chat', component: ChatView, meta: { title: '对话' } },
-        { path: 'sessions', component: SessionsView, meta: { title: '会话' } },
-        { path: 'usage', component: UsageView, meta: { title: '用量' } },
-        { path: 'kanban', component: KanbanView, meta: { title: '看板' } },
         { path: 'scheduler', component: SchedulerView, meta: { title: '定时任务' } },
         { path: 'memories', component: MemoriesView, meta: { title: '记忆' } },
+        { path: 'sessions', component: SessionsView, meta: { title: '会话管理', admin: true } },
+        { path: 'kanban', component: KanbanView, meta: { title: '看板', admin: true } },
         { path: 'monitor', component: MonitorView, meta: { title: '运行监控', admin: true } },
-        { path: 'logs', component: LogsView, meta: { title: '日志' } },
-        { path: 'webhook', component: WebhookView, meta: { title: 'Webhook' } },
+        { path: 'logs', component: LogsView, meta: { title: '日志', admin: true } },
+        { path: 'webhook', component: WebhookView, meta: { title: 'Webhook', admin: true } },
         { path: 'admin', component: AdminView, meta: { title: '用户管理', admin: true } },
-        { path: 'settings', component: SettingsView, meta: { title: '设置' } }
+        { path: 'settings', component: SettingsView, meta: { title: '设置', admin: true } }
       ]
     },
     { path: '/:pathMatch(.*)*', redirect: '/chat' }
