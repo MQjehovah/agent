@@ -45,6 +45,9 @@ class WebUserWorkerPool:
         self.acquire_timeout = acquire_timeout
         # tag("web:3") -> info
         self._workers: dict[str, dict] = {}
+        # 运行中会话登记: tag -> {session_id: {started_at, model}}。
+        # 供「运行中」API 在池启用时直接回答“该用户哪个会话正占用着 worker”。
+        self._runs: dict[str, dict[str, dict]] = {}
         self._lock = asyncio.Lock()
         self._total_created = 0
         self._sweep_task: asyncio.Task | None = None
@@ -121,6 +124,54 @@ class WebUserWorkerPool:
             info["busy"] = max(0, info["busy"] - 1)
             info["last"] = time.time()
 
+    # ---- 运行中会话登记（「运行中」接口在池模式下的主数据源）----
+    # acquire/release 只反映“用户是否占着 worker”，不含具体会话；这里在会话
+    # 真正开始/结束执行时登记/注销 session_id，使 running_sessions() 能回答
+    # “哪个 session 正在被哪个用户 worker 执行、何时开始、用什么模型”。
+
+    def register_run(self, tag: str, session_id: str, started_at: str = "", model: str = ""):
+        """登记某用户某会话开始执行（占用其 worker）。池未启用时为空操作。
+
+        登记/注销/读取全部发生在单个事件循环线程内（web 端点 / 池清理协程），
+        直接改 dict 即可，无需跨线程锁。
+        """
+        if not self.enabled or not tag or not session_id:
+            return
+        self._runs.setdefault(tag, {})[session_id] = {
+            "started_at": started_at or "",
+            "model": model or "",
+        }
+
+    def unregister_run(self, tag: str, session_id: str):
+        """会话执行结束，从登记中移除。幂等：不存在的登记直接忽略。"""
+        if not self.enabled or not tag or not session_id:
+            return
+        runs = self._runs.get(tag)
+        if runs is None:
+            return
+        runs.pop(session_id, None)
+        if not runs:
+            self._runs.pop(tag, None)
+
+    def running_sessions(self) -> list[dict]:
+        """当前运行中（正在被 worker 执行）的会话集合视图。
+
+        纯同步读、无副作用，便于单元测试注入状态。每条含 tag/uid/session_id/
+        started_at/model。池未启用或空闲时返回空列表。
+        """
+        out = []
+        for tag in sorted(self._runs.keys()):
+            uid = tag.split(":", 1)[1] if ":" in tag else tag
+            for sid, info in self._runs[tag].items():
+                out.append({
+                    "tag": tag,
+                    "uid": uid,
+                    "session_id": sid,
+                    "started_at": info.get("started_at", ""),
+                    "model": info.get("model", ""),
+                })
+        return out
+
     async def start(self):
         if self.enabled and self._sweep_task is None:
             self._sweep_task = asyncio.create_task(self._sweep_loop())
@@ -166,6 +217,7 @@ class WebUserWorkerPool:
         if best_tag is None:
             return False
         self._workers.pop(best_tag)
+        self._runs.pop(best_tag, None)
         asyncio.create_task(best_info["agent"].cleanup())
         logger.info(f"[pool] 容量回收 worker {best_tag}")
         return True
@@ -189,6 +241,7 @@ class WebUserWorkerPool:
                     expired.append((t, info))
             for t, _ in expired:
                 self._workers.pop(t, None)
+                self._runs.pop(t, None)
         for t, info in expired:
             try:
                 await info["agent"].cleanup()
@@ -200,6 +253,7 @@ class WebUserWorkerPool:
         async with self._lock:
             items = list(self._workers.items())
             self._workers.clear()
+            self._runs.clear()
         for t, info in items:
             try:
                 await info["agent"].cleanup()

@@ -168,6 +168,8 @@ class ChatSession:
         self.created_at = datetime.now().isoformat()
         self.is_streaming = False
         self.stream_started_at: str | None = None
+        # 当前执行阶段（工具/子代理等，供「运行中」接口展示；非流式/未命中则空串）
+        self.stage: str = ""
         self.messages: list[dict[str, Any]] = []
         # 保护 messages 列表：并发请求下 append/读取会竞态（迭代时被修改报错）
         self._lock = threading.Lock()
@@ -176,15 +178,21 @@ class ChatSession:
         with self._lock:
             self.messages.append({"role": role, "content": content, "time": datetime.now().isoformat()})
 
+    def set_stage(self, stage: str):
+        with self._lock:
+            self.stage = stage or ""
+
     def start_stream(self):
         with self._lock:
             self.is_streaming = True
             self.stream_started_at = datetime.now().isoformat()
+            self.stage = ""
 
     def stop_stream(self):
         with self._lock:
             self.is_streaming = False
             self.stream_started_at = None
+            self.stage = ""
 
     def message_count(self) -> int:
         with self._lock:
@@ -286,6 +294,34 @@ class WebServer:
                 pool.release(tag)
             except Exception as e:
                 logger.warning(f"Web Worker 释放失败({tag}): {e}")
+
+    def _pool_run_started(self, rel_tag: str, session_id: str, started_at: str = ""):
+        """运行开始：把会话登记到其用户 worker（池模式「运行中」主数据源）。"""
+        pool = getattr(self, "_pool", None)
+        if pool is None or not pool.enabled or not rel_tag:
+            return
+        try:
+            pool.register_run(rel_tag, session_id,
+                              started_at=started_at, model=self._exec_model())
+        except Exception as e:
+            logger.warning(f"Pool run 登记失败({rel_tag}/{session_id}): {e}")
+
+    def _pool_run_finished(self, rel_tag: str, session_id: str):
+        """运行结束：注销 worker 运行登记（幂等）。"""
+        pool = getattr(self, "_pool", None)
+        if pool is None or not pool.enabled or not rel_tag:
+            return
+        try:
+            pool.unregister_run(rel_tag, session_id)
+        except Exception as e:
+            logger.warning(f"Pool run 注销失败({rel_tag}/{session_id}): {e}")
+
+    def _exec_model(self) -> str:
+        """当前执行模型（web 会话共享 root/worker 的同一 LLM client）。"""
+        try:
+            return getattr(getattr(self.agent, "client", None), "model", "") or ""
+        except Exception:
+            return ""
 
     def set_panel(self, panel):
         self._kanban = panel
@@ -433,6 +469,83 @@ class WebServer:
             })
         out.sort(key=lambda x: x["created_at"], reverse=True)
         return out
+
+    def running_sessions_snapshot(self, admin: bool = False, tag: str = "") -> list[dict]:
+        """「运行中」会话快照（正在执行 = 占用 Agent worker 的活跃会话）。
+
+        判定口径：一次执行对应一次 start_stream()→stop_stream() 生命周期；
+        worker 池启用时还会在 acquire 到的 worker 上登记 session_id：
+        - 池模式：数据源 = 池登记 pool.running_sessions()（真实占着 worker 的
+          会话，不受内存会话上限淘汰影响），与 metrics agent_running_streams 同源；
+        - 单实例(池关闭)：数据源 = 内存 ChatSession.is_streaming（同 metrics）。
+        两种模式语义一致（「正在执行」）。admin=True 返回全部；否则仅本人（同 agent 用户）。
+        """
+        if not admin and not tag:
+            return []
+        model = self._exec_model()
+        pool_runs: dict[str, dict] = {}
+        pool = getattr(self, "_pool", None)
+        if pool is not None and pool.enabled:
+            try:
+                pool_runs = {r["session_id"]: r for r in pool.running_sessions()}
+            except Exception as e:
+                logger.warning(f"读取 pool 运行登记失败: {e}")
+        now = datetime.now()
+        with self._session_lock:
+            mem_items = list(self._sessions.items())
+
+        def _visible(owner_tag: str) -> bool:
+            return admin or bool(owner_tag) and WebServer._same_owner(owner_tag, tag)
+
+        out: list[dict] = []
+        seen: set[str] = set()
+        for sid, cs in mem_items:
+            if not cs.is_streaming and sid not in pool_runs:
+                continue  # 既非流式中也未占 worker → 不算运行中
+            owner_tag = self._session_owners.get(sid, "") or pool_runs.get(sid, {}).get("tag", "")
+            if not _visible(owner_tag):
+                continue
+            started_at = cs.stream_started_at or pool_runs.get(sid, {}).get("started_at", "")
+            stage = cs.stage if cs.is_streaming else ""
+            out.append(self._running_item(sid, owner_tag, started_at, stage, model, now,
+                                          on_worker=sid in pool_runs))
+            seen.add(sid)
+        # 池登记里已被内存淘汰的会话（极少见）：补全以免「正在执行」漏报
+        for sid, r in pool_runs.items():
+            if sid in seen:
+                continue
+            owner_tag = r.get("tag", "")
+            if not _visible(owner_tag):
+                continue
+            out.append(self._running_item(sid, owner_tag, r.get("started_at", ""), "",
+                                          r.get("model") or model, now, on_worker=True))
+        out.sort(key=lambda x: x["started_at"], reverse=True)
+        return out
+
+    def _running_item(self, sid: str, owner_tag: str, started_at: str, stage: str,
+                      model: str, now: datetime, on_worker: bool = False) -> dict:
+        """组装单条「运行中」记录（稳定 JSON 字段，前端直接消费）。"""
+        dur = 0
+        if started_at:
+            try:
+                dur = int((now - datetime.fromisoformat(started_at)).total_seconds())
+            except Exception:
+                dur = 0
+        info = self._owner_display(sid, owner_tag)
+        channel = sid.split(":", 1)[0] if ":" in sid else "web"
+        return {
+            "id": sid,
+            "conversation_id": sid,
+            "channel": channel,
+            "user": {"uid": info["uid"], "name": info["name"]},
+            "tag": info["tag"],
+            "started_at": started_at,
+            "duration_s": dur,
+            "stage": stage,
+            "model": model,
+            "is_streaming": True,
+            "worker": bool(on_worker),
+        }
 
     def _get_or_create_session(self, session_id: str) -> ChatSession:
         """获取或创建 Web 会话，带线程安全与上限淘汰（防止内存无限增长）。"""
@@ -827,11 +940,14 @@ class WebServer:
                     chat_session.stop_stream()
                     return
                 try:
+                    self._pool_run_started(rel_tag, session_id,
+                                           chat_session.stream_started_at or "")
                     router = MessageRouter(agent)
                     await router.route(message, channel="web", session_id=session_id,
                                        role=auth.get("role", "default"),
                                        user_id=web_user_id, user_name=web_user_name)
                 finally:
+                    self._pool_run_finished(rel_tag, session_id)
                     self._release_web_agent(rel_tag)
                     chat_session.stop_stream()
             asyncio.create_task(_web_auto_run())
@@ -889,6 +1005,7 @@ class WebServer:
             if agent_ref is None:
                 chat_session.stop_stream()
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            self._pool_run_started(rel_tag, session_id, chat_session.stream_started_at or "")
 
             async def event_stream():
                 from hooks import HookEvent
@@ -904,6 +1021,20 @@ class WebServer:
                     elif ctx.token:
                         full_response.append(ctx.token)
                         await q.put(("token", ctx.token))
+
+                def _stage_text(ctx) -> str:
+                    """把关键 hook 事件转成「当前执行阶段」文案（供运行中接口展示）。"""
+                    if ctx.event == HookEvent.TOOL_START:
+                        return f"执行工具 {ctx.tool_name}" if ctx.tool_name else "执行工具"
+                    if ctx.event == HookEvent.SUBAGENT_START:
+                        return f"子代理 {ctx.agent_name} 处理中" if ctx.agent_name else "子代理处理中"
+                    if ctx.event == HookEvent.SUBAGENT_TOOL_START:
+                        name = ctx.agent_name or ""
+                        tool = ctx.tool_name or ""
+                        return f"子代理 {name} 执行工具 {tool}".strip()
+                    if ctx.event == HookEvent.ROUND_START:
+                        return "推理回合"
+                    return ""
 
                 # 后端事件 → 前端 SSE type 映射(统一、可读)
                 _ui_types = {
@@ -921,6 +1052,9 @@ class WebServer:
                 async def event_handler(ctx):
                     etype = _ui_types.get(ctx.event, ctx.event.value)
                     d: dict[str, Any] = {}
+                    if ctx.event in (HookEvent.TOOL_START, HookEvent.SUBAGENT_START,
+                                     HookEvent.SUBAGENT_TOOL_START, HookEvent.ROUND_START):
+                        chat_session.set_stage(_stage_text(ctx))
                     if ctx.token:
                         d["content"] = ctx.token
                     elif ctx.content:
@@ -1086,6 +1220,7 @@ class WebServer:
                     if agent_task is not None and not agent_task.done():
                         agent_task.cancel()
                     chat_session.stop_stream()
+                    self._pool_run_finished(rel_tag, session_id)
                     self._release_web_agent(rel_tag)
 
             return StreamingResponse(
@@ -1473,6 +1608,27 @@ class WebServer:
                 "last_accessed": r["last_at"],
                 "first_accessed": r["first_at"],
             } for r in rows]
+            return {"total": len(sessions), "sessions": sessions}
+
+        @self._app.get("/api/agent/sessions/running")
+        async def agent_sessions_running(request: Request = None):
+            """「运行中」会话（本人）：正在执行、占用 Agent worker 的活跃会话。
+
+            判定口径见 running_sessions_snapshot()：worker 池启用时以池登记为准，
+            关闭时即内存流式中会话（与 metrics agent_running_streams 同源）。
+            普通用户仅见自己（跨渠道同 agent 用户），admin 见全部。
+            """
+            tag, admin = "", False
+            if request is not None:
+                try:
+                    u = await _get_auth(request)
+                    admin = u.get("role") == "admin"
+                    tag = WebServer._owner_tag(str(u.get("uid")))
+                except Exception:
+                    admin = True  # DISABLE_AUTH / 鉴权缺失场景视为 admin
+            if not admin and not tag:
+                return {"total": 0, "sessions": []}
+            sessions = self.running_sessions_snapshot(admin=admin, tag=tag)
             return {"total": len(sessions), "sessions": sessions}
 
         @self._app.get("/api/agent/sessions/messages")

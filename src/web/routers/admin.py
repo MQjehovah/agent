@@ -181,6 +181,18 @@ def build_admin_router(server) -> APIRouter:
                 })
         return {"live": live, "history": history}
 
+    @router.get("/api/admin/sessions/running")
+    async def admin_sessions_running(request: Request = None):
+        """管理端「运行中」会话：全部正在执行、占用 Agent worker 的会话（含 user 姓名）。
+
+        判定口径与 /api/agent/sessions/running 一致：worker 池启用时以池登记为准，
+        关闭时即内存流式中会话（metrics agent_running_streams 同源）。admin 全量可见。
+        """
+        if require_admin(request) is None:
+            return JSONResponse({"error": "Admin required"}, status_code=403)
+        sessions = server.running_sessions_snapshot(admin=True, tag="")
+        return {"total": len(sessions), "sessions": sessions}
+
     @router.get("/api/admin/sessions/{session_id}/threads")
     async def admin_session_threads(session_id: str, request: Request = None):
         if require_admin(request) is None:

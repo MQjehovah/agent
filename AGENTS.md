@@ -61,6 +61,7 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **RunDispatcher**: `src/agent/runner.py` — 把 `Agent.run()` 的 团队/reflective/ReAct 三路选择收敛为单一分发入口(`agent/core.py` 不再堆叠形态 if/else)
 - **Web 多用户 Worker 池**: `src/web/worker_pool.py` — `AGENT_WEB_POOL_SIZE>0` 时每个用户独立 Agent worker(`workspace/users/u_{uid}` + 独立 tracer/session/subagent), 隔离用户间实例/文件/记忆上下文; LRU 容量回收 + 空闲 TTL 清理
 - **管理可观测 API**(admin): `/api/admin/stats|usage|sessions|sessions/{id}/messages`(查看/导出)、个人用量 `/api/usage`
+- **「运行中」会话**: `GET /api/agent/sessions/running`(本人)、`GET /api/admin/sessions/running`(admin 全量含姓名)。口径: 正在执行(占用 Agent worker / 流式中), 与 metrics `agent_running_streams` 同源; worker 池启用时以池登记 `WebUserWorkerPool.register_run/running_sessions` 为准(chat/chat_stream acquire 后登记、release 前注销), 池关闭时回退内存 `ChatSession.is_streaming`。每条含 conversation_id/channel/user/started_at/model/stage(`ChatSession.stage`, 流式 hook 事件更新工具/子代理阶段)
 - **Sub-agents**: `src/subagent_manager.py` — loads sub-agent templates from `config/agents/*/PROMPT.md`, reuses sessions by name
 - **Memory**: `src/memory/manager.py` — DB 记忆按 `owner_id` 隔离(user 私有 + global 公共)
 - **Learning**: `src/learning/learner.py` — self-learning module that triggers pattern extraction and skill creation
