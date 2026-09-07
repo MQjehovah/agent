@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -17,8 +19,38 @@ NOT_PROVISIONED_REPLY = "您尚未开通 AI 数字员工，请在员工工作台
 
 
 def format_dingtalk_session_id(agent_uid: str | int, rand: str) -> str:
-    """Build a dingtalk session id: ``dingtalk:{agent_uid}:{rand}``."""
+    """Build a single-chat dingtalk session id: ``dingtalk:{agent_uid}:{rand}``.
+
+    单聊根保持原命名(uid 为 rbac_users.id 数字); 群根见
+    ``dingtalk_group_root_prefix``/``is_group_conversation_id``, 二者前缀互不混淆。
+    """
     return f"dingtalk:{agent_uid}:{rand}"
+
+
+def is_group_conversation_id(conversation_id: str) -> bool:
+    """钉钉群聊判定：群消息 conversation_id=openConversationId，形如 ``cid...``。
+
+    产品决策(2026-09-08)：不加会话类型字段，以 conversation_id 是否以 ``cid``
+    开头判定群聊；单聊消息 conversation_id 缺省(空串)，不会命中。风险：若线上
+    个别单聊也携带 cid 前缀会被按群处理——设计文档已列为上线前抓真实回调核对项。
+    """
+    return bool(conversation_id) and str(conversation_id).startswith("cid")
+
+
+def sanitize_dingtalk_cid(conversation_id: str) -> str:
+    """安全化 openConversationId：仅保留字母数字并截断，供拼进会话前缀(LIKE 可查)。"""
+    return re.sub(r"[^A-Za-z0-9]", "", str(conversation_id or ""))[:24]
+
+
+def dingtalk_group_root_prefix(conversation_id: str) -> str:
+    """群根规范前缀 ``dingtalk_group:{safe}:{hash}``(不含 rand)。
+
+    同 cid 恒映射同前缀：safe 为 cid 可识别子串，hash 为 sha256 前 8 位消歧；
+    前缀仅含字母数字，可用 ``LIKE 'dingtalk_group:{prefix}:%'`` 定位该群全部根。
+    """
+    cid = str(conversation_id or "")
+    digest = hashlib.sha256(cid.encode("utf-8")).hexdigest()[:8]
+    return f"dingtalk_group:{sanitize_dingtalk_cid(cid)}:{digest}"
 
 
 def resolve_dingtalk_staff_id(storage, user_tag) -> str | None:
@@ -137,7 +169,8 @@ class DingTalkPlugin(BasePlugin):
             logger.warning(f"DingTalk config file not found: {config_file}")
 
         self.sessions: dict[str, DingTalkSession] = {}
-        # (agent_user.id, conversation_id) -> session_id，保证同人同会话复用同一 session
+        # scope -> session_id：单聊 scope=("s", agent_uid)；群聊 scope=("g", cid 规范前缀)。
+        # 群共享根同群同一根(整群共享上下文)，群间按不同 cid 隔离。
         self._session_by_key: dict[tuple[str, str], str] = {}
         # conversation_id -> asyncio.Lock：同会话消息串行处理，避免快速连发并发跑同一 agent 会话
         self._conv_locks: dict[str, asyncio.Lock] = {}
@@ -384,29 +417,16 @@ class DingTalkPlugin(BasePlugin):
             self._conv_locks[conv_id] = lock
         return lock
 
-    def get_session(
-        self,
-        conversation_id: str,
-        agent_uid: str | int,
-        sender_nick: str,
-        robot_code: str,
-        role: str = "default",
-        sender_id: str = "",
-    ) -> DingTalkSession:
-        """Reuse a session per (agent_user.id, conversation_id).
+    def _get_storage(self):
+        from storage.storage import get_storage
+        return get_storage()
 
-        session_id is ``dingtalk:{agent_uid}:{rand}`` so a DingTalk user keeps
-        one conversation root per chat, keyed by the resolved agent identity
-        (never by the raw DingTalk staff id) and kept separate from web.
-        """
-        agent_uid = str(agent_uid)
-        key = (agent_uid, conversation_id)
-        session = self.sessions.get(self._session_by_key.get(key, ""))
-        if session:
-            return session
-
+    @staticmethod
+    def _make_session(session_id: str, conversation_id: str, agent_uid: str,
+                      sender_nick: str, robot_code: str, role: str,
+                      sender_id: str) -> "DingTalkSession":
         session = DingTalkSession(
-            session_id=format_dingtalk_session_id(agent_uid, uuid.uuid4().hex[:8]),
+            session_id=session_id,
             conversation_id=conversation_id,
             sender_id=sender_id,
             sender_nick=sender_nick,
@@ -414,11 +434,120 @@ class DingTalkPlugin(BasePlugin):
             agent_uid=agent_uid,
             role=role,
         )
+        return session
+
+    def _register_session(self, key: tuple[str, str], session: DingTalkSession) -> None:
         session._plugin = self
         self.sessions[session.session_id] = session
         self._session_by_key[key] = session.session_id
-        logger.debug(f"创建新钉钉Session: {session.session_id} by {sender_nick}")
-        return session
+
+    def _persist_scope_root(self, scope_kind: str, scope_key: str,
+                            root_session_id: str) -> None:
+        st = self._get_storage()
+        if not st:
+            return
+        try:
+            st.upsert_dingtalk_scope_root(scope_kind, scope_key, root_session_id)
+        except Exception as e:
+            logger.warning(f"登记钉钉 scope 根失败 {scope_kind}:{scope_key}: {e!r}")
+
+    def _resolve_persisted_root(self, scope_kind: str, scope_key: str,
+                                agent_uid: str) -> str:
+        """从 DB 取 scope 当前活跃根(跨重启续根)。返回 '' 表示无。
+
+        - 单聊: 先查 scope 指针(保证 /new 跨重启生效), 未命中再查该 uid 最近一条
+          单聊根(session_id=conversation_id 且前缀 dingtalk:{uid}:, 兼容改造前数据)
+        - 群聊: 仅靠 scope→根 持久指针(cid rand 不可推导), 并校验根归属该群前缀
+        """
+        st = self._get_storage()
+        if not st:
+            return ""
+        try:
+            if scope_kind == "g":
+                root = st.get_dingtalk_scope_root("g", scope_key) or ""
+                if root.startswith(scope_key + ":"):
+                    return root
+                return ""
+            root = st.get_dingtalk_scope_root("s", scope_key) or ""
+            if root.startswith(f"dingtalk:{agent_uid}:"):
+                return root
+            with st.get_connection() as conn:
+                row = conn.execute(
+                    "SELECT session_id FROM messages "
+                    "WHERE user_id = ? AND session_id = conversation_id "
+                    "  AND session_id LIKE ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (f"dingtalk:{agent_uid}", f"dingtalk:{agent_uid}:%"),
+                ).fetchone()
+            return row["session_id"] if row else ""
+        except Exception as e:
+            logger.warning(f"查询钉钉持久化根失败 {scope_kind}:{scope_key}: {e!r}")
+            return ""
+
+    def resolve_session(
+        self,
+        conversation_id: str,
+        agent_uid: str | int,
+        sender_nick: str,
+        robot_code: str,
+        role: str = "default",
+        sender_id: str = "",
+        force_new: bool = False,
+    ) -> DingTalkSession:
+        """按 scope 解析/复用钉钉会话根(取代旧 get_session)。
+
+        scope：单聊=("s", agent_uid)，群聊=("g", cid 规范前缀)。
+        复用顺序：内存 ``_session_by_key`` → DB 持久根(指针；单聊另兜底最近单聊根)
+        → 新建。force_new(=/new) 直接开新根：单聊换 rand、群换 rand 并覆写指针。
+        群共享根整群一个根，同 cid 任意成员触发均路由同一 session_id；行级
+        user_id 仍按触发人。会话命名(前缀即类型)：单 dingtalk:{uid}:{rand}，
+        群 dingtalk_group:{safe}:{hash}:{rand}。
+        """
+        agent_uid = str(agent_uid)
+        is_group = is_group_conversation_id(conversation_id)
+        scope_kind = "g" if is_group else "s"
+        scope_key = (dingtalk_group_root_prefix(conversation_id)
+                     if is_group else agent_uid)
+        key = (scope_kind, scope_key)
+
+        if not force_new:
+            sid = self._session_by_key.get(key)
+            if sid:
+                session = self.sessions.get(sid)
+                if session:
+                    session.conversation_id = conversation_id
+                    session.role = role
+                    session.agent_uid = agent_uid
+                    return session
+                # scope 在内存有指针但对象被清理(罕见)：按 session_id 重建
+                rebuilt = self._make_session(
+                    sid, conversation_id, agent_uid, sender_nick,
+                    robot_code, role, sender_id)
+                self._register_session(key, rebuilt)
+                logger.debug(f"重建钉钉Session: {sid} by {sender_nick}")
+                return rebuilt
+
+        if not force_new:
+            sid = self._resolve_persisted_root(scope_kind, scope_key, agent_uid)
+            if sid:
+                restored = self._make_session(
+                    sid, conversation_id, agent_uid, sender_nick,
+                    robot_code, role, sender_id)
+                self._register_session(key, restored)
+                logger.debug(f"恢复钉钉会话根: {sid} by {sender_nick}")
+                return restored
+
+        rand = uuid.uuid4().hex[:8]
+        session_id = (f"{scope_key}:{rand}" if is_group
+                      else format_dingtalk_session_id(agent_uid, rand))
+        fresh = self._make_session(
+            session_id, conversation_id, agent_uid, sender_nick,
+            robot_code, role, sender_id)
+        self._register_session(key, fresh)
+        # 群根 rand 不可推导，须登记持久指针跨重启续根；单聊亦登记以保证 /new 跨重启生效
+        self._persist_scope_root(scope_kind, scope_key, session_id)
+        logger.debug(f"创建新钉钉Session: {session_id} by {sender_nick} (group={is_group})")
+        return fresh
 
 
 class AgentChatbotHandler:
@@ -512,7 +641,25 @@ class AgentChatbotHandler:
             role = user_info.get("role") or "default"
             user_name = user_info.get("user_name") or sender_nick
 
-            session = self.plugin.get_session(
+            # 单/群判定(前缀即类型, 不加会话类型字段): 群消息 conversation_id=openConversationId(cid...)
+            is_group = is_group_conversation_id(conversation_id)
+
+            # /new: 忽略大小写/空格, force 开新根, 回复确认, 不进 agent 处理
+            if content.strip().lower() == "/new":
+                self.plugin.resolve_session(
+                    conversation_id=conversation_id,
+                    agent_uid=agent_uid,
+                    sender_nick=user_name,
+                    robot_code=robot_code,
+                    role=role,
+                    sender_id=sender_id,
+                    force_new=True,
+                )
+                self.logger.info(f"钉钉 /new 已开启新会话: group={is_group} by {sender_nick}")
+                self.reply_text("已开启新会话", incoming_message)
+                return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
+
+            session = self.plugin.resolve_session(
                 conversation_id=conversation_id,
                 agent_uid=agent_uid,
                 sender_nick=user_name,
@@ -522,7 +669,7 @@ class AgentChatbotHandler:
             )
 
             # 路由身份用归属 tag dingtalk:{agent_user.id}(与 web:{uid} 对齐)，
-            # 不再使用 dingtalk:{staff_id}
+            # 不再使用 dingtalk:{staff_id}; 群聊行级审计仍记当前触发人
             user_id = f"dingtalk:{agent_uid}"
 
             if not self.plugin.plugin_manager:
@@ -535,6 +682,8 @@ class AgentChatbotHandler:
                         session_id=session.session_id,
                         user_id=user_id, user_name=user_name,
                         role=role,
+                        # 群共享上下文信号: 记忆不注入个人私有, 群内串行/群间并发见 _conv_lock
+                        group_context=is_group,
                     )
                     response = result.result if hasattr(result, "result") else str(result)
                 else:

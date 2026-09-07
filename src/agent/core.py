@@ -54,6 +54,9 @@ class RunContext:
     user_id: str = ""
     user_name: str = ""
     role: str = "default"
+    # 群聊共享上下文信号：钉钉群共享根运行时置 True，子代理/团队继承；
+    # 命中后本轮不注入触发人私有记忆（防串隐私），行级审计仍记触发人。
+    group_context: bool = False
     session: Any = None
     task: str = ""
     consecutive_errors: int = 0
@@ -602,10 +605,11 @@ class Agent:
                     is_static=False, priority=50
                 )
 
-        # 记忆系统（按 user_id 隔离）
+        # 记忆系统（按 user_id 隔离；群共享上下文不注入触发人私有记忆，防串隐私）
         if self.memory:
             uid = rc.user_id if rc else ""
-            memory_context = self.memory.load_memory(uid, task=task) if uid else ""
+            group_context = bool(getattr(rc, "group_context", False)) if rc else False
+            memory_context = self._load_memory_for_prompt(uid, group_context, task)
             if memory_context:
                 builder.add(
                     "记忆上下文", memory_context,
@@ -624,6 +628,17 @@ class Agent:
             rc.system_static = static
             rc.system_dynamic = dynamic
             rc.system_prompt = full
+
+    def _load_memory_for_prompt(self, uid: str, group_context: bool, task: str) -> str:
+        """取本轮 prompt 的记忆上下文（封装判定，便于单测）。
+
+        群共享根会话面向整群成员、触发人每轮变化：若按触发人注入其私有记忆，
+        会把他人的群对话上下文污染到单聊私有记忆侧，也会把某成员私密记忆泄漏到
+        群里。故群上下文一律不注入个人记忆（global/系统公共记忆按需另议，Phase2）。
+        """
+        if not self.memory or not uid or group_context:
+            return ""
+        return self.memory.load_memory(uid, task=task)
 
     def _active_prompt_builder(self):
         """当前 run 的 prompt builder；run 之外回退到实例级（initialize）"""
@@ -801,7 +816,7 @@ class Agent:
 
         return tools
 
-    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "", role: str = "") -> AgentResult:
+    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "", role: str = "", group_context: bool = False) -> AgentResult:
         from hooks import get_run_id, reset_run_id, set_run_id
         # 顶层 agent 重置 ask_user 模式为交互模式
         if not self.parent_agent:
@@ -815,9 +830,12 @@ class Agent:
         eff_user = user_id or inherited.user_id
         eff_name = user_name or inherited.user_name
         eff_role = role or inherited.role or "default"
+        # 群共享上下文:顶层渠道显式传 True,子代理在同一 Task 内继承父级 run 标记
+        eff_group = bool(group_context) or bool(getattr(inherited, "group_context", False))
         ctx = RunContext(
             task=task, run_id=run_id or uuid.uuid4().hex,
             user_id=eff_user, user_name=eff_name, role=eff_role,
+            group_context=eff_group,
         )
         # 对话归属: 顶层 run 以自身 session 为对话; 子代理/成员运行继承父对话
         ctx.conversation_id = getattr(inherited, "conversation_id", "") or (session_id or "")

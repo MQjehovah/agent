@@ -31,6 +31,7 @@ class MessageRouter:
         session_id: str = "",
         user_id: str = "",
         user_name: str = "",
+        group_context: bool = False,
         **kwargs,
     ) -> Any:
         if not session_id:
@@ -54,6 +55,7 @@ class MessageRouter:
                 return await self.agent.run(
                     content, session_id=session_id,
                     user_id=user_id, user_name=user_name,
+                    group_context=group_context,
                     **kwargs,
                 )
             else:
@@ -62,6 +64,7 @@ class MessageRouter:
                     result = await self.agent.run(
                         content, session_id=session_id,
                         user_id=user_id, user_name=user_name,
+                        group_context=group_context,
                         **kwargs,
                     )
                     return result.result if hasattr(result, "result") else str(result)

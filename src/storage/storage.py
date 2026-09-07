@@ -29,14 +29,26 @@ def channel_of_conversation(conversation_id: str, user_id: str = "") -> str:
 
     带命名空间的对话根形如 ``{channel}:{uid}:{rand}``（web:7:abc / dingtalk:7:abc），
     渠道即第一段；老数据无 ':' 前缀时回退到 user_id 的渠道前缀，仍无则归为 other。
+    钉钉群共享根使用复合前缀 ``dingtalk_group:{cid_safe}:{hash}:{rand}``，仍归属
+    dingtalk 渠道（前端徽标/归属合并不受影响）。
     """
     cid = str(conversation_id or "")
+    if cid.startswith("dingtalk_group:"):
+        return "dingtalk"
     if ":" in cid:
         return cid.split(":", 1)[0]
     tag = str(user_id or "")
     if ":" in tag:
         return tag.split(":", 1)[0]
     return "other"
+
+
+def _session_channel(session_id: str) -> str:
+    """落库用会话默认渠道：取 session 前缀；钉钉群共享根归一为 dingtalk。"""
+    sid = str(session_id or "")
+    if sid.startswith("dingtalk_group:"):
+        return "dingtalk"
+    return sid.split(":", 1)[0] if ":" in sid else ""
 
 
 class Storage:
@@ -293,6 +305,14 @@ class Storage:
                     context_stats TEXT DEFAULT '',
                     updated_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS dingtalk_scopes (
+                    scope_kind TEXT NOT NULL,
+                    scope_key TEXT NOT NULL,
+                    root_session_id TEXT NOT NULL,
+                    updated_at TEXT,
+                    PRIMARY KEY (scope_kind, scope_key)
+                );
             """)
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at)
@@ -341,6 +361,9 @@ class Storage:
                     UPDATE messages SET conversation_id = session_id
                     WHERE conversation_id = '' AND session_id IS NOT NULL AND session_id != ''
                 """)
+                # 钉钉群共享根(dingtalk_group:...)的渠道列统一归一为 dingtalk(幂等自愈)
+                with suppress(sqlite3.OperationalError):
+                    conn.execute("UPDATE messages SET channel = 'dingtalk' WHERE channel = 'dingtalk_group'")
                 conn.commit()
 
     def _new_connection(self) -> sqlite3.Connection:
@@ -516,7 +539,7 @@ class Storage:
             'name': name,
             'reasoning_content': reasoning_content or "",
             'user_id': user_id or "",
-            'channel': channel or (session_id.split(':', 1)[0] if ':' in session_id else ""),
+            'channel': channel or _session_channel(session_id),
             'conversation_id': conversation_id or session_id,
             'created_at': datetime.now().isoformat()
         })
@@ -534,7 +557,7 @@ class Storage:
                 agent_id, session_id, role, content or "",
                 json.dumps(tool_calls) if tool_calls else None,
                 tool_call_id, name, reasoning_content or "",
-                user_id or "", channel or (session_id.split(':', 1)[0] if ':' in session_id else ""),
+                user_id or "", channel or _session_channel(session_id),
                 conversation_id or session_id,
                 datetime.now().isoformat()
             ))
@@ -664,6 +687,10 @@ class Storage:
         另兜底 ``session_id LIKE 'web:{uid}:%'`` 以兼容老迁移 user_id 缺省/截断的
         web 历史会话（老数据仍须可见）。
 
+        钉钉群共享根（``dingtalk_group:...``）不以某个人 user_id 前缀命名，按
+        参与者判定：凡根下 messages 出现过 ``user_id='dingtalk:{uid}'`` 的成员
+        均可见该群根（只读）。此判定不把群根泄漏给非参与者，也不与单聊根混淆。
+
         返回每条: {conversation_id, agent_id, user_id, msg_count, thread_count,
         first_at, last_at, channel}，与 list_conversations 同构。
         """
@@ -682,13 +709,17 @@ class Storage:
             "    (m.user_id != '' AND instr(m.user_id, ':') > 0 "
             "     AND substr(m.user_id, instr(m.user_id, ':') + 1) = ? "
             "     AND m.session_id LIKE (m.user_id || ':%')) "
-            "    OR m.session_id LIKE 'web:' || ? || ':%'"
+            "    OR m.session_id LIKE 'web:' || ? || ':%' "
+            "    OR (m.session_id LIKE 'dingtalk_group:%' AND EXISTS ("
+            "        SELECT 1 FROM messages gp "
+            "        WHERE gp.conversation_id = m.conversation_id "
+            "          AND gp.user_id = 'dingtalk:' || ?)) "
             "  ) "
             "GROUP BY m.conversation_id ORDER BY MAX(m.created_at) DESC LIMIT ?"
         )
         with self._get_connection() as conn:
             rows = conn.execute(
-                sql, (uid, uid, max(1, min(int(limit), 500)))).fetchall()
+                sql, (uid, uid, uid, max(1, min(int(limit), 500)))).fetchall()
         out = []
         for r in rows:
             item = dict(r)
@@ -697,6 +728,52 @@ class Storage:
                 item["conversation_id"], item.get("user_id") or "")
             out.append(item)
         return out
+
+    # ---------------- 钉钉会话 scope→根 持久指针 & 群参与者判定 ----------------
+
+    def get_dingtalk_scope_root(self, scope_kind: str, scope_key: str) -> str | None:
+        """取 scope(单聊 s:agent_uid / 群聊 g:cid 规范前缀) 当前活跃根 session_id。
+
+        群根 rand 不可推导，须靠指针跨重启续根；单聊亦登记指针以让 /new 跨重启生效。
+        """
+        if not scope_kind or not scope_key:
+            return None
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT root_session_id FROM dingtalk_scopes "
+                "WHERE scope_kind = ? AND scope_key = ?",
+                (scope_kind, scope_key)).fetchone()
+        return row["root_session_id"] if row else None
+
+    def upsert_dingtalk_scope_root(self, scope_kind: str, scope_key: str,
+                                   root_session_id: str) -> None:
+        """登记/覆写 scope 的当前根（/new 与新建根时 upsert）。"""
+        if not scope_kind or not scope_key or not root_session_id:
+            return
+        now = datetime.now().isoformat()
+        with self._write_lock, self._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO dingtalk_scopes (scope_kind, scope_key, root_session_id, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(scope_kind, scope_key) "
+                "DO UPDATE SET root_session_id = excluded.root_session_id, "
+                "updated_at = excluded.updated_at",
+                (scope_kind, scope_key, root_session_id, now))
+            conn.commit()
+
+    def is_dingtalk_group_participant(self, session_id: str, agent_uid: int | str) -> bool:
+        """群根参与者判定：该根(messages.conversation_id)下是否出现过 dingtalk:{uid} 触发。
+
+        供 Web 侧群根历史只读可见性（参与者 + admin）使用；非 dingtalk_group: 根恒 False。
+        """
+        if not str(session_id or "").startswith("dingtalk_group:"):
+            return False
+        tag = f"dingtalk:{agent_uid}"
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM messages WHERE conversation_id = ? AND user_id = ? LIMIT 1",
+                (session_id, tag)).fetchone()
+        return row is not None
 
     def conversation_threads(self, conversation_id: str) -> list[dict[str, Any]]:
         """某对话内部的子代理 thread（session != conversation）及条数，供审计下钻。"""

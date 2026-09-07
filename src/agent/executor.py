@@ -148,7 +148,9 @@ async def execute_tool(agent, name: str, args: dict) -> str:
 
         if agent.tool_registry and agent.tool_registry.has_tool(name):
             if name == "memory":
-                args["_local_user_id"] = current_uid
+                # 群共享上下文: 记忆工具置空属主 → 只读 global(list)、不读/写触发人私有
+                # 记忆(load_memory('') 返回空; save 因无 user_id 拒绝)，防群内串隐私。
+                args["_local_user_id"] = "" if getattr(rc, "group_context", False) else current_uid
             return await agent.tool_registry.execute(name, args)
 
         if agent.skill_manager and name in ("skill", "execute_skill"):

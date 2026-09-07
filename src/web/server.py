@@ -557,7 +557,27 @@ class WebServer:
                 self._session_owner_names[session_id] = name or tag
 
     def _session_access(self, session_id: str, tag: str, admin: bool) -> str:
-        """返回该会话对当前用户的访问级别: allow / deny（admin 恒 allow 只读语义由调用方掌握）。"""
+        """返回该会话对当前用户的访问级别: allow / deny（admin 恒 allow 只读语义由调用方掌握）。
+
+        钉钉群共享根（dingtalk_group:...）历史为参与者 + admin 可见：凡根下 messages
+        出现过 user_id='dingtalk:{uid}' 的成员(经 web/钉钉等 tag 归到同一 agent uid)
+        均可只读查看；非参与者 deny。单聊等其它会话沿用原单属主判定。
+        """
+        sid = str(session_id or "")
+        if sid.startswith("dingtalk_group:"):
+            if admin:
+                return "allow"
+            uid = WebServer._tag_uid(tag)
+            if not uid or not str(uid).isdigit():
+                return "deny"
+            try:
+                from storage.storage import get_storage as _gs
+                _storage = _gs()
+                if _storage and _storage.is_dingtalk_group_participant(sid, int(uid)):
+                    return "allow"
+            except Exception:
+                pass
+            return "deny"
         with self._session_lock:
             mem_owner = self._session_owners.get(session_id)
         if mem_owner is not None:
