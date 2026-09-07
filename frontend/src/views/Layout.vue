@@ -73,6 +73,10 @@ async function logout() {
   clearToken()
   router.push('/login')
 }
+
+function onUserCommand(cmd: string | number | object) {
+  if (cmd === 'logout') void logout()
+}
 </script>
 
 <template>
@@ -100,17 +104,23 @@ async function logout() {
       </nav>
 
       <div class="side-foot">
-        <div class="foot-user">
-          <div class="user-avatar">{{ (me.name || '?').slice(0, 1).toUpperCase() }}</div>
-          <div class="side-label">
-            <div class="user-name">{{ me.name || '未登录' }}</div>
-            <div class="user-role">{{ roleLabel }}</div>
+        <el-dropdown trigger="click" placement="top-start" @command="onUserCommand">
+          <div class="foot-user" title="点击菜单">
+            <div class="user-avatar">{{ (me.name || '?').slice(0, 1).toUpperCase() }}</div>
+            <div class="side-label">
+              <div class="user-name">{{ me.name || '未登录' }}</div>
+              <div class="user-role">{{ roleLabel }}</div>
+            </div>
           </div>
-        </div>
-        <div class="foot-row" @click="logout">
-          <el-icon :size="14"><SwitchButton /></el-icon>
-          <span class="side-foot-name">退出登录</span>
-        </div>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item disabled>{{ me.name || '未登录' }} · {{ roleLabel }}</el-dropdown-item>
+              <el-dropdown-item command="logout" divided>
+                <el-icon :size="14" style="margin-right: 6px"><SwitchButton /></el-icon>退出登录
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </aside>
 
@@ -141,7 +151,9 @@ async function logout() {
 .foot-user {
   display: flex; align-items: center; gap: 9px;
   padding: 7px 8px 10px; overflow: hidden;
+  cursor: pointer; border-radius: 8px;
 }
+.foot-user:hover { background: var(--bg-hover); }
 .user-avatar {
   width: 30px; height: 30px; flex: none; border-radius: 50%;
   background: var(--accent-dim); color: var(--accent);
