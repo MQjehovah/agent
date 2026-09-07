@@ -27,6 +27,8 @@ _DEFAULTS = {
         "pool_size": 0,
         "pool_overflow": 0,
         "pool_acquire_timeout": 20,
+        "user_max_concurrent_streams": 2,
+        "user_ratelimit_per_min": 20,
     },
     "cache": {
         "max_size": 1000,

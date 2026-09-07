@@ -52,7 +52,8 @@
 ### Wave C · 交互与可靠性补齐（面向员工）
 > 进度：SSE 双向 ask ✅（2026-09）——`tools/ask_user` 增加可注入追问桥，聊天流内
 > 遇 ask 时发 `ask` 事件暂停，`/api/chat/answer` 续跑；前端问答栏(单选/文本/默认)。
-> 待：F7 危险操作审批联动、webhook DB 化续跑、对话级限流/配额。
+> 对话级限流 ✅：每用户并发流数 + 每分钟消息数(`web.user_*`/env, admin 不受限)。
+> 待：F7 危险操作审批联动、webhook DB 化续跑。
 
 ### Wave D · 运行解耦与运维化（远期，借用 Dify/OpenHands 形态）
 - 执行入队(进程内队列→远期 Redis/worker 进程)，API 无状态化 → 多实例；

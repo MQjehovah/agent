@@ -97,7 +97,7 @@
 | F15 | 文件/工作区隔离 | R-B2 | ⭕ 需开 worker 池 | worker_pool、workspace | P0 |
 | F16 | 多用户 Worker 池(实例隔离) | R-B1/R-B2/R-G3 | ⭕ 已实现、默认关; 公司部署需置 env/config 开启 | worker_pool | P0 |
 | F17 | 资源上限/公平调度(worker 容量守护) | R-B3 | ✅ 溢出上限+忙碌等待+503(不再无界扩容) | worker_pool | P1 |
-| F18 | 对话级限流/配额 | R-B3/R-F2 | 🕐 目前仅登录限流 | web | P1 |
+| F18 | 对话级限流/配额 | R-B3/R-F2 | ✅ 每用户并发流数+每分钟消息数(admin 不受限); 部门级配额待 router 打通 | web | P1 |
 
 ### 4.3 安全与审计
 | 编号 | 功能 | 需求 | 现状 | 模块 | 优先级 |

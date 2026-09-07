@@ -25,6 +25,8 @@ python src/main.py --web                # Web UI on :8080(默认单实例)
 AGENT_WEB_POOL_SIZE=16 python src/main.py --web   # >0: 启用按用户隔离的 Worker 池
 # 可选: 容量/溢出(默认=容量)、获取等待秒数、也可写 config.json web.pool_size
 AGENT_WEB_POOL_OVERFLOW=0 AGENT_WEB_POOL_ACQUIRE_TIMEOUT=15 python src/main.py --web
+# 对话级限流(每用户): 并发进行中会话数 / 每分钟消息数(写 config.json web.* 亦可)
+AGENT_WEB_MAX_CONCURRENT_STREAMS=2 AGENT_WEB_RATELIMIT_PER_MIN=20 python src/main.py --web
 ```
 
 ## Lint & Test

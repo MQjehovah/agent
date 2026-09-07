@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -164,6 +165,8 @@ class WebServer:
         self._pool = None  # 可选: 多用户 Worker 池(AGENT_WEB_POOL_SIZE>0 启用)
         # SSE 双向追问: ask_id -> {"future", "tag", "question"}
         self._pending_asks: dict[str, dict] = {}
+        # 对话级限流: tag -> 近一分钟消息时间戳
+        self._msg_windows: dict[str, list[float]] = {}
         # 日志流 handler：把 agent 日志广播给 /api/logs/stream 订阅者
         self._log_handler = LogStreamHandler()
         self._log_handler.setFormatter(
@@ -310,6 +313,39 @@ class WebServer:
         except Exception:
             pass
         return tag
+
+    def _cfg_int(self, key: str, env_key: str, default: int) -> int:
+        try:
+            from settings import get_settings
+            val = int(get_settings().get(key, default) or default)
+        except Exception:
+            val = default
+        _ev = os.environ.get(env_key, "").strip()
+        if _ev:
+            with contextlib.suppress(TypeError, ValueError):
+                val = int(_ev)
+        return max(1, val)
+
+    def _user_rate_ok(self, tag: str) -> bool:
+        """每用户每分钟消息数限流；放行则记录本次。"""
+        limit = self._cfg_int("web.user_ratelimit_per_min", "AGENT_WEB_RATELIMIT_PER_MIN", 20)
+        now = time.time()
+        lst = self._msg_windows.setdefault(tag, [])
+        lst[:] = [t for t in lst if now - t < 60]
+        if len(lst) >= limit:
+            return False
+        lst.append(now)
+        return True
+
+    def _user_stream_capacity_ok(self, tag: str) -> bool:
+        """每用户并发运行(正在流式/处理)的会话数上限。"""
+        cap = self._cfg_int("web.user_max_concurrent_streams",
+                            "AGENT_WEB_MAX_CONCURRENT_STREAMS", 2)
+        with self._session_lock:
+            cnt = sum(1 for sid, s in self._sessions.items()
+                      if s.is_streaming
+                      and WebServer._same_owner(self._session_owners.get(sid, ""), tag))
+        return cnt < cap
 
     def live_sessions_snapshot(self) -> list[dict]:
         """内存态 Web 会话快照(含运行时长/归属)，供管理端实时观测。"""
@@ -637,6 +673,11 @@ class WebServer:
             uid = str(auth.get("uid", "anon"))
             tag = WebServer._owner_tag(uid)
             is_admin = auth.get("role") == "admin"
+            if not is_admin:
+                if not self._user_rate_ok(tag):
+                    return JSONResponse({"error": "请求太频繁，请稍后再试"}, status_code=429)
+                if not self._user_stream_capacity_ok(tag):
+                    return JSONResponse({"error": "同时进行的会话过多，请等待完成后再试"}, status_code=429)
             req_sid = (data.get("session_id") or "").strip()
             if req_sid:
                 if self._session_access(req_sid, tag, is_admin) == "deny":
@@ -691,6 +732,11 @@ class WebServer:
             uid = str(auth.get("uid", "anon"))
             tag = WebServer._owner_tag(uid)
             is_admin = auth.get("role") == "admin"
+            if not is_admin:
+                if not self._user_rate_ok(tag):
+                    return JSONResponse({"error": "请求太频繁，请稍后再试"}, status_code=429)
+                if not self._user_stream_capacity_ok(tag):
+                    return JSONResponse({"error": "同时进行的会话过多，请等待完成后再试"}, status_code=429)
             req_sid = (data.get("session_id") or "").strip()
             if req_sid:
                 if self._session_access(req_sid, tag, is_admin) == "deny":
