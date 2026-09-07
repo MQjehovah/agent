@@ -61,7 +61,7 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **Sub-agents**: `src/subagent_manager.py` — loads sub-agent templates from `config/agents/*/PROMPT.md`, reuses sessions by name
 - **Memory**: `src/memory/manager.py` — DB 记忆按 `owner_id` 隔离(user 私有 + global 公共)
 - **Learning**: `src/learning/learner.py` — self-learning module that triggers pattern extraction and skill creation
-- **Storage**: `src/storage/storage.py` — unified SQLite with connection pool; single `config/data.db`; singleton via `init_storage(workspace, config_dir)`. 表: `messages`(含 `user_id/channel/conversation_id` 审计列)、`eventbus_events`、`autonomous_goals`、`kanban_tasks`、`scheduled_tasks`、`rbac_roles/users/user_identities`、`memories/memory_proposals`、`web_tokens`、`usage_records`(含 `duration_ms/cache_*`, 聚合 `summarize_usage/usage_totals`)、`session_meta`。启动自动做幂等 `ALTER` 迁移
+- **Storage**: `src/storage/storage.py` — unified SQLite with connection pool; single `config/data.db`; singleton via `init_storage(workspace, config_dir)`. 表: `messages`(含 `user_id/channel/conversation_id` 审计列)、`eventbus_events`、`autonomous_goals`、`kanban_tasks`、`scheduled_tasks`、`rbac_roles/users/user_identities`、`memories/memory_proposals`、`web_tokens`、`usage_records`(含 `duration_ms/cache_*`, 聚合 `summarize_usage/usage_totals`)、`session_meta`、`webhook_tasks`(webhook 任务持久化+重启续跑)。启动自动做幂等 `ALTER` 迁移
 - **Plugins**: `src/plugins/` — `BasePlugin` ABC; plugins loaded from `src/plugins/` dir, provide extra tools to agents
 - **MCP servers**: `src/mcps/manager.py` — launches external MCP tool servers defined in `config/mcp_servers.json`
 - **Commands**: `src/cmd_handler.py` — `/` commands in interactive mode (e.g. `/help`, `/agents`)

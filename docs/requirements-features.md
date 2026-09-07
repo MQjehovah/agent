@@ -121,7 +121,7 @@
 | 编号 | 功能 | 需求 | 现状 | 模块 | 优先级 |
 |---|---|---|---|---|---|
 | F29 | 会话恢复续聊 | R-G1 | ✅ DB restore | core | P0 |
-| F30 | 长任务续跑/回放 | R-G1 | 🕐 webhook 内存态→需 DB | web/webhook | P1 |
+| F30 | 长任务续跑/回放 | R-G1 | ✅ webhook 任务 DB 化(webhook_tasks): pending 自动续跑, 崩溃 running 标记中断 | web/webhook_api | P1 |
 | F31 | DB 幂等迁移 | R-G2 | ✅ 启动自愈 | storage | P0 |
 | F32 | 备份/恢复策略 | R-G2 | ⭕ 手动 .bak, 无制度 | 运维 | P1 |
 | F33 | 健康检查/灰度回滚/多实例 | R-G2/R-G3 | ⭕ 单容器+健康 curl; 横向规划 | 部署 | P1/P2 |

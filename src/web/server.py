@@ -163,6 +163,7 @@ class WebServer:
         self._session_lock = threading.Lock()
         self._started_at = datetime.now().isoformat()
         self._pool = None  # 可选: 多用户 Worker 池(AGENT_WEB_POOL_SIZE>0 启用)
+        self._webhook_runtime = None  # webhook 任务续跑句柄(register 时设置)
         # SSE 双向追问: ask_id -> {"future", "tag", "question"}
         self._pending_asks: dict[str, dict] = {}
         # 对话级限流: tag -> 近一分钟消息时间戳
@@ -400,6 +401,11 @@ class WebServer:
                 loop.create_task(self._pool.start())
             except Exception as e:
                 logger.warning(f"Web Worker 池启动失败: {e}")
+        if self._webhook_runtime is not None:
+            try:
+                loop.create_task(self._webhook_runtime.resume_pending())
+            except Exception as e:
+                logger.warning(f"Webhook 任务续跑启动失败: {e}")
         loop.create_task(self._server.serve())
         logger.info(f"Web UI (FastAPI/uvicorn) started at http://{self.host}:{self.port}")
 
@@ -449,7 +455,7 @@ class WebServer:
         # ===== Webhook 接入(原独立 8081 插件的承接,与主服务同端口) =====
         from web.webhook_api import register_webhook_routes
 
-        register_webhook_routes(self._app, lambda: self.agent)
+        self._webhook_runtime = register_webhook_routes(self._app, lambda: self.agent)
 
         # ===== Auth 中间件：所有 /api/* 需有效 token（auth 端点、OPTIONS、或 DISABLE_AUTH 除外） =====
         MAX_BODY = 2 * 1024 * 1024  # 2MB(JSON API 足够)
