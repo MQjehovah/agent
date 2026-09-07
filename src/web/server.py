@@ -66,6 +66,79 @@ def decode_jwt(token: str) -> dict:
     return jwt.decode(token, _load_jwt_secret(), algorithms=["HS256"])
 
 
+class _BodyLimitMiddleware:
+    """纯 ASGI 请求体上限(2MB)。替代 BaseHTTPMiddleware, 规避并发 cancel-scope 崩溃。"""
+
+    def __init__(self, app, max_body: int = 2 * 1024 * 1024):
+        self.app = app
+        self.max_body = max_body
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] in ("POST", "PUT", "PATCH"):
+            for name, value in scope["headers"]:
+                if name == b"content-length":
+                    try:
+                        if int(value) > self.max_body:
+                            body = json.dumps({"error": "Payload too large"}).encode()
+                            await send({
+                                "type": "http.response.start",
+                                "status": 413,
+                                "headers": [(b"content-type", b"application/json")],
+                            })
+                            await send({"type": "http.response.body", "body": body})
+                            return
+                    except ValueError:
+                        pass
+                    break
+        await self.app(scope, receive, send)
+
+
+class _AuthMiddleware:
+    """纯 ASGI 鉴权: /api/* (非 /api/auth/*) 需有效 Bearer(agent JWT 或 SSO token)。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        method = scope["method"]
+        path = scope["path"]
+        if method == "OPTIONS" or os.environ.get("WEBUI_DISABLE_AUTH") == "1":
+            await self.app(scope, receive, send)
+            return
+        if path.startswith("/api/") and not path.startswith("/api/auth/"):
+            svc = os.environ.get("AGENT_SERVICE_TOKEN", "")
+            headers = dict((k.decode("latin1").lower(), v.decode("latin1")) for k, v in scope["headers"])
+            if svc and headers.get("x-service-token") == svc:
+                await self.app(scope, receive, send)
+                return
+            h = headers.get("authorization", "")
+            ok = False
+            if h.startswith("Bearer "):
+                cred = h[7:]
+                try:
+                    decode_jwt(cred)
+                    ok = True
+                except Exception:
+                    try:
+                        sso_auth.verify_sso_token(cred)
+                        ok = True
+                    except Exception:
+                        ok = False
+            if not ok:
+                err = json.dumps({"error": "Invalid or expired token"}).encode()
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"application/json")],
+                })
+                await send({"type": "http.response.body", "body": err})
+                return
+        await self.app(scope, receive, send)
+
+
 def _sso_lookup_user(sub: str) -> dict | None:
     """按 SSO sub(工号) 查 rbac_users(name=sub), 返回 auth 形状; 不存在/禁用返回 None。"""
     from storage.storage import get_storage
@@ -631,40 +704,10 @@ class WebServer:
         self._webhook_runtime = register_webhook_routes(self._app, lambda: self.agent)
 
         # ===== Auth 中间件：所有 /api/* 需有效 token（auth 端点、OPTIONS、或 DISABLE_AUTH 除外） =====
+        # ===== Auth / BodyLimit 纯 ASGI 中间件(替代 BaseHTTPMiddleware,规避并发 cancel-scope 崩溃) =====
         max_body = 2 * 1024 * 1024  # 2MB(JSON API 足够)
-
-        @self._app.middleware("http")
-        async def body_limit_middleware(request: Request, call_next):
-            if request.method in ("POST", "PUT", "PATCH"):
-                cl = request.headers.get("content-length")
-                if cl and cl.isdigit() and int(cl) > max_body:
-                    return JSONResponse({"error": "Payload too large"}, status_code=413)
-            return await call_next(request)
-
-        @self._app.middleware("http")
-        async def auth_middleware(request: Request, call_next):
-            if request.method == "OPTIONS":
-                return await call_next(request)
-            if os.environ.get("WEBUI_DISABLE_AUTH") == "1":
-                return await call_next(request)
-            if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/auth/"):
-                # 服务间专用凭证旁路(网关等可信服务自动开号)
-                _svc = os.environ.get("AGENT_SERVICE_TOKEN", "")
-                if _svc and request.headers.get("X-Service-Token") == _svc:
-                    return await call_next(request)
-                h = request.headers.get("Authorization", "")
-                if not h.startswith("Bearer "):
-                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
-                cred = h[7:]
-                try:
-                    decode_jwt(cred)
-                except Exception:
-                    # 双轨兜底: 允许 SSO(RS256) access_token/id_token 调受保护 API
-                    try:
-                        sso_auth.verify_sso_token(cred)
-                    except Exception:
-                        return JSONResponse({"error": "Invalid or expired token"}, status_code=401)
-            return await call_next(request)
+        self._app.add_middleware(_BodyLimitMiddleware, max_body=max_body)
+        self._app.add_middleware(_AuthMiddleware)
 
         # ===== Auth 依赖（路由内精细控制用） =====
         async def _get_auth(request: Request) -> dict[str, Any]:
