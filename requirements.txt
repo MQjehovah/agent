@@ -13,3 +13,5 @@ python-dotenv>=1.0.0
 httpx>=0.24.0
 lark-oapi>=1.4.0
 websockets>=12.0
+python-jose[cryptography]>=3.3.0
+PyJWT>=2.8.0

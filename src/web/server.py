@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
 import uuid
 from datetime import datetime
 from typing import Any
@@ -12,8 +13,17 @@ from typing import Any
 import jwt
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
+
+from web import sso_auth
 
 logger = logging.getLogger("agent.web")
 
@@ -54,6 +64,52 @@ def create_jwt(user: dict, expires_seconds: int = 86400 * 7) -> str:
 
 def decode_jwt(token: str) -> dict:
     return jwt.decode(token, _load_jwt_secret(), algorithms=["HS256"])
+
+
+def _sso_lookup_user(sub: str) -> dict | None:
+    """按 SSO sub(工号) 查 rbac_users(name=sub), 返回 auth 形状; 不存在/禁用返回 None。"""
+    from storage.storage import get_storage
+
+    storage = get_storage()
+    if not storage:
+        return None
+    with storage.get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, name, department, role, status FROM rbac_users WHERE name = ?",
+            (sub,),
+        ).fetchone()
+    if not row or row["status"] != "active":
+        return None
+    return {"id": row["id"], "name": row["name"], "department": row["department"],
+            "role": row["role"], "status": row["status"]}
+
+
+def _sso_ensure_user(sub: str, claims: dict) -> dict:
+    """SSO 登录: 按 sub(工号) 查/建 rbac_users 用户; 已存在但状态禁用抛 403。"""
+    from security.rbac import RBACManager
+    from storage.storage import get_storage
+
+    storage = get_storage()
+    if not storage:
+        raise HTTPException(status_code=500, detail="storage unavailable")
+    with storage.get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, name, department, role, status FROM rbac_users WHERE name = ?",
+            (sub,),
+        ).fetchone()
+    if row:
+        if row["status"] != "active":
+            raise HTTPException(status_code=403, detail="账号已被禁用")
+        return {"id": row["id"], "name": row["name"], "department": row["department"],
+                "role": row["role"], "status": row["status"]}
+    dept = sso_auth.sso_user_department(claims)
+    role = sso_auth.sso_user_role(claims)
+    rbac = RBACManager(storage)
+    uid = rbac.create_user(name=sub, department=dept, role=role)
+    # 随机不可登录密码(SSO 用户不走密码登录)
+    import secrets as _secrets
+    storage.set_user_password(uid, _secrets.token_urlsafe(24))
+    return {"id": uid, "name": sub, "department": dept, "role": role, "status": "active"}
 
 
 def _sse(payload: dict) -> str:
@@ -411,10 +467,8 @@ class WebServer:
 
     def stop(self):
         if self._pool is not None and self._pool.enabled:
-            try:
+            with contextlib.suppress(Exception):
                 asyncio.get_event_loop().create_task(self._pool.stop())
-            except Exception:
-                pass
         if self._server is not None:
             self._server.should_exit = True
         logger.info("WebServer stopped")
@@ -458,13 +512,13 @@ class WebServer:
         self._webhook_runtime = register_webhook_routes(self._app, lambda: self.agent)
 
         # ===== Auth 中间件：所有 /api/* 需有效 token（auth 端点、OPTIONS、或 DISABLE_AUTH 除外） =====
-        MAX_BODY = 2 * 1024 * 1024  # 2MB(JSON API 足够)
+        max_body = 2 * 1024 * 1024  # 2MB(JSON API 足够)
 
         @self._app.middleware("http")
         async def body_limit_middleware(request: Request, call_next):
             if request.method in ("POST", "PUT", "PATCH"):
                 cl = request.headers.get("content-length")
-                if cl and cl.isdigit() and int(cl) > MAX_BODY:
+                if cl and cl.isdigit() and int(cl) > max_body:
                     return JSONResponse({"error": "Payload too large"}, status_code=413)
             return await call_next(request)
 
@@ -482,11 +536,15 @@ class WebServer:
                 h = request.headers.get("Authorization", "")
                 if not h.startswith("Bearer "):
                     return JSONResponse({"error": "Unauthorized"}, status_code=401)
-                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+                cred = h[7:]
                 try:
-                    decode_jwt(h[7:])
+                    decode_jwt(cred)
                 except Exception:
-                    return JSONResponse({"error": "Invalid or expired token"}, status_code=401)
+                    # 双轨兜底: 允许 SSO(RS256) access_token/id_token 调受保护 API
+                    try:
+                        sso_auth.verify_sso_token(cred)
+                    except Exception:
+                        return JSONResponse({"error": "Invalid or expired token"}, status_code=401)
             return await call_next(request)
 
         # ===== Auth 依赖（路由内精细控制用） =====
@@ -494,10 +552,23 @@ class WebServer:
             if os.environ.get("WEBUI_DISABLE_AUTH") == "1":
                 return {"uid": 1, "name": "test", "role": "admin"}
             h = request.headers.get("Authorization", "")
+            if not h.startswith("Bearer "):
+                raise HTTPException(status_code=401, detail="Unauthorized")
+            cred = h[7:]
+            # 主轨: HS256 agent JWT
             try:
-                return decode_jwt(h[7:])
-            except Exception as e:
-                raise HTTPException(status_code=401, detail="Unauthorized") from e
+                return decode_jwt(cred)
+            except Exception:
+                pass
+            # 兜底: SSO(RS256) access_token/id_token → 转工号 → 查用户(与现有同形状)
+            try:
+                claims = sso_auth.verify_sso_token(cred)
+            except Exception:
+                raise HTTPException(status_code=401, detail="Unauthorized") from None
+            user = _sso_lookup_user(claims.get("sub", ""))
+            if not user:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+            return {"uid": user["id"], "name": user["name"], "role": user["role"]}
 
         _service_token = os.environ.get("AGENT_SERVICE_TOKEN", "")
 
@@ -546,6 +617,46 @@ class WebServer:
         async def auth_me(request: Request):
             u = await _get_auth(request)
             return {"id": u["uid"], "name": u["name"], "role": u["role"]}
+
+        # ===== SSO OIDC 登录 =====
+        @self._app.get("/api/auth/sso/start")
+        async def sso_start(request: Request):
+            """生成一次性 state 并 302 跳转到 SSO authorize 页。"""
+            if not sso_auth.is_configured():
+                return JSONResponse({"error": "SSO not enabled"}, status_code=404)
+            state = sso_auth.new_state()
+            try:
+                url = sso_auth.build_authorize_url(state)
+            except sso_auth.SsoAuthError as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+            return RedirectResponse(url, status_code=302)
+
+        @self._app.get("/api/auth/sso/callback")
+        async def sso_callback(request: Request, code: str = "", state: str = ""):
+            """SSO 回调: code→id_token→校验→查/建用户→签 agent JWT→302 回前端。"""
+            if not sso_auth.is_configured():
+                return JSONResponse({"error": "SSO not enabled"}, status_code=404)
+            if not code or not state:
+                return JSONResponse({"error": "Missing code or state"}, status_code=400)
+            if not sso_auth.validate_state(state):
+                return JSONResponse({"error": "Invalid or expired state"}, status_code=401)
+            try:
+                id_token = sso_auth.exchange_code(code)
+                claims = sso_auth.verify_sso_token(id_token)
+            except sso_auth.SsoAuthError as e:
+                return JSONResponse({"error": str(e)}, status_code=401)
+            sub = (claims.get("sub") or "").strip()
+            if not sub:
+                return JSONResponse({"error": "Missing sub"}, status_code=401)
+            try:
+                user = _sso_ensure_user(sub, claims)
+            except HTTPException as e:
+                return JSONResponse({"error": e.detail}, status_code=e.status_code)
+            token = create_jwt(user)
+            target = sso_auth.sso_redirect_target()
+            sep = "&" if "?" in target else "?"
+            return RedirectResponse(
+                f"{target}{sep}sso_token={urllib.parse.quote(token)}", status_code=302)
 
         @self._app.post("/api/auth/change-password")
         async def auth_change_password(request: Request):
@@ -1085,7 +1196,7 @@ class WebServer:
             return {"success": True}
 
         @self._app.delete("/api/kanban/{task_id}")
-        async def kanban_remove(task_id: str):
+        async def kanban_remove(task_id: str, request: Request):
             if not self._kanban:
                 return JSONResponse({"error": "Kanban not available"}, status_code=503)
             auth = await _get_auth(request)
@@ -1908,15 +2019,15 @@ class WebServer:
                             media_type="text/plain; version=0.0.4")
 
         # ===== Vue3 SPA(static_vue,由 frontend/ 构建产出)优先;旧版单页回退 =====
-        VUE_DIR = os.path.join(os.path.dirname(STATIC_DIR), "static_vue")
-        vue_index = os.path.join(VUE_DIR, "index.html")
+        vue_dir = os.path.join(os.path.dirname(STATIC_DIR), "static_vue")
+        vue_index = os.path.join(vue_dir, "index.html")
 
         if os.path.isfile(vue_index):
-            self._app.mount("/assets", StaticFiles(directory=os.path.join(VUE_DIR, "assets")), name="vue-assets")
+            self._app.mount("/assets", StaticFiles(directory=os.path.join(vue_dir, "assets")), name="vue-assets")
 
             @self._app.get("/favicon.svg", include_in_schema=False)
             async def favicon_svg():
-                path = os.path.join(VUE_DIR, "favicon.svg")
+                path = os.path.join(vue_dir, "favicon.svg")
                 if os.path.isfile(path):
                     return FileResponse(path)
                 raise HTTPException(404, "not found")
@@ -1926,7 +2037,7 @@ class WebServer:
             async def spa(full_path: str):
                 if full_path.startswith(("api/", "webhook", "static/", "assets/", "docs")):
                     raise HTTPException(404, "Not Found")
-                candidate = os.path.join(VUE_DIR, full_path)
+                candidate = os.path.join(vue_dir, full_path)
                 if full_path and os.path.isfile(candidate):
                     return FileResponse(candidate)
                 return FileResponse(vue_index, headers={"Cache-Control": "no-cache"})
