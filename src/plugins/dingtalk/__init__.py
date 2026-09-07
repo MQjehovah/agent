@@ -139,6 +139,8 @@ class DingTalkPlugin(BasePlugin):
         self.sessions: dict[str, DingTalkSession] = {}
         # (agent_user.id, conversation_id) -> session_id，保证同人同会话复用同一 session
         self._session_by_key: dict[tuple[str, str], str] = {}
+        # conversation_id -> asyncio.Lock：同会话消息串行处理，避免快速连发并发跑同一 agent 会话
+        self._conv_locks: dict[str, asyncio.Lock] = {}
         self._client = None
         self._running = False
         self._task: asyncio.Task | None = None
@@ -374,8 +376,23 @@ class DingTalkPlugin(BasePlugin):
         except Exception as e:
             return f"发送消息失败: {e}"
 
-    def get_session(self, conversation_id: str, agent_uid: str | int, sender_nick: str,
-                    robot_code: str, role: str = "default", sender_id: str = "") -> DingTalkSession:
+    def _conv_lock(self, conv_id: str) -> asyncio.Lock:
+        """返回某 conversation 的串行锁(进程内),避免同会话消息并发执行。"""
+        lock = self._conv_locks.get(conv_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._conv_locks[conv_id] = lock
+        return lock
+
+    def get_session(
+        self,
+        conversation_id: str,
+        agent_uid: str | int,
+        sender_nick: str,
+        robot_code: str,
+        role: str = "default",
+        sender_id: str = "",
+    ) -> DingTalkSession:
         """Reuse a session per (agent_user.id, conversation_id).
 
         session_id is ``dingtalk:{agent_uid}:{rand}`` so a DingTalk user keeps
@@ -550,8 +567,20 @@ class AgentChatbotHandler:
         return ack_message
 
     async def _async_process(self, callback_message):
+        # 同会话串行:快速连发时同一 conversation 的消息排队处理,
+        # 避免并发跑同一个 agent 会话导致上下文/worker 竞争报错。
+        conv_id = ""
         try:
-            await self.process(callback_message)
+            data = getattr(callback_message, "data", None) or {}
+            conv_id = str(data.get("conversationId", ""))
+        except Exception:
+            pass
+        try:
+            if conv_id:
+                async with self.plugin._conv_lock(conv_id):
+                    await self.process(callback_message)
+            else:
+                await self.process(callback_message)
         except Exception as e:
             self.logger.error(f"异步处理消息失败: {e!r}")
 
