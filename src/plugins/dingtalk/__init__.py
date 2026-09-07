@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +11,43 @@ from plugins.base import BasePlugin
 
 logger = logging.getLogger("plugin.dingtalk")
 logging.getLogger("dingtalk_stream").setLevel(logging.WARNING)
+
+# 未开户/被禁用用户的拒绝提示(不创建会话、不路由)
+NOT_PROVISIONED_REPLY = "您尚未开通 AI 数字员工，请在员工工作台完成企业登录，或联系管理员开通后使用"
+
+
+def format_dingtalk_session_id(agent_uid: str | int, rand: str) -> str:
+    """Build a dingtalk session id: ``dingtalk:{agent_uid}:{rand}``."""
+    return f"dingtalk:{agent_uid}:{rand}"
+
+
+def resolve_dingtalk_staff_id(storage, user_tag) -> str | None:
+    """Resolve the DingTalk staff id used for push APIs from an agent-run tag.
+
+    New routing user_id is ``dingtalk:{agent_user.id}`` (numeric agent uid);
+    the staff id is looked up via rbac_user_identities. Legacy tags that carry
+    a known staff id directly are still accepted for backward compatibility.
+    """
+    tag = str(user_tag or "")
+    cand = tag.split(":", 1)[1] if tag.startswith("dingtalk:") else tag
+    if not cand:
+        return None
+    with storage.get_connection() as conn:
+        if cand.isdigit():
+            row = conn.execute(
+                "SELECT platform_uid FROM rbac_user_identities "
+                "WHERE platform = 'dingtalk' AND user_id = ?",
+                (int(cand),)
+            ).fetchone()
+            if row:
+                return row[0]
+        row = conn.execute(
+            "SELECT 1 FROM rbac_user_identities "
+            "WHERE platform = 'dingtalk' AND platform_uid = ?",
+            (cand,)
+        ).fetchone()
+    return cand if row else None
+
 
 @dataclass
 class DingTalkStreamConfig:
@@ -39,6 +77,8 @@ class DingTalkSession:
     sender_id: str
     sender_nick: str
     robot_code: str
+    agent_uid: str = ""
+    role: str = "default"
     _plugin: "DingTalkPlugin | None" = field(default=None, repr=False)
 
     async def send_to_agent(self, content: str) -> str:
@@ -97,6 +137,8 @@ class DingTalkPlugin(BasePlugin):
             logger.warning(f"DingTalk config file not found: {config_file}")
 
         self.sessions: dict[str, DingTalkSession] = {}
+        # (agent_user.id, conversation_id) -> session_id，保证同人同会话复用同一 session
+        self._session_by_key: dict[tuple[str, str], str] = {}
         self._client = None
         self._running = False
         self._task: asyncio.Task | None = None
@@ -223,21 +265,7 @@ class DingTalkPlugin(BasePlugin):
         storage = get_storage()
         if not storage or not local_user_id:
             return None
-        # user_id 形如 dingtalk:{staff_id}，直接提取
-        if str(local_user_id).startswith("dingtalk:"):
-            uid = str(local_user_id).split(":", 1)[1]
-            if uid.isdigit():
-                return uid
-        try:
-            int(local_user_id)
-        except (ValueError, TypeError):
-            return None
-        with storage.get_connection() as conn:
-            row = conn.execute(
-                "SELECT platform_uid FROM rbac_user_identities WHERE user_id = ? AND platform = 'dingtalk'",
-                (local_user_id,)
-            ).fetchone()
-        return row[0] if row else None
+        return resolve_dingtalk_staff_id(storage, local_user_id)
 
     async def _get_access_token(self) -> str:
         now = time.time()
@@ -346,26 +374,34 @@ class DingTalkPlugin(BasePlugin):
         except Exception as e:
             return f"发送消息失败: {e}"
 
-    def get_session(self, conversation_id: str, sender_id: str, sender_nick: str, robot_code: str) -> DingTalkSession:
-        router = getattr(self.plugin_manager, "router", None) if self.plugin_manager else None
-        if router:
-            session_id = router.format_session_id("dingtalk", conversation_id, sender_id)
-        else:
-            session_id = f"{conversation_id}_{sender_id}"
+    def get_session(self, conversation_id: str, agent_uid: str | int, sender_nick: str,
+                    robot_code: str, role: str = "default", sender_id: str = "") -> DingTalkSession:
+        """Reuse a session per (agent_user.id, conversation_id).
 
-        if session_id not in self.sessions:
-            session = DingTalkSession(
-                session_id=session_id,
-                conversation_id=conversation_id,
-                sender_id=sender_id,
-                sender_nick=sender_nick,
-                robot_code=robot_code
-            )
-            session._plugin = self
-            self.sessions[session_id] = session
-            logger.debug(f"创建新Session: {session_id} by {sender_nick}")
+        session_id is ``dingtalk:{agent_uid}:{rand}`` so a DingTalk user keeps
+        one conversation root per chat, keyed by the resolved agent identity
+        (never by the raw DingTalk staff id) and kept separate from web.
+        """
+        agent_uid = str(agent_uid)
+        key = (agent_uid, conversation_id)
+        session = self.sessions.get(self._session_by_key.get(key, ""))
+        if session:
+            return session
 
-        return self.sessions[session_id]
+        session = DingTalkSession(
+            session_id=format_dingtalk_session_id(agent_uid, uuid.uuid4().hex[:8]),
+            conversation_id=conversation_id,
+            sender_id=sender_id,
+            sender_nick=sender_nick,
+            robot_code=robot_code,
+            agent_uid=agent_uid,
+            role=role,
+        )
+        session._plugin = self
+        self.sessions[session.session_id] = session
+        self._session_by_key[key] = session.session_id
+        logger.debug(f"创建新钉钉Session: {session.session_id} by {sender_nick}")
+        return session
 
 
 class AgentChatbotHandler:
@@ -406,6 +442,14 @@ class AgentChatbotHandler:
             except Exception as e:
                 self.logger.error(f"回复图片失败: {e!r}")
 
+    def reply_not_provisioned(self, incoming_message):
+        """回复未开户提示并返回 ACK(不创建会话、不路由)。"""
+        import dingtalk_stream
+
+        self.reply_text(NOT_PROVISIONED_REPLY, incoming_message, msgtype="text")
+        self.logger.info(f"已拒绝未开通用户: {getattr(incoming_message, 'sender_staff_id', '')}")
+        return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
+
     async def process(self, callback):
         import dingtalk_stream
 
@@ -428,34 +472,41 @@ class AgentChatbotHandler:
 
             self.logger.info(f"钉钉插件收到消息: [{sender_nick}](staff_id={sender_staff_id}) {content}...")
 
-            session = self.plugin.get_session(
-                conversation_id=conversation_id,
-                sender_id=sender_id,
-                sender_nick=sender_nick,
-                robot_code=robot_code
-            )
-
-            user_id = f"dingtalk:{sender_staff_id}"
-
-            # 身份解析:rbac_user_identities 绑定表(staff_id → agent 用户/角色)
+            # 身份解析: rbac_user_identities 绑定表(staff_id → agent 用户/角色)。
+            # 未开户(无绑定)/被禁用/解析异常 → 一律拒绝并 ACK，不创建会话、不路由，
+            # 杜绝以 dingtalk:{staff_id} 或 default 角色静默放行。
             try:
-                from security.rbac import RBACManager
+                from security.rbac import RBACManager, UserNotProvisionedError
                 from storage.storage import get_storage
                 _st = get_storage()
-                if _st:
-                    _rbac = RBACManager(_st)
-                    _info = _rbac.resolve_user("dingtalk", sender_staff_id,
-                                               fallback_name=sender_nick)
-                    role = _info.get("role") or "default"
-                    if _info.get("user_id") is None and _info.get("user_name"):
-                        role = "default"
-                    self.logger.debug(
-                        f"身份解析: staff={sender_staff_id} -> role={role}")
-                else:
-                    role = "default"
+                if not _st:
+                    raise UserNotProvisionedError(
+                        "dingtalk", sender_staff_id, "storage 未初始化")
+                user_info = RBACManager(_st).require_user(
+                    "dingtalk", sender_staff_id, fallback_name=sender_nick)
+            except UserNotProvisionedError as e:
+                self.logger.info(f"拒绝未开户钉钉用户: {e}")
+                return self.reply_not_provisioned(incoming_message)
             except Exception as e:
-                self.logger.warning(f"身份解析失败,使用 default: {e}")
-                role = "default"
+                self.logger.error(f"钉钉身份解析异常,拒绝处理: {e!r}")
+                return self.reply_not_provisioned(incoming_message)
+
+            agent_uid = str(user_info.get("user_id") or "")
+            role = user_info.get("role") or "default"
+            user_name = user_info.get("user_name") or sender_nick
+
+            session = self.plugin.get_session(
+                conversation_id=conversation_id,
+                agent_uid=agent_uid,
+                sender_nick=user_name,
+                robot_code=robot_code,
+                role=role,
+                sender_id=sender_id,
+            )
+
+            # 路由身份用归属 tag dingtalk:{agent_user.id}(与 web:{uid} 对齐)，
+            # 不再使用 dingtalk:{staff_id}
+            user_id = f"dingtalk:{agent_uid}"
 
             if not self.plugin.plugin_manager:
                 response = "执行器未注册，请稍后再试"
@@ -465,7 +516,7 @@ class AgentChatbotHandler:
                     result = await router.route(
                         content, channel="dingtalk",
                         session_id=session.session_id,
-                        user_id=user_id, user_name=sender_nick,
+                        user_id=user_id, user_name=user_name,
                         role=role,
                     )
                     response = result.result if hasattr(result, "result") else str(result)
@@ -474,7 +525,7 @@ class AgentChatbotHandler:
                         session_id=session.session_id,
                         content=content,
                         user_id=user_id,
-                        user_name=sender_nick
+                        user_name=user_name
                     )
 
             self.reply_text(response, incoming_message)

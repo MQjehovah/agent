@@ -5,6 +5,20 @@ from datetime import datetime
 logger = logging.getLogger("agent.rbac")
 
 
+class UserNotProvisionedError(Exception):
+    """Platform identity has no usable bound agent user (unregistered/disabled).
+
+    Channel handlers catch this to reject the request instead of silently
+    falling back to the default role.
+    """
+
+    def __init__(self, platform: str, platform_uid: str, message: str = ""):
+        self.platform = platform
+        self.platform_uid = platform_uid
+        detail = message or f"{platform}:{platform_uid} 未开通 AI 数字员工或已被禁用"
+        super().__init__(detail)
+
+
 class RBACManager:
     def __init__(self, storage):
         self.storage = storage
@@ -26,6 +40,21 @@ class RBACManager:
         if row and row[3] != "disabled":
             return {"user_id": row[0], "user_name": row[1], "role": row[2]}
         return {"user_id": None, "user_name": fallback_name, "role": "default"}
+
+    def require_user(self, platform: str, platform_uid: str, fallback_name: str = "") -> dict:
+        """Resolve a platform identity to a usable agent user, or raise.
+
+        Same lookup as resolve_user, but treats "not bound / disabled" as an
+        error so channel handlers can reject the message (never route under a
+        synthetic dingtalk:{staff} id or a silent default role). CLI always
+        resolves to the admin.
+        """
+        if platform == "cli":
+            return {"user_id": None, "user_name": fallback_name or "管理员", "role": "admin"}
+        info = self.resolve_user(platform, platform_uid, fallback_name=fallback_name)
+        if not info.get("user_id"):
+            raise UserNotProvisionedError(platform, platform_uid)
+        return info
 
     def check_tool(self, role: str, tool_name: str) -> bool:
         allowed = self._get_allowed(role, "allowed_tools")
