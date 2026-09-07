@@ -141,8 +141,8 @@ async def test_uvicorn_embedded_in_agent_loop_serves_real_http():
 
 def test_sessions_history_reads_from_db(tmp_path):
     """Sessions 标签页应从数据库聚合历史会话，而非仅内存活跃 session"""
-    import storage as storage_mod
-    from storage import Storage
+    import storage.storage as storage_mod
+    from storage.storage import Storage
     from web.server import WebServer
 
     prev = storage_mod._storage_instance
@@ -155,7 +155,7 @@ def test_sessions_history_reads_from_db(tmp_path):
     try:
         w = WebServer()
         client = TestClient(w._app)
-        resp = client.get("/api/agent/sessions/history?limit=20")
+        resp = client.get("/api/agent/sessions/history?limit=20&scope=all")
         assert resp.status_code == 200
         sessions = resp.json()["sessions"]
         ids = [x["id"] for x in sessions]
@@ -170,8 +170,8 @@ def test_sessions_history_reads_from_db(tmp_path):
 
 def test_session_messages_falls_back_to_db(tmp_path):
     """内存未命中的历史会话，应从数据库恢复消息"""
-    import storage as storage_mod
-    from storage import Storage
+    import storage.storage as storage_mod
+    from storage.storage import Storage
     from web.server import WebServer
 
     prev = storage_mod._storage_instance
@@ -206,8 +206,8 @@ def test_session_messages_handles_special_chars_in_id(tmp_path):
 
     回归：旧实现用路径参数 {session_id}，uvicorn 把 %2F 解码成 / 导致路由匹配失败 404。
     """
-    import storage as storage_mod
-    from storage import Storage
+    import storage.storage as storage_mod
+    from storage.storage import Storage
     from web.server import WebServer
 
     prev = storage_mod._storage_instance
@@ -237,8 +237,8 @@ def test_session_messages_handles_special_chars_in_id(tmp_path):
 
 def test_sessions_filter_by_agent(tmp_path):
     """Sessions 按 agent 筛选：history?agent_id=xxx 仅返回该 agent 的会话；/agents 返回聚合列表"""
-    import storage as storage_mod
-    from storage import Storage
+    import storage.storage as storage_mod
+    from storage.storage import Storage
     from web.server import WebServer
 
     prev = storage_mod._storage_instance
@@ -257,8 +257,8 @@ def test_sessions_filter_by_agent(tmp_path):
         assert agents.get("设备运维") == 2
         assert agents.get("代码审查") == 1
 
-        # 按 agent 筛选
-        r = client.get("/api/agent/sessions/history", params={"agent_id": "设备运维"})
+        # 按 agent 筛选（admin 运维全量视图：显式 scope=all）
+        r = client.get("/api/agent/sessions/history", params={"agent_id": "设备运维", "scope": "all"})
         rows = r.json()["sessions"]
         assert {x["id"] for x in rows} == {"sess_a1", "sess_a2"}
         assert all(x["agent_id"] == "设备运维" for x in rows)
@@ -395,8 +395,8 @@ async def test_logs_stream_query_token_auth(monkeypatch):
 
 def test_memories_crud(tmp_path):
     """记忆管理：新增 / 查询(筛选) / 编辑 / 删除 全链路"""
-    import storage as storage_mod
-    from storage import Storage
+    import storage.storage as storage_mod
+    from storage.storage import Storage
     from web.server import WebServer
 
     prev = storage_mod._storage_instance

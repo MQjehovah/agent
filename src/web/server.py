@@ -1670,10 +1670,14 @@ class WebServer:
 
         @self._app.get("/api/agent/sessions/history")
         async def agent_sessions_history(limit: int = Query(20), agent_id: str = Query(""),
+                                         scope: str = Query("mine"),
                                          request: Request = None):
             """对话优先：最近 N 个“对话根”（主会话，不含子代理内部 thread）。
-            普通用户仅能看到自己（该 agent 用户跨 web/钉钉等全部渠道）的对话；
-            admin 可见全部。每条带 channel（web/dingtalk/other，供前端徽标）。"""
+
+            默认个人口径：无论角色只看自己（该 agent 用户跨 web/钉钉等全部渠道）的对话，
+            供「个人空间」对话/会话入口使用（admin 亦只看自己）；
+            仅当 admin 显式传 scope=all 时才返回全站（运维「会话管理」用）。
+            每条带 channel（web/dingtalk/other，供前端徽标）。"""
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
@@ -1688,12 +1692,15 @@ class WebServer:
             if not admin and not tag:
                 return {"total": 0, "sessions": []}
             cap = min(max(limit, 1), 200)
-            if admin:
-                # 管理端维持全量视图（不按归属过滤）
+            if admin and scope == "all":
+                # 管理端运维视图：全站会话（不按归属过滤）
                 rows = storage.list_conversations(cap)
             else:
-                # 我的会话：同一 agent 用户跨渠道合并（web + 钉钉 + 其它 tag:{uid} 渠道）
+                # 我的会话（含 admin 个人视角）：同一 agent 用户跨渠道合并
+                # （web + 钉钉 + 其它 tag:{uid} 渠道）
                 rows = storage.list_conversations_for_agent_user(u.get("uid"), cap)
+            if agent_id:
+                rows = [r for r in rows if (r.get("agent_id") or "") == agent_id]
             sessions = [{
                 "id": r["conversation_id"],
                 "agent_id": r.get("agent_id") or "",
@@ -2108,20 +2115,51 @@ class WebServer:
             _require_rbac().unbind_identity(identity_id)
             return {"success": True}
 
-        # ===== Memory 管理 API（WebUI 后台，默认 admin 权限） =====
+        # ===== Memory 管理 API（WebUI 后台；列表为个人口径，增删改按归属校验） =====
+        def _mem_tag(u: dict) -> str:
+            """当前登录用户的记忆归属 tag；无有效身份(anon/0/None)时为空。"""
+            raw = str(u.get("uid", ""))
+            return WebServer._owner_tag(raw) if raw and raw not in ("anon", "0", "None") else ""
+
         @self._app.get("/api/memories")
         async def list_memories(scope: str = Query(""), category: str = Query(""),
                                 owner_id: str = Query(""), q: str = Query(""),
-                                limit: int = Query(100), offset: int = Query(0)):
+                                limit: int = Query(100), offset: int = Query(0),
+                                view: str = Query("mine"), request: Request = None):
+            """记忆列表（个人口径，消除越权）。
+
+            view=mine（默认）：无论普通用户还是 admin，都只返回「本人私有
+            (scope=user, owner=本人) + 全局公共(global)」，不再列出他人私有，
+            供「个人空间 · 记忆管理」页使用；
+            view=all（仅 admin）：跨用户全量列表，保留运维/管理能力
+            （scope/owner_id/category/q 筛选仍可在可见集内叠加）。
+            """
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            u = await _get_auth(request) if request is not None else {}
+            visible_to = _mem_tag(u)
+            if view == "all":
+                if u.get("role") != "admin":
+                    view = "mine"  # 非 admin 忽略全量请求，强制个人口径
+                else:
+                    visible_to = ""
             rows = storage.list_memories(scope=scope, owner_id=owner_id,
-                                          category=category, keyword=q,
-                                          limit=min(max(limit, 1), 500), offset=max(offset, 0))
+                                         category=category, keyword=q,
+                                         limit=min(max(limit, 1), 500),
+                                         offset=max(offset, 0),
+                                         visible_to=visible_to)
             total = storage.count_memories(scope=scope, owner_id=owner_id,
-                                            category=category, keyword=q)
+                                           category=category, keyword=q,
+                                           visible_to=visible_to)
             return {"memories": rows, "total": total}
+
+        def _mem_write_allowed(u: dict, row: dict) -> bool:
+            """判断当前用户能否写这条记忆：admin 可；否则仅本人私有记忆的属主可。"""
+            if u.get("role") == "admin":
+                return True
+            return bool(row and row.get("scope") == "user"
+                        and row.get("owner_id") == _mem_tag(u))
 
         @self._app.post("/api/memories")
         async def create_memory(request: Request):
@@ -2145,13 +2183,22 @@ class WebServer:
 
         @self._app.put("/api/memories/{memory_id}")
         async def update_memory(memory_id: int, request: Request):
-            await _get_admin(request)
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            u = await _get_auth(request)
+            row = storage.get_memory(memory_id)
+            if not row:
+                return JSONResponse({"error": "Memory not found"}, status_code=404)
+            if not _mem_write_allowed(u, row):
+                return JSONResponse({"error": "Permission denied"}, status_code=403)
             data = await request.json()
             if not data:
                 return JSONResponse({"error": "Missing body"}, status_code=400)
+            if u.get("role") != "admin":
+                # 非 admin 仅能编辑自己私有记忆的内容字段，不得改归属/公开范围
+                data.pop("scope", None)
+                data.pop("owner_id", None)
             ok = storage.update_memory(
                 memory_id,
                 content=data.get("content"),
@@ -2164,19 +2211,25 @@ class WebServer:
 
         @self._app.delete("/api/memories/{memory_id}")
         async def delete_memory(memory_id: int, request: Request):
-            await _get_admin(request)
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            u = await _get_auth(request)
+            row = storage.get_memory(memory_id)
+            if not row:
+                return JSONResponse({"error": "Memory not found"}, status_code=404)
+            if not _mem_write_allowed(u, row):
+                return JSONResponse({"error": "Permission denied"}, status_code=403)
             ok = storage.delete_memory(memory_id)
             if not ok:
                 return JSONResponse({"error": "Memory not found"}, status_code=404)
             return {"success": True}
 
-        # ===== Memory Proposals API（仅 admin 可操作，待补鉴权中间件） =====
+        # ===== Memory Proposals API（仅 admin，运维审批） =====
         @self._app.get("/api/memory/proposals")
-        async def memory_list_proposals(status: str = Query("pending")):
-            # TODO: 校验调用者为 admin 角色
+        async def memory_list_proposals(status: str = Query("pending"),
+                                        request: Request = None):
+            await _get_admin(request)
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=500)

@@ -7,7 +7,7 @@
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from web.security import get_auth
@@ -27,15 +27,21 @@ def build_sessions_router(server) -> APIRouter:
             return True, ""
 
     @router.get("/api/sessions")
-    async def list_sessions(request: Request):
+    async def list_sessions(request: Request, scope: str = Query("mine")):
+        """内存 Web 会话列表（对话侧栏 / 运维会话管理共用）。
+
+        scope=mine（默认）：无论角色只看本人（个人空间「对话」侧栏，admin 亦只看自己）；
+        仅当 admin 显式传 scope=all 时返回全站（运维「会话管理」合并展示）。
+        """
         admin, tag = _identity(request)
+        want_all = admin and scope == "all"
         now = datetime.now()
         out = []
         with server._session_lock:
             items = list(server._sessions.items())
         for sid, s in items:
             owner_tag = server._session_owners.get(sid, "")
-            if not admin and not server._same_owner(owner_tag, tag):
+            if not want_all and not server._same_owner(owner_tag, tag):
                 continue
             duration_s = 0
             if s.is_streaming and s.stream_started_at:

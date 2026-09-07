@@ -96,7 +96,7 @@ onMounted(load)
 <template>
   <div class="page" style="display: flex; flex-direction: column">
     <div class="page-head">
-      <h2>看板</h2>
+      <h2>任务看板</h2>
       <div>
         <el-button @click="load">刷新</el-button>
         <el-button type="primary" @click="addVisible = true">新建任务</el-button>

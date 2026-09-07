@@ -212,7 +212,7 @@ def test_history_admin_lists_all_with_channel(tmp_path, monkeypatch):
         w = WebServer()
         client = TestClient(w._app)
 
-        resp = client.get("/api/agent/sessions/history?limit=20")
+        resp = client.get("/api/agent/sessions/history?limit=20&scope=all")
         assert resp.status_code == 200, resp.text
         sessions = resp.json()["sessions"]
         ids = {x["id"] for x in sessions}

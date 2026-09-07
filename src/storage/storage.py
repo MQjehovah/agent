@@ -977,19 +977,32 @@ class Storage:
 
     def list_memories(self, scope: str = "", owner_id: str = "",
                       category: str = "", keyword: str = "",
-                      limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        """管理用：带筛选的记忆列表（跨用户，按更新时间倒序）"""
+                      limit: int = 100, offset: int = 0,
+                      visible_to: str = "") -> list[dict[str, Any]]:
+        """带筛选的记忆列表（按更新时间倒序）。
+
+        ``visible_to`` 传入归属 tag 时按“个人口径”过滤：仅返回该用户私有
+        (scope=user, owner=visible_to) + 全局公共(global)，供个人「记忆管理」
+        页与 admin 个人视角使用；不传则为跨用户全量（运维管理用）。
+        """
         sql = ("SELECT id, scope, owner_id, agent_id, category, content, source, "
                "importance, created_at, updated_at FROM memories WHERE 1=1")
         args: list[Any] = []
+        if visible_to:
+            sql += " AND (scope = 'global' OR (scope = 'user' AND owner_id = ?))"
+            args.append(visible_to)
         if scope:
-            sql += " AND scope = ?"; args.append(scope)
+            sql += " AND scope = ?"
+            args.append(scope)
         if owner_id:
-            sql += " AND owner_id = ?"; args.append(owner_id)
+            sql += " AND owner_id = ?"
+            args.append(owner_id)
         if category:
-            sql += " AND category = ?"; args.append(category)
+            sql += " AND category = ?"
+            args.append(category)
         if keyword:
-            sql += " AND content LIKE ?"; args.append(f"%{keyword}%")
+            sql += " AND content LIKE ?"
+            args.append(f"%{keyword}%")
         sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         args.extend([limit, offset])
         with self._get_connection() as conn:
@@ -997,17 +1010,25 @@ class Storage:
         return [dict(r) for r in rows]
 
     def count_memories(self, scope: str = "", owner_id: str = "",
-                       category: str = "", keyword: str = "") -> int:
+                       category: str = "", keyword: str = "",
+                       visible_to: str = "") -> int:
         sql = "SELECT COUNT(*) FROM memories WHERE 1=1"
         args: list[Any] = []
+        if visible_to:
+            sql += " AND (scope = 'global' OR (scope = 'user' AND owner_id = ?))"
+            args.append(visible_to)
         if scope:
-            sql += " AND scope = ?"; args.append(scope)
+            sql += " AND scope = ?"
+            args.append(scope)
         if owner_id:
-            sql += " AND owner_id = ?"; args.append(owner_id)
+            sql += " AND owner_id = ?"
+            args.append(owner_id)
         if category:
-            sql += " AND category = ?"; args.append(category)
+            sql += " AND category = ?"
+            args.append(category)
         if keyword:
-            sql += " AND content LIKE ?"; args.append(f"%{keyword}%")
+            sql += " AND content LIKE ?"
+            args.append(f"%{keyword}%")
         with self._get_connection() as conn:
             return conn.execute(sql, args).fetchone()[0]
 

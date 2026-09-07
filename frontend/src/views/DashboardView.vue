@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 import {
-  ChatDotRound, Coin, Monitor, Timer
+  ChatDotRound, Coin, Timer
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -19,7 +19,6 @@ const loading = ref(true)
 const me = ref<MyOverview['user']>({ uid: '', name: '', role: '' })
 const mySessions = ref({ total: 0, running: 0 })
 const memory = ref({ mine: 0, global: 0 })
-const agentStatus = ref<Record<string, any> | null>(null)
 const schedulerTotal = ref(0)
 const schedulerEnabled = ref(0)
 
@@ -35,9 +34,6 @@ const roleLabel = computed(() => {
 })
 
 const cards = computed(() => [
-  { key: 'agent', label: 'Agent 状态', icon: Monitor, value: agentStatus.value ? '运行中' : '离线',
-    hint: agentStatus.value?.model ? `模型 ${agentStatus.value.model}` : '—',
-    ok: !!agentStatus.value, to: '' },
   { key: 'sessions', label: '我的会话', icon: ChatDotRound, value: mySessions.value.total,
     hint: `${mySessions.value.running} 个运行中`, to: '/chat' },
   { key: 'scheduler', label: '定时任务', icon: Timer, value: schedulerTotal.value,
@@ -83,7 +79,6 @@ async function load() {
       mySessions.value = d.sessions ?? { total: 0, running: 0 }
       memory.value = d.memory ?? { mine: 0, global: 0 }
     }).catch(() => {}),
-    api('/api/agent/status').then(d => { agentStatus.value = d }).catch(() => { agentStatus.value = null }),
     api('/api/scheduler/tasks').then(d => {
       schedulerTotal.value = (d.tasks ?? []).length
       schedulerEnabled.value = (d.tasks ?? []).filter((t: any) => t.enabled).length
@@ -101,7 +96,7 @@ onMounted(load)
   <div class="page" v-loading="loading">
     <div class="page-head">
       <div>
-        <h2>总览</h2>
+        <h2>工作台</h2>
         <div class="sub">{{ me.name ? `你好，${me.name}（${roleLabel}），这是你的个人工作台` : '你的个人工作台' }}</div>
       </div>
       <div class="actions"><el-button @click="load">刷新</el-button></div>
@@ -110,7 +105,7 @@ onMounted(load)
     <div class="stat-grid">
       <div v-for="c in cards" :key="c.key" class="stat-card" :class="{ 'no-link': !c.to }" @click="c.to && router.push(c.to)">
         <div class="label"><el-icon :size="14"><component :is="c.icon" /></el-icon>{{ c.label }}</div>
-        <div class="value" :class="{ ok: c.key === 'agent' && c.ok, bad: c.key === 'agent' && !c.ok }">{{ c.value }}</div>
+        <div class="value">{{ c.value }}</div>
         <div class="hint">{{ c.hint }}</div>
       </div>
     </div>

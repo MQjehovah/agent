@@ -31,6 +31,8 @@ def build_admin_router(server) -> APIRouter:
         storage = get_storage()
         live = server.live_sessions_snapshot()
         running = [s for s in live if s["is_streaming"]]
+        # 「全站运行中会话」：与 /api/admin/sessions/running 同源（含池/渠道登记、非 web 执行）
+        running_sessions = server.running_sessions_snapshot(admin=True, tag="")
 
         agent_active_sessions, running_agents, task_counts = 0, 0, {}
         subagent_active = 0
@@ -84,6 +86,21 @@ def build_admin_router(server) -> APIRouter:
                 pass
 
         client = getattr(server.agent, "client", None)
+        mcp = None
+        if server.agent is not None:
+            try:
+                mgr = getattr(server.agent, "mcp", None)
+                if mgr is not None and hasattr(mgr, "list_servers"):
+                    servers = mgr.list_servers()
+                    if isinstance(servers, list):
+                        mcp = {
+                            "count": len(servers),
+                            "tools": sum(int(s.get("tools") or 0)
+                                         for s in servers if isinstance(s, dict)),
+                            "servers": servers,
+                        }
+            except Exception:
+                mcp = None
         return {
             "now": datetime.now().isoformat(),
             "uptime_s": _uptime_s(getattr(server, "_started_at", "")),
@@ -100,6 +117,8 @@ def build_admin_router(server) -> APIRouter:
                 "running_tasks": running_agents,
                 "task_counts": task_counts,
             },
+            "running_sessions": running_sessions,
+            "mcp": mcp,
             "pool": server._pool.stats() if (getattr(server, "_pool", None) is not None
                                              and server._pool.enabled)
                     else {"enabled": False, "capacity": 0, "overflow": 0, "hard_cap": 0,

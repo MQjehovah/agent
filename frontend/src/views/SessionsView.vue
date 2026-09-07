@@ -55,8 +55,8 @@ async function load() {
   loading.value = true
   try {
     const [live, hist] = await Promise.all([
-      api<{ sessions: SessionRow[] }>('/api/sessions').catch(() => ({ sessions: [] as SessionRow[] })),
-      api<{ sessions: SessionRow[] }>('/api/agent/sessions/history?limit=200').catch(() => ({ sessions: [] as SessionRow[] }))
+      api<{ sessions: SessionRow[] }>('/api/sessions?scope=all').catch(() => ({ sessions: [] as SessionRow[] })),
+      api<{ sessions: SessionRow[] }>('/api/agent/sessions/history?limit=200&scope=all').catch(() => ({ sessions: [] as SessionRow[] }))
     ])
     const map = new Map<string, SessionRow>()
     for (const s of hist.sessions ?? []) {

@@ -17,23 +17,23 @@ const admin = isAdmin()
 
 const groups = [
   {
-    title: '工作台',
+    title: '个人空间',
     items: [
-      { path: '/dashboard', title: '总览', icon: Monitor },
+      { path: '/dashboard', title: '工作台', icon: Monitor },
       { path: '/chat', title: '对话', icon: ChatDotRound },
       { path: '/scheduler', title: '定时任务', icon: Timer },
-      { path: '/memories', title: '记忆', icon: Coin }
+      { path: '/memories', title: '记忆管理', icon: Coin }
     ]
   },
   {
     title: '运维与管理',
     adminOnly: true,
     items: [
-      { path: '/sessions', title: '会话管理', icon: Clock },
       { path: '/monitor', title: '运行监控', icon: Odometer },
+      { path: '/sessions', title: '会话管理', icon: Clock },
+      { path: '/kanban', title: '任务看板', icon: DataBoard },
       { path: '/logs', title: '日志', icon: Document },
       { path: '/webhook', title: 'Webhook', icon: Connection },
-      { path: '/kanban', title: '看板', icon: DataBoard },
       { path: '/admin', title: '用户管理', icon: User },
       { path: '/settings', title: '设置', icon: Setting }
     ]

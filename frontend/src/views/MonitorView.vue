@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, post } from '../api'
 import { ElMessage } from 'element-plus'
 
@@ -8,6 +8,8 @@ const auto = ref(true)
 const stats = ref<any>(null)
 const onlineCount = ref(0)
 const nowText = ref('')
+
+const running = computed<any[]>(() => stats.value?.running_sessions ?? [])
 
 const days = ref(7)
 const group = ref('day')
@@ -23,6 +25,15 @@ const threads = ref<any[]>([])
 
 let timer: number | undefined
 let clock: number | undefined
+
+function channelMeta(ch?: string): { label: string; type: 'primary' | 'success' | 'info' | 'warning' } {
+  switch (ch) {
+    case 'web': return { label: 'Web', type: 'primary' }
+    case 'dingtalk': return { label: '钉钉', type: 'success' }
+    case 'feishu': return { label: '飞书', type: 'warning' }
+    default: return { label: ch || '—', type: 'info' }
+  }
+}
 
 async function loadStats() {
   try {
@@ -159,7 +170,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="page" v-loading="loading">
     <div class="page-head">
-      <div><h2>运行监控</h2><div class="sub">实时会话 · token 用量 · 性能 · 审计(管理员)</div></div>
+      <div><h2>运行监控</h2><div class="sub">全局系统视角 · 运行中会话 · worker 池 · MCP · token 用量 · 审计（管理员）</div></div>
       <div class="actions">
         <el-switch v-model="auto" active-text="自动刷新" style="margin-right: 14px" />
         <el-button @click="refreshAll">刷新 {{ nowText }}</el-button>
@@ -172,6 +183,16 @@ onBeforeUnmount(() => {
         <div class="label">Agent</div>
         <div class="value ok">{{ stats.agent.name }}</div>
         <div class="hint">模型 {{ stats.agent.model }} · {{ stats.agent.status }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Worker 池</div>
+        <div class="value" :class="stats.pool?.enabled ? 'ok' : 'bad'">{{ stats.pool?.enabled ? `${stats.pool.active}/${stats.pool.capacity}` : '未启用' }}</div>
+        <div class="hint">忙碌 {{ stats.pool?.busy ?? 0 }} · 已建 {{ stats.pool?.total_created ?? 0 }}{{ stats.pool?.enabled && (stats.pool.users || []).length ? ` · 在线 ${(stats.pool.users || []).length} 用户` : '' }}</div>
+      </div>
+      <div class="stat-card" v-if="stats.mcp">
+        <div class="label">MCP 服务</div>
+        <div class="value">{{ stats.mcp.count }}</div>
+        <div class="hint">{{ stats.mcp.tools }} 个工具已加载</div>
       </div>
       <div class="stat-card">
         <div class="label">正在运行的会话</div>
@@ -198,6 +219,54 @@ onBeforeUnmount(() => {
         <div class="value">{{ fmtMs(stats.perf_today.p50_duration_ms) }}</div>
         <div class="hint">P50 · P95 {{ fmtMs(stats.perf_today.p95_duration_ms) }}</div>
       </div>
+    </div>
+
+    <!-- 全站运行中会话：占用 Agent worker / 流式中 / 渠道执行(非 web)，全站口径 -->
+    <div class="section-title">
+      <span>全站运行中会话</span>
+      <el-tag type="warning" effect="light" size="small" round>{{ running.length }}</el-tag>
+    </div>
+    <div class="card" style="padding: 6px 0">
+      <el-table :data="running" size="small" empty-text="当前没有正在执行的全站会话">
+        <el-table-column label="会话 ID" min-width="210" show-overflow-tooltip class-name="mono">
+          <template #default="{ row }">{{ row.conversation_id || row.id }}</template>
+        </el-table-column>
+        <el-table-column label="渠道" width="86" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.channel" :type="channelMeta(row.channel).type" size="small">
+              {{ channelMeta(row.channel).label }}
+            </el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="用户" width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.user?.name || row.user?.uid || row.tag || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="模型" width="170" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="mono" style="font-size: 12px">{{ row.model || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="阶段" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag v-if="row.stage" type="info" effect="plain" size="small">{{ row.stage }}</el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="执行来源" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.worker ? 'warning' : 'info'" effect="plain">
+              {{ row.worker ? 'Worker 池' : '渠道' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="已运行" width="100" align="right" class-name="mono">
+          <template #default="{ row }">{{ durationText(row.duration_s) }}</template>
+        </el-table-column>
+        <el-table-column label="开始时间" width="170">
+          <template #default="{ row }">{{ row.started_at ? new Date(row.started_at).toLocaleString() : '-' }}</template>
+        </el-table-column>
+      </el-table>
     </div>
 
     <!-- 实时会话 -->

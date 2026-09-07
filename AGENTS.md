@@ -60,7 +60,7 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **会话续聊恢复**: `Agent._restore_db_session_history()` — 进程重启 / worker 回收后首次承接旧会话时从 `messages` 表按序回填上下文(不重复落盘)
 - **RunDispatcher**: `src/agent/runner.py` — 把 `Agent.run()` 的 团队/reflective/ReAct 三路选择收敛为单一分发入口(`agent/core.py` 不再堆叠形态 if/else)
 - **Web 多用户 Worker 池**: `src/web/worker_pool.py` — `AGENT_WEB_POOL_SIZE>0` 时每个用户独立 Agent worker(`workspace/users/u_{uid}` + 独立 tracer/session/subagent), 隔离用户间实例/文件/记忆上下文; LRU 容量回收 + 空闲 TTL 清理
-- **管理可观测 API**(admin): `/api/admin/stats|usage|sessions|sessions/{id}/messages`(查看/导出)、个人用量 `/api/usage`、个人工作台 `/api/my/overview`(总览卡片: 本人跨渠道会话/运行中/记忆统计, 与角色无关)
+- **管理可观测 API**(admin): `/api/admin/stats|usage|sessions|sessions/running|sessions/{id}/messages`(查看/导出)、个人用量 `/api/usage`、个人工作台 `/api/my/overview`(总览卡片: 本人跨渠道会话/运行中/记忆统计, 与角色无关)
 - **「运行中」会话**: `GET /api/agent/sessions/running`(本人)、`GET /api/admin/sessions/running`(admin 全量含姓名)。口径: 正在执行(占用 Agent worker / 流式中), 与 metrics `agent_running_streams` 同源; worker 池启用时以池登记 `WebUserWorkerPool.register_run/running_sessions` 为准(chat/chat_stream acquire 后登记、release 前注销), 池关闭时回退内存 `ChatSession.is_streaming`。**跨渠道**: 钉钉/飞书/webhook/定时等非 web 执行经 `MessageRouter.route` 前后写入进程级登记 `src/channels/run_registry.py`(除 cli 外全渠道, 与池登记/内存流式按 session_id 去重合并; 钉钉等跑在 root agent、`worker=false`, 不占池 worker)。每条含 conversation_id/channel/user/started_at/model/stage(`ChatSession.stage`, 流式 hook 事件更新工具/子代理阶段)。归属 tag 统一解析为 `{channel}:{uid}`(`WebServer._tag_uid`), 跨渠道同 agent 用户可见
 - **Sub-agents**: `src/subagent_manager.py` — loads sub-agent templates from `config/agents/*/PROMPT.md`, reuses sessions by name
 - **Memory**: `src/memory/manager.py` — DB 记忆按 `owner_id` 隔离(user 私有 + global 公共)
@@ -125,7 +125,7 @@ workspace/                # Auto-created, gitignored
 ## 多用户隔离与审计(公司级在线 Agent)
 
 - **对话优先(Conversation-first)**: `messages.conversation_id` 定义“一个用户对话”。顶层 run 的 `session_id` 即对话根(`web:{uid}:{rand}`); 子代理/团队成员运行继承同一 `conversation_id`, 其内部上下文为确定性线程 `session_id = <对话>#<agent>`(`src/agent/core.py` RunContext 下传)
-- **列表/续聊/审计按对话聚合**: `/api/agent/sessions/history`、`/api/admin/sessions` 走 `storage.list_conversations()`(主对话条数 + thread_count), 不再按 agent 碎片列出; 审计可经 `/api/admin/sessions/{conv}/threads` 下钻内部线程。普通用户「我的会话」= 同一 agent 用户跨 web/钉钉/其它 `tag:{uid}` 渠道合并(`storage.list_conversations_for_agent_user()`), 每条带 `channel` 字段(供前端渠道徽标)
+- **列表/续聊/审计按对话聚合**: `/api/agent/sessions/history`、`/api/admin/sessions` 走 `storage.list_conversations()`(主对话条数 + thread_count), 不再按 agent 碎片列出; 审计可经 `/api/admin/sessions/{conv}/threads` 下钻内部线程。普通用户「我的会话」= 同一 agent 用户跨 web/钉钉/其它 `tag:{uid}` 渠道合并(`storage.list_conversations_for_agent_user()`), 每条带 `channel` 字段(供前端渠道徽标)。**个人口径约定**: `/api/sessions`、`/api/agent/sessions/history`、`/api/memories` 默认 `scope=mine`(admin 亦只看自己, 记忆=本人私有+全局公共); 仅当 admin 显式传 `scope=all`(`/api/memories` 为 `view=all`) 才返回全站, 供「运维与管理」组使用
 - **子代理按(对话, agent)隔离**: `SubagentInstance.conversation_id` + `_name_to_session` 仅在相同对话内复用, 杜绝跨对话/跨用户串上下文; 老随机子会话由启动迁移以自身 session 兜底为对话根
 - **会话命名空间**: web 渠道 session_id 服务端强制 `web:{uid}:{rand}`; 非属主访问一律 404
 - **审计落盘**: `messages` 表带 `user_id/channel/conversation_id` 列; 会话内容全部落库,admin 可经 `/api/admin/sessions/{id}/messages` 查看/导出
