@@ -66,6 +66,20 @@ def decode_jwt(token: str) -> dict:
     return jwt.decode(token, _load_jwt_secret(), algorithms=["HS256"])
 
 
+def _verify_cred(cred: str) -> bool:
+    """校验凭证是否为有效 agent JWT 或 SSO(RS256) token。"""
+    try:
+        decode_jwt(cred)
+        return True
+    except Exception:
+        pass
+    try:
+        sso_auth.verify_sso_token(cred)
+        return True
+    except Exception:
+        return False
+
+
 class _BodyLimitMiddleware:
     """纯 ASGI 请求体上限(2MB)。替代 BaseHTTPMiddleware, 规避并发 cancel-scope 崩溃。"""
 
@@ -94,7 +108,11 @@ class _BodyLimitMiddleware:
 
 
 class _AuthMiddleware:
-    """纯 ASGI 鉴权: /api/* (非 /api/auth/*) 需有效 Bearer(agent JWT 或 SSO token)。"""
+    """纯 ASGI 鉴权: /api/* (非 /api/auth/*) 需有效 Bearer(agent JWT 或 SSO token)。
+
+    GET SSE(/api/logs/stream) 例外: EventSource 无法携带 Authorization 头,
+    前端按旧版约定把 token 放查询参数 ?token=..., 故该路径额外放行 query token。
+    """
 
     def __init__(self, app):
         self.app = app
@@ -109,24 +127,20 @@ class _AuthMiddleware:
             await self.app(scope, receive, send)
             return
         if path.startswith("/api/") and not path.startswith("/api/auth/"):
+
             svc = os.environ.get("AGENT_SERVICE_TOKEN", "")
             headers = dict((k.decode("latin1").lower(), v.decode("latin1")) for k, v in scope["headers"])
             if svc and headers.get("x-service-token") == svc:
                 await self.app(scope, receive, send)
                 return
             h = headers.get("authorization", "")
-            ok = False
-            if h.startswith("Bearer "):
-                cred = h[7:]
-                try:
-                    decode_jwt(cred)
+            ok = h.startswith("Bearer ") and _verify_cred(h[7:])
+            if not ok and method == "GET" and path == "/api/logs/stream":
+                # EventSource SSE: 读取 ?token= 查询参数作为 Bearer 兜底(仅此 GET 端点)
+                qs = urllib.parse.parse_qs(scope.get("query_string", b"").decode("latin1"))
+                t = qs.get("token")
+                if t and _verify_cred(t[0]):
                     ok = True
-                except Exception:
-                    try:
-                        sso_auth.verify_sso_token(cred)
-                        ok = True
-                    except Exception:
-                        ok = False
             if not ok:
                 err = json.dumps({"error": "Invalid or expired token"}).encode()
                 await send({
@@ -640,9 +654,12 @@ class WebServer:
         self._server = uvicorn.Server(config)
         # 嵌入式运行：禁用 uvicorn 自带的信号处理，统一由 main.py 控制
         self._server.install_signal_handlers = lambda: None
-        # 绑定事件循环并把日志流 handler 挂到 agent logger（含所有子 logger）
+        # 绑定事件循环并把日志流 handler 挂到 root logger:
+        # 只挂 "agent" 会漏掉 agent 树之外的运行时日志(plugin.dingtalk/webhook/scheduler
+        # 等均以 plugin.* / web.webhook 命名), 挂 root 才能收到本进程全部实际运行日志;
+        # 子 logger 无独立 handler 时默认 propagate 到 root, 不会重复。
         self._log_handler.set_loop(loop)
-        logging.getLogger("agent").addHandler(self._log_handler)
+        logging.getLogger().addHandler(self._log_handler)
         self._ensure_admin_user()
         if self._pool is not None and self._pool.enabled:
             try:

@@ -4,21 +4,15 @@ import contextlib
 import os
 import socket
 import sys
-import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-import pytest
-from fastapi.testclient import TestClient  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
 
-# 测试用 JWT
-import jwt as _jwt  # noqa: E402
-os.environ["WEBUI_DISABLE_AUTH"] = "1"  # 测试模式下绕过鉴权中间件
-
 import pytest
 from fastapi.testclient import TestClient  # noqa: E402
 
+os.environ["WEBUI_DISABLE_AUTH"] = "1"  # 测试模式下绕过鉴权中间件
 
 def _free_port() -> int:
     s = socket.socket()
@@ -337,7 +331,62 @@ async def test_logs_stream_end_to_end():
             await asyncio.wait_for(asyncio.shield(rt), timeout=5)
         assert any("E2E_LOG_TOKEN_X" in x for x in received), f"未收到日志，got: {received}"
     finally:
-        logging.getLogger("agent").removeHandler(w._log_handler)
+        logging.getLogger().removeHandler(w._log_handler)
+        w.stop()
+        await asyncio.sleep(0.3)
+
+
+@pytest.mark.asyncio
+async def test_logs_stream_query_token_auth(monkeypatch):
+    """鉴权开启时前端 EventSource 的 ?token= 查询参数应能通过 SSE(回归: 此前仅认 header 致 401)"""
+    import logging
+
+    import httpx
+
+    from web.server import WebServer, create_jwt
+
+    monkeypatch.setenv("WEBUI_DISABLE_AUTH", "0")
+    monkeypatch.setenv("JWT_SECRET", "unit-test-secret-0123456789abcdef")
+    token = create_jwt({"id": 1, "name": "admin", "role": "admin"})
+
+    logging.getLogger("agent").setLevel(logging.INFO)
+    # main.py 生产环境把 root 置 INFO;pytest 环境 root 可能被调成 WARNING, 这里对齐生产
+    prev_root_level = logging.getLogger().level
+    logging.getLogger().setLevel(logging.INFO)
+    port = _free_port()
+    w = WebServer(host="127.0.0.1", port=port)
+    w.start()
+    srv = w._server
+    for _ in range(50):
+        if srv.started:
+            break
+        await asyncio.sleep(0.1)
+    assert srv.started, "uvicorn 未启动"
+
+    received = []
+
+    async def reader():
+        async with httpx.AsyncClient(timeout=10) as client, client.stream(
+                "GET", f"http://127.0.0.1:{port}/api/logs/stream?token={token}") as r:
+            assert r.status_code == 200, "query token 被鉴权拦截"
+            async for line in r.aiter_lines():
+                received.append(line)
+                if all(m in "\n".join(received) for m in ("E2E_QUERY_TOKEN_X", "E2E_PLUGIN_NS_X")):
+                    break
+
+    try:
+        rt = asyncio.create_task(reader())
+        await asyncio.sleep(1.0)  # 等 SSE 连接建立
+        logging.getLogger("agent.e2e_auth_test").info("E2E_QUERY_TOKEN_X marked")
+        # handler 挂在 root: agent 树之外的运行时 logger(plugin.* / web.webhook) 也能收到
+        logging.getLogger("plugin.dingtalk.handler").info("E2E_PLUGIN_NS_X marked")
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(rt), timeout=5)
+        assert any("E2E_QUERY_TOKEN_X" in x for x in received), f"未收到 agent 日志，got: {received}"
+        assert any("E2E_PLUGIN_NS_X" in x for x in received), f"未收到 plugin.* 日志，got: {received}"
+    finally:
+        logging.getLogger().removeHandler(w._log_handler)
+        logging.getLogger().setLevel(prev_root_level)
         w.stop()
         await asyncio.sleep(0.3)
 
