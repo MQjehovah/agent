@@ -58,8 +58,8 @@ const roleLabel = computed(() => {
 
 async function refreshMe() {
   try {
-    const d = await api<{ id?: number; name: string; role: string }>('/api/auth/me')
-    me.value = { name: d.name, role: d.role }
+    const d = await api<{ id?: number; name: string; display_name?: string; role: string }>('/api/auth/me')
+    me.value = { name: d.display_name || d.name, role: d.role }
     if (d.role) { role.value = d.role; setRole(d.role) }
   } catch {
     /* 忽略 */

@@ -236,7 +236,7 @@ onBeforeUnmount(() => {
           </template>
         </el-table-column>
         <el-table-column label="用户" width="130" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.user?.name || row.user?.uid || row.tag || '-' }}</template>
+          <template #default="{ row }">{{ row.user?.display_name || row.user?.name || row.user?.uid || row.tag || '-' }}</template>
         </el-table-column>
         <el-table-column label="模型" width="170" show-overflow-tooltip>
           <template #default="{ row }">

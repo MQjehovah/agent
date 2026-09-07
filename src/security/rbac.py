@@ -29,17 +29,20 @@ class RBACManager:
 
     def resolve_user(self, platform: str, platform_uid: str, fallback_name: str = "") -> dict:
         if platform == "cli":
-            return {"user_id": None, "user_name": fallback_name or "管理员", "role": "admin"}
+            return {"user_id": None, "user_name": fallback_name or "管理员", "display_name": "",
+                    "role": "admin"}
         with self.storage.get_connection() as conn:
             row = conn.execute(
-                """SELECT u.id, u.name, u.role, u.status FROM rbac_user_identities i
+                """SELECT u.id, u.name, u.display_name, u.role, u.status FROM rbac_user_identities i
                    JOIN rbac_users u ON i.user_id = u.id
                    WHERE i.platform = ? AND i.platform_uid = ?""",
                 (platform, platform_uid)
             ).fetchone()
-        if row and row[3] != "disabled":
-            return {"user_id": row[0], "user_name": row[1], "role": row[2]}
-        return {"user_id": None, "user_name": fallback_name, "role": "default"}
+        if row and row[4] != "disabled":
+            return {"user_id": row[0], "user_name": row[2] or row[1],
+                    "display_name": row[2] or row[1], "role": row[3]}
+        return {"user_id": None, "user_name": fallback_name, "display_name": "",
+                "role": "default"}
 
     def require_user(self, platform: str, platform_uid: str, fallback_name: str = "") -> dict:
         """Resolve a platform identity to a usable agent user, or raise.
@@ -88,12 +91,13 @@ class RBACManager:
             conn.commit()
         return True
 
-    def create_user(self, name: str, department: str = "", role: str = "default") -> int:
+    def create_user(self, name: str, department: str = "", role: str = "default",
+                    display_name: str = "") -> int:
         now = datetime.now().isoformat()
         with self.storage.get_connection() as conn:
             cursor = conn.execute(
-                "INSERT INTO rbac_users (name, department, role, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)",
-                (name, department, role, now, now)
+                "INSERT INTO rbac_users (name, display_name, department, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?)",
+                (name, display_name, department, role, now, now)
             )
             conn.commit()
             return cursor.lastrowid
@@ -131,67 +135,71 @@ class RBACManager:
     def list_users(self) -> list:
         with self.storage.get_connection() as conn:
             rows = conn.execute(
-                "SELECT id, name, department, role, status, created_at, updated_at FROM rbac_users ORDER BY id"
+                "SELECT id, name, display_name, department, role, status, created_at, updated_at FROM rbac_users ORDER BY id"
             ).fetchall()
         result = []
         for r in rows:
             result.append({
-                "id": r[0], "name": r[1], "department": r[2],
-                "role": r[3], "status": r[4], "created_at": r[5], "updated_at": r[6]
+                "id": r[0], "name": r[1], "display_name": r[2] or r[1], "department": r[3],
+                "role": r[4], "status": r[5], "created_at": r[6], "updated_at": r[7]
             })
         return result
 
     def list_users_with_password_flag(self) -> list:
         with self.storage.get_connection() as conn:
             rows = conn.execute(
-                "SELECT id, name, department, role, status, created_at, updated_at, "
+                "SELECT id, name, display_name, department, role, status, created_at, updated_at, "
                 "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_pw "
                 "FROM rbac_users ORDER BY id"
             ).fetchall()
         result = []
         for r in rows:
             result.append({
-                "id": r[0], "name": r[1], "department": r[2],
-                "role": r[3], "status": r[4], "created_at": r[5], "updated_at": r[6],
-                "has_password": bool(r[7])
+                "id": r[0], "name": r[1], "display_name": r[2] or r[1], "department": r[3],
+                "role": r[4], "status": r[5], "created_at": r[6], "updated_at": r[7],
+                "has_password": bool(r[8])
             })
         return result
 
     def get_user(self, user_id: int) -> dict | None:
         with self.storage.get_connection() as conn:
             row = conn.execute(
-                "SELECT id, name, department, role, status, created_at, updated_at FROM rbac_users WHERE id=?",
+                "SELECT id, name, display_name, department, role, status, created_at, updated_at FROM rbac_users WHERE id=?",
                 (user_id,)
             ).fetchone()
         if not row:
             return None
         return {
-            "id": row[0], "name": row[1], "department": row[2],
-            "role": row[3], "status": row[4], "created_at": row[5], "updated_at": row[6]
+            "id": row[0], "name": row[1], "display_name": row[2] or row[1], "department": row[3],
+            "role": row[4], "status": row[5], "created_at": row[6], "updated_at": row[7]
         }
 
     def get_user_with_password_flag(self, user_id: int) -> dict | None:
         with self.storage.get_connection() as conn:
             row = conn.execute(
-                "SELECT id, name, department, role, status, created_at, updated_at, "
+                "SELECT id, name, display_name, department, role, status, created_at, updated_at, "
                 "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_pw "
                 "FROM rbac_users WHERE id=?", (user_id,)
             ).fetchone()
         if not row:
             return None
         return {
-            "id": row[0], "name": row[1], "department": row[2],
-            "role": row[3], "status": row[4], "created_at": row[5], "updated_at": row[6],
-            "has_password": bool(row[7])
+            "id": row[0], "name": row[1], "display_name": row[2] or row[1], "department": row[3],
+            "role": row[4], "status": row[5], "created_at": row[6], "updated_at": row[7],
+            "has_password": bool(row[8])
         }
 
-    def update_user(self, user_id: int, name: str = None, department: str = None, role: str = None) -> bool:
+    def update_user(self, user_id: int, name: str = None, department: str = None,
+                    role: str = None, display_name: str = None) -> bool:
         now = datetime.now().isoformat()
         sets = ["updated_at=?"]
         vals = [now]
         if name is not None:
             sets.append("name=?")
             vals.append(name)
+        if display_name is not None:
+            sets.append("display_name=?")
+            vals.append(display_name)
         if department is not None:
             sets.append("department=?")
             vals.append(department)

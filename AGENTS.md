@@ -197,6 +197,7 @@ Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py
 - **LLM timeout is configurable**: `LLM_TIMEOUT` (default 300s, read timeout) and `LLM_CONNECT_TIMEOUT` (default 30s, connection timeout)
 - **MCP servers in `mcp_servers.json` are disabled by default** (`"enabled": false`) — must be explicitly enabled
 - **`AGENT_WEB_POOL_SIZE` 默认 0** — 多用户部署需显式设 >0; 启用后每个用户首次请求会触发 worker 冷初始化; 回滚/单实例直接置 0
-- **DB 迁移幂等自愈** — `messages.user_id/channel`、`usage_records.duration_ms/cache_*` 由启动时 `ALTER` 自动补齐并回填一次历史(web:{uid}); 无需手工
+- **DB 迁移幂等自愈** — `messages.user_id/channel`、`usage_records.duration_ms/cache_*`、`rbac_users.display_name` 由启动时 `ALTER` 自动补齐并回填一次历史(web:{uid}); 无需手工
+- **SSO 账号模型** — `rbac_users.name` 恒为工号(sub, 唯一身份键), 中文显示名放 `display_name`; `_sso_ensure_user` 未按工号命中时会按 `claims.name`(中文) 找老账号并把其 name 改成工号(双账号自动合并, 保留 role/dept/status/钉钉绑定/历史); `claims.dingtalk` 登录成功后自动 `bind_identity`(幂等), 钉钉渠道免人工开号。展示类接口(name/owner)同时返回 `display_name` 字段, 前端优先用, 内部归属仍按 name=工号/tag
 - **会话隔离依赖命名空间** — 非 web 前缀的旧会话无法回填归属, 对非 admin 普通用户不可见(安全优先), admin 仍可审计; 改造前旧格式钉钉会话(dingtalk:{staff_id})同理保持不可见
 - **跨渠道合并仅限同一 agent 用户** — 钉钉改造后归属 tag 为 `dingtalk:{agent_user.id}`(与 web:{uid} 同 rbac 用户), web「会话」页才会合并展示并带渠道徽标; 钉钉会话跨进程重启不自动复用对话根(复用键在内存, 重启后新 rand), 属已知限制, 恢复上下文能力仍按 `_restore_db_session_history`

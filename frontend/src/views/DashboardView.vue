@@ -9,14 +9,14 @@ import {
 const router = useRouter()
 
 interface MyOverview {
-  user: { uid: string; name: string; role: string }
+  user: { uid: string; name: string; display_name?: string; role: string }
   sessions: { total: number; running: number }
   memory: { mine: number; global: number }
 }
 
 const loading = ref(true)
 
-const me = ref<MyOverview['user']>({ uid: '', name: '', role: '' })
+const me = ref<MyOverview['user']>({ uid: '', name: '', display_name: '', role: '' })
 const mySessions = ref({ total: 0, running: 0 })
 const memory = ref({ mine: 0, global: 0 })
 const schedulerTotal = ref(0)
@@ -97,7 +97,7 @@ onMounted(load)
     <div class="page-head">
       <div>
         <h2>工作台</h2>
-        <div class="sub">{{ me.name ? `你好，${me.name}（${roleLabel}），这是你的个人工作台` : '你的个人工作台' }}</div>
+        <div class="sub">{{ (me.display_name || me.name) ? `你好，${me.display_name || me.name}（${roleLabel}），这是你的个人工作台` : '你的个人工作台' }}</div>
       </div>
       <div class="actions"><el-button @click="load">刷新</el-button></div>
     </div>

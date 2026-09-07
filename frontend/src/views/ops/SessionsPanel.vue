@@ -19,7 +19,7 @@ interface RunningRow {
   id: string
   conversation_id?: string
   channel?: string
-  user?: { uid: string; name: string }
+  user?: { uid: string; name: string; display_name?: string }
   tag?: string
   started_at?: string
   duration_s?: number
@@ -192,7 +192,7 @@ onBeforeUnmount(() => {
           </template>
         </el-table-column>
         <el-table-column v-if="admin" label="用户" width="130" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.user?.name || row.user?.uid || row.tag || '-' }}</template>
+          <template #default="{ row }">{{ row.user?.display_name || row.user?.name || row.user?.uid || row.tag || '-' }}</template>
         </el-table-column>
         <el-table-column label="模型" width="170" show-overflow-tooltip>
           <template #default="{ row }">

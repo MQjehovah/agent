@@ -206,6 +206,7 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS rbac_users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
+                    display_name TEXT DEFAULT '',
                     department TEXT DEFAULT '',
                     role TEXT NOT NULL DEFAULT 'default',
                     status TEXT DEFAULT 'active',
@@ -312,6 +313,7 @@ class Storage:
             _add_col("messages", "channel TEXT DEFAULT ''")
             _add_col("messages", "conversation_id TEXT DEFAULT ''")
             _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
+            _add_col("rbac_users", "display_name TEXT DEFAULT ''")
             for _col in ("duration_ms REAL DEFAULT 0",
                          "cache_hit_tokens INTEGER DEFAULT 0",
                          "cache_miss_tokens INTEGER DEFAULT 0"):
@@ -1135,7 +1137,7 @@ class Storage:
     def get_user_by_token(self, token: str) -> dict[str, Any] | None:
         with self._get_connection() as conn:
             row = conn.execute("""
-                SELECT u.id, u.name, u.department, u.role, u.status, t.id AS token_id
+                SELECT u.id, u.name, u.display_name, u.department, u.role, u.status, t.id AS token_id
                 FROM web_tokens t JOIN rbac_users u ON t.user_id = u.id WHERE t.token = ?
             """, (token,)).fetchone()
         if row:
@@ -1150,7 +1152,7 @@ class Storage:
         with self._get_connection() as conn:
             rows = conn.execute("""
                 SELECT t.id, substring(t.token,1,8)||'...' AS token_preview, t.user_id,
-                       u.name AS user_name, t.description, t.created_at, t.last_used_at
+                       u.name AS user_name, u.display_name, t.description, t.created_at, t.last_used_at
                 FROM web_tokens t JOIN rbac_users u ON t.user_id = u.id ORDER BY t.id DESC
             """).fetchall()
         return [dict(r) for r in rows]
@@ -1177,7 +1179,7 @@ class Storage:
         import hashlib
         with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT id, name, department, role, status, password_hash FROM rbac_users WHERE name = ? AND status = 'active'",
+                "SELECT id, name, display_name, department, role, status, password_hash FROM rbac_users WHERE name = ? AND status = 'active'",
                 (username,),
             ).fetchone()
         if not row or not row["password_hash"]:
@@ -1190,8 +1192,8 @@ class Storage:
                 return None
         except Exception:
             return None
-        return {"id": row["id"], "name": row["name"], "department": row["department"],
-                "role": row["role"], "status": row["status"]}
+        return {"id": row["id"], "name": row["name"], "display_name": row["display_name"] or row["name"],
+                "department": row["department"], "role": row["role"], "status": row["status"]}
 
     def close(self):
         """关闭存储管理器"""

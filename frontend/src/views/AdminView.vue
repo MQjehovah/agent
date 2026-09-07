@@ -3,14 +3,14 @@ import { onMounted, ref } from 'vue'
 import { api, del, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-interface User { id: number | string; name: string; role: string; status?: string; department?: string }
+interface User { id: number | string; name: string; display_name?: string; role: string; status?: string; department?: string }
 interface Role { name: string; description?: string; allowed_tools?: string[] }
 
 const users = ref<User[]>([])
 const roles = ref<Role[]>([])
 const loading = ref(false)
 const dialog = ref(false)
-const form = ref({ name: '', password: '', role: 'default' })
+const form = ref({ name: '', display_name: '', password: '', role: 'default' })
 
 async function load() {
   loading.value = true
@@ -36,7 +36,7 @@ async function addUser() {
   try {
     await post('/api/rbac/users', form.value)
     dialog.value = false
-    form.value = { name: '', password: '', role: 'default' }
+    form.value = { name: '', display_name: '', password: '', role: 'default' }
     await load()
   } catch (e) {
     ElMessage.error((e as Error).message)
@@ -54,7 +54,7 @@ async function toggle(u: User) {
 
 async function removeUser(u: User) {
   try {
-    await ElMessageBox.confirm(`删除用户「${u.name}」?`, '确认', { type: 'warning' })
+    await ElMessageBox.confirm(`删除用户「${u.display_name || u.name}」?`, '确认', { type: 'warning' })
   } catch { return }
   try {
     await del(`/api/rbac/users/${u.id}`)
@@ -77,6 +77,9 @@ onMounted(load)
     <el-table :data="users" v-loading="loading">
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column prop="name" label="用户名" min-width="140" />
+      <el-table-column label="显示名" min-width="120">
+        <template #default="{ row }">{{ row.display_name || '—' }}</template>
+      </el-table-column>
       <el-table-column prop="role" label="角色" width="120">
         <template #default="{ row }"><el-tag size="small">{{ row.role }}</el-tag></template>
       </el-table-column>
@@ -111,6 +114,7 @@ onMounted(load)
     <el-dialog v-model="dialog" title="新建用户" width="420px">
       <el-form label-width="80px">
         <el-form-item label="用户名"><el-input v-model="form.name" /></el-form-item>
+        <el-form-item label="显示名"><el-input v-model="form.display_name" placeholder="中文显示名(可选)" /></el-form-item>
         <el-form-item label="密码"><el-input v-model="form.password" type="password" show-password /></el-form-item>
         <el-form-item label="角色">
           <el-select v-model="form.role">
