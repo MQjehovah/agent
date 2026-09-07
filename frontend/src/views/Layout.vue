@@ -4,9 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../theme'
 import { api, clearToken, getRole, setRole } from '../api'
 import {
-  Monitor, ChatDotRound, Clock, Timer, Coin, Document,
-  Connection, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
-  Odometer, ArrowDown, ArrowUp
+  Monitor, ChatDotRound, Timer, Coin,
+  Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -22,70 +21,30 @@ interface NavItem {
   path: string
   title: string
   icon: any
-  query?: Record<string, string>
-  active?: (r: ReturnType<typeof useRoute>) => boolean
 }
 
-// —— 一级：个人空间（所有登录用户）——
+// —— 一级：个人空间（所有登录用户，平铺）——
 const personalItems: NavItem[] = [
   { path: '/dashboard', title: '工作台', icon: Monitor },
   { path: '/chat', title: '对话', icon: ChatDotRound },
-  {
-    path: '/scheduler', title: '定时任务', icon: Timer,
-    active: r => r.path.startsWith('/scheduler') && r.query.scope !== 'all'
-  },
-  {
-    path: '/memories', title: '记忆管理', icon: Coin,
-    active: r => r.path.startsWith('/memories') && r.query.view !== 'all'
-  }
+  { path: '/scheduler', title: '定时任务', icon: Timer },
+  { path: '/memories', title: '记忆管理', icon: Coin }
 ]
 
-// —— 一级：运行监控（仅管理员，可展开二级）——
+// —— 一级：运维与管理（仅管理员，平铺三个菜单项，无折叠）——
 const opsItems: NavItem[] = [
   { path: '/monitor', title: '运行监控', icon: Odometer },
-  { path: '/sessions', title: '会话管理', icon: Clock },
-  {
-    path: '/scheduler', title: '定时任务', icon: Timer, query: { scope: 'all' },
-    active: r => r.path.startsWith('/scheduler') && r.query.scope === 'all'
-  },
-  {
-    path: '/memories', title: '记忆管理', icon: Coin, query: { view: 'all' },
-    active: r => r.path.startsWith('/memories') && r.query.view === 'all'
-  },
-  { path: '/logs', title: '日志', icon: Document },
-  { path: '/webhook', title: 'Webhook', icon: Connection },
   { path: '/admin', title: '用户管理', icon: User },
   { path: '/settings', title: '设置', icon: Setting }
 ]
 
-const opsActive = computed(() => opsItems.some(itemActive))
-const opsOpen = ref(false)
-const opsExpanded = computed({
-  get: () => opsOpen.value || opsActive.value,
-  set: (v: boolean) => { opsOpen.value = v }
-})
-
 function itemActive(item: NavItem): boolean {
-  if (item.active) return item.active(route)
-  const q = item.query ?? {}
-  for (const [k, v] of Object.entries(q)) {
-    if (String(route.query[k] ?? '') !== v) return false
-  }
   return route.path.startsWith(item.path)
 }
 
 function go(item: NavItem) {
   if (collapsed.value) collapsed.value = false
-  router.push({ path: item.path, query: item.query })
-}
-
-function toggleOps() {
-  if (collapsed.value) {
-    collapsed.value = false
-    opsOpen.value = true
-    return
-  }
-  opsExpanded.value = !opsExpanded.value
+  router.push(item.path)
 }
 
 const currentTitle = computed(() => (route.meta.title as string) ?? '')
@@ -130,21 +89,13 @@ async function logout() {
         </a>
 
         <template v-if="admin">
-          <div class="nav-sub-head" :class="{ open: opsExpanded, 'router-link-active': opsActive }" @click="toggleOps">
-            <el-icon :size="15"><Odometer /></el-icon>
-            <span class="side-label">运行监控</span>
-            <el-icon v-if="!collapsed" class="caret side-label" :size="12">
-              <component :is="opsExpanded ? ArrowUp : ArrowDown" />
-            </el-icon>
-          </div>
-          <template v-if="opsExpanded && !collapsed">
-            <a v-for="item in opsItems" :key="item.path + JSON.stringify(item.query ?? {})" href="#"
-               class="nav-sub-item" :class="{ 'router-link-active': itemActive(item) }"
-               @click.prevent="go(item)">
-              <el-icon :size="15"><component :is="item.icon" /></el-icon>
-              <span class="side-label">{{ item.title }}</span>
-            </a>
-          </template>
+          <div class="side-group-title ops-title">运维与管理</div>
+          <a v-for="item in opsItems" :key="item.path" href="#"
+             :class="{ 'router-link-active': itemActive(item) }"
+             @click.prevent="go(item)">
+            <el-icon :size="15"><component :is="item.icon" /></el-icon>
+            <span class="side-label">{{ item.title }}</span>
+          </a>
         </template>
       </nav>
 
@@ -186,22 +137,7 @@ async function logout() {
 </template>
 
 <style scoped>
-.nav-sub-head {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8.5px 10px; border-radius: 8px;
-  color: var(--text-2); font-size: 13.5px;
-  white-space: nowrap; cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-.nav-sub-head:hover { background: var(--bg-hover); color: var(--text); }
-.nav-sub-head.open { color: var(--text); }
-.nav-sub-head.router-link-active { color: var(--accent); }
-.nav-sub-head .caret { margin-left: auto; flex: none; }
-.layout.collapsed .nav-sub-head { justify-content: center; padding: 9px 0; }
-.layout.collapsed .nav-sub-head .caret { display: none; }
-
-nav a.nav-sub-item { padding-left: 28px; }
-
+.ops-title { margin-top: 14px; }
 .foot-user {
   display: flex; align-items: center; gap: 9px;
   padding: 7px 8px 10px; overflow: hidden;
