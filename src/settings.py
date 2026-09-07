@@ -61,6 +61,11 @@ _DEFAULTS = {
         "password": "",
         "token": "",
     },
+    # 敏感工具清单：命中工具的结果 = 敏感(群共享会话不群发, 私聊送达)。
+    # 默认 = mysql_query MCP 三工具(数字中台子代理查 ERP 库)。
+    "sensitive": {
+        "tools": ["list_tables", "describe_table", "execute_query"],
+    },
     "learning": {
         "enabled": False,
         "per_round": False,

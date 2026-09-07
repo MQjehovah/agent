@@ -17,6 +17,9 @@ logging.getLogger("dingtalk_stream").setLevel(logging.WARNING)
 # 未开户/被禁用用户的拒绝提示(不创建会话、不路由)
 NOT_PROVISIONED_REPLY = "您尚未开通 AI 数字员工，请在员工工作台完成企业登录，或联系管理员开通后使用"
 
+# 群共享会话命中敏感工具时，群内只发这条固定占位(最终文本私聊送达提问者)。
+GROUP_SENSITIVE_PRIVATE_NOTICE = "查询结果含敏感数据，已私聊发送给你，请查收。"
+
 
 def format_dingtalk_session_id(agent_uid: str | int, rand: str) -> str:
     """Build a single-chat dingtalk session id: ``dingtalk:{agent_uid}:{rand}``.
@@ -672,6 +675,8 @@ class AgentChatbotHandler:
             # 不再使用 dingtalk:{staff_id}; 群聊行级审计仍记当前触发人
             user_id = f"dingtalk:{agent_uid}"
 
+            # 本轮是否命中敏感工具(见 agent.sensitive; 子代理调用链已汇聚到顶层结果)。
+            sensitive_hit = False
             if not self.plugin.plugin_manager:
                 response = "执行器未注册，请稍后再试"
             else:
@@ -684,9 +689,13 @@ class AgentChatbotHandler:
                         role=role,
                         # 群共享上下文信号: 记忆不注入个人私有, 群内串行/群间并发见 _conv_lock
                         group_context=is_group,
+                        # 返回 AgentResult, 供下方按 sensitive_hit 改道敏感出口
+                        return_result=True,
                     )
                     response = result.result if hasattr(result, "result") else str(result)
+                    sensitive_hit = bool(getattr(result, "sensitive_hit", False))
                 else:
+                    # 兜底(router 缺失, 非线上路径): 仅能取文本, 无敏感标记可判定
                     response = await self.plugin.plugin_manager.execute(
                         session_id=session.session_id,
                         content=content,
@@ -694,7 +703,19 @@ class AgentChatbotHandler:
                         user_name=user_name
                     )
 
-            self.reply_text(response, incoming_message)
+            # Phase2 敏感改道: 群共享会话(dingtalk_group:)中命中敏感工具的最终回复
+            # → 不把文本发群, 私聊(单聊回执)送达提问者(触发人), 群内仅发固定占位。
+            if is_group and sensitive_hit:
+                if response:
+                    try:
+                        dm_status = await self.plugin._send_text(response, local_user_id=user_id)
+                        self.logger.info(f"群敏感结果已私聊送达 {sender_nick} "
+                                         f"(staff_id={sender_staff_id}): {dm_status}")
+                    except Exception as e:
+                        self.logger.error(f"群敏感结果私聊发送失败: {e!r}", exc_info=True)
+                self.reply_text(GROUP_SENSITIVE_PRIVATE_NOTICE, incoming_message)
+            else:
+                self.reply_text(response, incoming_message)
 
             return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
 

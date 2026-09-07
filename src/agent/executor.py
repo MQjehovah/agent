@@ -4,6 +4,7 @@ Agent 工具执行模块 — execute_tool_safe / execute_tool / execute_subagent
 提取自 agent.py，函数第一个参数为 agent 实例。
 """
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -18,6 +19,23 @@ def _current_run():
 MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 5000))
 
 logger = logging.getLogger("agent.agent")
+
+
+def _mark_run_sensitive_if_hit(name: str) -> None:
+    """命中敏感清单的工具名 → 给当前 run 打「含敏感产出」标记(保守: 调过即敏感)。
+
+    在工具真正执行前置位(已过权限/RBAC/确认/Sandbox 拦截)，保证被允许执行的
+    敏感工具一旦运行即为敏感；写入当前 run 的 RunContext.sensitive_hit，
+    嵌套 run(子代理调用链)由 agent.core.run 结束时会聚到父级上下文。
+    仅活跃 run(带 run_id)才打标，避免误改 run 之外的共享空上下文。
+    """
+    from agent.sensitive import is_sensitive_tool
+    if not is_sensitive_tool(name):
+        return
+    rc = _current_run()
+    if rc is None or not getattr(rc, "run_id", ""):
+        return
+    rc.sensitive_hit = True
 
 
 def _get_user_circuit_breaker(agent):
@@ -40,10 +58,9 @@ def _get_user_circuit_breaker(agent):
 async def execute_tool_safe(agent, name: str, args: dict) -> str:
     """带权限检查、沙箱拦截、钩子、熔断器和错误恢复的工具执行"""
     cb = _get_user_circuit_breaker(agent)
-    if cb and name != "ask_user":
-        if not cb.allow_request():
-            logger.warning(f"熔断器开启，拒绝工具调用: {name}")
-            return cb.get_fallback()
+    if cb and name != "ask_user" and not cb.allow_request():
+        logger.warning(f"熔断器开启，拒绝工具调用: {name}")
+        return cb.get_fallback()
 
     perm_result = agent.permission.check(name, args)
     if not perm_result:
@@ -89,6 +106,8 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
     logger.info(f"[工具调用] {name} | 输入: {args_preview}")
 
     await agent.hooks.fire(agent._hook_event.TOOL_START, tool_name=name, arguments=args)
+
+    _mark_run_sensitive_if_hit(name)
 
     try:
         result = await execute_tool(agent, name, args)
@@ -350,7 +369,5 @@ def unregister_subagent_hooks(agent, unregisters: list):
     if not unregisters:
         return
     for sub_agent, event, callback in unregisters:
-        try:
+        with contextlib.suppress(Exception):
             sub_agent.hooks.unregister(event, callback)
-        except Exception:
-            pass

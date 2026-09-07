@@ -9,16 +9,13 @@ import subprocess
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
-from openai.types.chat import ChatCompletionMessageParam
-
+from agent.subagent import SubagentManager
 from learning import Learner
 from prompt import PromptBuilder
-from agent.subagent import SubagentManager
 from utils.frontmatter import extract_frontmatter
 
 if TYPE_CHECKING:
@@ -34,6 +31,9 @@ class AgentResult:
     result: str
     completed_at: str = field(
         default_factory=lambda: datetime.now().isoformat())
+    # 本轮 run 是否命中敏感工具(清单见 agent.sensitive)：
+    # 嵌套 run(子代理调用链)的命中会汇聚到顶层, 渠道层据此改道敏感结果出口。
+    sensitive_hit: bool = False
 
 
 MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 3000))
@@ -57,6 +57,10 @@ class RunContext:
     # 群聊共享上下文信号：钉钉群共享根运行时置 True，子代理/团队继承；
     # 命中后本轮不注入触发人私有记忆（防串隐私），行级审计仍记触发人。
     group_context: bool = False
+    # 本轮 run 是否命中敏感工具(保守: 调过敏感清单工具即 True)：
+    # 由工具执行层按清单置位；嵌套 run(子代理)结束时汇聚到父级 run 上下文，
+    # 顶层 run 结束时写入 AgentResult.sensitive_hit 供渠道层改道。
+    sensitive_hit: bool = False
     session: Any = None
     task: str = ""
     consecutive_errors: int = 0
@@ -820,7 +824,7 @@ class Agent:
         from hooks import get_run_id, reset_run_id, set_run_id
         # 顶层 agent 重置 ask_user 模式为交互模式
         if not self.parent_agent:
-            from tools.ask_user import set_ask_user_mode, reset_ask_user_mode
+            from tools.ask_user import reset_ask_user_mode, set_ask_user_mode
             _ask_token = set_ask_user_mode("interactive")
         # 读取调用方（父级 run）上下文：子代理在同 Task 内 await 执行，可继承父级身份；
         # 顶层调用时返回空 RunContext。
@@ -863,12 +867,11 @@ class Agent:
             if sess_lock:
                 await sess_lock.acquire()
             # 子代理/每次新建会话默认清历史；web 常驻 worker（persist_session）不清
-            if self.parent_agent and not getattr(self, "persist_session", False):
-                if sess.messages:
-                    old_count = len(sess.messages)
-                    sess.messages = [m for m in sess.messages if m.get("role") == "system"]
-                    if len(sess.messages) != old_count:
-                        logger.debug(f"清除了 {old_count - len(sess.messages)} 条旧消息 (session={session_id[:16]}...)")
+            if self.parent_agent and not getattr(self, "persist_session", False) and sess.messages:
+                old_count = len(sess.messages)
+                sess.messages = [m for m in sess.messages if m.get("role") == "system"]
+                if len(sess.messages) != old_count:
+                    logger.debug(f"清除了 {old_count - len(sess.messages)} 条旧消息 (session={session_id[:16]}...)")
             if not sess.messages and self.system_prompt:
                 sess.reset()
             if eff_user:
@@ -881,7 +884,16 @@ class Agent:
 
         try:
             from agent.runner import dispatch
-            return await dispatch(self, task, session_id, user_id, user_name, inherited)
+            result = await dispatch(self, task, session_id, user_id, user_name, inherited)
+            if getattr(ctx, "sensitive_hit", False):
+                # 敏感标记汇聚：顶层/嵌套 run 结果携带；嵌套 run(子代理调用链)
+                # 同时上抛父级 run 上下文，使整条调用链任一环命中 → 顶层可感知。
+                if hasattr(result, "sensitive_hit"):
+                    result.sensitive_hit = True
+                if (self.parent_agent and inherited is not None
+                        and inherited is not _EMPTY_RUN):
+                    inherited.sensitive_hit = True
+            return result
         finally:
             if sess_lock:
                 sess_lock.release()

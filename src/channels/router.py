@@ -32,6 +32,7 @@ class MessageRouter:
         user_id: str = "",
         user_name: str = "",
         group_context: bool = False,
+        return_result: bool = False,
         **kwargs,
     ) -> Any:
         if not session_id:
@@ -67,6 +68,10 @@ class MessageRouter:
                         group_context=group_context,
                         **kwargs,
                     )
+                    # 渠道层需要结果元信息(如钉钉群敏感标记改道)时返回 AgentResult；
+                    # 默认保持既有行为: 解包为最终回复文本字符串。
+                    if return_result:
+                        return result
                     return result.result if hasattr(result, "result") else str(result)
                 finally:
                     reset_ask_user_mode(token)
