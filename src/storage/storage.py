@@ -24,6 +24,21 @@ def init_storage(workspace: str, config_dir: str = "") -> "Storage":
     return _storage_instance
 
 
+def channel_of_conversation(conversation_id: str, user_id: str = "") -> str:
+    """从会话标识推断渠道名称（用于前端徽标）。
+
+    带命名空间的对话根形如 ``{channel}:{uid}:{rand}``（web:7:abc / dingtalk:7:abc），
+    渠道即第一段；老数据无 ':' 前缀时回退到 user_id 的渠道前缀，仍无则归为 other。
+    """
+    cid = str(conversation_id or "")
+    if ":" in cid:
+        return cid.split(":", 1)[0]
+    tag = str(user_id or "")
+    if ":" in tag:
+        return tag.split(":", 1)[0]
+    return "other"
+
+
 class Storage:
     """SQLite 存储管理器，使用连接池和批量写入"""
 
@@ -304,16 +319,20 @@ class Storage:
             with suppress(sqlite3.OperationalError):
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id)")
-            # 回填历史消息的 channel / user_id（web 命名空间前缀形如 web:{uid}:...）
+            # 回填历史消息的 channel / user_id（web 命名空间前缀形如 web:{uid}:{rand}）
             with suppress(sqlite3.OperationalError):
                 conn.execute("""
                     UPDATE messages SET channel = substr(session_id, 1, instr(session_id, ':') - 1)
                     WHERE channel = '' AND instr(session_id, ':') > 0
                 """)
+                # 老迁移从第 6 位取 uid 会截掉首字符(web:12:... 回填成 web:2);
+                # 此处按会话第二段(web:{uid}:{rand})正确重算, 并兜底补齐空值(幂等自愈)。
                 conn.execute("""
-                    UPDATE messages SET user_id = 'web:' || substr(
-                        session_id, 6, instr(substr(session_id, 6), ':') - 1)
-                    WHERE user_id = '' AND session_id LIKE 'web:%:%'
+                    UPDATE messages SET user_id = 'web:' ||
+                        substr(session_id, 5, instr(substr(session_id, 5), ':') - 1)
+                    WHERE session_id LIKE 'web:%:%'
+                      AND user_id <> 'web:' ||
+                          substr(session_id, 5, instr(substr(session_id, 5), ':') - 1)
                 """)
                 # 老数据无对话归属：以自身 session 为对话根
                 conn.execute("""
@@ -625,6 +644,55 @@ class Storage:
         for r in rows:
             item = dict(r)
             item["thread_count"] = item.get("thread_count") or 0
+            item["channel"] = channel_of_conversation(
+                item["conversation_id"], item.get("user_id") or "")
+            out.append(item)
+        return out
+
+    def list_conversations_for_agent_user(self, agent_user_id: int | str,
+                                          limit: int = 50) -> list[dict[str, Any]]:
+        """跨渠道「我的会话」：按 agent 用户 id 聚合其名下全部渠道的对话根。
+
+        归属约定: messages.user_id 存渠道 tag ``{channel}:{agent_user.id}``
+        （web 为 web:{uid}、钉钉改造后为 dingtalk:{uid}，uid 均指 rbac_users.id），
+        对话根 session_id 形如 ``{channel}:{agent_user.id}:{rand}``。此方法按
+        user_id 的渠道前缀 + 数字 uid 后缀匹配该用户在所有渠道的对话；并额外要求
+        对话根 session_id 以 ``user_id + ':'`` 开头，从而把 Task1 改造前的旧格式
+        钉钉会话（dingtalk:{staff_id}、无前缀等）排除在普通用户可见范围外。
+        另兜底 ``session_id LIKE 'web:{uid}:%'`` 以兼容老迁移 user_id 缺省/截断的
+        web 历史会话（老数据仍须可见）。
+
+        返回每条: {conversation_id, agent_id, user_id, msg_count, thread_count,
+        first_at, last_at, channel}，与 list_conversations 同构。
+        """
+        uid = str(agent_user_id)
+        sql = (
+            "SELECT m.conversation_id AS conversation_id, MAX(m.agent_id) AS agent_id, "
+            "MAX(m.user_id) AS user_id, COUNT(*) AS msg_count, "
+            "(SELECT COUNT(DISTINCT x.session_id) FROM messages x "
+            "  WHERE x.conversation_id = m.conversation_id "
+            "    AND x.session_id != m.conversation_id) AS thread_count, "
+            "MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at "
+            "FROM messages m "
+            "WHERE m.conversation_id IS NOT NULL AND m.conversation_id != '' "
+            "  AND m.session_id = m.conversation_id "
+            "  AND ("
+            "    (m.user_id != '' AND instr(m.user_id, ':') > 0 "
+            "     AND substr(m.user_id, instr(m.user_id, ':') + 1) = ? "
+            "     AND m.session_id LIKE (m.user_id || ':%')) "
+            "    OR m.session_id LIKE 'web:' || ? || ':%'"
+            "  ) "
+            "GROUP BY m.conversation_id ORDER BY MAX(m.created_at) DESC LIMIT ?"
+        )
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                sql, (uid, uid, max(1, min(int(limit), 500)))).fetchall()
+        out = []
+        for r in rows:
+            item = dict(r)
+            item["thread_count"] = item.get("thread_count") or 0
+            item["channel"] = channel_of_conversation(
+                item["conversation_id"], item.get("user_id") or "")
             out.append(item)
         return out
 

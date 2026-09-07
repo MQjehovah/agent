@@ -124,7 +124,7 @@ workspace/                # Auto-created, gitignored
 ## 多用户隔离与审计(公司级在线 Agent)
 
 - **对话优先(Conversation-first)**: `messages.conversation_id` 定义“一个用户对话”。顶层 run 的 `session_id` 即对话根(`web:{uid}:{rand}`); 子代理/团队成员运行继承同一 `conversation_id`, 其内部上下文为确定性线程 `session_id = <对话>#<agent>`(`src/agent/core.py` RunContext 下传)
-- **列表/续聊/审计按对话聚合**: `/api/agent/sessions/history`、`/api/admin/sessions` 走 `storage.list_conversations()`(主对话条数 + thread_count), 不再按 agent 碎片列出; 审计可经 `/api/admin/sessions/{conv}/threads` 下钻内部线程
+- **列表/续聊/审计按对话聚合**: `/api/agent/sessions/history`、`/api/admin/sessions` 走 `storage.list_conversations()`(主对话条数 + thread_count), 不再按 agent 碎片列出; 审计可经 `/api/admin/sessions/{conv}/threads` 下钻内部线程。普通用户「我的会话」= 同一 agent 用户跨 web/钉钉/其它 `tag:{uid}` 渠道合并(`storage.list_conversations_for_agent_user()`), 每条带 `channel` 字段(供前端渠道徽标)
 - **子代理按(对话, agent)隔离**: `SubagentInstance.conversation_id` + `_name_to_session` 仅在相同对话内复用, 杜绝跨对话/跨用户串上下文; 老随机子会话由启动迁移以自身 session 兜底为对话根
 - **会话命名空间**: web 渠道 session_id 服务端强制 `web:{uid}:{rand}`; 非属主访问一律 404
 - **审计落盘**: `messages` 表带 `user_id/channel/conversation_id` 列; 会话内容全部落库,admin 可经 `/api/admin/sessions/{id}/messages` 查看/导出
@@ -197,4 +197,5 @@ Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py
 - **MCP servers in `mcp_servers.json` are disabled by default** (`"enabled": false`) — must be explicitly enabled
 - **`AGENT_WEB_POOL_SIZE` 默认 0** — 多用户部署需显式设 >0; 启用后每个用户首次请求会触发 worker 冷初始化; 回滚/单实例直接置 0
 - **DB 迁移幂等自愈** — `messages.user_id/channel`、`usage_records.duration_ms/cache_*` 由启动时 `ALTER` 自动补齐并回填一次历史(web:{uid}); 无需手工
-- **会话隔离依赖命名空间** — 非 web 前缀的旧会话无法回填归属, 对非 admin 普通用户不可见(安全优先), admin 仍可审计
+- **会话隔离依赖命名空间** — 非 web 前缀的旧会话无法回填归属, 对非 admin 普通用户不可见(安全优先), admin 仍可审计; 改造前旧格式钉钉会话(dingtalk:{staff_id})同理保持不可见
+- **跨渠道合并仅限同一 agent 用户** — 钉钉改造后归属 tag 为 `dingtalk:{agent_user.id}`(与 web:{uid} 同 rbac 用户), web「会话」页才会合并展示并带渠道徽标; 钉钉会话跨进程重启不自动复用对话根(复用键在内存, 重启后新 rand), 属已知限制, 恢复上下文能力仍按 `_restore_db_session_history`

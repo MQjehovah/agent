@@ -11,6 +11,7 @@ interface SessionRow {
   message_count?: number
   messages?: number
   is_streaming?: boolean
+  channel?: string
   source?: 'live' | 'history'
 }
 interface HistoryMsg { role: string; content: string }
@@ -20,6 +21,15 @@ const loading = ref(false)
 const viewVisible = ref(false)
 const viewId = ref('')
 const viewMessages = ref<HistoryMsg[]>([])
+
+function channelMeta(ch?: string): { label: string; type: 'primary' | 'success' | 'info' | 'warning' } {
+  switch (ch) {
+    case 'web': return { label: 'Web', type: 'primary' }
+    case 'dingtalk': return { label: '钉钉', type: 'success' }
+    case 'feishu': return { label: '飞书', type: 'warning' }
+    default: return { label: ch || '—', type: 'info' }
+  }
+}
 
 async function load() {
   loading.value = true
@@ -36,12 +46,16 @@ async function load() {
           created_at: s.first_accessed,
           last_accessed: s.last_accessed,
           message_count: s.messages,
+          channel: s.channel,
           source: 'history'
         } as SessionRow)
       }
     }
     for (const s of live.sessions ?? []) {
-      if (s.id) map.set(s.id, { ...s, source: 'live' })
+      if (s.id) {
+        const prev = map.get(s.id)
+        map.set(s.id, { ...s, channel: s.channel || prev?.channel, source: 'live' })
+      }
     }
     sessions.value = Array.from(map.values()).sort((a, b) =>
       (b.last_accessed || b.created_at || '').localeCompare(a.last_accessed || a.created_at || ''))
@@ -102,6 +116,14 @@ onMounted(load)
           <el-tag :type="row.source === 'live' ? 'warning' : 'info'" size="small">
             {{ row.source === 'live' ? '活跃' : '历史' }}
           </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="渠道" width="90" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="row.channel" :type="channelMeta(row.channel).type" size="small">
+            {{ channelMeta(row.channel).label }}
+          </el-tag>
+          <span v-else>-</span>
         </template>
       </el-table-column>
       <el-table-column label="最近活跃" width="180">

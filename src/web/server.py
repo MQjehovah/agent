@@ -304,10 +304,16 @@ class WebServer:
 
     @staticmethod
     def _same_owner(a: str, b: str) -> bool:
-        """比较两个归属标识是否同一人（容忍 web: 前缀/数字两种形态）。"""
-        def _strip(x: str) -> str:
-            return x[4:] if x.startswith("web:") else x
-        return bool(a) and bool(b) and _strip(str(a)) == _strip(str(b))
+        """判断两个归属标识是否为同一 agent 用户（跨渠道等价）。
+
+        归属 tag 形如 ``{channel}:{uid}``（web:3 / dingtalk:3，uid 均为
+        rbac_users.id）。比较时忽略渠道前缀，使同一 agent 用户在 web/钉钉等
+        渠道的会话互相可见；也兼容历史裸 uid 形态（3 vs web:3）。
+        """
+        def _agent_id(x: str) -> str:
+            x = str(x)
+            return x.split(":", 1)[1] if ":" in x else x
+        return bool(a) and bool(b) and _agent_id(a) == _agent_id(b)
 
     @staticmethod
     def _owner_name_for(uid: str, name: str = "") -> str:
@@ -1435,7 +1441,8 @@ class WebServer:
         async def agent_sessions_history(limit: int = Query(20), agent_id: str = Query(""),
                                          request: Request = None):
             """对话优先：最近 N 个“对话根”（主会话，不含子代理内部 thread）。
-            普通用户仅能看到自己归属的对话；admin 可见全部。"""
+            普通用户仅能看到自己（该 agent 用户跨 web/钉钉等全部渠道）的对话；
+            admin 可见全部。每条带 channel（web/dingtalk/other，供前端徽标）。"""
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
@@ -1449,12 +1456,18 @@ class WebServer:
                     admin = True
             if not admin and not tag:
                 return {"total": 0, "sessions": []}
-            rows = storage.list_conversations(
-                min(max(limit, 1), 200), user_id="" if admin else tag)
+            cap = min(max(limit, 1), 200)
+            if admin:
+                # 管理端维持全量视图（不按归属过滤）
+                rows = storage.list_conversations(cap)
+            else:
+                # 我的会话：同一 agent 用户跨渠道合并（web + 钉钉 + 其它 tag:{uid} 渠道）
+                rows = storage.list_conversations_for_agent_user(u.get("uid"), cap)
             sessions = [{
                 "id": r["conversation_id"],
                 "agent_id": r.get("agent_id") or "",
                 "user_id": r.get("user_id") or "",
+                "channel": r.get("channel") or "other",
                 "messages": r["msg_count"],
                 "thread_count": r.get("thread_count") or 0,
                 "last_accessed": r["last_at"],
