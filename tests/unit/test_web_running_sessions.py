@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from channels import run_registry  # noqa: E402
 from web.server import ChatSession, WebServer, create_jwt  # noqa: E402
 from web.worker_pool import WebUserWorkerPool  # noqa: E402
 
@@ -196,3 +197,93 @@ def test_running_from_pool_registry_when_pool_enabled(monkeypatch):
     assert s["worker"] is True
     assert s["user"]["name"] == "张三"
     assert s["model"] == "qwen-max"
+
+
+# ---------------- 渠道登记（钉钉等非 web 经 MessageRouter.route 执行） ----------------
+
+def test_running_snapshot_merges_channel_registry_run(monkeypatch):
+    """非池模式：钉钉 route 执行（仅渠道登记、无内存 ChatSession）也计入运行中。"""
+    monkeypatch.setenv("WEBUI_DISABLE_AUTH", "1")
+    w = WebServer()
+    run_registry.reset()
+    try:
+        run_registry.register_run("dingtalk:7:b2", "dingtalk", "dingtalk:7",
+                                  started_at="2026-09-07T10:00:00", model="qwen-max")
+        with w._session_lock:
+            w._session_owner_names["dingtalk:7:b2"] = "张三"
+        client = TestClient(w._app)
+
+        r = client.get("/api/admin/sessions/running")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["total"] == 1
+        s = data["sessions"][0]
+        assert s["id"] == "dingtalk:7:b2"
+        assert s["conversation_id"] == "dingtalk:7:b2"
+        assert s["channel"] == "dingtalk"
+        assert s["worker"] is False  # 钉钉跑在 root agent，不占池 worker
+        assert s["user"]["uid"] == "7"
+        assert s["user"]["name"] == "张三"
+        assert s["model"] == "qwen-max"
+
+        # 执行结束（route 注销）后消失
+        run_registry.unregister_run("dingtalk:7:b2")
+        assert client.get("/api/admin/sessions/running").json() == {"total": 0, "sessions": []}
+    finally:
+        run_registry.reset()
+
+
+def test_running_own_view_includes_own_channel_registry_run(monkeypatch):
+    """普通用户：本人钉钉 route 执行可见；他人渠道执行不得混入。"""
+    monkeypatch.setenv("WEBUI_DISABLE_AUTH", "0")
+    w = WebServer()
+    run_registry.reset()
+    try:
+        run_registry.register_run("dingtalk:7:b2", "dingtalk", "dingtalk:7",
+                                  started_at="2026-09-07T10:00:00", model="qwen-max")
+        run_registry.register_run("dingtalk:9:d4", "dingtalk", "dingtalk:9",
+                                  started_at="2026-09-07T10:00:01", model="qwen-max")
+        client = TestClient(w._app)
+        tok = create_jwt({"id": 7, "name": "张三", "role": "default"})
+
+        r = client.get("/api/agent/sessions/running",
+                       headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 200, r.text
+        by = {s["id"]: s for s in r.json()["sessions"]}
+        assert set(by) == {"dingtalk:7:b2"}
+        assert "dingtalk:9:d4" not in by
+    finally:
+        run_registry.reset()
+
+
+def test_running_pool_mode_merges_channel_registry_runs(monkeypatch):
+    """池模式：web 池登记（worker=True）与钉钉渠道登记（worker=False）并存展示。"""
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    monkeypatch.setenv("WEBUI_DISABLE_AUTH", "1")
+    monkeypatch.setenv("AGENT_WEB_POOL_SIZE", "2")
+    agent = MagicMock()
+    agent.client = MagicMock(model="qwen-max")
+    w = WebServer()
+    w.set_agent(agent)
+    assert w._pool is not None and w._pool.enabled
+    run_registry.reset()
+    try:
+        w._pool.register_run("web:7", "web:7:p1",
+                             started_at="2026-09-07T10:00:00", model="qwen-max")
+        run_registry.register_run("dingtalk:7:b2", "dingtalk", "dingtalk:7",
+                                  started_at="2026-09-07T10:00:01", model="qwen-max")
+        with w._session_lock:
+            w._session_owner_names["web:7:p1"] = "张三"
+            w._session_owner_names["dingtalk:7:b2"] = "张三"
+        client = TestClient(w._app)
+
+        r = client.get("/api/admin/sessions/running")
+        assert r.status_code == 200, r.text
+        by = {s["id"]: s for s in r.json()["sessions"]}
+        assert set(by) == {"web:7:p1", "dingtalk:7:b2"}
+        assert by["web:7:p1"]["worker"] is True
+        assert by["dingtalk:7:b2"]["worker"] is False
+        assert by["dingtalk:7:b2"]["channel"] == "dingtalk"
+    finally:
+        run_registry.reset()

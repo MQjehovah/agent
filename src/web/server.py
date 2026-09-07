@@ -426,6 +426,12 @@ class WebServer:
         return f"web:{uid}"
 
     @staticmethod
+    def _tag_uid(tag: str) -> str:
+        """从归属 tag（``{channel}:{uid}``）解析 agent 用户 uid；兼容裸 uid 形态。"""
+        tag = str(tag or "")
+        return tag.split(":", 1)[1] if ":" in tag else tag
+
+    @staticmethod
     def _same_owner(a: str, b: str) -> bool:
         """判断两个归属标识是否为同一 agent 用户（跨渠道等价）。
 
@@ -469,8 +475,8 @@ class WebServer:
         return "allow"
 
     def _owner_display(self, session_id: str, tag: str) -> dict:
-        """解析会话归属展示信息 {uid, name}。tag 形如 web:{uid}。"""
-        uid = tag[4:] if tag.startswith("web:") else tag
+        """解析会话归属展示信息 {uid, name}。tag 形如 {channel}:{uid}。"""
+        uid = WebServer._tag_uid(tag)
         name = self._session_owner_names.get(session_id, "")
         if not name:
             try:
@@ -487,7 +493,7 @@ class WebServer:
 
     def _user_display_name(self, tag: str) -> str:
         """按归属 tag 查询用户姓名（用于管理端展示）。"""
-        uid = tag[4:] if tag.startswith("web:") else tag
+        uid = WebServer._tag_uid(tag)
         try:
             from storage.storage import get_storage
             storage = get_storage()
@@ -565,7 +571,10 @@ class WebServer:
         - 池模式：数据源 = 池登记 pool.running_sessions()（真实占着 worker 的
           会话，不受内存会话上限淘汰影响），与 metrics agent_running_streams 同源；
         - 单实例(池关闭)：数据源 = 内存 ChatSession.is_streaming（同 metrics）。
-        两种模式语义一致（「正在执行」）。admin=True 返回全部；否则仅本人（同 agent 用户）。
+        - 跨渠道：钉钉/飞书/webhook/定时等经 MessageRouter.route 触发的执行另有
+          进程级登记（channels.run_registry），无内存 ChatSession 也能被统计。
+        三种来源按 session_id 去重合并；「worker」仅对真实占用池 worker 的会话为真。
+        admin=True 返回全部；否则仅本人（同 agent 用户）。
         """
         if not admin and not tag:
             return []
@@ -577,6 +586,12 @@ class WebServer:
                 pool_runs = {r["session_id"]: r for r in pool.running_sessions()}
             except Exception as e:
                 logger.warning(f"读取 pool 运行登记失败: {e}")
+        router_runs: dict[str, dict] = {}
+        try:
+            from channels.run_registry import running_sessions as _router_runs
+            router_runs = {r["session_id"]: r for r in _router_runs()}
+        except Exception as e:
+            logger.warning(f"读取渠道运行登记失败: {e}")
         now = datetime.now()
         with self._session_lock:
             mem_items = list(self._sessions.items())
@@ -584,15 +599,26 @@ class WebServer:
         def _visible(owner_tag: str) -> bool:
             return admin or bool(owner_tag) and WebServer._same_owner(owner_tag, tag)
 
+        def _source_tag(sid: str, mem_owner: str) -> str:
+            """按 内存归属 > 池登记 > 渠道登记 的优先级取归属 tag。"""
+            return (mem_owner
+                    or pool_runs.get(sid, {}).get("tag", "")
+                    or router_runs.get(sid, {}).get("tag", ""))
+
+        def _source_started_at(sid: str, mem_started: str) -> str:
+            return (mem_started
+                    or pool_runs.get(sid, {}).get("started_at", "")
+                    or router_runs.get(sid, {}).get("started_at", ""))
+
         out: list[dict] = []
         seen: set[str] = set()
         for sid, cs in mem_items:
-            if not cs.is_streaming and sid not in pool_runs:
-                continue  # 既非流式中也未占 worker → 不算运行中
-            owner_tag = self._session_owners.get(sid, "") or pool_runs.get(sid, {}).get("tag", "")
+            if (not cs.is_streaming and sid not in pool_runs and sid not in router_runs):
+                continue  # 既非流式中也未占 worker/渠道执行 → 不算运行中
+            owner_tag = _source_tag(sid, self._session_owners.get(sid, ""))
             if not _visible(owner_tag):
                 continue
-            started_at = cs.stream_started_at or pool_runs.get(sid, {}).get("started_at", "")
+            started_at = _source_started_at(sid, cs.stream_started_at or "")
             stage = cs.stage if cs.is_streaming else ""
             out.append(self._running_item(sid, owner_tag, started_at, stage, model, now,
                                           on_worker=sid in pool_runs))
@@ -606,6 +632,16 @@ class WebServer:
                 continue
             out.append(self._running_item(sid, owner_tag, r.get("started_at", ""), "",
                                           r.get("model") or model, now, on_worker=True))
+            seen.add(sid)
+        # 渠道登记里无内存 ChatSession 的执行（钉钉/飞书/webhook 等，非池 worker）
+        for sid, r in router_runs.items():
+            if sid in seen:
+                continue
+            owner_tag = r.get("tag", "")
+            if not _visible(owner_tag):
+                continue
+            out.append(self._running_item(sid, owner_tag, r.get("started_at", ""), "",
+                                          r.get("model") or model, now, on_worker=False))
         out.sort(key=lambda x: x["started_at"], reverse=True)
         return out
 

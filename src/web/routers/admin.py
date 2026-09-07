@@ -172,7 +172,7 @@ def build_admin_router(server) -> APIRouter:
                     "id": r["conversation_id"],
                     "agent_id": r.get("agent_id") or "",
                     "owner": server._user_display_name(tag) if tag else "",
-                    "uid": tag[4:] if tag.startswith("web:") else tag,
+                    "uid": server._tag_uid(tag),
                     "tag": tag,
                     "messages": r["msg_count"],
                     "thread_count": r.get("thread_count") or 0,
