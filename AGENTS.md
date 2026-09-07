@@ -27,6 +27,9 @@ AGENT_WEB_POOL_SIZE=16 python src/main.py --web   # >0: 启用按用户隔离的
 AGENT_WEB_POOL_OVERFLOW=0 AGENT_WEB_POOL_ACQUIRE_TIMEOUT=15 python src/main.py --web
 # 对话级限流(每用户): 并发进行中会话数 / 每分钟消息数(写 config.json web.* 亦可)
 AGENT_WEB_MAX_CONCURRENT_STREAMS=2 AGENT_WEB_RATELIMIT_PER_MIN=20 python src/main.py --web
+# 危险操作确认(审批联动): 1=写操作经 SSE ask 由员工确认(admin 豁免)
+AGENT_WEB_CONFIRM=1 python src/main.py --web
+# 健康检查/指标: GET /healthz /metrics(内网/监控用, 不鉴权)
 ```
 
 ## Lint & Test

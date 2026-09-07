@@ -12,7 +12,7 @@ from typing import Any
 import jwt
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("agent.web")
@@ -872,8 +872,35 @@ class WebServer:
 
                 async def run_agent():
                     from tools.ask_user import reset_ask_bridge, set_ask_bridge
-                    _bt = set_ask_bridge(make_ask_bridge())
+                    _ask = make_ask_bridge()
+                    _bt = set_ask_bridge(_ask)
+                    _old_mode = None
+                    _old_confirm = None
                     try:
+                        # F7 审批联动：AGENT_WEB_CONFIRM=1 且非 admin 时，写/危险操作经 ask 双向确认
+                        if os.environ.get("AGENT_WEB_CONFIRM", "") == "1" \
+                                and auth.get("role") != "admin":
+                            try:
+                                _pc = agent_ref._permission_config
+                                if _pc is not None:
+                                    from security.permissions import PermissionMode
+                                    _old_mode = _pc.mode
+                                    _pc.mode = PermissionMode.DEFAULT
+                            except Exception:
+                                _old_mode = None
+                            _old_confirm = getattr(agent_ref, "on_confirm", None)
+
+                            async def _confirm_cb(name, args):
+                                try:
+                                    ans = await _ask(
+                                        f"是否允许执行操作：{name}？",
+                                        ["允许", "拒绝"], "拒绝")
+                                except Exception:
+                                    return False
+                                return ans == "允许"
+
+                            agent_ref.on_confirm = _confirm_cb
+
                         router = MessageRouter(agent_ref)
                         result = await router.route(
                             message, channel="web",
@@ -895,6 +922,12 @@ class WebServer:
                     except Exception as e:
                         await q.put(("error", str(e)))
                     finally:
+                        if _old_mode is not None:
+                            with contextlib.suppress(Exception):
+                                agent_ref._permission_config.mode = _old_mode
+                        if getattr(agent_ref, "on_confirm", None) is not None \
+                                or _old_confirm is not None:
+                            agent_ref.on_confirm = _old_confirm
                         reset_ask_bridge(_bt)
                         for evt in hook_events:
                             agent_ref.hooks.unregister(
@@ -1808,6 +1841,71 @@ class WebServer:
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
             )
 
+        # ===== Wave D: 健康检查 / 指标（供 LB 与监控抓取，不鉴权、内网使用）=====
+
+        @self._app.get("/healthz")
+        async def healthz():
+            db_ok = False
+            try:
+                from storage.storage import get_storage
+                storage = get_storage()
+                if storage is not None:
+                    with storage.get_connection() as conn:
+                        db_ok = conn.execute("SELECT 1").fetchone() is not None
+            except Exception:
+                db_ok = False
+            pool = self._pool.stats() if (self._pool is not None and self._pool.enabled) else None
+            return {
+                "status": "ok" if db_ok else "degraded",
+                "now": datetime.now().isoformat(),
+                "uptime_s": int((datetime.now() - datetime.fromisoformat(self._started_at)).total_seconds())
+                if self._started_at else 0,
+                "db": db_ok,
+                "pool": pool,
+            }
+
+        @self._app.get("/metrics")
+        async def metrics():
+            from storage.storage import get_storage
+            storage = get_storage()
+            live = self.live_sessions_snapshot()
+            running = sum(1 for s in live if s["is_streaming"])
+            pool = self._pool.stats() if (self._pool is not None and self._pool.enabled) else {}
+            usage = storage.usage_totals(days=1) if storage else {}
+            lines = [
+                "# HELP agent_up 1 if agent responding",
+                "# TYPE agent_up gauge",
+                "agent_up 1",
+                "# HELP agent_active_sessions 活跃 web 会话数",
+                "# TYPE agent_active_sessions gauge",
+                f"agent_active_sessions {len(live)}",
+                "# HELP agent_running_streams 运行中流式会话",
+                "# TYPE agent_running_streams gauge",
+                f"agent_running_streams {running}",
+                "# HELP agent_online_users 最近在线用户数",
+                "# TYPE agent_online_users gauge",
+                "agent_online_users 0",
+                "# HELP agent_pool_active worker 池活跃 worker 数",
+                "# TYPE agent_pool_active gauge",
+                f"agent_pool_active {pool.get('active', 0)}",
+                "# HELP agent_pool_busy worker 池忙碌 worker 数",
+                "# TYPE agent_pool_busy gauge",
+                f"agent_pool_busy {pool.get('busy', 0)}",
+                "# HELP agent_usage_today_calls 今日 LLM 调用",
+                "# TYPE agent_usage_today_calls gauge",
+                f"agent_usage_today_calls {usage.get('calls', 0)}",
+                "# HELP agent_usage_today_tokens 今日 tokens",
+                "# TYPE agent_usage_today_tokens gauge",
+                f"agent_usage_today_tokens {usage.get('total_tokens', 0)}",
+                "# HELP agent_usage_today_cost_cny 今日成本",
+                "# TYPE agent_usage_today_cost_cny gauge",
+                f"agent_usage_today_cost_cny {usage.get('cost', 0)}",
+                "# HELP agent_uptime_seconds 运行秒数",
+                "# TYPE agent_uptime_seconds gauge",
+                f"agent_uptime_seconds {int((datetime.now() - datetime.fromisoformat(self._started_at)).total_seconds())}",
+            ]
+            return Response(content="\n".join(lines) + "\n",
+                            media_type="text/plain; version=0.0.4")
 
         # ===== Vue3 SPA(static_vue,由 frontend/ 构建产出)优先;旧版单页回退 =====
         VUE_DIR = os.path.join(os.path.dirname(STATIC_DIR), "static_vue")

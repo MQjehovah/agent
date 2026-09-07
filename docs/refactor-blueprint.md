@@ -54,11 +54,17 @@
 > 遇 ask 时发 `ask` 事件暂停，`/api/chat/answer` 续跑；前端问答栏(单选/文本/默认)。
 > 对话级限流 ✅：每用户并发流数 + 每分钟消息数(`web.user_*`/env, admin 不受限)。
 > webhook DB 化 ✅：任务落 `webhook_tasks`, 启动续跑 pending、崩溃 running 标记中断。
-> 待：F7 危险操作审批联动；随后 Wave D。
+> F7 审批联动 ✅：`AGENT_WEB_CONFIRM=1` 时写/危险操作经 SSE ask 员工确认(admin 豁免)。
+> Wave C 完成。
 
-### Wave D · 运行解耦与运维化（远期，借用 Dify/OpenHands 形态）
+### Wave D · 运行解耦与运维化（借鉴 Dify/OpenHands 形态）
+> 进度（2026-09）：/healthz、/metrics(Prometheus text)、scripts/backup_db.py(在线备份+保留) ✅。
+> 遗留(需存储升级后方可)：执行入队与多实例/无状态 API、指标告警对接、router 计量闭环。
+
 - 执行入队(进程内队列→远期 Redis/worker 进程)，API 无状态化 → 多实例；
 - 指标(Prometheus/Opik 式 trace)、备份/恢复制度、审计闭环、router 计量打通。
+- 说明：多实例横向扩展依赖把单机 SQLite 迁到共享存储(Postgres 等)与进程外队列，
+  属后续大迭代；本次先交付单节点运维化(健康/指标/备份)与文档基线。
 
 ## 3. 改版完成定义(DoD)
 - 每个 Wave：烟测脚本绿(登录/流式/审计/用量/隔离/新功能)、ruff 增量不回归、

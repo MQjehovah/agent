@@ -82,7 +82,7 @@
 | F4 | 工具调用过程可见(名称/参数/结果) | R-A3 | ✅ tool_start/result+卡片 | web/server · ChatView | P0 |
 | F5 | 子代理执行过程可见(流式+内部工具) | R-A3 | ✅ 顶层子代理卡片(深层受限) | subagent 转发 · ChatView | P0 |
 | F6 | 运行中追问/回答(ask 双向) | R-A4 | ✅ SSE ask + /api/chat/answer(后端 e2e 通过,前端问答栏) | tools/ask_user、web | P1 |
-| F7 | 危险操作审批(权限确认) | R-A4/R-C3 | 🕐 | 权限层+前端 | P1 |
+| F7 | 危险操作审批(权限确认) | R-A4/R-C3 | ✅ AGENT_WEB_CONFIRM=1: 写/危险操作经 SSE ask 员工确认(admin 豁免) | 权限层+ask | P1 |
 | F8 | 多任务执行(工具/技能/子代理/团队) | R-A5 | ✅ | tools/skills/subagent/team | P0 |
 | F9 | 定时任务/自主执行 | R-A5 | ✅ | plugins/scheduler、autonomous | P1 |
 | F10 | 记忆/个性化 | R-A5 | ✅ 按 owner 隔离 | memory | P1 |
@@ -115,7 +115,7 @@
 | F25 | token/成本/性能大盘 | R-E2 | ✅ usage P50/P95 聚合 | web+Monitor | P0 |
 | F26 | 个人用量视图 | R-E2 | ✅ /api/usage+UsageView | web | P1 |
 | F27 | 日志流 | R-E3 | ✅ /api/logs/stream | web+Logs | P1 |
-| F28 | 指标/告警(Prometheus 等) | R-E1/R-G3 | 🕐 | 平台监控 | P2 |
+| F28 | 指标/告警(Prometheus 等) | R-E1/R-G3 | ✅ /healthz + /metrics 基础指标(text); 告警对接后续 | web | P2 |
 
 ### 4.5 可靠与运维
 | 编号 | 功能 | 需求 | 现状 | 模块 | 优先级 |
@@ -123,8 +123,8 @@
 | F29 | 会话恢复续聊 | R-G1 | ✅ DB restore | core | P0 |
 | F30 | 长任务续跑/回放 | R-G1 | ✅ webhook 任务 DB 化(webhook_tasks): pending 自动续跑, 崩溃 running 标记中断 | web/webhook_api | P1 |
 | F31 | DB 幂等迁移 | R-G2 | ✅ 启动自愈 | storage | P0 |
-| F32 | 备份/恢复策略 | R-G2 | ⭕ 手动 .bak, 无制度 | 运维 | P1 |
-| F33 | 健康检查/灰度回滚/多实例 | R-G2/R-G3 | ⭕ 单容器+健康 curl; 横向规划 | 部署 | P1/P2 |
+| F32 | 备份/恢复策略 | R-G2 | ✅ scripts/backup_db.py 在线备份+保留(建议 cron) | scripts | P1 |
+| F33 | 健康检查/灰度回滚/多实例 | R-G2/R-G3 | ⭕ 单容器+健康/回滚; 多实例需存储升级 | 部署 | P1/P2 |
 
 ### 4.6 前端与渠道
 | 编号 | 功能 | 需求 | 现状 | 模块 | 优先级 |
