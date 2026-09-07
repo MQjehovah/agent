@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { api, del, isAdmin } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-interface Memory { id: string; content: string; category: string; scope?: string; created_at?: string }
+interface Memory { id: string; content: string; category: string; scope?: string; owner_id?: string; created_at?: string }
 
+const route = useRoute()
+const viewAll = computed(() => route.query.view === 'all')
 const admin = isAdmin()
 const memories = ref<Memory[]>([])
 const total = ref(0)
@@ -14,7 +17,8 @@ const keyword = ref('')
 async function load() {
   loading.value = true
   try {
-    const d = await api<{ memories: Memory[]; total: number }>(`/api/memories?q=${encodeURIComponent(keyword.value)}&limit=200`)
+    const qs = `/api/memories?q=${encodeURIComponent(keyword.value)}&limit=200${viewAll.value ? '&view=all' : ''}`
+    const d = await api<{ memories: Memory[]; total: number }>(qs)
     memories.value = d.memories ?? []
     total.value = d.total ?? 0
   } catch (e) {
@@ -50,7 +54,9 @@ onMounted(load)
 <template>
   <div class="page">
     <div class="page-head">
-      <div><h2>记忆管理</h2><div class="sub">仅展示我的私有记忆与全局公共记忆（个人视角）</div></div>
+      <div><h2>记忆管理</h2>
+        <div class="sub">{{ viewAll ? '全部用户私有 + 全局公共记忆（运维全量）' : '仅展示我的私有记忆（个人空间，不含全局公共记忆）' }}</div>
+      </div>
       <div style="display: flex; gap: 8px">
         <el-input v-model="keyword" placeholder="搜索记忆" clearable style="width: 240px" @keyup.enter="load" />
         <el-button @click="load">搜索</el-button>
@@ -61,6 +67,7 @@ onMounted(load)
       <div v-for="m in memories" :key="m.id" style="border-bottom: 1px solid var(--el-border-color-lighter); padding: 9px 2px; display: flex; gap: 10px; align-items: flex-start">
         <el-tag size="small">{{ m.category || '未分类' }}</el-tag>
         <el-tag size="small" :type="scopeTag(m).type" effect="plain">{{ scopeTag(m).label }}</el-tag>
+        <el-tag v-if="viewAll && m.scope === 'user'" size="small" effect="plain" type="info">{{ m.owner_id || '?' }}</el-tag>
         <span style="flex: 1">{{ m.content }}</span>
         <el-button v-if="canDelete(m)" size="small" text type="danger" @click="remove(m)">删除</el-button>
       </div>

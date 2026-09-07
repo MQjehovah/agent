@@ -415,13 +415,17 @@ def test_memories_crud(tmp_path):
         mid = r.json()["id"]
         assert mid
 
-        # 关键词查询应命中
-        r = client.get("/api/memories?q=知识XYZ")
+        # 关键词查询应命中（global 公共记忆仅运维 view=all 可见）
+        r = client.get("/api/memories?q=知识XYZ&view=all")
         assert r.status_code == 200
         assert any(m["id"] == mid for m in r.json()["memories"])
 
-        # scope 筛选
-        r = client.get("/api/memories?scope=user")
+        # 个人口径默认不含 global（admin 亦只看本人私有）
+        r = client.get("/api/memories?q=知识XYZ")
+        assert not any(m["id"] == mid for m in r.json()["memories"])
+
+        # scope 筛选（全量视角下按 scope 过滤）
+        r = client.get("/api/memories?scope=user&view=all")
         assert all(m["scope"] == "user" for m in r.json()["memories"])
 
         # 编辑
@@ -433,7 +437,7 @@ def test_memories_crud(tmp_path):
         assert r.status_code == 200 and r.json()["success"] is True
 
         # 删除后查不到
-        r = client.get("/api/memories?q=已修改内容")
+        r = client.get("/api/memories?q=已修改内容&view=all")
         assert not any(m["id"] == mid for m in r.json()["memories"])
     finally:
         s.close()

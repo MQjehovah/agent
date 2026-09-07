@@ -1014,6 +1014,13 @@ class WebServer:
             if req_sid:
                 if self._session_access(req_sid, tag, is_admin) == "deny":
                     return JSONResponse({"error": "Session not found"}, status_code=404)
+                # 续聊写回仅允许 web 前缀会话；钉钉等外部渠道的历史会话只读，
+                # 由对应渠道插件续聊（钉钉插件自身发消息不经过 /api/chat）。
+                if not req_sid.startswith("web:"):
+                    return JSONResponse(
+                        {"error": "该会话来自钉钉等外部渠道，仅支持查看历史，请回到对应渠道继续对话"},
+                        status_code=400,
+                    )
                 session_id = req_sid
             else:
                 session_id = MessageRouter.format_session_id("web", uid, uuid.uuid4().hex[:8])
@@ -1076,6 +1083,13 @@ class WebServer:
             if req_sid:
                 if self._session_access(req_sid, tag, is_admin) == "deny":
                     return JSONResponse({"error": "Session not found"}, status_code=404)
+                # 续聊写回仅允许 web 前缀会话；钉钉等外部渠道的历史会话只读，
+                # 由对应渠道插件续聊（钉钉插件自身发消息不经过 /api/chat）。
+                if not req_sid.startswith("web:"):
+                    return JSONResponse(
+                        {"error": "该会话来自钉钉等外部渠道，仅支持查看历史，请回到对应渠道继续对话"},
+                        status_code=400,
+                    )
                 session_id = req_sid
             else:
                 session_id = MessageRouter.format_session_id("web", uid, uuid.uuid4().hex[:8])
@@ -1461,33 +1475,43 @@ class WebServer:
             return self.agent.plugin_manager.get_plugin("scheduler")
 
         @self._app.get("/api/scheduler/tasks")
-        async def scheduler_tasks(request: Request):
+        async def scheduler_tasks(request: Request, scope: str = Query("mine")):
+            """定时任务列表。
+
+            scope=mine（默认）：无论角色都只看「本人创建」的 DB 定时任务，
+            （排除 static 系统级配置与他人任务），供「个人空间 · 定时任务」页；
+            仅当 admin 显式传 scope=all 时返回全量（static 配置文件任务 +
+            全部用户的 DB 任务），供「运行监控 · 定时任务」运维入口使用。
+            """
             sp = _scheduler_plugin()
             if not sp:
                 return JSONResponse({"error": "Scheduler not available", "code": 503}, status_code=503)
             try:
                 auth = await _get_auth(request)
+                is_admin = auth.get("role") == "admin"
+                want_all = is_admin and scope == "all"
                 uid = f"web:{auth['uid']}"
-                db_tasks = sp.list_db_tasks(user_id=uid)
-                visible = [
-                    {"id": t.get("id", ""), "name": t.get("name", ""),
-                     "cron": t.get("cron", ""), "task": t.get("task", ""),
-                     "enabled": bool(t.get("enabled", True)), "static": t.get("static", False),
-                     "user_id": t.get("user_id", ""), "user_name": t.get("user_name", ""),
-                     "last_run_at": t.get("last_run_at"), "last_result": t.get("last_result"),
-                     "last_error": t.get("last_error"), "run_count": t.get("run_count", 0),
-                     "created_at": t.get("created_at"), "updated_at": t.get("updated_at")}
-                    for t in sp.schedules
-                ] + [
-                    {"id": t.get("id", ""), "name": t.get("name", ""),
-                     "cron": t.get("cron", ""), "task": t.get("task", ""),
-                     "enabled": bool(t.get("enabled", True)), "static": False,
-                     "user_id": t.get("user_id", ""), "user_name": t.get("user_name", ""),
-                     "last_run_at": t.get("last_run_at"), "last_result": t.get("last_result"),
-                     "last_error": t.get("last_error"), "run_count": t.get("run_count", 0),
-                     "created_at": t.get("created_at"), "updated_at": t.get("updated_at")}
-                    for t in db_tasks
-                ]
+
+                static = sp.schedules if want_all else []
+                db_tasks = sp.list_db_tasks() if want_all else sp.list_db_tasks(user_id=uid)
+
+                def _row(t: dict, is_static: bool) -> dict:
+                    return {
+                        "id": t.get("id", ""), "name": t.get("name", ""),
+                        "cron": t.get("cron", ""), "task": t.get("task", ""),
+                        "enabled": bool(t.get("enabled", True)), "static": is_static,
+                        "user_id": t.get("user_id", ""), "user_name": t.get("user_name", ""),
+                        "last_run_at": t.get("last_run_at"), "last_result": t.get("last_result"),
+                        "last_error": t.get("last_error"), "run_count": t.get("run_count", 0),
+                        "created_at": t.get("created_at"), "updated_at": t.get("updated_at"),
+                    }
+
+                visible = [_row(t, True) for t in static] + [_row(t, False) for t in db_tasks]
+                if want_all:
+                    # 运维全量：补全归属人姓名（user_name 缺失时按 user_id 渠道 tag 反查）
+                    for it in visible:
+                        if not it.get("user_name") and it.get("user_id"):
+                            it["user_name"] = self._user_display_name(it["user_id"])
                 return {"tasks": visible}
             except Exception as e:
                 logger.exception("Scheduler list error")
@@ -2129,10 +2153,10 @@ class WebServer:
             """记忆列表（个人口径，消除越权）。
 
             view=mine（默认）：无论普通用户还是 admin，都只返回「本人私有
-            (scope=user, owner=本人) + 全局公共(global)」，不再列出他人私有，
+            (scope=user, owner=本人)」的记忆，不含 global 公共记忆，
             供「个人空间 · 记忆管理」页使用；
-            view=all（仅 admin）：跨用户全量列表，保留运维/管理能力
-            （scope/owner_id/category/q 筛选仍可在可见集内叠加）。
+            view=all（仅 admin）：跨用户全量列表（含 global 公共 + 全部人私有），
+            保留运维/管理能力（scope/owner_id/category/q 筛选仍可在可见集内叠加）。
             """
             storage = get_storage()
             if not storage:

@@ -38,8 +38,8 @@ const cards = computed(() => [
     hint: `${mySessions.value.running} 个运行中`, to: '/chat' },
   { key: 'scheduler', label: '定时任务', icon: Timer, value: schedulerTotal.value,
     hint: `启用 ${schedulerEnabled.value} 个`, to: '/scheduler' },
-  { key: 'memories', label: '我的记忆', icon: Coin, value: memory.value.mine + memory.value.global,
-    hint: `个人 ${memory.value.mine} · 公共 ${memory.value.global}`, to: '/memories' }
+  { key: 'memories', label: '我的记忆', icon: Coin, value: memory.value.mine,
+    hint: '我的私有记忆', to: '/memories' }
 ])
 
 const quick = [

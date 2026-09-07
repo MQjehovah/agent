@@ -9,6 +9,21 @@ export function getToken(): string {
 
 export function setToken(t: string) {
   localStorage.setItem(TOKEN_KEY, t)
+  // 从 agent JWT payload 顺带还原角色（SSO 登录等场景前端无 user.role 回包）
+  const role = roleFromJwt(t)
+  if (role) setRole(role)
+}
+
+/** 仅解 JWT payload（不验签）取 role：用于前端菜单/路由展示级判断，后端仍强制鉴权 */
+function roleFromJwt(token: string): string {
+  try {
+    const part = token.split('.')[1] ?? ''
+    const json = atob(part.replace(/-/g, '+').replace(/_/g, '/'))
+    const payload = JSON.parse(json)
+    return payload && typeof payload.role === 'string' ? payload.role : ''
+  } catch {
+    return ''
+  }
 }
 
 export function getRole(): string {

@@ -982,14 +982,15 @@ class Storage:
         """带筛选的记忆列表（按更新时间倒序）。
 
         ``visible_to`` 传入归属 tag 时按“个人口径”过滤：仅返回该用户私有
-        (scope=user, owner=visible_to) + 全局公共(global)，供个人「记忆管理」
-        页与 admin 个人视角使用；不传则为跨用户全量（运维管理用）。
+        (scope=user, owner=visible_to) 的记忆——不含 global 公共记忆，
+        供「个人空间 · 记忆管理」页与 admin 个人视角使用；global 与跨用户
+        全量仅能经运维入口（/api/memories?view=all，不传 visible_to）获得。
         """
         sql = ("SELECT id, scope, owner_id, agent_id, category, content, source, "
                "importance, created_at, updated_at FROM memories WHERE 1=1")
         args: list[Any] = []
         if visible_to:
-            sql += " AND (scope = 'global' OR (scope = 'user' AND owner_id = ?))"
+            sql += " AND scope = 'user' AND owner_id = ?"
             args.append(visible_to)
         if scope:
             sql += " AND scope = ?"
@@ -1015,7 +1016,7 @@ class Storage:
         sql = "SELECT COUNT(*) FROM memories WHERE 1=1"
         args: list[Any] = []
         if visible_to:
-            sql += " AND (scope = 'global' OR (scope = 'user' AND owner_id = ?))"
+            sql += " AND scope = 'user' AND owner_id = ?"
             args.append(visible_to)
         if scope:
             sql += " AND scope = ?"

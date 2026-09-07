@@ -48,7 +48,12 @@ const router = createRouter({
 router.beforeEach((to) => {
   document.title = (to.meta.title ? to.meta.title + ' · ' : '') + '零号员工'
   if (!to.meta.public && !localStorage.getItem('agent_jwt')) return '/login'
-  if (to.meta.admin && localStorage.getItem('agent_role') !== 'admin') return '/dashboard'
+  const role = localStorage.getItem('agent_role')
+  const admin = role === 'admin'
+  // 「运行监控」组内页:仅 admin(含二级 query 全量模式),普通用户一律回个人空间
+  if (to.meta.admin && !admin) return '/dashboard'
+  if (!admin && to.path === '/scheduler' && to.query.scope === 'all') return '/dashboard'
+  if (!admin && to.path === '/memories' && to.query.view === 'all') return '/dashboard'
 })
 
 const app = createApp(App)

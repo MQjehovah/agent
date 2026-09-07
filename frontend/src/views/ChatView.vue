@@ -1,9 +1,9 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatView' })
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, post, streamChat, getToken } from '../api'
 import MarkdownIt from 'markdown-it'
-import { Promotion, VideoPause, Plus, Delete } from '@element-plus/icons-vue'
+import { Promotion, VideoPause, Plus, Delete, Warning } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -11,7 +11,14 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 interface ToolTrace { name: string; done: boolean; args?: string; result?: string }
 interface AgentAct { name: string; done: boolean; content: string; tools: ToolTrace[] }
 interface Msg { role: 'user' | 'assistant'; content: string; reasoning: string; tools: ToolTrace[]; agents: AgentAct[]; error: string }
-interface SessionRow { id: string; created_at: string; message_count: number; is_streaming: boolean }
+interface SessionRow {
+  id: string
+  channel: string
+  created_at?: string
+  last_accessed?: string
+  message_count?: number
+  is_streaming?: boolean
+}
 
 const messages = ref<Msg[]>([])
 const input = ref('')
@@ -22,8 +29,23 @@ const askSel = ref('')
 const askText = ref('')
 const sessionId = ref('')
 const sessions = ref<SessionRow[]>([])
+const currentSession = ref<SessionRow | null>(null)
 const scrollRef = ref<HTMLElement | null>(null)
 let abort: AbortController | null = null
+
+const readonly = computed(() => {
+  const ch = currentSession.value?.channel
+  return !!ch && ch !== 'web'
+})
+
+function channelMeta(ch: string): { label: string; type: 'primary' | 'success' | 'warning' | 'info' } {
+  switch (ch) {
+    case 'web': return { label: 'Web', type: 'primary' }
+    case 'dingtalk': return { label: '钉钉', type: 'success' }
+    case 'feishu': return { label: '飞书', type: 'warning' }
+    default: return { label: ch || '其他', type: 'info' }
+  }
+}
 
 function render(text: string) {
   return md.render(text ?? '')
@@ -36,21 +58,81 @@ function scrollBottom() {
   })
 }
 
+function shortTime(t?: string): string {
+  if (!t) return ''
+  const d = new Date(t)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function displayId(id: string): string {
+  const m = /^[^:]+:\d+:/i.exec(id)
+  return m ? id.slice(m[0].length) : id
+}
+
 async function loadSessions() {
   try {
-    const d = await api<{ sessions: SessionRow[] }>('/api/sessions')
-    sessions.value = d.sessions ?? []
+    const [hist, live] = await Promise.all([
+      api<{ sessions: any[] }>('/api/agent/sessions/history?limit=200').catch(() => ({ sessions: [] })),
+      api<{ sessions: any[] }>('/api/sessions').catch(() => ({ sessions: [] }))
+    ])
+    const map = new Map<string, SessionRow>()
+    for (const h of hist.sessions ?? []) {
+      if (!h.id) continue
+      map.set(h.id, {
+        id: h.id,
+        channel: h.channel || 'other',
+        created_at: h.first_accessed,
+        last_accessed: h.last_accessed,
+        message_count: h.messages ?? 0,
+        is_streaming: false
+      })
+    }
+    for (const l of live.sessions ?? []) {
+      if (!l.id) continue
+      const prev = map.get(l.id)
+      map.set(l.id, {
+        id: l.id,
+        channel: prev?.channel || 'web',
+        created_at: prev?.created_at || l.created_at,
+        last_accessed: prev?.last_accessed || l.created_at,
+        message_count: l.message_count ?? prev?.message_count ?? 0,
+        is_streaming: !!l.is_streaming
+      })
+    }
+    sessions.value = Array.from(map.values()).sort((a, b) =>
+      (b.last_accessed || b.created_at || '').localeCompare(a.last_accessed || a.created_at || ''))
   } catch { /* 静默 */ }
+}
+
+async function fetchMessages(id: string, channel: string): Promise<Array<{ role: string; content: string }>> {
+  // 钉钉等外部渠道无内存 ChatSession，直接读 DB 历史（只读）；
+  // Web 会话优先读内存快照，落库后/重启后回退 DB。
+  if (channel !== 'web') {
+    const d = await api<{ messages: Array<{ role: string; content: string }> }>(
+      `/api/agent/sessions/messages?session_id=${encodeURIComponent(id)}`)
+    return d.messages ?? []
+  }
+  try {
+    const d = await api<{ messages: Array<{ role: string; content: string }> }>(
+      `/api/sessions/${encodeURIComponent(id)}/messages`)
+    return d.messages ?? []
+  } catch {
+    const d = await api<{ messages: Array<{ role: string; content: string }> }>(
+      `/api/agent/sessions/messages?session_id=${encodeURIComponent(id)}`)
+    return d.messages ?? []
+  }
 }
 
 async function openSession(row: SessionRow) {
   if (streaming.value) return
   try {
-    const d = await api<{ messages: Array<{ role: string; content: string }> }>(
-      `/api/sessions/${encodeURIComponent(row.id)}/messages`)
+    const msgs = await fetchMessages(row.id, row.channel)
     sessionId.value = row.id
+    currentSession.value = row
     procTip.value = ''
-    messages.value = (d.messages ?? []).map(m => ({
+    messages.value = msgs.map(m => ({
       role: m.role === 'user' ? 'user' : 'assistant',
       content: m.content, reasoning: '', tools: [], agents: [], error: ''
     }))
@@ -62,20 +144,21 @@ async function openSession(row: SessionRow) {
 
 async function removeSession(row: SessionRow) {
   try { await api(`/api/sessions/${encodeURIComponent(row.id)}`, { method: 'DELETE' }) } catch { return }
-  if (sessionId.value === row.id) { sessionId.value = ''; messages.value = [] }
+  if (sessionId.value === row.id) { sessionId.value = ''; currentSession.value = null; messages.value = [] }
   await loadSessions()
 }
 
 function newSession() {
   if (streaming.value) return
   sessionId.value = ''
+  currentSession.value = null
   messages.value = []
   procTip.value = ''
 }
 
 function send() {
   const text = input.value.trim()
-  if (!text || streaming.value) return
+  if (!text || streaming.value || readonly.value) return
   input.value = ''
   messages.value.push({ role: 'user', content: text, reasoning: '', tools: [], agents: [], error: '' })
   const reply: Msg = { role: 'assistant', content: '', reasoning: '', tools: [], agents: [], error: '' }
@@ -221,17 +304,30 @@ onBeforeUnmount(() => {
       <el-button class="new-btn" type="primary" plain style="width: 100%" :icon="Plus" @click="newSession">新会话</el-button>
       <div class="sess-list">
         <div v-for="s in sessions" :key="s.id" class="sess-item" :class="{ active: s.id === sessionId }" @click="openSession(s)">
-          {{ s.id }}
+          <div class="sess-top">
+            <el-tag size="small" effect="plain" :type="channelMeta(s.channel).type" class="sess-ch">{{ channelMeta(s.channel).label }}</el-tag>
+            <span class="sess-id" :title="s.id">{{ displayId(s.id) }}</span>
+          </div>
+          <div class="sess-meta">
+            <span>{{ s.message_count ?? 0 }} 条</span>
+            <span>{{ shortTime(s.last_accessed || s.created_at) }}</span>
+            <span v-if="s.is_streaming" class="sess-run">运行中</span>
+          </div>
         </div>
         <div v-if="sessions.length === 0" style="font-size: 12px; color: var(--text-3); padding: 6px">暂无历史会话</div>
       </div>
-      <div v-if="sessionId" style="display: flex; align-items: center; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border)">
+      <div v-if="sessionId && !readonly" style="display: flex; align-items: center; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border)">
         <span class="mono" style="flex: 1; font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis">{{ sessionId }}</span>
         <el-button size="small" text type="danger" :icon="Delete" @click="newSession" title="结束当前会话" />
       </div>
     </aside>
 
     <div class="chat-main">
+      <div v-if="readonly" class="readonly-bar">
+        <el-icon :size="14"><Warning /></el-icon>
+        <span>该会话来自「{{ channelMeta(currentSession?.channel || '').label }}」渠道，仅支持查看历史，请在对应渠道继续对话。</span>
+        <el-button size="small" @click="newSession">新建会话</el-button>
+      </div>
       <div ref="scrollRef" class="chat-scroll">
         <div v-if="messages.length === 0" style="text-align: center; margin-top: 13vh">
           <h2 style="font-weight: 650; font-size: 22px">有什么可以帮你?</h2>
@@ -314,11 +410,13 @@ onBeforeUnmount(() => {
           v-model="input"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 8 }"
-          placeholder="输入任务或问题,Enter 发送,Shift+Enter 换行"
+          :disabled="readonly"
+          :placeholder="readonly ? '该会话只读，不可发送消息' : '输入任务或问题,Enter 发送,Shift+Enter 换行'"
           resize="none"
           @keydown.enter.exact.prevent="send"
         />
-        <el-button v-if="!streaming" type="primary" :icon="Promotion" :disabled="!input.trim()" @click="send" />
+        <el-button v-if="readonly" type="primary" :icon="Promotion" disabled>只读</el-button>
+        <el-button v-else-if="!streaming" type="primary" :icon="Promotion" :disabled="!input.trim()" @click="send" />
         <el-button v-else type="warning" :icon="VideoPause" @click="stop" />
       </div>
     </div>
@@ -334,6 +432,31 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   font-size: 13px;
 }
+.readonly-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8% 0;
+  font-size: 12.5px;
+  color: var(--warn, #b8822a);
+}
+.sess-item {
+  padding: 6px 8px; border-radius: 8px; cursor: pointer;
+  font-size: 12px; color: var(--text-2); margin-bottom: 2px;
+  overflow: hidden;
+}
+.sess-item:hover { background: var(--bg-hover); }
+.sess-item.active { background: var(--accent-dim); color: var(--accent); }
+.sess-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sess-ch { flex: none; }
+.sess-id {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: Consolas, monospace; font-size: 12px;
+}
+.sess-meta {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--text-3); margin-top: 3px;
+}
+.sess-item.active .sess-meta { color: var(--text-3); }
+.sess-run { color: var(--warn); }
 .ask-q { display: flex; align-items: center; gap: 8px; color: #7a5c00; }
 .tool-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
 .tool-row {

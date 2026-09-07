@@ -22,7 +22,7 @@ async function submit() {
     })
     setToken(data.token)
     setRole(data.user?.role ?? '')
-    router.push('/chat')
+    router.push('/dashboard')
   } catch (err) {
     error.value = (err as Error).message
   } finally {
@@ -44,7 +44,7 @@ function handleSsoCallback() {
   if (typeof q === 'string' && q) {
     setToken(q)
     // 角色:回调未携带时默认空,后续 /api/auth/me 可补;此处保持最小
-    router.replace('/chat')
+    router.replace('/dashboard')
   }
 }
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { api, del, patch, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -10,12 +11,16 @@ interface Task {
   task: string
   enabled: boolean
   static: boolean
+  user_id?: string
+  user_name?: string
   run_count: number
   last_run_at?: string
   last_result?: string
   last_error?: string
 }
 
+const route = useRoute()
+const scopeAll = computed(() => route.query.scope === 'all')
 const tasks = ref<Task[]>([])
 const loading = ref(false)
 const dialog = ref(false)
@@ -25,7 +30,8 @@ const form = ref({ name: '', cron: '', task: '' })
 async function load() {
   loading.value = true
   try {
-    const d = await api<{ tasks: Task[] }>('/api/scheduler/tasks')
+    const qs = scopeAll.value ? '?scope=all' : ''
+    const d = await api<{ tasks: Task[] }>(`/api/scheduler/tasks${qs}`)
     tasks.value = d.tasks ?? []
   } catch (e) {
     ElMessage.error((e as Error).message)
@@ -85,7 +91,9 @@ onMounted(load)
 <template>
   <div class="page">
     <div class="page-head">
-      <div><h2>定时任务</h2><div class="sub">按 Cron 周期自动执行的任务(仅显示本人可见任务)</div></div>
+      <div><h2>定时任务</h2>
+        <div class="sub">{{ scopeAll ? '全部用户与系统级(static)定时任务（运维全量）' : '按 Cron 周期自动执行的任务（仅显示我创建的）' }}</div>
+      </div>
       <div>
         <el-button @click="load">刷新</el-button>
         <el-button type="primary" @click="openAdd">新建</el-button>
@@ -94,6 +102,15 @@ onMounted(load)
 
     <el-table :data="tasks" v-loading="loading" empty-text="暂无定时任务">
       <el-table-column prop="name" label="名称" min-width="140" />
+      <el-table-column label="类型" width="96" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="row.static" type="warning" size="small" effect="plain">系统级</el-tag>
+          <el-tag v-else type="info" size="small" effect="plain">个人</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="scopeAll" label="归属" width="140" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.user_name || row.user_id || '系统' }}</template>
+      </el-table-column>
       <el-table-column prop="cron" label="Cron" width="140">
         <template #default="{ row }"><code>{{ row.cron }}</code></template>
       </el-table-column>
@@ -109,7 +126,7 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="操作" width="200" align="center">
         <template #default="{ row }">
-          <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button size="small" text type="primary" :disabled="row.static" @click="openEdit(row)">编辑</el-button>
           <el-button size="small" text :type="row.enabled ? 'warning' : 'success'" :disabled="row.static" @click="toggle(row)">
             {{ row.enabled ? '停用' : '启用' }}
           </el-button>
