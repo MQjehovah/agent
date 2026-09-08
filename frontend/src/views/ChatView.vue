@@ -9,7 +9,7 @@ import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
-interface TextBlock { kind: 'text'; content: string; sealed?: boolean }
+interface TextBlock { kind: 'text'; content: string; sealed?: boolean; html: string }
 interface ToolBlock { kind: 'tool'; name: string }
 interface AgentBlock {
   kind: 'agent'
@@ -60,6 +60,36 @@ function render(text: string) {
   return md.render(text ?? '')
 }
 
+// —— 流式 markdown 节流渲染 ——
+// 每 token 都全量 v-html 重跑 markdown-it 会让长回复越滚越卡(看起来像卡住/攒批)。
+// 正文流式期间只累积纯文本 content，由节流器把增量渲染成 html 缓存；
+// 模板优先显示 html，首个节流周期内未渲染时回退纯文本，避免空白。
+const RENDER_TICK = 90
+let renderTimer: number | undefined
+let mdDirty = new Set<TextBlock>()
+function scheduleMarkdown(b: TextBlock) {
+  mdDirty.add(b)
+  if (renderTimer !== undefined) return
+  renderTimer = window.setTimeout(() => {
+    renderTimer = undefined
+    const pending = mdDirty
+    mdDirty = new Set()
+    for (const t of pending) {
+      t.html = render(t.content)
+    }
+  }, RENDER_TICK)
+}
+function flushMarkdown(blocks: MsgBlock[]) {
+  for (const b of blocks) {
+    if (b.kind === 'text') {
+      b.html = render(b.content)
+      mdDirty.delete(b)
+    } else if (b.kind === 'agent') {
+      flushMarkdown(b.blocks)
+    }
+  }
+}
+
 function scrollBottom() {
   void nextTick(() => {
     const el = scrollRef.value
@@ -100,7 +130,9 @@ function textOf(m: Msg): string {
 function appendText(blocks: MsgBlock[], token: string) {
   const last = blocks[blocks.length - 1]
   if (last && last.kind === 'text' && !last.sealed) last.content += token
-  else blocks.push({ kind: 'text', content: token })
+  else blocks.push({ kind: 'text', content: token, html: '' })
+  const tb = blocks[blocks.length - 1]
+  if (tb && tb.kind === 'text') scheduleMarkdown(tb)
 }
 
 /** 密封尾部 text 块：工具/子代理插入点之前的正文不再续写，后续正文另起新块(呈现换行) */
@@ -196,7 +228,7 @@ async function openSession(row: SessionRow) {
         return { role: 'user' as const, content: m.content, reasoning: '', blocks: [], toolCount: 0, error: '' }
       }
       const a = emptyAssistant()
-      if (m.content) a.blocks.push({ kind: 'text', content: m.content })
+      if (m.content) a.blocks.push({ kind: 'text', content: m.content, html: '' })
       return a
     })
     scrollBottom()
@@ -304,7 +336,8 @@ function send() {
         }
         case 'done':
           // 正文 token 已实时入 blocks；若流内无正文(如 ask/纯工具兜底)，用 done 内容补齐
-          if (ev.content && reply.blocks.length === 0) reply.blocks.push({ kind: 'text', content: ev.content })
+          if (ev.content && reply.blocks.length === 0) reply.blocks.push({ kind: 'text', content: ev.content, html: '' })
+          flushMarkdown(reply.blocks)
           for (let i = reply.blocks.length - 1; i >= 0; i--) {
             const b = reply.blocks[i]
             if (b.kind === 'agent' && b.running) { b.running = false; b.collapsed = true }
@@ -325,6 +358,7 @@ function send() {
       streaming.value = false
       procTip.value = ''
       abort = null
+      flushMarkdown(reply.blocks)
       void loadSessions()
       scrollBottom()
     })
@@ -367,6 +401,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   abort?.abort()
   if (pollTimer) window.clearInterval(pollTimer)
+  if (renderTimer !== undefined) window.clearTimeout(renderTimer)
+  renderTimer = undefined
+  mdDirty = new Set()
 })
 </script>
 
@@ -419,8 +456,11 @@ onBeforeUnmount(() => {
               </details>
 
               <div v-for="(b, bi) in m.blocks" :key="bi" class="flow-block">
-                <!-- 正文 -->
-                <div v-if="b.kind === 'text' && b.content" class="md" v-html="render(b.content)" />
+                <!-- 正文：优先显示节流渲染的 html，首帧未完成时回退纯文本(不阻塞) -->
+                <div v-if="b.kind === 'text' && b.content" class="md">
+                  <div v-if="!b.html" class="md-plain">{{ b.content }}</div>
+                  <div v-else v-html="b.html" />
+                </div>
                 <!-- 运行中的工具：仅运行时显示 -->
                 <div v-else-if="b.kind === 'tool'" class="tool-chip">
                   <span class="chip-running">●</span>
@@ -437,7 +477,10 @@ onBeforeUnmount(() => {
                   </div>
                   <div v-if="b.running || !b.collapsed" class="agent-body">
                     <div v-for="(ab, abi) in b.blocks" :key="abi" class="flow-block">
-                      <div v-if="ab.kind === 'text' && ab.content" class="agent-stream" v-html="render(ab.content)" />
+                      <div v-if="ab.kind === 'text' && ab.content" class="agent-stream">
+                        <div v-if="!ab.html" class="md-plain">{{ ab.content }}</div>
+                        <div v-else v-html="ab.html" />
+                      </div>
                       <div v-else-if="ab.kind === 'tool'" class="tool-chip">
                         <span class="chip-running">●</span>
                         <span class="tool-name mono">{{ ab.name }}</span>
@@ -534,6 +577,7 @@ onBeforeUnmount(() => {
 .ask-q { display: flex; align-items: center; gap: 8px; color: #7a5c00; }
 /* 时间线流 */
 .flow-block { margin: 2px 0; }
+.md-plain { white-space: pre-wrap; word-break: break-word; }
 /* 多次输出的正文之间要换行(工具插入被移除后相邻 text 块也保持段落间距) */
 .flow-block .md + .flow-block .md { margin-top: 10px; }
 .caret-line { color: var(--text-2); margin-top: 2px; }
