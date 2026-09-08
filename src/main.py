@@ -622,10 +622,23 @@ async def _main_with_args(args):
                         sid = "scheduler"
                         if user_id:
                             sid = f"scheduler:{user_id}"
+                    # 恢复创建者角色：定时任务以创建者身份执行，需带其 RBAC 角色，
+                    # 否则权限校验按 default 拒绝工具(如推送/调度器查询)。
+                    role = ""
+                    try:
+                        _uid = str(user_id or "").split(":", 1)[-1]
+                        if _uid.isdigit():
+                            _rbac = getattr(agent, "rbac", None)
+                            _u = _rbac.get_user(int(_uid)) if _rbac else None
+                            if _u and _u.get("status", "active") != "disabled":
+                                role = _u.get("role") or ""
+                    except Exception as e:
+                        logger.warning(f"定时任务恢复创建者角色失败: {e!r}")
                     return await router.route(
                         schedule_task, channel="scheduler", session_id=sid,
                         user_id=user_id or "scheduler:admin",
                         user_name=user_name or "定时任务",
+                        role=role or "",
                     )
                 scheduler_plugin._agent_executor = _schedule_to_router
                 if not scheduler_plugin._started:
