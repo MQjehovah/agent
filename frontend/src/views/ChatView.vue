@@ -1,17 +1,34 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatView' })
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { api, post, streamChat, getToken } from '../api'
+import { api, post, streamChat } from '../api'
 import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import MarkdownIt from 'markdown-it'
-import { Promotion, VideoPause, Plus, Delete, Warning } from '@element-plus/icons-vue'
+import { Promotion, VideoPause, Plus, Delete, Warning, ArrowRight } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
-interface ToolTrace { name: string; done: boolean; args?: string; result?: string }
-interface AgentAct { name: string; done: boolean; content: string; tools: ToolTrace[] }
-interface Msg { role: 'user' | 'assistant'; content: string; reasoning: string; tools: ToolTrace[]; agents: AgentAct[]; error: string }
+interface TextBlock { kind: 'text'; content: string }
+interface ToolBlock { kind: 'tool'; name: string }
+interface AgentBlock {
+  kind: 'agent'
+  name: string
+  running: boolean
+  collapsed: boolean
+  toolCount: number
+  blocks: MsgBlock[]
+}
+type MsgBlock = TextBlock | ToolBlock | AgentBlock
+
+interface Msg {
+  role: 'user' | 'assistant'
+  content: string
+  reasoning: string
+  blocks: MsgBlock[]
+  toolCount: number
+  error: string
+}
 interface SessionRow {
   id: string
   channel: string
@@ -66,6 +83,45 @@ function displayId(id: string): string {
 function displayTitle(s: SessionRow): string {
   if (isDingtalkGroupSession(s.id)) return dingtalkGroupDisplayName(s.id)
   return displayId(s.id)
+}
+
+function emptyAssistant(): Msg {
+  return { role: 'assistant', content: '', reasoning: '', blocks: [], toolCount: 0, error: '' }
+}
+
+function textOf(m: Msg): string {
+  return m.blocks
+    .filter((b): b is TextBlock => b.kind === 'text')
+    .map(b => b.content)
+    .join('')
+}
+
+/** 顶层/子代理内 追加正文 token：命中尾部 text 块则续写，否则新增 text 块(保持输出顺序) */
+function appendText(blocks: MsgBlock[], token: string) {
+  const last = blocks[blocks.length - 1]
+  if (last && last.kind === 'text') last.content += token
+  else blocks.push({ kind: 'text', content: token })
+}
+
+/** 找到当前运行中的子代理(最近的 running agent 块)，用于接收 subagent_token/tool 事件 */
+function runningAgent(m: Msg): AgentBlock | null {
+  for (let i = m.blocks.length - 1; i >= 0; i--) {
+    const b = m.blocks[i]
+    if (b.kind === 'agent' && b.running) return b
+  }
+  return null
+}
+
+/** 移除最近一个 name 匹配的 tool 块(运行中工具完成即消失)，返回是否命中 */
+function finishTool(blocks: MsgBlock[], name: string): boolean {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i]
+    if (b.kind === 'tool' && (!name || b.name === name)) {
+      blocks.splice(i, 1)
+      return true
+    }
+  }
+  return false
 }
 
 async function loadSessions() {
@@ -129,10 +185,14 @@ async function openSession(row: SessionRow) {
     sessionId.value = row.id
     currentSession.value = row
     procTip.value = ''
-    messages.value = msgs.map(m => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content, reasoning: '', tools: [], agents: [], error: ''
-    }))
+    messages.value = msgs.map(m => {
+      if (m.role === 'user') {
+        return { role: 'user' as const, content: m.content, reasoning: '', blocks: [], toolCount: 0, error: '' }
+      }
+      const a = emptyAssistant()
+      if (m.content) a.blocks.push({ kind: 'text', content: m.content })
+      return a
+    })
     scrollBottom()
   } catch (e) {
     console.error(e)
@@ -157,17 +217,12 @@ function send() {
   const text = input.value.trim()
   if (!text || streaming.value || readonly.value) return
   input.value = ''
-  messages.value.push({ role: 'user', content: text, reasoning: '', tools: [], agents: [], error: '' })
-  const reply: Msg = { role: 'assistant', content: '', reasoning: '', tools: [], agents: [], error: '' }
+  messages.value.push({ role: 'user', content: text, reasoning: '', blocks: [], toolCount: 0, error: '' })
+  const reply: Msg = emptyAssistant()
   messages.value.push(reply)
   streaming.value = true
   procTip.value = '正在处理…'
   scrollBottom()
-
-  function markToolDone(list: ToolTrace[], name: string) {
-    const hit = [...list].reverse().find(t => t.name === name && !t.done)
-    if (hit) hit.done = true
-  }
 
   abort = new AbortController()
   streamChat(
@@ -176,12 +231,12 @@ function send() {
       const data = (ev.data ?? {}) as Record<string, any>
       switch (ev.type) {
         case 'token':
-          reply.content += ev.content ?? ''
+          appendText(reply.blocks, ev.content ?? '')
           procTip.value = ''
           break
         case 'reasoning':
           reply.reasoning += ev.content ?? ''
-          if (!reply.content) procTip.value = '思考中…'
+          if (!textOf(reply)) procTip.value = '思考中…'
           break
         case 'round_start':
           procTip.value = `第 ${data.iteration ?? ''} 轮`
@@ -192,52 +247,59 @@ function send() {
           procTip.value = '需要你确认/回答…'
           break
         case 'tool_start':
-          reply.tools.push({ name: String(data.name || 'tool'), done: false, args: data.arguments })
+          reply.blocks.push({ kind: 'tool', name: String(data.name || 'tool') })
           procTip.value = `正在调用工具：${String(data.name || 'tool')}`
           break
         case 'tool_result': {
           const name = String(data.name || 'tool')
-          const hit = [...reply.tools].reverse().find(t => t.name === name && !t.done)
-          if (hit) { hit.done = true; hit.result = data.result }
+          if (finishTool(reply.blocks, name)) reply.toolCount++
           procTip.value = '工具执行完成，继续处理…'
           break
         }
         case 'subagent_start': {
           const name = String(data.agent_name || 'subagent')
-          reply.agents.push({ name, done: false, content: '', tools: [] })
+          reply.blocks.push({ kind: 'agent', name, running: true, collapsed: false, toolCount: 0, blocks: [] })
           procTip.value = `已派生子代理「${name}」执行`
           break
         }
         case 'subagent_token': {
-          const act = reply.agents[reply.agents.length - 1]
-          if (act && !act.done) act.content += data.content ?? ev.content ?? ''
+          const act = runningAgent(reply)
+          if (act) appendText(act.blocks, ev.content ?? data.content ?? '')
           procTip.value = '子代理执行中…'
           break
         }
         case 'subagent_tool_start': {
-          const act = reply.agents[reply.agents.length - 1]
-          if (act) act.tools.push({ name: String(data.name || 'tool'), done: false, args: data.arguments })
-          procTip.value = `子代理正在调用工具：${String(data.name || 'tool')}`
+          const act = runningAgent(reply)
+          if (act) {
+            act.blocks.push({ kind: 'tool', name: String(data.name || 'tool') })
+            procTip.value = `子代理正在调用工具：${String(data.name || 'tool')}`
+          }
           break
         }
         case 'subagent_tool_result': {
-          const act = reply.agents[reply.agents.length - 1]
+          const act = runningAgent(reply)
           if (act) {
-            const hit = [...act.tools].reverse().find(t => t.name === String(data.name || 'tool') && !t.done)
-            if (hit) { hit.done = true; hit.result = data.result }
+            const name = String(data.name || 'tool')
+            if (finishTool(act.blocks, name)) act.toolCount++
           }
           break
         }
         case 'subagent_result': {
-          const act = reply.agents[reply.agents.length - 1]
-          if (act) act.done = true
+          const act = runningAgent(reply)
+          if (act) {
+            act.running = false
+            act.collapsed = true
+          }
           procTip.value = '子代理已结束，汇总结果中…'
           break
         }
         case 'done':
-          if (ev.content) reply.content = ev.content
-          for (const act of reply.agents) act.done = true
-          for (const t of reply.tools) t.done = true
+          // 正文 token 已实时入 blocks；若流内无正文(如 ask/纯工具兜底)，用 done 内容补齐
+          if (ev.content && reply.blocks.length === 0) reply.blocks.push({ kind: 'text', content: ev.content })
+          for (let i = reply.blocks.length - 1; i >= 0; i--) {
+            const b = reply.blocks[i]
+            if (b.kind === 'agent' && b.running) { b.running = false; b.collapsed = true }
+          }
           ask.value = null
           procTip.value = ''
           break
@@ -260,6 +322,10 @@ function send() {
 }
 
 function stop() { abort?.abort() }
+
+function toggleAgent(m: Msg, b: AgentBlock) {
+  b.collapsed = !b.collapsed
+}
 
 async function submitAsk() {
   if (!ask.value) return
@@ -333,58 +399,56 @@ onBeforeUnmount(() => {
 
         <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
           <div class="bubble" style="min-width: 30%">
-            <details v-if="m.reasoning" style="margin-bottom: 6px">
-              <summary style="font-size: 12px; color: var(--text-2); cursor: pointer">思考过程</summary>
-              <div style="font-size: 12px; color: var(--text-2); white-space: pre-wrap; margin-top: 4px">{{ m.reasoning }}</div>
-            </details>
+            <!-- 用户消息：纯文本 -->
+            <div v-if="m.role === 'user'">{{ m.content }}</div>
 
-            <div v-if="m.tools.length" class="tool-list">
-              <div v-for="(t, ti) in m.tools" :key="ti" class="tool-row" :class="{ active: !t.done }">
-                <div class="tool-title">
-                  <span class="tool-name mono">{{ t.name }}</span>
-                  <el-tag size="small" :type="t.done ? 'success' : 'warning'" class="tool-state">{{ t.done ? '完成' : '运行中…' }}</el-tag>
-                  <span v-if="t.done && t.result" class="tool-note">({{ String(t.result).length }} 字符)</span>
-                </div>
-                <div v-if="t.args" class="tool-meta mono">{{ t.args }}</div>
-                <details v-if="t.done && t.result" class="tool-detail">
-                  <summary>查看结果</summary>
-                  <pre class="tool-result">{{ t.result }}</pre>
-                </details>
-              </div>
-            </div>
+            <!-- 助手消息：按输出顺序的时间线流 -->
+            <template v-else>
+              <details v-if="m.reasoning" style="margin-bottom: 6px">
+                <summary style="font-size: 12px; color: var(--text-2); cursor: pointer">思考过程</summary>
+                <div style="font-size: 12px; color: var(--text-2); white-space: pre-wrap; margin-top: 4px">{{ m.reasoning }}</div>
+              </details>
 
-            <div v-if="m.agents.length" class="agent-list">
-              <div v-for="(a, ai) in m.agents" :key="ai" class="agent-card" :class="{ active: !a.done }">
-                <div class="agent-head">
-                  <span class="agent-name mono">{{ a.name }}</span>
-                  <el-tag size="small" :type="a.done ? 'success' : 'warning'">
-                    {{ a.done ? '完成' : '执行中' }}
-                  </el-tag>
+              <div v-for="(b, bi) in m.blocks" :key="bi" class="flow-block">
+                <!-- 正文 -->
+                <div v-if="b.kind === 'text' && b.content" class="md" v-html="render(b.content)" />
+                <!-- 运行中的工具：仅运行时显示 -->
+                <div v-else-if="b.kind === 'tool'" class="tool-chip">
+                  <span class="chip-running">●</span>
+                  <span class="tool-name mono">{{ b.name }}</span>
+                  <span style="color: var(--text-3); font-size: 11px">执行中…</span>
                 </div>
-                <div v-if="a.content" class="agent-stream">{{ a.content }}</div>
-                <div v-if="a.tools.length" class="tool-list" style="margin-top: 6px">
-                  <div v-for="(t, tj) in a.tools" :key="tj" class="tool-row sub" :class="{ active: !t.done }">
-                    <div class="tool-title">
-                      <span class="tool-name mono">{{ t.name }}</span>
-                      <el-tag size="small" :type="t.done ? 'success' : 'info'" class="tool-state">{{ t.done ? '完成' : '运行中…' }}</el-tag>
+                <!-- 子代理子块：可折叠 -->
+                <div v-else-if="b.kind === 'agent'" class="agent-card" :class="{ running: b.running }">
+                  <div class="agent-head" @click="toggleAgent(m, b)">
+                    <el-icon :size="12" class="chev" :class="{ open: !b.collapsed }"><ArrowRight /></el-icon>
+                    <span class="agent-name mono">{{ b.name }}</span>
+                    <el-tag size="small" :type="b.running ? 'warning' : 'success'">{{ b.running ? '执行中' : '完成' }}</el-tag>
+                    <span v-if="b.toolCount > 0" class="agent-tools">调用 {{ b.toolCount }} 次工具</span>
+                  </div>
+                  <div v-if="b.running || !b.collapsed" class="agent-body">
+                    <div v-for="(ab, abi) in b.blocks" :key="abi" class="flow-block">
+                      <div v-if="ab.kind === 'text' && ab.content" class="agent-stream" v-html="render(ab.content)" />
+                      <div v-else-if="ab.kind === 'tool'" class="tool-chip">
+                        <span class="chip-running">●</span>
+                        <span class="tool-name mono">{{ ab.name }}</span>
+                        <span style="color: var(--text-3); font-size: 11px">执行中…</span>
+                      </div>
                     </div>
-                    <div v-if="t.args" class="tool-meta mono">{{ t.args }}</div>
-                    <details v-if="t.done && t.result" class="tool-detail">
-                      <summary>查看结果</summary>
-                      <pre class="tool-result">{{ t.result }}</pre>
-                    </details>
+                    <div v-if="b.blocks.length === 0 && b.running" style="color: var(--text-3); font-size: 12px; padding: 2px 0">子代理思考中…</div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <div v-if="m.role === 'user'">{{ m.content }}</div>
-            <div v-else-if="m.content" class="md" v-html="render(m.content)" />
-            <div v-else-if="streaming && i === messages.length - 1" class="proc-hint">
-              <template v-if="procTip"><span class="chip-running">●</span> {{ procTip }}</template>
-              <template v-else><span class="chip-running">●</span> 正在处理…</template>
-            </div>
-            <el-alert v-if="m.error" :title="m.error" type="error" :closable="false" class="err" />
+              <!-- 已完成工具计数汇总 -->
+              <div v-if="m.toolCount > 0" class="tools-sum">已调用 {{ m.toolCount }} 次工具</div>
+
+              <div v-if="!textOf(m) && m.blocks.length === 0 && streaming && i === messages.length - 1" class="proc-hint">
+                <template v-if="procTip"><span class="chip-running">●</span> {{ procTip }}</template>
+                <template v-else><span class="chip-running">●</span> 正在处理…</template>
+              </div>
+              <el-alert v-if="m.error" :title="m.error" type="error" :closable="false" class="err" />
+            </template>
           </div>
         </div>
       </div>
@@ -455,56 +519,45 @@ onBeforeUnmount(() => {
 .sess-item.active .sess-meta { color: var(--text-3); }
 .sess-run { color: var(--warn); }
 .ask-q { display: flex; align-items: center; gap: 8px; color: #7a5c00; }
-.tool-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
-.tool-row {
-  border: 1px solid var(--border, #e5e7eb);
-  border-radius: 8px;
-  padding: 6px 10px;
-  background: var(--fill, #f7f8fa);
-  font-size: 12px;
+/* 时间线流 */
+.flow-block { margin: 2px 0; }
+.tool-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid #e3b0ff; background: #faf3ff; color: #6b3fa0;
+  border-radius: 14px; padding: 2px 10px; font-size: 12px; margin: 2px 0;
 }
-.tool-row.active { border-color: #409eff; background: #eef5ff; }
-.tool-row.sub { border-left: 3px solid #909399; background: #fafafa; }
-.tool-title { display: flex; align-items: center; gap: 8px; }
-.tool-name { font-weight: 600; font-size: 12.5px; }
-.tool-meta { color: var(--text-2, #555); word-break: break-all; margin-top: 4px; font-size: 11.5px; }
-.tool-note { color: var(--text-3, #888); font-size: 11px; }
-.tool-state { margin-left: auto; }
-.tool-detail { margin-top: 4px; }
-.tool-detail summary { cursor: pointer; color: #409eff; font-size: 12px; }
-.tool-result {
-  margin: 6px 0 0;
-  max-height: 180px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 11.5px;
-  background: var(--fill, #fff);
-  border-radius: 6px;
-  padding: 6px 8px;
+.tool-chip .tool-name { font-weight: 600; font-size: 12px; }
+.chip-running { color: #f56c6c; font-size: 10px; animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0.2; } }
+.tools-sum {
+  margin-top: 6px; font-size: 11.5px; color: var(--text-3);
 }
-.proc-hint { color: var(--text-2, #555); font-size: 13px; margin-top: 4px; }
-.agent-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
 .agent-card {
   border: 1px solid var(--border, #e5e7eb);
   border-left: 3px solid #409eff;
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   background: var(--fill, #f7f8fa);
+  margin: 4px 0;
 }
-.agent-card.active { border-left-color: #f59e0b; }
-.agent-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.agent-name { font-size: 13px; font-weight: 600; }
+.agent-card.running { border-left-color: #f59e0b; }
+.agent-head {
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; user-select: none; padding: 2px 0;
+}
+.chev { transition: transform 0.15s; color: var(--text-3); }
+.chev.open { transform: rotate(90deg); }
+.agent-name { font-size: 12.5px; font-weight: 600; }
+.agent-tools { color: var(--text-3); font-size: 11px; margin-left: auto; }
+.agent-body { margin-top: 4px; }
 .agent-stream {
-  font-size: 12px;
-  color: var(--text-2, #555);
-  white-space: pre-wrap;
+  font-size: 13px;
+  color: var(--text-1);
+  line-height: 1.65;
   word-break: break-word;
-  line-height: 1.6;
-  max-height: 200px;
-  overflow-y: auto;
   border-left: 2px solid #d0d7de;
   padding-left: 8px;
-  margin-top: 4px;
+  margin-top: 2px;
 }
+.proc-hint { color: var(--text-2, #555); font-size: 13px; margin-top: 4px; }
 </style>
