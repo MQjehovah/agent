@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { api, del, post } from '../api'
+import { api, del, post, put } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 interface User { id: number | string; name: string; display_name?: string; role: string; status?: string; department?: string }
@@ -11,6 +11,9 @@ const roles = ref<Role[]>([])
 const loading = ref(false)
 const dialog = ref(false)
 const form = ref({ name: '', display_name: '', password: '', role: 'default' })
+const editDialog = ref(false)
+const editTarget = ref<User | null>(null)
+const editForm = ref({ role: '', display_name: '', department: '', password: '' })
 
 async function load() {
   loading.value = true
@@ -37,6 +40,34 @@ async function addUser() {
     await post('/api/rbac/users', form.value)
     dialog.value = false
     form.value = { name: '', display_name: '', password: '', role: 'default' }
+    await load()
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+function openEdit(u: User) {
+  editTarget.value = u
+  editForm.value = {
+    role: u.role,
+    display_name: u.display_name ?? '',
+    department: u.department ?? '',
+    password: ''
+  }
+  editDialog.value = true
+}
+
+async function saveEdit() {
+  const u = editTarget.value
+  if (!u) return
+  const body: Record<string, string> = { role: editForm.value.role }
+  if (editForm.value.display_name !== (u.display_name ?? '')) body.display_name = editForm.value.display_name
+  if (editForm.value.department !== (u.department ?? '')) body.department = editForm.value.department
+  if (editForm.value.password) body.password = editForm.value.password
+  try {
+    await put(`/api/rbac/users/${u.id}`, body)
+    editDialog.value = false
+    ElMessage.success('已保存')
     await load()
   } catch (e) {
     ElMessage.error((e as Error).message)
@@ -91,8 +122,9 @@ onMounted(load)
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="150" align="center">
+      <el-table-column label="操作" width="210" align="center">
         <template #default="{ row }">
+          <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button size="small" text :type="row.status === 'active' ? 'warning' : 'success'" @click="toggle(row)">
             {{ row.status === 'active' ? '禁用' : '启用' }}
           </el-button>
@@ -125,6 +157,24 @@ onMounted(load)
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
         <el-button type="primary" @click="addUser">创建</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="editDialog" title="编辑用户" width="420px">
+      <el-form label-width="80px" v-if="editTarget">
+        <el-form-item label="用户名"><el-input :model-value="editTarget.name" disabled /></el-form-item>
+        <el-form-item label="显示名"><el-input v-model="editForm.display_name" placeholder="中文显示名" /></el-form-item>
+        <el-form-item label="部门"><el-input v-model="editForm.department" placeholder="部门" /></el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="editForm.role" style="width: 100%">
+            <el-option v-for="r in roles" :key="r.name" :label="r.name" :value="r.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="重置密码"><el-input v-model="editForm.password" type="password" show-password placeholder="留空则不修改" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveEdit">保存</el-button>
       </template>
     </el-dialog>
   </div>

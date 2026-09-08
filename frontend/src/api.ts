@@ -87,6 +87,11 @@ export function post<T = any>(path: string, body: unknown): Promise<T> {
   return api<T>(path, { method: 'POST', body: JSON.stringify(body) })
 }
 
+/** PUT JSON 快捷 */
+export function put<T = any>(path: string, body: unknown): Promise<T> {
+  return api<T>(path, { method: 'PUT', body: JSON.stringify(body) })
+}
+
 export function patch<T = any>(path: string, body: unknown): Promise<T> {
   return api<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
 }
