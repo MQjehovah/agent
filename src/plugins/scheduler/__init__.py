@@ -59,14 +59,26 @@ class SchedulerPlugin(BasePlugin):
         from storage.storage import get_storage
         return get_storage()
 
-    def list_db_tasks(self, user_id: str = "") -> list[dict]:
-        """列出数据库定时任务。user_id 为空返回全部（管理员），否则只返回该用户。"""
+    def list_db_tasks(self, user_id: str = "", user_uid: str = "") -> list[dict]:
+        """列出数据库定时任务。
+
+        - user_id 非空：精确匹配该 user_id（跨渠道时仅单渠道 tag，如 ``web:3``）。
+        - user_uid 非空：按 agent 用户 uid 后缀匹配任意渠道 tag（``web:3``/``dingtalk:3``…），
+          供「个人空间」跨渠道合并展示本人全部任务；两者同时给定时 user_uid 优先。
+        - 均为空：返回全部（管理员全量）。
+        """
         db = self._db()
         if not db:
             return []
         try:
             with db.get_connection() as conn:
-                if user_id:
+                if user_uid:
+                    rows = conn.execute(
+                        "SELECT * FROM scheduled_tasks "
+                        "WHERE user_id != '' AND user_id LIKE ? ORDER BY created_at DESC",
+                        (f"%:{user_uid}",),
+                    ).fetchall()
+                elif user_id:
                     rows = conn.execute(
                         "SELECT * FROM scheduled_tasks WHERE user_id = ? ORDER BY created_at DESC",
                         (user_id,),

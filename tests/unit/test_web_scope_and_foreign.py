@@ -71,6 +71,10 @@ def test_scheduler_default_mine_excludes_static_and_others(env):
          "enabled": 1, "user_id": "web:7", "user_name": "", "last_run_at": None,
          "last_result": None, "last_error": None, "run_count": 0,
          "created_at": "", "updated_at": ""},
+        {"id": "t7d", "name": "七的钉钉任务", "cron": "0 9 * * *", "task": "执行钉钉任务",
+         "enabled": 1, "user_id": "dingtalk:7", "user_name": "", "last_run_at": None,
+         "last_result": None, "last_error": None, "run_count": 0,
+         "created_at": "", "updated_at": ""},
         {"id": "t9", "name": "九的任务", "cron": "0 9 * * *", "task": "执行九的任务",
          "enabled": 1, "user_id": "web:9", "user_name": "", "last_run_at": None,
          "last_result": None, "last_error": None, "run_count": 0,
@@ -78,8 +82,10 @@ def test_scheduler_default_mine_excludes_static_and_others(env):
     ]
     sp.schedules = [{"id": "st1", "name": "系统报表", "cron": "0 10 * * 0",
                      "task": "静态任务", "enabled": True}]
-    sp.list_db_tasks.side_effect = lambda user_id="": (
-        rows if not user_id else [r for r in rows if r["user_id"] == user_id])
+    sp.list_db_tasks.side_effect = lambda user_id="", user_uid="": (
+        rows if (not user_id and not user_uid) else (
+            [r for r in rows if r["user_id"].endswith(f":{user_uid}")] if user_uid else
+            [r for r in rows if r["user_id"] == user_id]))
 
     mock_pm = MagicMock()
     mock_pm.get_plugin.return_value = sp
@@ -87,20 +93,20 @@ def test_scheduler_default_mine_excludes_static_and_others(env):
     mock_agent.plugin_manager = mock_pm
     w.set_agent(mock_agent)
 
-    # 普通用户：默认只看到自己创建的，不含 static / 他人
+    # 普通用户：默认跨渠道合并(web:7 + dingtalk:7)，不含 static / 他人
     r = client.get("/api/scheduler/tasks", headers=_token(7))
     assert r.status_code == 200, r.text
     ids = {t["id"] for t in r.json()["tasks"]}
-    assert ids == {"t7"}
+    assert ids == {"t7", "t7d"}
 
     # 普通用户显式 scope=all 仍被忽略（无静态/他人）
     r = client.get("/api/scheduler/tasks?scope=all", headers=_token(7))
-    assert {t["id"] for t in r.json()["tasks"]} == {"t7"}
+    assert {t["id"] for t in r.json()["tasks"]} == {"t7", "t7d"}
 
     # admin scope=all：static + 全部用户
     r = client.get("/api/scheduler/tasks?scope=all", headers=_token(1, role="admin"))
     assert r.status_code == 200, r.text
-    assert {t["id"] for t in r.json()["tasks"]} == {"st1", "t7", "t9"}
+    assert {t["id"] for t in r.json()["tasks"]} == {"st1", "t7", "t7d", "t9"}
 
 
 # ===== 记忆：个人默认不含 global，view=all 才含 =====

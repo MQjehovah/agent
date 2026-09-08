@@ -1632,10 +1632,10 @@ class WebServer:
                 auth = await _get_auth(request)
                 is_admin = auth.get("role") == "admin"
                 want_all = is_admin and scope == "all"
-                uid = f"web:{auth['uid']}"
 
                 static = sp.schedules if want_all else []
-                db_tasks = sp.list_db_tasks() if want_all else sp.list_db_tasks(user_id=uid)
+                # 个人口径：同一 agent 用户跨渠道(web/dingtalk…)全部任务
+                db_tasks = sp.list_db_tasks() if want_all else sp.list_db_tasks(user_uid=str(auth["uid"]))
 
                 def _row(t: dict, is_static: bool) -> dict:
                     return {
