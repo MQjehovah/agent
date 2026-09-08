@@ -9,7 +9,7 @@ import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
-interface TextBlock { kind: 'text'; content: string }
+interface TextBlock { kind: 'text'; content: string; sealed?: boolean }
 interface ToolBlock { kind: 'tool'; name: string }
 interface AgentBlock {
   kind: 'agent'
@@ -96,11 +96,17 @@ function textOf(m: Msg): string {
     .join('')
 }
 
-/** 顶层/子代理内 追加正文 token：命中尾部 text 块则续写，否则新增 text 块(保持输出顺序) */
+/** 顶层/子代理内 追加正文 token：命中尾部未密封 text 块则续写，否则新增 text 块(保持输出顺序) */
 function appendText(blocks: MsgBlock[], token: string) {
   const last = blocks[blocks.length - 1]
-  if (last && last.kind === 'text') last.content += token
+  if (last && last.kind === 'text' && !last.sealed) last.content += token
   else blocks.push({ kind: 'text', content: token })
+}
+
+/** 密封尾部 text 块：工具/子代理插入点之前的正文不再续写，后续正文另起新块(呈现换行) */
+function sealTailText(blocks: MsgBlock[]) {
+  const last = blocks[blocks.length - 1]
+  if (last && last.kind === 'text') last.sealed = true
 }
 
 /** 找到当前运行中的子代理(最近的 running agent 块)，用于接收 subagent_token/tool 事件 */
@@ -247,6 +253,7 @@ function send() {
           procTip.value = '需要你确认/回答…'
           break
         case 'tool_start':
+          sealTailText(reply.blocks)
           reply.blocks.push({ kind: 'tool', name: String(data.name || 'tool') })
           procTip.value = `正在调用工具：${String(data.name || 'tool')}`
           break
@@ -258,6 +265,7 @@ function send() {
         }
         case 'subagent_start': {
           const name = String(data.agent_name || 'subagent')
+          sealTailText(reply.blocks)
           reply.blocks.push({ kind: 'agent', name, running: true, collapsed: false, toolCount: 0, blocks: [] })
           procTip.value = `已派生子代理「${name}」执行`
           break
@@ -271,6 +279,7 @@ function send() {
         case 'subagent_tool_start': {
           const act = runningAgent(reply)
           if (act) {
+            sealTailText(act.blocks)
             act.blocks.push({ kind: 'tool', name: String(data.name || 'tool') })
             procTip.value = `子代理正在调用工具：${String(data.name || 'tool')}`
           }
@@ -443,9 +452,13 @@ onBeforeUnmount(() => {
               <!-- 已完成工具计数汇总 -->
               <div v-if="m.toolCount > 0" class="tools-sum">已调用 {{ m.toolCount }} 次工具</div>
 
-              <div v-if="!textOf(m) && m.blocks.length === 0 && streaming && i === messages.length - 1" class="proc-hint">
-                <template v-if="procTip"><span class="chip-running">●</span> {{ procTip }}</template>
-                <template v-else><span class="chip-running">●</span> 正在处理…</template>
+              <div v-if="streaming && i === messages.length - 1 && (procTip || !textOf(m))" class="proc-hint">
+                <span class="chip-running">●</span>
+                <template v-if="procTip">{{ procTip }}</template>
+                <template v-else>正在处理…</template>
+              </div>
+              <div v-else-if="streaming && i === messages.length - 1" class="caret-line">
+                <span class="caret">▍</span>
               </div>
               <el-alert v-if="m.error" :title="m.error" type="error" :closable="false" class="err" />
             </template>
@@ -521,6 +534,14 @@ onBeforeUnmount(() => {
 .ask-q { display: flex; align-items: center; gap: 8px; color: #7a5c00; }
 /* 时间线流 */
 .flow-block { margin: 2px 0; }
+/* 多次输出的正文之间要换行(工具插入被移除后相邻 text 块也保持段落间距) */
+.flow-block .md + .flow-block .md { margin-top: 10px; }
+.caret-line { color: var(--text-2); margin-top: 2px; }
+.caret {
+  color: var(--accent, #409eff);
+  animation: caret-blink 0.9s step-end infinite;
+}
+@keyframes caret-blink { 50% { opacity: 0; } }
 .tool-chip {
   display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid #e3b0ff; background: #faf3ff; color: #6b3fa0;
@@ -550,6 +571,7 @@ onBeforeUnmount(() => {
 .agent-name { font-size: 12.5px; font-weight: 600; }
 .agent-tools { color: var(--text-3); font-size: 11px; margin-left: auto; }
 .agent-body { margin-top: 4px; }
+.agent-body .flow-block + .flow-block { margin-top: 4px; }
 .agent-stream {
   font-size: 13px;
   color: var(--text-1);
