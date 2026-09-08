@@ -61,6 +61,9 @@ class RunContext:
     # 由工具执行层按清单置位；嵌套 run(子代理)结束时汇聚到父级 run 上下文，
     # 顶层 run 结束时写入 AgentResult.sensitive_hit 供渠道层改道。
     sensitive_hit: bool = False
+    # 群共享根「整轮标记」：顶层群 run 置为自己的 run_id，嵌套 run(子代理/团队)
+    # 继承父级值；本轮所有落库消息带同一 round_token，敏感轮据此整轮搬到触发人私有旁路。
+    round_token: str = ""
     session: Any = None
     task: str = ""
     consecutive_errors: int = 0
@@ -841,6 +844,11 @@ class Agent:
             user_id=eff_user, user_name=eff_name, role=eff_role,
             group_context=eff_group,
         )
+        # 群共享根整轮标记：顶层群 run 用自身 run_id；嵌套 run(子代理/团队)继承父级，
+        # 使本轮全部落库消息带同一 round_token(敏感轮据此整轮改道私有旁路，见 finally)。
+        if eff_group:
+            ctx.round_token = (ctx.run_id if not self.parent_agent
+                               else getattr(inherited, "round_token", "") or "")
         # 对话归属: 顶层 run 以自身 session 为对话; 子代理/成员运行继承父对话
         ctx.conversation_id = getattr(inherited, "conversation_id", "") or (session_id or "")
         # 任务级过程目录：顶层 run 建立（时间戳+任务摘要），子代理继承父目录（同任务共享）
@@ -857,6 +865,8 @@ class Agent:
         # 会话管理：复用 session_id 保持历史消息
         sess = None
         sess_lock = None
+        # 群共享根敏感轮的共享内存回滚起点(仅顶层群 run 设置)
+        _round_marker = None
         if session_id and self.session_manager:
             sess = await self.session_manager.create_session(
                 session_id=session_id, system_prompt=self.system_prompt or "",
@@ -879,6 +889,12 @@ class Agent:
             # 新进程/worker 首次承接已有会话时，从 DB 恢复历史上下文
             self._restore_db_session_history(sess)
             sess.conversation_id = ctx.conversation_id
+            # 本轮落库消息打 round_token(群根/子代理线程统一归属该轮); 顶层群 run
+            # 记录共享内存回滚起点, 敏感轮收尾时把该轮整体移出群共享上下文。
+            sess._persist_round_id = ctx.round_token
+            if (not self.parent_agent and ctx.round_token
+                    and str(session_id).startswith("dingtalk_group:")):
+                _round_marker = len(sess.messages)
             sess.add_message("user", task)
             ctx.session = sess
 
@@ -895,6 +911,13 @@ class Agent:
                     inherited.sensitive_hit = True
             return result
         finally:
+            # 群共享根命中敏感的那一轮收尾：整轮不留在群根/共享上下文, 改存触发人
+            # 私有旁路(见 _finalize_sensitive_group_round)。非敏感轮消息已按原逻辑实时
+            # 落群根, 无需处理。
+            if (_round_marker is not None and sess is not None and ctx.round_token
+                    and getattr(ctx, "sensitive_hit", False)):
+                self._finalize_sensitive_group_round(
+                    sess, _round_marker, ctx.round_token, ctx.user_id)
             if sess_lock:
                 sess_lock.release()
             if not self.parent_agent:
@@ -902,6 +925,38 @@ class Agent:
             if hook_token is not None:
                 reset_run_id(hook_token)
             _current_run.reset(run_token)
+
+    def _finalize_sensitive_group_round(self, sess, marker: int,
+                                        round_token: str, owner_tag: str) -> None:
+        """群共享根敏感轮收尾：整轮不留在群共享历史，改存触发人私有旁路。
+
+        该轮 run 期间消息已实时落 messages(带 round_token)；此处把 conversation_id=
+        群根 且 round_token=本轮的整轮消息(敏感工具产出 + 含敏感结果的最终回复, 含
+        子代理线程行)搬到 dingtalk_private_messages 按 owner_tag(dingtalk:{uid}) 关联
+        —— 触发人本人可查、他人/群根历史不可见、上下文恢复不含该轮。随后从共享内存
+        上下文回滚该轮，使后续群轮不引用敏感产出。单聊与非敏感群轮不走到这里。
+        """
+        storage = self.storage
+        if storage is None:
+            try:
+                from storage.storage import get_storage
+                storage = get_storage()
+            except Exception:
+                storage = None
+        conv = getattr(sess, "conversation_id", "") or getattr(sess, "session_id", "")
+        if storage and str(conv).startswith("dingtalk_group:") and round_token and owner_tag:
+            try:
+                # 先冲刷写入队列保证本轮行已全部提交，再整轮搬移(不残留/不漏搬)
+                storage.flush_messages()
+                storage.relocate_round_to_dingtalk_private(conv, round_token, owner_tag)
+            except Exception as e:
+                logger.warning(f"群敏感轮落库改道失败(行保留群根): {e!r}", exc_info=True)
+        # 共享上下文不含敏感轮：回滚该轮内存消息(DB 行已搬私有侧; 无 storage 时同样截断)
+        try:
+            if sess is not None and marker >= 0 and marker <= len(sess.messages):
+                sess.messages = sess.messages[:marker]
+        except Exception as e:
+            logger.warning(f"群敏感轮共享上下文回滚失败: {e!r}")
 
     def _restore_db_session_history(self, session) -> int:
         """进程重启 / worker 回收后，首次承接既有会话时从 DB 恢复上下文。

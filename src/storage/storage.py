@@ -129,12 +129,32 @@ class Storage:
                     user_id TEXT DEFAULT '',
                     channel TEXT DEFAULT '',
                     conversation_id TEXT DEFAULT '',
+                    round_id TEXT DEFAULT '',
                     created_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+
+                CREATE TABLE IF NOT EXISTS dingtalk_private_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_tag TEXT NOT NULL DEFAULT '',
+                    source_conversation TEXT NOT NULL DEFAULT '',
+                    round_id TEXT NOT NULL DEFAULT '',
+                    agent_id TEXT DEFAULT '',
+                    session_id TEXT DEFAULT '',
+                    role TEXT,
+                    content TEXT,
+                    tool_calls TEXT,
+                    tool_call_id TEXT,
+                    name TEXT,
+                    reasoning_content TEXT,
+                    user_id TEXT DEFAULT '',
+                    created_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_dtalk_priv_owner ON dingtalk_private_messages(owner_tag, source_conversation, round_id);
 
                 CREATE TABLE IF NOT EXISTS eventbus_events (
                     id TEXT PRIMARY KEY,
@@ -332,6 +352,7 @@ class Storage:
             _add_col("messages", "user_id TEXT DEFAULT ''")
             _add_col("messages", "channel TEXT DEFAULT ''")
             _add_col("messages", "conversation_id TEXT DEFAULT ''")
+            _add_col("messages", "round_id TEXT DEFAULT ''")
             _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
             _add_col("rbac_users", "display_name TEXT DEFAULT ''")
             for _col in ("duration_ms REAL DEFAULT 0",
@@ -466,6 +487,14 @@ class Storage:
         while self._running:
             try:
                 item = self._write_queue.get(timeout=0.1)
+                # flush 屏障哨兵：先把当前批次落库再置位，保证该时刻之前入队的消息已可见
+                if isinstance(item, dict) and item.get("__flush__"):
+                    if batch:
+                        self._safe_flush(batch)
+                        batch = []
+                        last_flush = time.time()
+                    item["__flush__"].set()
+                    continue
                 batch.append(item)
             except Exception:
                 # queue.Empty 超时：检查是否需要按时间刷新
@@ -501,8 +530,8 @@ class Storage:
 
         with self._write_lock, self._get_connection() as conn:
             conn.executemany("""
-                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, conversation_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, conversation_id, round_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     item['agent_id'],
@@ -516,6 +545,7 @@ class Storage:
                     item.get('user_id', ''),
                     item.get('channel', ''),
                     item.get('conversation_id') or item['session_id'],
+                    item.get('round_id', ''),
                     item['created_at']
                 )
                 for item in batch
@@ -527,8 +557,12 @@ class Storage:
     def save_message(self, agent_id: str, session_id: str, role: str, content: str,
                      tool_calls: list | None = None,
                      tool_call_id: str = "", name: str = "", reasoning_content: str = "",
-                     user_id: str = "", channel: str = "", conversation_id: str = ""):
-        """保存消息到写入队列（异步写入）"""
+                     user_id: str = "", channel: str = "", conversation_id: str = "",
+                     round_id: str = ""):
+        """保存消息到写入队列（异步写入）
+
+        round_id: 群共享根上一整轮(一次 agent.run)的标记，供敏感轮落库改道定位。
+        """
         self._write_queue.put({
             'agent_id': agent_id,
             'session_id': session_id,
@@ -541,27 +575,42 @@ class Storage:
             'user_id': user_id or "",
             'channel': channel or _session_channel(session_id),
             'conversation_id': conversation_id or session_id,
+            'round_id': round_id or "",
             'created_at': datetime.now().isoformat()
         })
 
     def save_message_sync(self, agent_id: str, session_id: str, role: str, content: str,
                           tool_calls: list | None = None,
                           tool_call_id: str = "", name: str = "", reasoning_content: str = "",
-                          user_id: str = "", channel: str = "", conversation_id: str = ""):
+                          user_id: str = "", channel: str = "", conversation_id: str = "",
+                          round_id: str = ""):
         """同步保存消息（立即写入）"""
         with self._write_lock, self._get_connection() as conn:
             conn.execute("""
-                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, conversation_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, conversation_id, round_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent_id, session_id, role, content or "",
                 json.dumps(tool_calls) if tool_calls else None,
                 tool_call_id, name, reasoning_content or "",
                 user_id or "", channel or _session_channel(session_id),
-                conversation_id or session_id,
+                conversation_id or session_id, round_id or "",
                 datetime.now().isoformat()
             ))
             conn.commit()
+
+    def flush_messages(self, timeout: float = 10.0) -> bool:
+        """阻塞直到写入队列已全部落库(屏障)。
+
+        批量写入线程可能把消息暂存在队列/批次中，敏感轮「落库改道」前必须先 flush，
+        保证本轮所有行都已提交，才能整体搬到触发人私有侧(不残留、不漏搬)。
+        返回 True 表示屏障已通过。
+        """
+        if not self._write_thread or not self._write_thread.is_alive():
+            return True
+        ev = threading.Event()
+        self._write_queue.put({"__flush__": ev})
+        return ev.wait(timeout)
 
     def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._get_connection() as conn:
@@ -774,6 +823,95 @@ class Storage:
                 "SELECT 1 FROM messages WHERE conversation_id = ? AND user_id = ? LIMIT 1",
                 (session_id, tag)).fetchone()
         return row is not None
+
+    # ---------------- 钉钉群敏感轮：私有旁路落库（触发人本人可见） ----------------
+
+    def relocate_round_to_dingtalk_private(self, conversation_id: str, round_id: str,
+                                           owner_tag: str) -> int:
+        """把群共享根中某整轮(round_id)消息从 messages 搬到触发人私有旁路表。
+
+        仅当该轮命中敏感工具时调用：敏感工具产出 + 含敏感结果的最终回复不留在
+        群共享历史(他人不可读、上下文恢复不含该轮)，改存 dingtalk_private_messages
+        按 owner_tag(dingtalk:{uid}) 关联，供触发人本人查询。非敏感轮不调用此方法。
+        返回搬移条数；调用方须先 flush_messages() 保证本轮行已全部提交。
+        """
+        if not conversation_id or not round_id or not owner_tag:
+            return 0
+        count = 0
+        with self._write_lock, self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT agent_id, session_id, role, content, tool_calls, tool_call_id, "
+                "name, reasoning_content, user_id, created_at "
+                "FROM messages WHERE conversation_id = ? AND round_id = ? ORDER BY id",
+                (conversation_id, round_id)).fetchall()
+            if rows:
+                now = datetime.now().isoformat()
+                conn.executemany(
+                    "INSERT INTO dingtalk_private_messages "
+                    "(owner_tag, source_conversation, round_id, agent_id, session_id, role, "
+                    " content, tool_calls, tool_call_id, name, reasoning_content, user_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(
+                        owner_tag, conversation_id, round_id,
+                        r["agent_id"] or "", r["session_id"] or "", r["role"] or "",
+                        r["content"] or "", r["tool_calls"], r["tool_call_id"] or "",
+                        r["name"] or "", r["reasoning_content"] or "",
+                        r["user_id"] or "", r["created_at"] or now,
+                    ) for r in rows])
+                conn.execute(
+                    "DELETE FROM messages WHERE conversation_id = ? AND round_id = ?",
+                    (conversation_id, round_id))
+                count = len(rows)
+            conn.commit()
+        if count:
+            logger.info(f"敏感轮落库改道: 群 {conversation_id[:20]}… 的 round={round_id[:8]} "
+                        f"{count} 条消息移至私有旁路(owner={owner_tag})")
+        return count
+
+    def list_dingtalk_private_rounds(self, owner_tag: str,
+                                     source_conversation: str = "",
+                                     limit: int = 50) -> list[dict[str, Any]]:
+        """列出触发人私有敏感轮次摘要（本人可查；他人无 owner_tag 恒查不到）。"""
+        sql = ("SELECT source_conversation, round_id, COUNT(*) AS msg_count, "
+               "MIN(created_at) AS first_at, MAX(created_at) AS last_at "
+               "FROM dingtalk_private_messages WHERE owner_tag = ?")
+        args: list[Any] = [owner_tag]
+        if source_conversation:
+            sql += " AND source_conversation = ?"
+            args.append(source_conversation)
+        sql += " GROUP BY source_conversation, round_id ORDER BY last_at DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_dingtalk_private_messages(self, owner_tag: str,
+                                       source_conversation: str = "",
+                                       round_id: str = "") -> list[dict[str, Any]]:
+        """触发人私有敏感轮消息明细（含 role/content/工具输出），按写入序返回。"""
+        sql = ("SELECT round_id, agent_id, session_id, role, content, tool_calls, "
+               "tool_call_id, name, user_id, created_at "
+               "FROM dingtalk_private_messages WHERE owner_tag = ?")
+        args: list[Any] = [owner_tag]
+        if source_conversation:
+            sql += " AND source_conversation = ?"
+            args.append(source_conversation)
+        if round_id:
+            sql += " AND round_id = ?"
+            args.append(round_id)
+        sql += " ORDER BY id"
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        out = []
+        for r in rows:
+            m = dict(r)
+            if m.get("tool_calls"):
+                try:
+                    m["tool_calls"] = json.loads(m["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    m["tool_calls"] = []
+            out.append(m)
+        return out
 
     def conversation_threads(self, conversation_id: str) -> list[dict[str, Any]]:
         """某对话内部的子代理 thread（session != conversation）及条数，供审计下钻。"""

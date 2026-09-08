@@ -1944,6 +1944,50 @@ class WebServer:
                 "memory": {"mine": mem_mine, "global": mem_global},
             }
 
+        @self._app.get("/api/my/dingtalk/private-rounds")
+        async def my_dingtalk_private_rounds(request: Request = None,
+                                              conversation_id: str = ""):
+            """钉钉群敏感轮私有落库(触发人本人)：当前用户在群共享根触发的敏感轮内容。
+
+            敏感工具产出 + 含敏感结果的最终回复按产品要求不落群根(他人不可见、上下文
+            不含敏感轮)，改存 dingtalk_private_messages(按 dingtalk:{uid} 关联)。
+            本接口个人口径：uid 取自登录态, admin 亦只看自己; conversation_id 传群根
+            session_id 可只看某群。返回各轮摘要 + 消息明细, 供前端「我的会话/群历史」
+            按需展示给触发人本人。
+            """
+            u: dict[str, Any] = {}
+            if request is not None:
+                try:
+                    u = await _get_auth(request)
+                except Exception:
+                    u = {}
+            uid = str(u.get("uid", "")) or ""
+            if not uid or uid in ("anon", "0", "None"):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            storage = get_storage()
+            if not storage:
+                return {"rounds": []}
+            owner_tag = f"dingtalk:{uid}"
+            try:
+                rounds = storage.list_dingtalk_private_rounds(
+                    owner_tag, source_conversation=conversation_id or "")
+                out = []
+                for r in rounds:
+                    msgs = storage.list_dingtalk_private_messages(
+                        owner_tag, source_conversation=r["source_conversation"],
+                        round_id=r["round_id"])
+                    out.append({
+                        "conversation_id": r["source_conversation"],
+                        "round_id": r["round_id"],
+                        "msg_count": r["msg_count"],
+                        "created_at": r["last_at"],
+                        "messages": msgs,
+                    })
+                return {"rounds": out}
+            except Exception as e:
+                logger.warning(f"[my/dingtalk/private-rounds] 查询失败: {e}")
+                return {"rounds": []}
+
         @self._app.get("/api/agent/sessions/messages")
         async def agent_session_messages(session_id: str = Query(...), request: Request = None):
             if not self.agent or not self.agent.session_manager:

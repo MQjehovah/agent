@@ -59,6 +59,9 @@ class AgentSession:
                     tool_call_id=kwargs.get("tool_call_id"),
                     name=kwargs.get("name"),
                     user_id=getattr(self, "user_id", "") or "",
+                    # 群共享根整轮标记：一次 agent.run 的全部落库消息打同一 round_id，
+                    # 敏感轮据此把整轮从群根搬到触发人私有旁路(见 agent/core.py)。
+                    round_id=getattr(self, "_persist_round_id", "") or "",
                 )
         except ImportError:
             pass

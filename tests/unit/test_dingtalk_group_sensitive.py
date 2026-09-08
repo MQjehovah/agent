@@ -362,3 +362,281 @@ async def test_group_sensitive_uses_shared_group_root(storage):
     assert sid.startswith("dingtalk_group:")
     assert router.route.await_args.kwargs["user_id"] == f"dingtalk:{uid}"
     assert plugin._send_text.await_args.kwargs["local_user_id"] == f"dingtalk:{uid}"
+
+
+# ---------------- 落库改道: 敏感轮不落群根, 存触发人私有旁路(Phase2 收尾) ----------------
+
+def _swap_global_storage(storage):
+    """临时替换 storage 单例(AgentSession.add_message 经 get_storage() 落库)。"""
+    import storage.storage as storage_mod
+    prev = storage_mod._storage_instance
+    storage_mod._storage_instance = storage
+    return prev, storage_mod
+
+
+def _boot_group_agent(storage, workspace):
+    """最小可跑 run 的 Agent：注入 storage + session_manager(不 initialize)。"""
+    from agent.core import Agent
+    from agent.session import AgentSessionManager
+    agent = Agent(workspace=workspace, client=MagicMock())
+    agent.storage = storage
+    agent.session_manager = AgentSessionManager()
+    return agent
+
+
+def _conv_rows(st, conversation_id):
+    with st.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT role, content, session_id FROM messages "
+            "WHERE conversation_id = ? ORDER BY id", (conversation_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def test_group_sensitive_round_not_in_root_history_but_in_private(tmp_path, monkeypatch):
+    """群敏感轮：群根 messages 无敏感正文(整轮搬离)，私有旁路按触发人有，他人查不到。
+
+    先跑一轮非敏感群轮 → 正常留群根；再跑敏感轮(工具产出含敏感经营数据) → 该轮整轮
+    不落群根：敏感工具产出 + 含敏感结果的最终回复 + 该轮触发问题均改存触发人私有侧。
+    """
+    from agent.core import AgentResult, current_run
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    st = Storage(str(ws))
+    prev, storage_mod = _swap_global_storage(st)
+    try:
+        agent = _boot_group_agent(st, str(tmp_path / "agent"))
+        group = "dingtalk_group:cidsensX:abc12345:r1"
+
+        async def fake_dispatch(self_, task, session_id, user_id, user_name, inherited):
+            sess = current_run().session
+            if task.startswith("正常"):
+                sess.add_message("assistant", "正常回复: 周报已生成")
+                return AgentResult(agent_id="", status="completed", result="正常回复: 周报已生成")
+            # 模拟敏感轮: 命中 list_tables 且最终回复含敏感经营数据
+            current_run().sensitive_hit = True
+            sess.add_message("assistant", "", tool_calls=[{
+                "id": "c1", "type": "function",
+                "function": {"name": "list_tables", "arguments": "{}"}}])
+            sess.add_message("tool", "客户表|订单表|销售明细表(含渠道/金额)",
+                             name="list_tables", tool_call_id="c1")
+            sess.add_message("assistant", "2025 年销售总额 1.2 亿（敏感经营数据）")
+            return AgentResult(agent_id="", status="completed",
+                               result="2025 年销售总额 1.2 亿（敏感经营数据）")
+
+        monkeypatch.setattr("agent.runner.dispatch", fake_dispatch)
+
+        r1 = await agent.run("正常帮我生成周报", session_id=group,
+                             user_id="dingtalk:7", group_context=True)
+        st.flush_messages()
+        r2 = await agent.run("查一下 2025 年销售总额", session_id=group,
+                             user_id="dingtalk:7", group_context=True)
+        st.flush_messages()
+        assert r1.sensitive_hit is False
+        assert r2.sensitive_hit is True
+
+        # 群根历史: 只含非敏感轮, 绝无敏感工具产出/含敏感结果的最终回复
+        rows = _conv_rows(st, group)
+        root_text = "\n".join((r["content"] or "") for r in rows)
+        assert "正常回复: 周报已生成" in root_text
+        assert "客户表" not in root_text
+        assert "1.2 亿" not in root_text
+        assert "2025 年销售总额" not in root_text
+
+        # 私有旁路: 触发人 dingtalk:7 可见整轮(问题+工具产出+最终回复)
+        priv = st.list_dingtalk_private_messages("dingtalk:7", source_conversation=group)
+        priv_text = "\n".join((m.get("content") or "") for m in priv)
+        assert "查一下 2025 年销售总额" in priv_text
+        assert "客户表|订单表|销售明细表" in priv_text
+        assert "1.2 亿" in priv_text
+        rounds = st.list_dingtalk_private_rounds("dingtalk:7", source_conversation=group)
+        assert len(rounds) == 1
+        assert rounds[0]["msg_count"] == 4  # user + assistant(tool_calls) + tool + assistant
+        # 他人(非触发人)私有侧/群根均不可见
+        assert st.list_dingtalk_private_messages("dingtalk:8", source_conversation=group) == []
+        assert st.list_dingtalk_private_rounds("dingtalk:8") == []
+
+        # 群共享内存上下文不含敏感轮(后续群轮/上下文不会串)
+        sess = agent.session_manager.sessions.get(group)
+        mem_text = "\n".join((m.get("content") or "") for m in sess.messages)
+        assert "正常回复: 周报已生成" in mem_text
+        assert "1.2 亿" not in mem_text
+    finally:
+        st.close()
+        storage_mod._storage_instance = prev
+
+
+async def test_group_sensitive_round_not_restored_into_context(tmp_path, monkeypatch):
+    """上下文恢复不含敏感轮: DB 恢复群根历史只有非敏感轮, 无敏感正文。"""
+    from agent.core import AgentResult, current_run
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    st = Storage(str(ws))
+    prev, storage_mod = _swap_global_storage(st)
+    try:
+        agent = _boot_group_agent(st, str(tmp_path / "agent"))
+        group = "dingtalk_group:cidsensY:abc12345:r2"
+
+        async def fake_dispatch(self_, task, session_id, user_id, user_name, inherited):
+            sess = current_run().session
+            if task.startswith("正常"):
+                sess.add_message("assistant", "普通话题的回复")
+                return AgentResult(agent_id="", status="completed", result="普通话题的回复")
+            current_run().sensitive_hit = True
+            sess.add_message("tool", "SELECT 工资 8000 元/月", name="execute_query",
+                             tool_call_id="c1")
+            sess.add_message("assistant", "工资明细已私聊")
+            return AgentResult(agent_id="", status="completed", result="工资明细已私聊")
+
+        monkeypatch.setattr("agent.runner.dispatch", fake_dispatch)
+        await agent.run("正常话题", session_id=group, user_id="dingtalk:7", group_context=True)
+        st.flush_messages()
+        await agent.run("查工资", session_id=group, user_id="dingtalk:7", group_context=True)
+        st.flush_messages()
+
+        # 模拟进程重启后首次承接: 会话内仅剩 system, 从 DB 恢复
+        from agent.session import AgentSession
+        fresh = AgentSession(session_id=group, system_prompt="你是助手")
+        n = agent._restore_db_session_history(fresh)
+        assert n > 0  # 非敏感轮可恢复
+        texts = "\n".join((m.get("content") or "") for m in fresh.messages)
+        assert "普通话题的回复" in texts
+        assert "工资" not in texts
+        assert "8000" not in texts
+    finally:
+        st.close()
+        storage_mod._storage_instance = prev
+
+
+async def test_non_sensitive_group_round_stays_in_group_root(tmp_path, monkeypatch):
+    """非敏感群轮不受影响: 照常实时落群根, 不进私有旁路, 共享上下文不截断。"""
+    from agent.core import AgentResult, current_run
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    st = Storage(str(ws))
+    prev, storage_mod = _swap_global_storage(st)
+    try:
+        agent = _boot_group_agent(st, str(tmp_path / "agent"))
+        group = "dingtalk_group:cidnonsens:abc12345:r3"
+
+        async def fake_dispatch(self_, task, session_id, user_id, user_name, inherited):
+            current_run().session.add_message("assistant", "已生成文档给到大家")
+            return AgentResult(agent_id="", status="completed", result="已生成文档给到大家")
+
+        monkeypatch.setattr("agent.runner.dispatch", fake_dispatch)
+        res = await agent.run("生成周报", session_id=group,
+                              user_id="dingtalk:7", group_context=True)
+        st.flush_messages()
+        assert res.sensitive_hit is False
+        rows = _conv_rows(st, group)
+        root_text = "\n".join((r["content"] or "") for r in rows)
+        assert "生成周报" in root_text
+        assert "已生成文档给到大家" in root_text
+        assert st.list_dingtalk_private_messages("dingtalk:7", source_conversation=group) == []
+        sess = agent.session_manager.sessions.get(group)
+        assert any("已生成文档给到大家" in (m.get("content") or "") for m in sess.messages)
+    finally:
+        st.close()
+        storage_mod._storage_instance = prev
+
+
+async def test_single_chat_sensitive_stays_in_single_root(tmp_path, monkeypatch):
+    """单聊即使命中敏感: 仍照常落自己单聊根(不私有旁路、不截断), 与群轮互不影响。"""
+    from agent.core import AgentResult, current_run
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    st = Storage(str(ws))
+    prev, storage_mod = _swap_global_storage(st)
+    try:
+        agent = _boot_group_agent(st, str(tmp_path / "agent"))
+        sid = "dingtalk:7:single-root-abc"
+
+        async def fake_dispatch(self_, task, session_id, user_id, user_name, inherited):
+            current_run().sensitive_hit = True
+            current_run().session.add_message("assistant", "单聊里的敏感明细")
+            return AgentResult(agent_id="", status="completed", result="单聊里的敏感明细")
+
+        monkeypatch.setattr("agent.runner.dispatch", fake_dispatch)
+        res = await agent.run("查我的数据", session_id=sid,
+                              user_id="dingtalk:7", group_context=False)
+        st.flush_messages()
+        assert res.sensitive_hit is True
+        rows = _conv_rows(st, sid)
+        text = "\n".join((r["content"] or "") for r in rows)
+        assert "查我的数据" in text
+        assert "单聊里的敏感明细" in text
+        assert st.list_dingtalk_private_messages("dingtalk:7") == []
+        # 单聊共享上下文不截断
+        sess = agent.session_manager.sessions.get(sid)
+        assert any("单聊里的敏感明细" in (m.get("content") or "") for m in sess.messages)
+    finally:
+        st.close()
+        storage_mod._storage_instance = prev
+
+
+# ---------------- 私有旁路读取: 本人可查 / 他人不可见(web API) ----------------
+
+def _seed_private_round(st, conversation_id, round_id, owner_tag):
+    """往 messages 写入一轮消息后经 relocate 搬到私有旁路(等价于真实敏感轮落库路径)。"""
+    for role, content, extra in [
+        ("user", "查一下 2025 年销售总额", {}),
+        ("assistant", "", {"tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "execute_query", "arguments": "{}"}}]}),
+        ("tool", "销售明细: 2025 年总额 1.2 亿", {"name": "execute_query", "tool_call_id": "c1"}),
+        ("assistant", "2025 年销售总额 1.2 亿（敏感经营数据）", {}),
+    ]:
+        st.save_message_sync("main", conversation_id, role, content,
+                             user_id=owner_tag, conversation_id=conversation_id,
+                             round_id=round_id, **extra)
+    return st.relocate_round_to_dingtalk_private(conversation_id, round_id, owner_tag)
+
+
+def test_private_rounds_endpoint_owner_only_visible(tmp_path, monkeypatch):
+    """触发人本人(web uid=7)经 API 可查自己的群敏感轮; 他人(8)查不到; 按群过滤可用。"""
+    from fastapi.testclient import TestClient
+
+    from web.server import WebServer, create_jwt
+
+    monkeypatch.setenv("WEBUI_DISABLE_AUTH", "0")
+    group = "dingtalk_group:cidsensZ:abc12345:r9"
+    st = Storage(str(tmp_path / "db"))
+    prev, storage_mod = _swap_global_storage(st)
+    try:
+        assert _seed_private_round(st, group, "round-z", "dingtalk:7") == 4
+        assert st.list_dingtalk_private_messages("dingtalk:7", source_conversation=group) != []
+        # 群根 messages 已无该轮(搬运即删除)
+        assert _conv_rows(st, group) == []
+
+        w = WebServer()
+        client = TestClient(w._app)
+        p7 = create_jwt({"id": 7, "name": "张三", "role": "default"})
+        p8 = create_jwt({"id": 8, "name": "李四", "role": "default"})
+
+        def _get(token):
+            return client.get(
+                "/api/my/dingtalk/private-rounds",
+                params={"conversation_id": group},
+                headers={"Authorization": f"Bearer {token}"})
+
+        r7 = _get(p7)
+        assert r7.status_code == 200
+        rounds = r7.json()["rounds"]
+        assert len(rounds) == 1
+        assert rounds[0]["conversation_id"] == group
+        texts = "\n".join((m.get("content") or "") for m in rounds[0]["messages"])
+        assert "查一下 2025 年销售总额" in texts
+        assert "1.2 亿" in texts
+        assert rounds[0]["msg_count"] == 4
+        # 他人不可见
+        r8 = _get(p8)
+        assert r8.status_code == 200
+        assert r8.json()["rounds"] == []
+    finally:
+        st.close()
+        storage_mod._storage_instance = prev
+
+
