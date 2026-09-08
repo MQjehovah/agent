@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, del, isAdmin } from '../../api'
+import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../../channel'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 interface SessionRow {
@@ -41,15 +42,6 @@ const viewId = ref('')
 const viewMessages = ref<HistoryMsg[]>([])
 const runningIds = computed(() => new Set(running.value.map(r => r.conversation_id || r.id)))
 const isViewRunning = computed(() => viewVisible.value && runningIds.value.has(viewId.value))
-
-function channelMeta(ch?: string): { label: string; type: 'primary' | 'success' | 'info' | 'warning' } {
-  switch (ch) {
-    case 'web': return { label: 'Web', type: 'primary' }
-    case 'dingtalk': return { label: '钉钉', type: 'success' }
-    case 'feishu': return { label: '飞书', type: 'warning' }
-    default: return { label: ch || '—', type: 'info' }
-  }
-}
 
 async function load() {
   loading.value = true
@@ -183,10 +175,10 @@ onBeforeUnmount(() => {
         <el-table-column label="会话 ID" min-width="210" show-overflow-tooltip class-name="mono">
           <template #default="{ row }">{{ row.conversation_id || row.id }}</template>
         </el-table-column>
-        <el-table-column label="渠道" width="86" align="center">
+        <el-table-column label="渠道" width="96" align="center">
           <template #default="{ row }">
-            <el-tag v-if="row.channel" :type="channelMeta(row.channel).type" size="small">
-              {{ channelMeta(row.channel).label }}
+            <el-tag v-if="row.channel" :type="channelMeta(row.channel, row.conversation_id || row.id).type" size="small">
+              {{ channelMeta(row.channel, row.conversation_id || row.id).label }}
             </el-tag>
             <span v-else>-</span>
           </template>
@@ -228,7 +220,16 @@ onBeforeUnmount(() => {
       <el-button size="small" @click="refresh">刷新</el-button>
     </div>
     <el-table :data="sessions" v-loading="loading" empty-text="暂无会话">
-      <el-table-column prop="id" label="会话 ID" min-width="200" show-overflow-tooltip class-name="mono" />
+      <el-table-column label="会话" min-width="240">
+        <template #default="{ row }">
+          <div class="sess-cell">
+            <div v-if="isDingtalkGroupSession(row.id)" class="sess-group-name" :title="row.id">
+              <span class="sess-group-icon">#</span>{{ dingtalkGroupDisplayName(row.id) }}
+            </div>
+            <div class="mono sess-full-id" :title="row.id">{{ row.id }}</div>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="来源" width="90" align="center">
         <template #default="{ row }">
           <el-tag :type="row.source === 'live' ? 'warning' : 'info'" size="small">
@@ -236,10 +237,10 @@ onBeforeUnmount(() => {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="渠道" width="90" align="center">
+      <el-table-column label="渠道" width="96" align="center">
         <template #default="{ row }">
-          <el-tag v-if="row.channel" :type="channelMeta(row.channel).type" size="small">
-            {{ channelMeta(row.channel).label }}
+          <el-tag v-if="row.channel" :type="channelMeta(row.channel, row.id).type" size="small">
+            {{ channelMeta(row.channel, row.id).label }}
           </el-tag>
           <span v-else>-</span>
         </template>
@@ -297,5 +298,19 @@ onBeforeUnmount(() => {
 .run-badge .run-dot { background: currentColor; margin-right: 3px; }
 .hist-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
 .hist-head .section-title { margin: 0; }
+.sess-cell { display: flex; flex-direction: column; line-height: 1.4; padding: 2px 0; min-width: 0; }
+.sess-group-name {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 12px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sess-group-icon {
+  color: var(--accent, #409eff); font-weight: 700;
+  margin-right: 1px;
+}
+.sess-full-id {
+  font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sess-cell .sess-full-id { opacity: 0.85; }
 @keyframes runpulse { 50% { opacity: 0.35; } }
 </style>

@@ -2,6 +2,7 @@
 defineOptions({ name: 'ChatView' })
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, post, streamChat, getToken } from '../api'
+import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import MarkdownIt from 'markdown-it'
 import { Promotion, VideoPause, Plus, Delete, Warning } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -38,15 +39,6 @@ const readonly = computed(() => {
   return !!ch && ch !== 'web'
 })
 
-function channelMeta(ch: string): { label: string; type: 'primary' | 'success' | 'warning' | 'info' } {
-  switch (ch) {
-    case 'web': return { label: 'Web', type: 'primary' }
-    case 'dingtalk': return { label: '钉钉', type: 'success' }
-    case 'feishu': return { label: '飞书', type: 'warning' }
-    default: return { label: ch || '其他', type: 'info' }
-  }
-}
-
 function render(text: string) {
   return md.render(text ?? '')
 }
@@ -69,6 +61,11 @@ function shortTime(t?: string): string {
 function displayId(id: string): string {
   const m = /^[^:]+:\d+:/i.exec(id)
   return m ? id.slice(m[0].length) : id
+}
+
+function displayTitle(s: SessionRow): string {
+  if (isDingtalkGroupSession(s.id)) return dingtalkGroupDisplayName(s.id)
+  return displayId(s.id)
 }
 
 async function loadSessions() {
@@ -305,8 +302,8 @@ onBeforeUnmount(() => {
       <div class="sess-list">
         <div v-for="s in sessions" :key="s.id" class="sess-item" :class="{ active: s.id === sessionId }" @click="openSession(s)">
           <div class="sess-top">
-            <el-tag size="small" effect="plain" :type="channelMeta(s.channel).type" class="sess-ch">{{ channelMeta(s.channel).label }}</el-tag>
-            <span class="sess-id" :title="s.id">{{ displayId(s.id) }}</span>
+            <el-tag size="small" effect="plain" :type="channelMeta(s.channel, s.id).type" class="sess-ch">{{ channelMeta(s.channel, s.id).label }}</el-tag>
+            <span class="sess-id" :title="s.id">{{ displayTitle(s) }}</span>
           </div>
           <div class="sess-meta">
             <span>{{ s.message_count ?? 0 }} 条</span>
@@ -325,7 +322,7 @@ onBeforeUnmount(() => {
     <div class="chat-main">
       <div v-if="readonly" class="readonly-bar">
         <el-icon :size="14"><Warning /></el-icon>
-        <span>该会话来自「{{ channelMeta(currentSession?.channel || '').label }}」渠道，仅支持查看历史，请在对应渠道继续对话。</span>
+        <span>该会话来自「{{ channelMeta(currentSession?.channel || '', currentSession?.id || '').label }}」渠道，仅支持查看历史，请在对应渠道继续对话。</span>
         <el-button size="small" @click="newSession">新建会话</el-button>
       </div>
       <div ref="scrollRef" class="chat-scroll">
