@@ -60,33 +60,16 @@ function render(text: string) {
   return md.render(text ?? '')
 }
 
-// —— 流式 markdown 节流渲染 ——
-// 每 token 都全量 v-html 重跑 markdown-it 会让长回复越滚越卡(看起来像卡住/攒批)。
-// 正文流式期间只累积纯文本 content，由节流器把增量渲染成 html 缓存；
-// 模板优先显示 html，首个节流周期内未渲染时回退纯文本，避免空白。
-const RENDER_TICK = 90
-let renderTimer: number | undefined
-let mdDirty = new Set<TextBlock>()
-function scheduleMarkdown(b: TextBlock) {
-  mdDirty.add(b)
-  if (renderTimer !== undefined) return
-  renderTimer = window.setTimeout(() => {
-    renderTimer = undefined
-    const pending = mdDirty
-    mdDirty = new Set()
-    for (const t of pending) {
-      t.html = render(t.content)
-    }
-  }, RENDER_TICK)
+// —— markdown 渲染时机 ——
+// 流式期间正文以纯文本即时累积显示(零解析、顺滑)；整段流结束(或历史加载)后
+// 才渲染一次 markdown 存 html。避免每 token 全量 v-html 重跑 markdown-it 卡顿。
+function renderBlockMarkdown(b: TextBlock) {
+  b.html = render(b.content)
 }
 function flushMarkdown(blocks: MsgBlock[]) {
   for (const b of blocks) {
-    if (b.kind === 'text') {
-      b.html = render(b.content)
-      mdDirty.delete(b)
-    } else if (b.kind === 'agent') {
-      flushMarkdown(b.blocks)
-    }
+    if (b.kind === 'text') renderBlockMarkdown(b)
+    else if (b.kind === 'agent') flushMarkdown(b.blocks)
   }
 }
 
@@ -131,14 +114,15 @@ function appendText(blocks: MsgBlock[], token: string) {
   const last = blocks[blocks.length - 1]
   if (last && last.kind === 'text' && !last.sealed) last.content += token
   else blocks.push({ kind: 'text', content: token, html: '' })
-  const tb = blocks[blocks.length - 1]
-  if (tb && tb.kind === 'text') scheduleMarkdown(tb)
 }
 
-/** 密封尾部 text 块：工具/子代理插入点之前的正文不再续写，后续正文另起新块(呈现换行) */
+/** 密封尾部 text 块：工具/子代理插入点之前的正文不再续写(呈现换行)，并立即渲染其 markdown */
 function sealTailText(blocks: MsgBlock[]) {
   const last = blocks[blocks.length - 1]
-  if (last && last.kind === 'text') last.sealed = true
+  if (last && last.kind === 'text') {
+    last.sealed = true
+    renderBlockMarkdown(last)
+  }
 }
 
 /** 找到当前运行中的子代理(最近的 running agent 块)，用于接收 subagent_token/tool 事件 */
@@ -231,6 +215,7 @@ async function openSession(row: SessionRow) {
       if (m.content) a.blocks.push({ kind: 'text', content: m.content, html: '' })
       return a
     })
+    for (const mm of messages.value) flushMarkdown(mm.blocks)
     scrollBottom()
   } catch (e) {
     console.error(e)
@@ -401,9 +386,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   abort?.abort()
   if (pollTimer) window.clearInterval(pollTimer)
-  if (renderTimer !== undefined) window.clearTimeout(renderTimer)
-  renderTimer = undefined
-  mdDirty = new Set()
 })
 </script>
 
