@@ -148,6 +148,18 @@ def test_group_prefix_helpers():
     assert sanitize_dingtalk_cid("cidGROUP+abc/def==") == "cidGROUPabcdef"
 
 
+def test_group_judge_prefers_conversation_type():
+    """单/群判定优先官方 conversation_type：cid 开头的单聊不得误判为群。"""
+    # 群: conversation_type='2' 或 前缀 cid 兜底
+    assert is_group_conversation_id("cidX", "2") is True
+    assert is_group_conversation_id("", "2") is True
+    # 单聊: conversation_type='1'，即使 conversation_id 以 cid 开头(线上单聊常见)
+    assert is_group_conversation_id("cidX", "1") is False
+    assert is_group_conversation_id("cidX", "") is True   # 无 type 时回退前缀
+    # 其它取值视为缺失 -> 回退前缀
+    assert is_group_conversation_id("cidX", "unknown") is True
+
+
 def test_resolve_session_single_scope_and_reuse():
     """单聊按 agent_uid 一个 scope：同人不同 conversation_id 复用同一根；不同人隔离。"""
     plugin = _plugin()

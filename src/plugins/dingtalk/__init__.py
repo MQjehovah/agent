@@ -30,13 +30,16 @@ def format_dingtalk_session_id(agent_uid: str | int, rand: str) -> str:
     return f"dingtalk:{agent_uid}:{rand}"
 
 
-def is_group_conversation_id(conversation_id: str) -> bool:
-    """钉钉群聊判定：群消息 conversation_id=openConversationId，形如 ``cid...``。
+def is_group_conversation_id(conversation_id: str, conversation_type: str = "") -> bool:
+    """钉钉群聊判定。
 
-    产品决策(2026-09-08)：不加会话类型字段，以 conversation_id 是否以 ``cid``
-    开头判定群聊；单聊消息 conversation_id 缺省(空串)，不会命中。风险：若线上
-    个别单聊也携带 cid 前缀会被按群处理——设计文档已列为上线前抓真实回调核对项。
+    优先用官方 ``conversation_type``：'2'=群聊，'1'=单聊(该字段可靠，
+    单聊与群聊的 conversationId 都可能以 ``cid`` 开头，前缀不可靠)。
+    仅当 conversation_type 缺失时回退 conversation_id 前缀推断(旧版兼容)。
     """
+    ct = str(conversation_type or "").strip()
+    if ct in ("1", "2"):
+        return ct == "2"
     return bool(conversation_id) and str(conversation_id).startswith("cid")
 
 
@@ -496,6 +499,7 @@ class DingTalkPlugin(BasePlugin):
         role: str = "default",
         sender_id: str = "",
         force_new: bool = False,
+        conversation_type: str = "",
     ) -> DingTalkSession:
         """按 scope 解析/复用钉钉会话根(取代旧 get_session)。
 
@@ -507,7 +511,7 @@ class DingTalkPlugin(BasePlugin):
         群 dingtalk_group:{safe}:{hash}:{rand}。
         """
         agent_uid = str(agent_uid)
-        is_group = is_group_conversation_id(conversation_id)
+        is_group = is_group_conversation_id(conversation_id, conversation_type)
         scope_kind = "g" if is_group else "s"
         scope_key = (dingtalk_group_root_prefix(conversation_id)
                      if is_group else agent_uid)
@@ -617,6 +621,7 @@ class AgentChatbotHandler:
             sender_staff_id = getattr(incoming_message, 'sender_staff_id', "") or getattr(incoming_message, 'staff_id', "") or sender_id
             sender_nick = incoming_message.sender_nick or ""
             conversation_id = incoming_message.conversation_id or ""
+            conversation_type = getattr(incoming_message, "conversation_type", "") or ""
             robot_code = incoming_message.robot_code or ""
 
             self.logger.info(f"钉钉插件收到消息: [{sender_nick}](staff_id={sender_staff_id}) {content}...")
@@ -644,8 +649,9 @@ class AgentChatbotHandler:
             role = user_info.get("role") or "default"
             user_name = user_info.get("user_name") or sender_nick
 
-            # 单/群判定(前缀即类型, 不加会话类型字段): 群消息 conversation_id=openConversationId(cid...)
-            is_group = is_group_conversation_id(conversation_id)
+            # 单/群判定: 优先官方 conversation_type('2'=群,'1'=单), cid 前缀仅兜底。
+            # 单聊与群聊的 conversationId 均可能以 cid 开头, 前缀不可靠(曾致私聊误判为群)。
+            is_group = is_group_conversation_id(conversation_id, conversation_type)
 
             # /new: 忽略大小写/空格, force 开新根, 回复确认, 不进 agent 处理
             if content.strip().lower() == "/new":
@@ -657,6 +663,7 @@ class AgentChatbotHandler:
                     role=role,
                     sender_id=sender_id,
                     force_new=True,
+                    conversation_type=conversation_type,
                 )
                 self.logger.info(f"钉钉 /new 已开启新会话: group={is_group} by {sender_nick}")
                 self.reply_text("已开启新会话", incoming_message)
@@ -669,6 +676,7 @@ class AgentChatbotHandler:
                 robot_code=robot_code,
                 role=role,
                 sender_id=sender_id,
+                conversation_type=conversation_type,
             )
 
             # 路由身份用归属 tag dingtalk:{agent_user.id}(与 web:{uid} 对齐)，
