@@ -1383,6 +1383,277 @@ def remote_action(
     )
 
 
+# ==================== 补充具名工具：覆盖全部 /remote/* 端点 ====================
+# 说明：以下工具与上面的具名工具风格一致，走 cloud_common 鉴权 + RemoteForm 信封。
+# 未明确业务字段的接口统一以 param(JSON/dict) 透传设备端参数。
+
+
+@mcp.tool()
+def device_initiate(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """设备初始化（POST /remote/device/initiate）。"""
+    result = _remote_post("device/initiate", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def factory_calib_camera(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """相机标定（POST /remote/device/factory/calib/camera）。"""
+    result = _remote_post("device/factory/calib/camera", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def factory_test(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """调试测试 SW50 GT（POST /remote/device/factory/test）。"""
+    result = _remote_post("device/factory/test", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def camera_image(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """机器摄像头图片获取（旧接口，POST /remote/camera/image）。新版本见 get_camera_image。"""
+    result = _remote_post("camera/image", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+# ---------- 地图 ----------
+
+@mcp.tool()
+def map_list(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图列表（POST /remote/map/list）。param: {pageNo, pageSize}"""
+    result = _remote_post("map/list", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_detail(device_id: str, product_id: str, map_id: int):
+    """地图详情（GET /remote/map/{id}）。map_id=地图云端数据库ID。"""
+    result = _remote_get(f"map/{int(map_id)}", device_id, product_id)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip(), id=int(map_id))
+
+
+@mcp.tool()
+def map_save(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图保存（POST /remote/map/save）。"""
+    result = _remote_post("map/save", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_update(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图更新（POST /remote/map/update）。param: id/aliasId/map_name/floor/building/origin/resolution/update_time"""
+    result = _remote_post("map/update", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_image_update(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图图片更新（橡皮擦，POST /remote/map/image/update）。param: id/aliasId/map_data/type"""
+    result = _remote_post("map/image/update", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_image_rotate(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图图片旋转（POST /remote/map/image/rotate）。"""
+    result = _remote_post("map/image/rotate", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_delete(device_id: str, product_id: str, map_id: Optional[int] = None, req_id: int = 0, param: Any = None):
+    """地图删除（POST /remote/map/delete）。param: id(地图云端ID)，或传 map_id。"""
+    p = _parse_param(param)
+    if map_id is not None and "id" not in p:
+        p["id"] = int(map_id)
+    result = _remote_post("map/delete", device_id, product_id, req_id=req_id, param=p)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_copy(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """复制地图（POST /remote/map/copy）。"""
+    result = _remote_post("map/copy", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_switch(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """默认地图切换（POST /remote/map/switch）。"""
+    result = _remote_post("map/switch", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_cover(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图覆盖物信息（POST /remote/map/cover）。"""
+    result = _remote_post("map/cover", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_cover_create(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图覆盖物创建（POST /remote/map/cover/create）。"""
+    result = _remote_post("map/cover/create", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_cover_update(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图覆盖物更新（POST /remote/map/cover/update）。"""
+    result = _remote_post("map/cover/update", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_cover_update_all(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图覆盖物全量更新（POST /remote/map/cover/update/all）。param: {map_id, data}"""
+    result = _remote_post("map/cover/update/all", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def map_cover_delete(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """地图覆盖物删除（POST /remote/map/cover/delete）。"""
+    result = _remote_post("map/cover/delete", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+# ---------- 路径 ----------
+
+@mcp.tool()
+def path_list(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """路径列表（POST /remote/path/list）。param: {pageNo, pageSize}"""
+    result = _remote_post("path/list", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def path_detail(device_id: str, product_id: str, path_id: int):
+    """路径详情-查云端（GET /remote/path/detail/{id}）。path_id=路径云端数据库ID。"""
+    result = _remote_get(f"path/detail/{int(path_id)}", device_id, product_id)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip(), id=int(path_id))
+
+
+@mcp.tool()
+def path_update(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """路径更新（POST /remote/path/update）。"""
+    result = _remote_post("path/update", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def path_delete(device_id: str, product_id: str, path_id: Optional[int] = None, req_id: int = 0, param: Any = None):
+    """路径删除（POST /remote/path/delete）。param: id(路径云端ID)，或传 path_id。"""
+    p = _parse_param(param)
+    if path_id is not None and "id" not in p:
+        p["id"] = int(path_id)
+    result = _remote_post("path/delete", device_id, product_id, req_id=req_id, param=p)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def path_record(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """路径记录（POST /remote/path/record）。param: name/map_id/type(path_type)/area/aliasId/id"""
+    result = _remote_post("path/record", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+# ---------- 任务 ----------
+
+@mcp.tool()
+def task_list(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """任务列表（POST /remote/task/list）。param: {pageNo, pageSize}"""
+    result = _remote_post("task/list", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def task_create(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """任务创建（POST /remote/task/create）。"""
+    result = _remote_post("task/create", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def task_update(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """任务更新（POST /remote/task/update）。"""
+    result = _remote_post("task/update", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def task_delete(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """任务删除（POST /remote/task/delete）。param: id(任务云端ID)"""
+    result = _remote_post("task/delete", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def task_control(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """任务控制-开始/暂停/停止（POST /remote/task/control）。"""
+    result = _remote_post("task/control", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def task_start_general(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """开始普通任务（POST /remote/task/start_general_task）。"""
+    result = _remote_post("task/start_general_task", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def task_report_list(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """任务报告列表（POST /remote/task/report/list）。param: {pageNo, pageSize}"""
+    result = _remote_post("task/report/list", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+# ---------- 消耗品 / 垃圾 ----------
+
+@mcp.tool()
+def consumable_reset(device_id: str, product_id: str, type: Optional[int] = None, req_id: int = 0, param: Any = None):
+    """重置消耗品寿命（POST /remote/device/consumable/reset）。param: type(消耗品类型)，或传 type。"""
+    p = _parse_param(param)
+    if type is not None and "type" not in p:
+        p["type"] = int(type)
+    result = _remote_post("device/consumable/reset", device_id, product_id, req_id=req_id, param=p)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def consumable_set(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """设置消耗品寿命（POST /remote/device/consumable/set）。param: 消耗品类型/寿命等。"""
+    result = _remote_post("device/consumable/set", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def garbage_switch(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """控制倒垃圾（POST /remote/device/garbage/switch）。"""
+    result = _remote_post("device/garbage/switch", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+# ---------- 视频 ----------
+
+@mcp.tool()
+def video_control(device_id: str, product_id: str, flag: Optional[bool] = None, req_id: int = 0, param: Any = None):
+    """设备视频控制（POST /remote/video/control）。param: flag(开关)，或传 flag。"""
+    p = _parse_param(param)
+    if flag is not None and "flag" not in p:
+        p["flag"] = bool(flag)
+    result = _remote_post("video/control", device_id, product_id, req_id=req_id, param=p)
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
+
+@mcp.tool()
+def video_heartbeat(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
+    """设备视频心跳（POST /remote/video/heartbeat）。"""
+    result = _remote_post("video/heartbeat", device_id, product_id, req_id=req_id, param=_parse_param(param))
+    return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
+
 
 if __name__ == "__main__":
     mcp.run()
