@@ -1,9 +1,9 @@
-"""
+﻿"""
 BMS Ticket MCP Server (rosiwit-cloud)
 
 工单读写：详情 / 改状态 / 评论 / 附件。
-设备影子、录包、倒退、回桩见 remote_operation MCP。
-鉴权见 cloud_common。
+设备影子、录包、倒退、回桩见 rosiwit_cloud_remote MCP。
+鉴权见 rosiwit_cloud_auth。
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from rich.console import Console
 from rich.logging import RichHandler
 
-import cloud_common as cloud
+import rosiwit_cloud_auth as cloud
 
 console = Console(stderr=True)
 

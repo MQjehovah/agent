@@ -1,9 +1,9 @@
-"""
-Device Remote Operations MCP Server (remote_operation)
+﻿"""
+Device Remote Operations MCP Server (rosiwit_cloud_remote)
 
 rosiwit-cloud 云端运维（远程控制）：影子/录包/倒退/回桩/重启/重定位等。
-鉴权：cloud_common。统一 RemoteForm：{deviceId,productId,id,param}。
-工单 CRUD 见 ticket_ops；WebSocket 终端见 remote_terminal。
+鉴权：rosiwit_cloud_auth。统一 RemoteForm：{deviceId,productId,id,param}。
+工单 CRUD 见 rosiwit_cloud_ticket；WebSocket 终端见 remote_terminal。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from mcp.server.fastmcp import FastMCP
 from rich.console import Console
 from rich.logging import RichHandler
 
-import cloud_common as cloud
+import rosiwit_cloud_auth as cloud
 
 console = Console(stderr=True)
 
@@ -1384,7 +1384,7 @@ def remote_action(
 
 
 # ==================== 补充具名工具：覆盖全部 /remote/* 端点 ====================
-# 说明：以下工具与上面的具名工具风格一致，走 cloud_common 鉴权 + RemoteForm 信封。
+# 说明：以下工具与上面的具名工具风格一致，走 rosiwit_cloud_auth 鉴权 + RemoteForm 信封。
 # 未明确业务字段的接口统一以 param(JSON/dict) 透传设备端参数。
 
 

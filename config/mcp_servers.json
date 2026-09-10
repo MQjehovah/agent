@@ -41,18 +41,17 @@
         "description": "MySQL查询服务"
     },
     {
-        "name": "remote_operation",
+        "name": "rosiwit_cloud_remote",
         "enabled": true,
         "command": "python",
         "args": [
-            "mcp_server/src/remote_operation.py"
+            "mcp_server/src/rosiwit_cloud_remote.py"
         ],
         "env": {
-            "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com/rosiwit-cloud",
             "DEVICE_API_USERNAME": "rosiwit_robot",
             "DEVICE_API_PASSWORD": "Xzrobot2022!"
         },
-        "description": "设备远程运维服务 - 设备查询、控制、OTA升级等"
+        "description": "设备远程控制（rosiwit-cloud /remote/*，含影子/录包/控制/地图/任务等）"
     },
     {
         "name": "remote_terminal",
@@ -67,16 +66,16 @@
         "description": "WebSocket终端交互服务 - 通过WebSocket连接设备终端并执行命令"
     },
     {
-        "name": "ticket_ops",
+        "name": "rosiwit_cloud_ticket",
         "enabled": true,
         "command": "python",
         "args": [
-            "mcp_server/src/ticket_ops.py"
+            "mcp_server/src/rosiwit_cloud_ticket.py"
         ],
         "env": {
             "DEVICE_API_USERNAME": "rosiwit_robot",
             "DEVICE_API_PASSWORD": "Xzrobot2022!"
         },
-        "description": "BMS工单 CRUD"
+        "description": "BMS工单 CRUD（rosiwit-cloud /ticket/*）"
     }
 ]

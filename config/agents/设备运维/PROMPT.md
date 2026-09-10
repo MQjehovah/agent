@@ -21,10 +21,10 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 
 ## 可用工具
 
-### 0. 云端工单 + 设备能力（ticket_ops + remote_operation）
+### 0. 云端工单 + 设备能力（rosiwit_cloud_ticket + rosiwit_cloud_remote）
 
-**`remote_operation`**：rosiwit-cloud 云端运维（影子 / 录包 / 倒退 / 回桩等）。鉴权由 MCP 自动登录，token 全局缓存至过期（与 ticket_ops 共用）。  
-**`ticket_ops`**：工单读写。终端用 `remote_terminal`。
+**`rosiwit_cloud_remote`**：rosiwit-cloud 设备远程控制（影子 / 录包 / 倒退 / 回桩 / 地图 / 任务等）。鉴权由 MCP 自动登录，token 全局缓存至过期（与 rosiwit_cloud_ticket 共用）。  
+**`rosiwit_cloud_ticket`**：工单读写。终端用 `remote_terminal`。
 
 **有 `ticket_id` / 工单号 / `【BMS工单AI处理】` 时（工单模式，优先于一切「只采日志」说法）：**
 

@@ -1,14 +1,14 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 rosiwit-cloud 共享鉴权与 HTTP 封装。
 
-供 ticket_ops 与 remote_operation 复用。
+供 rosiwit_cloud_ticket 与 rosiwit_cloud_remote 复用。
 
 当前写死国内云 https://bms-cn.xzrobot.com，不做多云探测。
 
 登录策略：
 - 自动登录一次后把 token + 过期时间写入本机共享文件
-- ticket_ops / remote_operation / 进程重启在过期前复用，不重复登录
+- rosiwit_cloud_ticket / rosiwit_cloud_remote / 进程重启在过期前复用，不重复登录
 - 仅过期、即将过期、或接口明确 token 非法时才重新登录
 """
 from __future__ import annotations
@@ -65,7 +65,7 @@ def _default_state_path(env_key: str, filename: str) -> str:
     return os.path.join(_default_runtime_dir(), filename)
 
 
-# ticket_ops / remote_operation 分进程，用文件同步当前云与 token
+# rosiwit_cloud_ticket / rosiwit_cloud_remote 分进程，用文件同步当前云与 token
 BIND_STATE_PATH = _default_state_path("CLOUD_BIND_STATE_PATH", "cloud_bind.json")
 TOKEN_STATE_PATH = _default_state_path("CLOUD_TOKEN_STATE_PATH", "cloud_tokens.json")
 
@@ -127,7 +127,7 @@ def _write_json_file(path: str, payload: dict[str, Any]) -> None:
 
 @contextmanager
 def _interprocess_lock():
-    """登录/写 token 的跨进程锁，避免 ticket_ops 与 remote_operation 同时登录。"""
+    """登录/写 token 的跨进程锁，避免 rosiwit_cloud_ticket 与 rosiwit_cloud_remote 同时登录。"""
     depth = getattr(_tls, "lock_depth", 0)
     if depth:
         _tls.lock_depth = depth + 1

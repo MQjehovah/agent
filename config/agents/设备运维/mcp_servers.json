@@ -25,17 +25,17 @@
         "description": "钉钉消息推送；工单 ticket_id 场景禁止调用（评论失败不可降级钉钉）"
     },
     {
-        "name": "remote_operation",
+        "name": "rosiwit_cloud_remote",
         "enabled": true,
         "command": "python",
         "args": [
-            "mcp_server/src/remote_operation.py"
+            "mcp_server/src/rosiwit_cloud_remote.py"
         ],
         "env": {
             "DEVICE_API_USERNAME": "rosiwit_robot",
             "DEVICE_API_PASSWORD": "Xzrobot2022!"
         },
-        "description": "云端运维 remote_operation（Base URL 随工单绑定）"
+        "description": "设备远程控制（rosiwit-cloud /remote/*，含影子/录包/控制/地图/任务等）"
     },
     {
         "name": "remote_terminal",
@@ -50,16 +50,16 @@
         "description": "设备远程终端（可用进程环境 WS_BASE_URL 覆盖）"
     },
     {
-        "name": "ticket_ops",
+        "name": "rosiwit_cloud_ticket",
         "enabled": true,
         "command": "python",
         "args": [
-            "mcp_server/src/ticket_ops.py"
+            "mcp_server/src/rosiwit_cloud_ticket.py"
         ],
         "env": {
             "DEVICE_API_USERNAME": "rosiwit_robot",
             "DEVICE_API_PASSWORD": "Xzrobot2022!"
         },
-        "description": "BMS工单 CRUD（多云时按 ticket_id 自动选 Base URL）"
+        "description": "BMS工单 CRUD（rosiwit-cloud /ticket/*，含评论/附件/状态流转）"
     }
 ]
