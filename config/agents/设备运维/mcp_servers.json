@@ -22,7 +22,7 @@
             "DINGTALK_AGENT_ID": "4389947271",
             "DINGTALK_ROBOT_CODE": "ding3xmu1gbsy11jbks3"
         },
-        "description": "钉钉消息推送服务 - 支持工作通知、机器人单聊/群聊消息、Webhook、通讯录查询等"
+        "description": "钉钉消息推送；工单 ticket_id 场景禁止调用（评论失败不可降级钉钉）"
     },
     {
         "name": "remote_operation",
@@ -32,11 +32,10 @@
             "mcp_server/src/remote_operation.py"
         ],
         "env": {
-            "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com/rosiwit-cloud",
-            "DEVICE_API_USERNAME": "jimingqing@xzrobot.com",
-            "DEVICE_API_PASSWORD": "202202100024"
+            "DEVICE_API_USERNAME": "rosiwit_robot",
+            "DEVICE_API_PASSWORD": "Xzrobot2022!"
         },
-        "description": "设备远程运维服务"
+        "description": "云端运维 remote_operation（Base URL 随工单绑定）"
     },
     {
         "name": "remote_terminal",
@@ -48,6 +47,19 @@
         "env": {
             "WS_BASE_URL": "wss://dev.xzrobot.com:10000"
         },
-        "description": "设备远程终端"
+        "description": "设备远程终端（可用进程环境 WS_BASE_URL 覆盖）"
+    },
+    {
+        "name": "ticket_ops",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/ticket_ops.py"
+        ],
+        "env": {
+            "DEVICE_API_USERNAME": "rosiwit_robot",
+            "DEVICE_API_PASSWORD": "Xzrobot2022!"
+        },
+        "description": "BMS工单 CRUD（多云时按 ticket_id 自动选 Base URL）"
     }
 ]
