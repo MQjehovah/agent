@@ -32,7 +32,7 @@
             "mcp_server/src/remote_operation.py"
         ],
         "env": {
-            "DEVICE_API_BASE_URL": "https://bms-cn.xzrobot.com",
+            "DEVICE_API_BASE_URL": "https://bms-cn.rosiwit.com/rosiwit-cloud",
             "DEVICE_API_USERNAME": "jimingqing@xzrobot.com",
             "DEVICE_API_PASSWORD": "202202100024"
         },

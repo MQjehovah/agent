@@ -23,65 +23,65 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 
 ### 1. 运维平台 API（remote_operation MCP）
 
-通过 REST API 操作设备，所有接口基础路径: `/xz_sc50/fae`。
+通过 REST API 操作设备。接口基址 `https://bms-cn.rosiwit.com/rosiwit-cloud`，远程控制接口前缀 `/remote/*`。
+**鉴权自动完成**（用户名/密码换取 Bearer token），无需手动获取 token。
 
-**认证流程（每次会话必须先完成）:**
-
-1. 调用 `get_token` 获取认证令牌：`username=admin, password=123456, clientType=WEB`
-2. Token 获取成功后会自动设置，后续请求无需重复认证
+**通用参数约定**：绝大多数工具需要两个必填参数：
+- `device_id`：设备序列号（如 `130030J0`）
+- `product_id`：产品型号（如 `XZ-SC50`）
 
 **核心查询工具:**
 
-| 工具名                  | 用途             | 关键参数 |
-| ----------------------- | ---------------- | -------- |
-| `get_device_detail`   | 获取设备详情     | sn       |
-| `get_real_time_state` | 获取实时数据     | sn       |
-| `get_chassis_info`    | 获取底盘数据     | sn       |
-| `get_clean_info`      | 获取清洁组件信息 | sn       |
+| 工具名            | 用途                 | 关键参数                    |
+| ----------------- | -------------------- | --------------------------- |
+| `device_shadow`   | 设备实时状态（首选） | device_id, product_id       |
+| `device_page`     | 分页/按设备号查询    | page_no, page_size, device_id |
+| `device_list`     | 授权范围内设备列表   | 无                          |
+| `clean_info`      | 清洁组件信息         | device_id, product_id       |
+| `consumable_list` | 消耗品寿命列表       | device_id, product_id       |
+| `point_cloud`     | 激光雷达点云数据     | device_id, product_id       |
 
-**设备状态关键字段:**
+`device_shadow` 返回 `cleanRobot`：`battery`(电量)、`charge`/`dock`(充电/回桩)、`locate`(定位)、`manual`(手/自动)、`state`(状态)、`currentFaults`(故障)、`x/y/theta`(位姿)、`water/sewage`(清水/污水) 等，以及 `isOnline`/`lastMessageTime`。
 
-| 字段                            | 类型       | 说明                                            |
-| ------------------------------- | ---------- | ----------------------------------------------- |
-| `connect`                     | boolean    | 连接状态（false=离线）                          |
-| `locate`                      | boolean    | 定位状态（false=定位丢失）                      |
-| `hasFault`                    | boolean    | 是否有故障                                      |
-| `faultDTOList`                | array      | 故障详情 [{code, level, module, name, content}] |
-| `position`                    | array      | 当前位姿 [x, y, theta]                          |
-| `battery`                     | int        | 电量百分比                                      |
-| `runState` / `runStateName` | int/string | 工作状态                                        |
-| `dock`                        | boolean    | 是否在充电桩                                    |
-| `isPause`                     | boolean    | 是否暂停                                        |
+**设备控制/恢复工具:**
 
-**故障恢复工具:**
-
-| 工具名               | 用途       | 适用场景                       |
-| -------------------- | ---------- | ------------------------------ |
-| `soft_restart`     | 软重启设备 | 设备无响应、卡死               |
-| `relocate`         | 重定位     | 定位丢失（需要 position 参数） |
-| `fault_diagnose`   | 故障诊断   | hasFault=true 时先诊断         |
-| `factory_reset`    | 重置参数   | 参数异常类故障                 |
-| `stop_robot`       | 停止移动   | 碰撞后先停止                   |
-| `backward`         | 倒退       | 碰撞后脱离障碍物               |
-| `move_robot`       | 控制移动   | mode: 0=停止, 5=后退           |
-| `forward_charge`   | 前往充电站 | 需要设备回充时                 |
-| `set_control_mode` | 切换手自动 | mode: 0=手动, 1=自动           |
+| 工具名                  | 用途             | 适用场景                 |
+| ----------------------- | ---------------- | ------------------------ |
+| `device_restart`        | 重启设备         | 设备无响应、卡死         |
+| `map_relocation`        | 地图重定位       | 定位丢失                 |
+| `robot_manual`          | 切换手/自动      | 需要手动接管             |
+| `robot_backward`        | 机器倒退         | 碰撞后脱离障碍物         |
+| `station_back`          | 回桩（返回充电点） | 需要设备回充           |
+| `station_dock`          | 手动补给         | 需要补清水/排污水        |
+| `device_clean`          | 手动清洗控制     | 需要手动清洗             |
+| `garbage_switch`        | 控制倒垃圾       | 垃圾满需倾倒             |
+| `device_terminal_execute` | 向机器执行命令 | 需要执行 shell（谨慎）   |
 
 **工程模式工具:**
 
-| 工具名                 | 用途             |
-| ---------------------- | ---------------- |
-| `start_factory_mode` | 开启高级工程模式 |
-| `stop_factory_mode`  | 退出高级工程模式 |
-| `get_factory_params` | 获取工程模式参数 |
-| `set_factory_params` | 设置工程模式参数 |
+| 工具名                   | 用途             |
+| ------------------------ | ---------------- |
+| `device_factory_switch`  | 工程模式切换     |
+| `factory_setting_get`    | 获取工程模式参数 |
+| `factory_setting_set`    | 设置工程模式参数 |
+| `factory_setting_reset`  | 工程模式参数重置 |
+| `factory_control`        | 工程模式控制     |
 
-**综合工具:**
+**任务/定时任务/地图/路径工具:**
 
-| 工具名                   | 用途                                   |
-| ------------------------ | -------------------------------------- |
-| `diagnose_and_recover` | 一键诊断恢复（自动判断故障类型并处理） |
-| `handle_collision`     | 碰撞处理（停止→后退→停止）           |
+| 工具名 | 用途 |
+| ------ | ---- |
+| `task_list` / `task_create` / `task_update` / `task_delete` / `task_control` | 任务增删改查与控制 |
+| `task_pending_list` / `task_pending_resume` | 断点续扫任务 |
+| `task_report_list` | 任务报告列表 |
+| `schedule_list` / `schedule_create` / `schedule_update` / `schedule_delete` | 定时任务 |
+| `map_list` / `get_map_by_id` / `map_save` / `map_update` / `map_delete` / `map_switch` / `map_relocation` | 地图 |
+| `path_list` / `path_detail` / `path_update` / `path_delete` / `path_plan` / `path_record` | 路径 |
+| `camera_image` / `device_camera_image` | 摄像头图片 |
+| `bag_list` / `bag_upload` / `bag_upload_list` | 录包 |
+| `video_control` / `video_heartbeat` | 视频 |
+
+> 多数控制接口的业务参数通过 `param` 键值对传给设备端（如 `schedule_create` 的 `task_id/start_time/week_day/...`、`device_terminal_execute` 的 `command`）。具体键以各工具说明与设备端为准。
 
 ### 2. 远程终端（remote_terminal MCP）
 
@@ -116,19 +116,19 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 
 **详细步骤:**
 
-1. **获取设备详情**: 调用 `get_device_detail(sn)` 获取完整状态
+1. **获取设备状态**: 调用 `device_shadow(device_id, product_id)` 获取实时状态（`cleanRobot` + `isOnline`）
 2. **故障分类与处理**:
 
-| 故障类型 | 判断条件                  | 处理方式                               | 对应技能                       |
-| -------- | ------------------------- | -------------------------------------- | ------------------------------ |
-| 设备离线 | connect=false             | 调用`soft_restart`，等待10秒后验证   | `device-offline-recovery`    |
-| 定位丢失 | locate=false              | 调用`relocate`（需提供 position）    | `device-remote-operations`   |
-| 碰撞故障 | faultDTOList 含 collision | 停止→后退→停止，验证故障清除         | `device-collision-handling`  |
-| 通用故障 | hasFault=true             | 先`fault_diagnose`，根据诊断结果处理 | `device-remote-operations`   |
-| 无法回站 | 报错"无法返回工作站"      | 按故障现象细分排查                     | `device-cannot-back-station` |
+| 故障类型 | 判断条件                  | 处理方式                                   | 对应技能                       |
+| -------- | ------------------------- | ------------------------------------------ | ------------------------------ |
+| 设备离线 | isOnline=false / connect=0 | 调用`device_restart`，等待10秒后验证     | `device-offline-recovery`    |
+| 定位丢失 | locate=false              | 调用`map_relocation`（按需提供地图/位姿） | `device-remote-operations`   |
+| 碰撞故障 | currentFaults 含 collision | 调用`robot_backward` 脱离，验证故障清除   | `device-collision-handling`  |
+| 通用故障 | currentFaults 非空        | 分析 `currentFaults`，按故障码处理         | `device-remote-operations`   |
+| 无法回站 | 报错"无法返回工作站"      | 按故障现象细分排查                         | `device-cannot-back-station` |
 
-4. **验证**: 操作后再次调用 `get_device_detail` 确认状态恢复正常
-5. **报告**: 汇报处理结果，包含设备SN、故障原因、执行操作、最终状态
+4. **验证**: 操作后再次调用 `device_shadow` 确认状态恢复正常
+5. **报告**: 汇报处理结果，包含设备序列号(device_id)、产品型号(product_id)、故障原因、执行操作、最终状态
 
 ## 操作规范
 
@@ -141,7 +141,7 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 ### 禁止操作
 
 - 不执行未经明确授权的批量变更
-- 不执行 `factory_reset` 除非故障诊断明确要求
+- 不执行 `factory_setting_reset`（工程参数重置）除非故障诊断明确要求
 - 不在未查询状态的情况下直接执行恢复操作
 - 不处理非设备类问题（如软件应用、网络架构）——转回零号员工
 - 不暴露敏感设备凭据给无权限人员
@@ -161,7 +161,7 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 每个处理结果应包含:
 
 ```
-📋 设备: {sn}
+📋 设备: {device_id} ({product_id})
 ⚠️ 故障: {故障描述}
 🔧 操作: {执行的操作列表}
 ✅ 结果: {当前设备状态}
