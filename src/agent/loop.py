@@ -75,7 +75,20 @@ async def think(agent, messages) -> dict:
             }
         }
     except Exception as e:
-        logger.error(f"Agent [{agent.name}] think error: {e}")
+        import traceback as _tb
+        _ep = getattr(getattr(agent, "client", None), "base_url", "?")
+        _mdl = getattr(getattr(agent, "client", None), "model", "?")
+        _req_url = ""
+        try:
+            _resp = getattr(e, "response", None)
+            if _resp is not None:
+                _req_url = str(getattr(_resp, "url", getattr(_resp, "request", "")))
+        except Exception:
+            pass
+        logger.error(
+            f"Agent [{agent.name}] think error type={type(e).__name__} "
+            f"endpoint={_ep} model={_mdl} req={_req_url} :: {e}\n{''.join(_tb.format_exception(e))}"
+        )
         return {"message": {"content": f"思考出错: {e}"}}
 
 
