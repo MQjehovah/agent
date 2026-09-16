@@ -344,6 +344,15 @@ class Storage:
                     PRIMARY KEY (scope_kind, scope_key)
                 );
             """)
+            # migration: add columns 若缺失则补上（新库已在 CREATE TABLE 定义）
+            def _add_col(table: str, col_def: str):
+                with suppress(sqlite3.OperationalError):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+
+            # 老库升级: rbac_roles 新列须在建种子之前补齐(种子 INSERT 引用了这些列)
+            _add_col("rbac_roles", "permissions TEXT DEFAULT '[]'")
+            _add_col("rbac_roles", "data_scope TEXT DEFAULT 'self'")
+
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
                 VALUES ('default', '默认角色-只能对话', '[]', '[]', '[]', 'self', datetime('now'))
@@ -353,10 +362,6 @@ class Storage:
                 VALUES ('admin', '管理员-全部权限', '["*"]', '["*"]', '["*"]', 'all', datetime('now'))
             """)
             conn.commit()
-            # migration: add columns 若缺失则补上（新库已在 CREATE TABLE 定义）
-            def _add_col(table: str, col_def: str):
-                with suppress(sqlite3.OperationalError):
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
 
             _add_col("messages", "reasoning_content TEXT")
             _add_col("messages", "user_id TEXT DEFAULT ''")
@@ -365,8 +370,6 @@ class Storage:
             _add_col("messages", "round_id TEXT DEFAULT ''")
             _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
             _add_col("rbac_users", "display_name TEXT DEFAULT ''")
-            _add_col("rbac_roles", "permissions TEXT DEFAULT '[]'")
-            _add_col("rbac_roles", "data_scope TEXT DEFAULT 'self'")
             # 老库升级: 内置角色的 Web 权限/数据范围回填(仅当仍为默认空值时, 幂等)
             with suppress(sqlite3.OperationalError):
                 conn.execute(

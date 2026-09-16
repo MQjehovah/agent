@@ -174,3 +174,34 @@ def test_department_delete_blocked_when_has_members(rbac):
     ok2, _ = rbac.delete_department("空部门")
     assert ok2 is True
 
+
+def test_migration_adds_permission_columns_to_legacy_db(tmp_path):
+    """老库(无 permissions/data_scope 列)升级: 必须先补列再建种子, 否则启动即崩。"""
+    import sqlite3
+
+    db = tmp_path / "data.db"
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "CREATE TABLE rbac_roles (name TEXT PRIMARY KEY, description TEXT DEFAULT '', "
+            "allowed_tools TEXT DEFAULT '[]', allowed_agents TEXT DEFAULT '[]', created_at TEXT)")
+        conn.execute(
+            "INSERT INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at) "
+            "VALUES ('admin', '管理员-全部权限', '[\"*\"]', '[\"*\"]', datetime('now'))")
+        conn.execute(
+            "INSERT INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at) "
+            "VALUES ('default', '默认角色-只能对话', '[]', '[]', datetime('now'))")
+        conn.commit()
+
+    storage = Storage(str(tmp_path))
+    try:
+        with storage.get_connection() as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(rbac_roles)")]
+        assert "permissions" in cols
+        assert "data_scope" in cols
+        rbac = RBACManager(storage)
+        assert rbac.get_permissions("admin") == ["*"]
+        assert rbac.get_data_scope("admin") == "all"
+        assert rbac.get_data_scope("default") == "self"
+    finally:
+        storage.close()
+
