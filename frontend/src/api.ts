@@ -2,6 +2,9 @@
 
 const TOKEN_KEY = 'agent_jwt'
 const ROLE_KEY = 'agent_role'
+const PERMS_KEY = 'agent_perms'
+const SCOPE_KEY = 'agent_scope'
+const DEPT_KEY = 'agent_dept'
 
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? ''
@@ -34,13 +37,54 @@ export function setRole(role: string) {
   localStorage.setItem(ROLE_KEY, role)
 }
 
+/** 当前用户 Web 权限键列表（来自 /api/auth/me 或登录回包） */
+export function getPermissions(): string[] {
+  try {
+    const raw = localStorage.getItem(PERMS_KEY)
+    const arr = raw ? JSON.parse(raw) : []
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+}
+
+export function setPermissions(perms: string[]) {
+  localStorage.setItem(PERMS_KEY, JSON.stringify(perms ?? []))
+}
+
+/** 是否拥有某项权限（admin 角色或 `*` 通配恒真；仅前端展示级，后端仍强制鉴权） */
+export function hasPerm(key: string): boolean {
+  if (getRole() === 'admin') return true
+  const perms = getPermissions()
+  return perms.includes('*') || perms.includes(key)
+}
+
+export function getDataScope(): string {
+  return localStorage.getItem(SCOPE_KEY) ?? 'self'
+}
+
+export function getDepartment(): string {
+  return localStorage.getItem(DEPT_KEY) ?? ''
+}
+
+/** 统一写入身份信息（角色/权限/数据范围/部门） */
+export function setIdentity(u: { role?: string; permissions?: string[]; data_scope?: string; department?: string }) {
+  if (u.role) setRole(u.role)
+  if (u.permissions) setPermissions(u.permissions)
+  if (u.data_scope) localStorage.setItem(SCOPE_KEY, u.data_scope)
+  if (u.department !== undefined) localStorage.setItem(DEPT_KEY, u.department ?? '')
+}
+
 export function isAdmin(): boolean {
-  return getRole() === 'admin'
+  return hasPerm('*')
 }
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(ROLE_KEY)
+  localStorage.removeItem(PERMS_KEY)
+  localStorage.removeItem(SCOPE_KEY)
+  localStorage.removeItem(DEPT_KEY)
 }
 
 export class ApiError extends Error {

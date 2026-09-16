@@ -327,7 +327,12 @@ def register_webhook_routes(app: FastAPI, agent_provider: Callable[[], Any]) -> 
                 "result": task.result, "error": task.error}
 
     @app.get("/webhook/tasks")
-    async def list_tasks(status: str | None = None, limit: int = 50):
+    async def list_tasks(request: Request, status: str | None = None, limit: int = 50):
+        # 任务列表为运维管理视图：需 admin.monitor 权限(webhook 执行入口另用 token 校验)
+        from web.security import perm_or_403
+        _u, denied = perm_or_403(request, "admin.monitor")
+        if denied:
+            return denied
         tasks = WebhookStore.list(status=status, limit=limit)
         items = [{"task_id": t.task_id, "status": t.status, "created_at": t.created_at}
                  for t in tasks]

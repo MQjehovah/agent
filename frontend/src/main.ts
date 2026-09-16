@@ -5,6 +5,7 @@ import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import App from './App.vue'
 import './style.css'
+import { hasPerm } from './api'
 
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
@@ -32,13 +33,15 @@ const router = createRouter({
         { path: 'chat', component: ChatView, meta: { title: '对话' } },
         { path: 'scheduler', component: SchedulerView, meta: { title: '定时任务' } },
         { path: 'memories', component: MemoriesView, meta: { title: '记忆管理' } },
-        { path: 'sessions', component: SessionsView, meta: { title: '会话管理', admin: true } },
-        { path: 'kanban', component: KanbanView, meta: { title: '任务看板', admin: true } },
-        { path: 'monitor', component: MonitorView, meta: { title: '运行监控', admin: true } },
-        { path: 'logs', component: LogsView, meta: { title: '日志', admin: true } },
-        { path: 'webhook', component: WebhookView, meta: { title: 'Webhook', admin: true } },
-        { path: 'admin', component: AdminView, meta: { title: '用户管理', admin: true } },
-        { path: 'settings', component: SettingsView, meta: { title: '设置', admin: true } }
+        { path: 'settings', component: SettingsView, meta: { title: '设置' } },
+        { path: 'sessions', component: SessionsView, meta: { title: '会话管理', perm: 'admin.monitor' } },
+        { path: 'kanban', component: KanbanView, meta: { title: '任务看板', perm: 'admin.monitor' } },
+        { path: 'monitor', component: MonitorView, meta: { title: '运行监控',
+          permAny: ['admin.monitor', 'admin.logs', 'admin.scheduler', 'admin.memories'] } },
+        { path: 'logs', component: LogsView, meta: { title: '日志', perm: 'admin.logs' } },
+        { path: 'webhook', component: WebhookView, meta: { title: 'Webhook', perm: 'admin.monitor' } },
+        { path: 'admin', component: AdminView, meta: { title: '用户与权限',
+          permAny: ['admin.users', 'admin.roles', 'admin.departments'] } }
       ]
     },
     { path: '/:pathMatch(.*)*', redirect: '/chat' }
@@ -48,12 +51,13 @@ const router = createRouter({
 router.beforeEach((to) => {
   document.title = (to.meta.title ? to.meta.title + ' · ' : '') + '零号员工'
   if (!to.meta.public && !localStorage.getItem('agent_jwt')) return '/login'
-  const role = localStorage.getItem('agent_role')
-  const admin = role === 'admin'
-  // 「运行监控」组内页:仅 admin(含二级 query 全量模式),普通用户一律回个人空间
-  if (to.meta.admin && !admin) return '/dashboard'
-  if (!admin && to.path === '/scheduler' && to.query.scope === 'all') return '/dashboard'
-  if (!admin && to.path === '/memories' && to.query.view === 'all') return '/dashboard'
+  // 权限路由守卫: 细粒度 Web 权限(后端仍强制鉴权, 此处仅导航收敛)
+  const permAny = to.meta.permAny as string[] | undefined
+  if (permAny && !permAny.some((p) => hasPerm(p))) return '/dashboard'
+  if (to.meta.perm && !hasPerm(to.meta.perm as string)) return '/dashboard'
+  // 「运行监控」组内页的全量 query: 无对应权限一律回个人空间
+  if (!hasPerm('admin.scheduler') && to.path === '/scheduler' && to.query.scope === 'all') return '/dashboard'
+  if (!hasPerm('admin.memories') && to.path === '/memories' && to.query.view === 'all') return '/dashboard'
 })
 
 const app = createApp(App)

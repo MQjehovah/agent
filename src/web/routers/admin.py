@@ -1,6 +1,7 @@
 """管理端可观测/用量/个人用量 Router（Wave B：从 web/server.py 拆出的域）。
 
-端点语义与 server.py 迁移前完全一致；共享状态通过传入的 WebServer 实例访问。
+端点语义与 server.py 迁移前一致；共享状态通过传入的 WebServer 实例访问。
+鉴权升级为细粒度权限(admin.monitor) + 部门数据范围(department scope)过滤。
 """
 
 import logging
@@ -9,9 +10,31 @@ from datetime import datetime
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
-from web.security import get_auth, require_admin
+from web.security import get_auth, perm_or_403, scope_department
 
 logger = logging.getLogger("agent.web.admin")
+
+
+def _tag_uid(tag) -> str:
+    tag = str(tag or "")
+    return tag.split(":", 1)[1] if ":" in tag else tag
+
+
+def _scope_uids(user: dict) -> set | None:
+    """部门范围可见的 rbac uid 集合；None=全站不限。"""
+    dept = scope_department(user)
+    if dept is None:
+        return None
+    from security.rbac import RBACManager
+    from storage.storage import get_storage
+    storage = get_storage()
+    if storage is None or not dept:
+        return set()
+    return {str(i) for i in RBACManager(storage).list_user_ids_by_department(dept)}
+
+
+def _in_scope(uids: set | None, tag) -> bool:
+    return uids is None or _tag_uid(tag) in uids
 
 
 def build_admin_router(server) -> APIRouter:
@@ -23,16 +46,32 @@ def build_admin_router(server) -> APIRouter:
         except Exception:
             return 0
 
+    def _session_in_scope(storage, uids: set | None, session_id: str) -> bool:
+        """会话归属是否在当前用户数据范围内(用于下钻/导出越权拦截)。"""
+        if uids is None:
+            return True
+        owner = ""
+        try:
+            owner = storage.get_message_owner(session_id) if storage else ""
+        except Exception:
+            owner = ""
+        if not owner:
+            owner = server._session_owners.get(session_id, "")
+        return _in_scope(uids, owner)
+
     @router.get("/api/admin/stats")
     async def admin_stats(request: Request):
-        if require_admin(request) is None:
-            return JSONResponse({"error": "Admin required"}, status_code=403)
+        u, denied = perm_or_403(request, "admin.monitor")
+        if denied:
+            return denied
+        uids = _scope_uids(u)
         from storage.storage import get_storage
         storage = get_storage()
-        live = server.live_sessions_snapshot()
+        live = [s for s in server.live_sessions_snapshot() if _in_scope(uids, s.get("tag"))]
         running = [s for s in live if s["is_streaming"]]
         # 「全站运行中会话」：与 /api/admin/sessions/running 同源（含池/渠道登记、非 web 执行）
-        running_sessions = server.running_sessions_snapshot(admin=True, tag="")
+        running_sessions = [s for s in server.running_sessions_snapshot(admin=True, tag="")
+                            if _in_scope(uids, s.get("tag"))]
 
         agent_active_sessions, running_agents, task_counts = 0, 0, {}
         subagent_active = 0
@@ -65,8 +104,8 @@ def build_admin_router(server) -> APIRouter:
         online = {"count": 0, "users": []}
         if storage:
             try:
-                usage_today = storage.usage_totals(days=1)
-                rows = storage.query_usage(limit=200)
+                usage_today = storage.usage_totals(days=1, uids=uids)
+                rows = storage.query_usage(limit=200, uids=uids)
             except Exception:
                 rows = []
             try:
@@ -128,14 +167,16 @@ def build_admin_router(server) -> APIRouter:
                            if "duration_ms" in k or k == "calls"},
             "online": online,
             "live_sessions": live,
+            "scope_department": scope_department(u),
         }
 
     @router.get("/api/admin/usage")
     async def admin_usage(days: int = Query(7), group: str = Query("day"),
                           model: str = Query(""), user: str = Query(""),
                           request: Request = None):
-        if require_admin(request) is None:
-            return JSONResponse({"error": "Admin required"}, status_code=403)
+        u, denied = perm_or_403(request, "admin.monitor")
+        if denied:
+            return denied
         from storage.storage import get_storage
         storage = get_storage()
         if not storage:
@@ -143,10 +184,11 @@ def build_admin_router(server) -> APIRouter:
         days = max(1, min(days, 90))
         if group not in ("day", "user", "model", "session"):
             group = "day"
-        totals = storage.usage_totals(days=days, user_id=user, model=model)
+        uids = _scope_uids(u)
+        totals = storage.usage_totals(days=days, user_id=user, model=model, uids=uids)
         breakdown = storage.summarize_usage(group_by=group, days=days,
-                                            user_id=user, model=model)
-        recent = storage.query_usage(user_id=user, limit=100)
+                                            user_id=user, model=model, uids=uids)
+        recent = storage.query_usage(user_id=user, limit=100, uids=uids)
         return {"days": days, "group": group, "totals": totals,
                 "breakdown": breakdown, "recent": recent}
 
@@ -177,16 +219,21 @@ def build_admin_router(server) -> APIRouter:
     @router.get("/api/admin/sessions")
     async def admin_sessions(limit: int = Query(30), scope: str = Query("all"),
                              request: Request = None):
-        if require_admin(request) is None:
-            return JSONResponse({"error": "Admin required"}, status_code=403)
+        u, denied = perm_or_403(request, "admin.monitor")
+        if denied:
+            return denied
+        uids = _scope_uids(u)
         from storage.storage import get_storage
         storage = get_storage()
-        live = server.live_sessions_snapshot() if scope in ("all", "live") else []
+        live = [s for s in server.live_sessions_snapshot()
+                if _in_scope(uids, s.get("tag"))] if scope in ("all", "live") else []
         history: list[dict] = []
         if storage and scope in ("all", "history"):
             rows = storage.list_conversations(min(max(limit, 1), 500))
             for r in rows:
                 tag = r.get("user_id") or ""
+                if not _in_scope(uids, tag):
+                    continue
                 history.append({
                     "id": r["conversation_id"],
                     "agent_id": r.get("agent_id") or "",
@@ -205,31 +252,42 @@ def build_admin_router(server) -> APIRouter:
         """管理端「运行中」会话：全部正在执行、占用 Agent worker 的会话（含 user 姓名）。
 
         判定口径与 /api/agent/sessions/running 一致：worker 池启用时以池登记为准，
-        关闭时即内存流式中会话（metrics agent_running_streams 同源）。admin 全量可见。
+        关闭时即内存流式中会话（metrics agent_running_streams 同源）。admin 全量可见，
+        部门范围管理员仅见本部门成员。
         """
-        if require_admin(request) is None:
-            return JSONResponse({"error": "Admin required"}, status_code=403)
-        sessions = server.running_sessions_snapshot(admin=True, tag="")
+        u, denied = perm_or_403(request, "admin.monitor")
+        if denied:
+            return denied
+        uids = _scope_uids(u)
+        sessions = [s for s in server.running_sessions_snapshot(admin=True, tag="")
+                    if _in_scope(uids, s.get("tag"))]
         return {"total": len(sessions), "sessions": sessions}
 
     @router.get("/api/admin/sessions/{session_id}/threads")
     async def admin_session_threads(session_id: str, request: Request = None):
-        if require_admin(request) is None:
-            return JSONResponse({"error": "Admin required"}, status_code=403)
+        u, denied = perm_or_403(request, "admin.monitor")
+        if denied:
+            return denied
         from storage.storage import get_storage
         storage = get_storage()
         if not storage:
             return JSONResponse({"error": "storage unavailable"}, status_code=503)
+        if not _session_in_scope(storage, _scope_uids(u), session_id):
+            return JSONResponse({"error": "Session not found"}, status_code=404)
         threads = storage.conversation_threads(session_id)
         return {"conversation_id": session_id, "threads": threads, "count": len(threads)}
 
     @router.get("/api/admin/sessions/{session_id}/messages")
     async def admin_session_messages(session_id: str, request: Request = None):
-        if require_admin(request) is None:
-            return JSONResponse({"error": "Admin required"}, status_code=403)
+        u, denied = perm_or_403(request, "admin.monitor")
+        if denied:
+            return denied
         from storage.storage import get_storage
         storage = get_storage()
+        uids = _scope_uids(u)
         if storage:
+            if not _session_in_scope(storage, uids, session_id):
+                return JSONResponse({"error": "Session not found"}, status_code=404)
             msgs = storage.get_messages_with_meta(session_id, limit=0)
             if msgs:
                 return {"session_id": session_id, "source": "db", "messages": msgs,
@@ -237,6 +295,8 @@ def build_admin_router(server) -> APIRouter:
         with server._session_lock:
             cs = server._sessions.get(session_id)
         if cs:
+            if not _in_scope(uids, server._session_owners.get(session_id, "")):
+                return JSONResponse({"error": "Session not found"}, status_code=404)
             return {"session_id": session_id, "source": "memory", "messages": cs.snapshot(),
                     "count": len(cs.snapshot())}
         return JSONResponse({"error": "Session not found"}, status_code=404)
@@ -244,11 +304,14 @@ def build_admin_router(server) -> APIRouter:
     @router.post("/api/admin/sessions/{session_id}/messages")
     async def admin_session_export(session_id: str, request: Request = None):
         """审计导出：返回全部消息的 JSON（含元数据），由管理端保存为审计文件。"""
-        if require_admin(request) is None:
-            return JSONResponse({"error": "Admin required"}, status_code=403)
+        u, denied = perm_or_403(request, "admin.monitor")
+        if denied:
+            return denied
         from storage.storage import get_storage
         storage = get_storage()
         if storage:
+            if not _session_in_scope(storage, _scope_uids(u), session_id):
+                return JSONResponse({"error": "Session not found"}, status_code=404)
             msgs = storage.get_messages_with_meta(session_id)
             if msgs:
                 return {"session_id": session_id,

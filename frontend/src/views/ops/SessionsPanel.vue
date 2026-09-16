@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { api, del, isAdmin } from '../../api'
+import { api, del, hasPerm } from '../../api'
 import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../../channel'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -31,7 +31,7 @@ interface RunningRow {
 }
 
 const RUN_POLL_MS = 4000
-const admin = isAdmin()
+const admin = hasPerm('admin.monitor')
 
 const sessions = ref<SessionRow[]>([])
 const loading = ref(false)

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { post, setToken, setRole } from '../api'
+import { post, setToken, setIdentity } from '../api'
 
 const router = useRouter()
 const route = useRoute()
@@ -16,12 +16,17 @@ async function submit() {
   loading.value = true
   error.value = ''
   try {
-    const data = await post<{ token: string; user?: { role?: string } }>('/api/auth/login', {
+    const data = await post<{ token: string; user?: { role?: string; permissions?: string[]; data_scope?: string; department?: string } }>('/api/auth/login', {
       username: username.value.trim(),
       password: password.value
     })
     setToken(data.token)
-    setRole(data.user?.role ?? '')
+    setIdentity({
+      role: data.user?.role,
+      permissions: data.user?.permissions,
+      data_scope: data.user?.data_scope,
+      department: data.user?.department
+    })
     router.push('/dashboard')
   } catch (err) {
     error.value = (err as Error).message

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../theme'
-import { api, clearToken, getRole, setRole } from '../api'
+import { api, clearToken, getRole, hasPerm, setIdentity } from '../api'
 import {
   Monitor, ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton
@@ -14,13 +14,14 @@ const { theme, toggle } = useTheme()
 const collapsed = ref(false)
 
 const role = ref(getRole())
-const admin = computed(() => role.value === 'admin')
-const me = ref<{ name: string; role: string }>({ name: '', role: '' })
+const me = ref<{ name: string; role: string; department?: string }>({ name: '', role: '' })
+const permsVersion = ref(0)
 
 interface NavItem {
   path: string
   title: string
   icon: any
+  perm?: string
 }
 
 // —— 一级：个人空间（所有登录用户，平铺）——
@@ -28,15 +29,23 @@ const personalItems: NavItem[] = [
   { path: '/dashboard', title: '工作台', icon: Monitor },
   { path: '/chat', title: '对话', icon: ChatDotRound },
   { path: '/scheduler', title: '定时任务', icon: Timer },
-  { path: '/memories', title: '记忆管理', icon: Coin }
-]
-
-// —— 一级：运维与管理（仅管理员，平铺三个菜单项，无折叠）——
-const opsItems: NavItem[] = [
-  { path: '/monitor', title: '运行监控', icon: Odometer },
-  { path: '/admin', title: '用户管理', icon: User },
+  { path: '/memories', title: '记忆管理', icon: Coin },
   { path: '/settings', title: '设置', icon: Setting }
 ]
+
+// —— 一级：运维与管理（按细粒度权限展示）——
+const allOpsItems: NavItem[] = [
+  { path: '/monitor', title: '运行监控', icon: Odometer, perm: 'admin.monitor' },
+  { path: '/admin', title: '用户与权限', icon: User,
+    perm: 'admin.users' }
+]
+const opsItems = computed(() => {
+  void permsVersion.value
+  return allOpsItems.filter((i) => !i.perm || hasPerm(i.perm)
+    || (i.path === '/admin' && (hasPerm('admin.roles') || hasPerm('admin.departments')))
+    || (i.path === '/monitor' && (hasPerm('admin.logs') || hasPerm('admin.scheduler') || hasPerm('admin.memories'))))
+})
+const showOps = computed(() => opsItems.value.length > 0)
 
 function itemActive(item: NavItem): boolean {
   return route.path.startsWith(item.path)
@@ -51,16 +60,18 @@ const currentTitle = computed(() => (route.meta.title as string) ?? '')
 
 const roleLabel = computed(() => {
   const r = me.value.role || role.value
-  if (r === 'admin') return '管理员'
-  if (r === 'user') return '普通用户'
-  return '成员'
+  const base = r === 'admin' ? '管理员' : (r === 'user' ? '普通用户' : '成员')
+  return me.value.department ? `${base} · ${me.value.department}` : base
 })
 
 async function refreshMe() {
   try {
-    const d = await api<{ id?: number; name: string; display_name?: string; role: string }>('/api/auth/me')
-    me.value = { name: d.display_name || d.name, role: d.role }
-    if (d.role) { role.value = d.role; setRole(d.role) }
+    const d = await api<{ id?: number; name: string; display_name?: string; role: string;
+      department?: string; permissions?: string[]; data_scope?: string }>('/api/auth/me')
+    me.value = { name: d.display_name || d.name, role: d.role, department: d.department }
+    setIdentity({ role: d.role, permissions: d.permissions, data_scope: d.data_scope, department: d.department })
+    role.value = d.role
+    permsVersion.value++
   } catch {
     /* 忽略 */
   }
@@ -92,7 +103,7 @@ function onUserCommand(cmd: string | number | object) {
           <span class="side-label">{{ item.title }}</span>
         </a>
 
-        <template v-if="admin">
+        <template v-if="showOps">
           <div class="side-group-title ops-title">运维与管理</div>
           <a v-for="item in opsItems" :key="item.path" href="#"
              :class="{ 'router-link-active': itemActive(item) }"

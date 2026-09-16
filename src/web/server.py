@@ -933,6 +933,59 @@ class WebServer:
                 raise HTTPException(403, "Admin required")
             return u
 
+        # ===== 细粒度权限 / 数据范围（角色 + 部门） =====
+        from web.security import _resolve_role as _resolve_role_perm
+        from web.security import has_permission as _has_perm
+        from web.security import scope_department as _scope_dept
+
+        async def _get_authz(request: Request) -> dict[str, Any]:
+            """身份 + 角色权限 + 数据范围 + 部门（SSO/JWT 均适用）。"""
+            u = dict(await _get_auth(request))
+            try:
+                from web.security import _resolve_role
+                perms, scope, dept = _resolve_role(u.get("role", ""), u.get("uid"))
+            except Exception:
+                perms, scope, dept = [], "self", ""
+            u["permissions"] = perms
+            u["data_scope"] = scope
+            u["department"] = dept
+            return u
+
+        async def _require_perm(request: Request, perm: str) -> dict[str, Any]:
+            u = await _get_authz(request)
+            if not _has_perm(u, perm):
+                raise HTTPException(403, "权限不足")
+            return u
+
+        def _dept_visible(actor: dict[str, Any], target_department: str) -> bool:
+            """部门数据范围校验: 全站/admin 恒可见；department 范围仅本部门。"""
+            dept = _scope_dept(actor)
+            if dept is None:
+                return True
+            return (target_department or "") == dept
+
+        def _dept_uids(actor: dict[str, Any]) -> set | None:
+            """部门范围下可见的 rbac_users.id 集合；None=全站不限。"""
+            dept = _scope_dept(actor)
+            if dept is None:
+                return None
+            rbac = _get_rbac()
+            if not rbac or not dept:
+                return set()
+            return {str(i) for i in rbac.list_user_ids_by_department(dept)}
+
+        def _filter_tags_by_dept(actor: dict[str, Any], rows: list, tag_key: str) -> list:
+            """按部门范围过滤带归属 tag({channel}:{uid}) 的行；None 范围不过滤。"""
+            uids = _dept_uids(actor)
+            if uids is None:
+                return rows
+            out = []
+            for r in rows:
+                uid = WebServer._tag_uid(r.get(tag_key) or "")
+                if uid and uid in uids:
+                    out.append(r)
+            return out
+
         # ===== Auth API =====
         _login_attempts: dict[str, list[float]] = {}
 
@@ -959,19 +1012,26 @@ class WebServer:
             if not user:
                 return JSONResponse({"error": "Invalid username or password"}, status_code=401)
             token = create_jwt(user)
+            from security.rbac import RBACManager
+            _rbac = RBACManager(storage)
             return {"token": token, "user": {"id": user["id"], "name": user["name"],
                      "role": user["role"], "department": user.get("department", ""),
-                     "display_name": user.get("display_name") or user["name"]}}
+                     "display_name": user.get("display_name") or user["name"],
+                     "permissions": _rbac.get_permissions(user["role"]),
+                     "data_scope": _rbac.get_data_scope(user["role"])}}
 
         @self._app.get("/api/auth/me")
         async def auth_me(request: Request):
-            u = await _get_auth(request)
+            u = await _get_authz(request)
             display = (u.get("display_name") or "").strip()
             if not display:
                 # 旧 JWT(签发时未含 display_name) 兜底按 uid 查
                 display = _display_name_for_uid(u.get("uid", ""))
             return {"id": u["uid"], "name": u["name"], "role": u["role"],
-                    "display_name": display or u["name"]}
+                    "display_name": display or u["name"],
+                    "department": u.get("department", ""),
+                    "permissions": u.get("permissions", []),
+                    "data_scope": u.get("data_scope", "self")}
 
         # ===== SSO OIDC 登录 =====
         @self._app.get("/api/auth/sso/start")
@@ -1629,13 +1689,16 @@ class WebServer:
             if not sp:
                 return JSONResponse({"error": "Scheduler not available", "code": 503}, status_code=503)
             try:
-                auth = await _get_auth(request)
-                is_admin = auth.get("role") == "admin"
-                want_all = is_admin and scope == "all"
+                auth = await _get_authz(request)
+                can_all = _has_perm(auth, "admin.scheduler")
+                dept = _scope_dept(auth)
+                want_all = can_all and scope == "all"
 
-                static = sp.schedules if want_all else []
+                static = sp.schedules if (want_all and dept is None) else []
                 # 个人口径：同一 agent 用户跨渠道(web/dingtalk…)全部任务
                 db_tasks = sp.list_db_tasks() if want_all else sp.list_db_tasks(user_uid=str(auth["uid"]))
+                if want_all and dept is not None:
+                    db_tasks = _filter_tags_by_dept(auth, db_tasks, "user_id")
 
                 def _row(t: dict, is_static: bool) -> dict:
                     return {
@@ -1847,24 +1910,26 @@ class WebServer:
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            tag, admin = "", False
+            tag, can_all, actor = "", False, None
             if request is not None:
                 try:
-                    u = await _get_auth(request)
-                    admin = u.get("role") == "admin"
-                    tag = WebServer._owner_tag(str(u.get("uid")))
+                    actor = await _get_authz(request)
+                    can_all = _has_perm(actor, "admin.monitor")
+                    tag = WebServer._owner_tag(str(actor.get("uid")))
                 except Exception:
-                    admin = True
-            if not admin and not tag:
+                    can_all = True
+            if not can_all and not tag:
                 return {"total": 0, "sessions": []}
             cap = min(max(limit, 1), 200)
-            if admin and scope == "all":
-                # 管理端运维视图：全站会话（不按归属过滤）
+            if can_all and scope == "all":
+                # 管理端运维视图：全站会话（admin 不限；部门管理员仅本部门成员）
                 rows = storage.list_conversations(cap)
+                if actor is not None:
+                    rows = _filter_tags_by_dept(actor, rows, "user_id")
             else:
                 # 我的会话（含 admin 个人视角）：同一 agent 用户跨渠道合并
                 # （web + 钉钉 + 其它 tag:{uid} 渠道）
-                rows = storage.list_conversations_for_agent_user(u.get("uid"), cap)
+                rows = storage.list_conversations_for_agent_user(actor.get("uid"), cap)
             if agent_id:
                 rows = [r for r in rows if (r.get("agent_id") or "") == agent_id]
             sessions = [{
@@ -1887,17 +1952,20 @@ class WebServer:
             关闭时即内存流式中会话（与 metrics agent_running_streams 同源）。
             普通用户仅见自己（跨渠道同 agent 用户），admin 见全部。
             """
-            tag, admin = "", False
+            tag, admin, actor = "", False, None
             if request is not None:
                 try:
-                    u = await _get_auth(request)
-                    admin = u.get("role") == "admin"
-                    tag = WebServer._owner_tag(str(u.get("uid")))
+                    actor = await _get_authz(request)
+                    admin = _has_perm(actor, "admin.monitor")
+                    tag = WebServer._owner_tag(str(actor.get("uid")))
                 except Exception:
                     admin = True  # DISABLE_AUTH / 鉴权缺失场景视为 admin
             if not admin and not tag:
                 return {"total": 0, "sessions": []}
             sessions = self.running_sessions_snapshot(admin=admin, tag=tag)
+            # 部门范围管理员(admin 视图)按部门过滤；个人视图已按 tag 限定，不再二次过滤
+            if admin and actor is not None and _scope_dept(actor) is not None:
+                sessions = _filter_tags_by_dept(actor, sessions, "tag")
             return {"total": len(sessions), "sessions": sessions}
 
         @self._app.get("/api/my/overview")
@@ -2171,11 +2239,15 @@ class WebServer:
             shutil.rmtree(skill_dir)
             return {"success": True}
 
-        # ===== RBAC API =====
+        # ===== RBAC API（角色 / 用户 / 部门；细粒度权限 + 部门数据隔离） =====
         def _get_rbac():
-            if not self.agent or not self.agent.rbac:
-                return None
-            return self.agent.rbac
+            from security.rbac import RBACManager
+            st = get_storage()
+            if st is not None:
+                return RBACManager(st)
+            if self.agent and getattr(self.agent, "rbac", None):
+                return self.agent.rbac
+            return None
 
         def _require_rbac():
             rbac = _get_rbac()
@@ -2183,41 +2255,79 @@ class WebServer:
                 raise HTTPException(503, "RBAC not initialized")
             return rbac
 
-        async def _require_rbac_admin(request: Request):
-            await _get_admin(request)
-            return _require_rbac()
+        def _guard_user_target(actor: dict, rbac, user_id: int) -> dict:
+            """取目标用户并校验部门范围；部门管理员不得操作管理员账号。"""
+            target = rbac.get_user(user_id)
+            if not target:
+                raise HTTPException(404, "User not found")
+            if not _dept_visible(actor, target.get("department") or ""):
+                raise HTTPException(403, "无权访问其他部门用户")
+            if _scope_dept(actor) is not None and target.get("role") == "admin":
+                raise HTTPException(403, "无权操作管理员账号")
+            return target
+
+        def _guard_role_assign(actor: dict, rbac, role: str):
+            """部门范围管理员不得分配超管/全站范围角色(防越权)。"""
+            if _scope_dept(actor) is None or not role:
+                return
+            r = rbac.get_role(role)
+            perms = (r or {}).get("permissions") or []
+            if role == "admin" or "*" in perms or (r or {}).get("data_scope") == "all":
+                raise HTTPException(403, "无权分配该角色")
+
+        @self._app.get("/api/rbac/permissions")
+        async def rbac_permission_catalog(request: Request):
+            await _require_perm(request, "admin.roles")
+            return _require_rbac().permission_catalog()
 
         @self._app.get("/api/rbac/roles")
-        async def rbac_list_roles():
+        async def rbac_list_roles(request: Request):
+            await _require_perm(request, "admin.roles")
             return {"roles": _require_rbac().list_roles()}
 
         @self._app.post("/api/rbac/roles")
         async def rbac_create_role(request: Request):
-            await _get_admin(request)
+            await _require_perm(request, "admin.roles")
             rbac = _require_rbac()
             data = await request.json()
-            if not data or "name" not in data:
+            name = (data or {}).get("name", "").strip() if isinstance(data, dict) else ""
+            if not name:
                 return JSONResponse({"error": "Missing name"}, status_code=400)
+            if name in ("admin", "default"):
+                return JSONResponse({"error": "内置角色不可重建"}, status_code=400)
             rbac.create_role(
-                name=data["name"],
+                name=name,
                 description=data.get("description", ""),
                 allowed_tools=data.get("allowed_tools", []),
                 allowed_agents=data.get("allowed_agents", []),
+                permissions=data.get("permissions", []),
+                data_scope=data.get("data_scope", "self"),
             )
-            return {"success": True, "name": data["name"]}
+            return {"success": True, "name": name}
+
+        @self._app.get("/api/rbac/roles/options")
+        async def rbac_role_options(request: Request):
+            """角色下拉选项（用户管理需要分配角色，故 admin.users 亦可读取，仅返回名字/范围）。"""
+            await _require_perm(request, "admin.users")
+            roles = _require_rbac().list_roles()
+            return {"roles": [{"name": r["name"], "description": r.get("description", ""),
+                               "data_scope": r.get("data_scope"), "builtin": r.get("builtin")}
+                              for r in roles]}
 
         @self._app.get("/api/rbac/roles/{name}")
-        async def rbac_get_role(name: str):
-            rbac = _require_rbac()
-            role = rbac.get_role(name)
+        async def rbac_get_role(name: str, request: Request):
+            await _require_perm(request, "admin.roles")
+            role = _require_rbac().get_role(name)
             if not role:
                 raise HTTPException(404, "Role not found")
             return role
 
         @self._app.put("/api/rbac/roles/{name}")
         async def rbac_update_role(name: str, request: Request):
-            await _get_admin(request)
+            await _require_perm(request, "admin.roles")
             rbac = _require_rbac()
+            if name in ("admin", "default"):
+                return JSONResponse({"error": "内置角色不可修改"}, status_code=400)
             data = await request.json()
             if not data:
                 return JSONResponse({"error": "Missing body"}, status_code=400)
@@ -2226,35 +2336,45 @@ class WebServer:
                 description=data.get("description"),
                 allowed_tools=data.get("allowed_tools"),
                 allowed_agents=data.get("allowed_agents"),
+                permissions=data.get("permissions"),
+                data_scope=data.get("data_scope"),
             )
             return {"success": True}
 
         @self._app.delete("/api/rbac/roles/{name}")
-        async def rbac_delete_role(name: str):
-            rbac = _require_rbac()
-            if not rbac.delete_role(name):
+        async def rbac_delete_role(name: str, request: Request):
+            await _require_perm(request, "admin.roles")
+            if name in ("admin", "default") or not _require_rbac().delete_role(name):
                 return JSONResponse({"error": "Cannot delete built-in role"}, status_code=400)
             return {"success": True}
 
         @self._app.get("/api/rbac/users")
         async def rbac_list_users(request: Request):
-            await _get_admin(request)
+            actor = await _require_perm(request, "admin.users")
             rbac = _require_rbac()
             users = rbac.list_users_with_password_flag()
+            dept = _scope_dept(actor)
+            if dept is not None:
+                users = [u for u in users if (u.get("department") or "") == dept]
             for u in users:
                 u["identities"] = rbac.list_user_identities(u["id"])
-            return {"users": users}
+            return {"users": users, "scope_department": dept}
 
         @self._app.post("/api/rbac/users")
         async def rbac_create_user(request: Request):
-            await _get_admin(request)
+            actor = await _require_perm(request, "admin.users")
             rbac = _require_rbac()
             data = await request.json()
-            if not data or "name" not in data:
+            if not data or not (data.get("name") or "").strip():
                 return JSONResponse({"error": "Missing name"}, status_code=400)
+            dept = _scope_dept(actor)
+            department = data.get("department", "")
+            if dept is not None:
+                department = dept  # 部门管理员只能创建本部门成员
+            _guard_role_assign(actor, rbac, data.get("role", "default"))
             user_id = rbac.create_user(
-                name=data["name"],
-                department=data.get("department", ""),
+                name=data["name"].strip(),
+                department=department,
                 role=data.get("role", "default"),
                 display_name=data.get("display_name", ""),
             )
@@ -2269,8 +2389,10 @@ class WebServer:
             return {"success": True, "user": user}
 
         @self._app.get("/api/rbac/users/{user_id}")
-        async def rbac_get_user(user_id: int):
+        async def rbac_get_user(user_id: int, request: Request):
+            actor = await _require_perm(request, "admin.users")
             rbac = _require_rbac()
+            _guard_user_target(actor, rbac, user_id)
             user = rbac.get_user_with_password_flag(user_id)
             if not user:
                 raise HTTPException(404, "User not found")
@@ -2279,15 +2401,25 @@ class WebServer:
 
         @self._app.put("/api/rbac/users/{user_id}")
         async def rbac_update_user(user_id: int, request: Request):
-            await _get_admin(request)
+            actor = await _require_perm(request, "admin.users")
             rbac = _require_rbac()
+            _guard_user_target(actor, rbac, user_id)
             data = await request.json()
             if not data:
                 return JSONResponse({"error": "Missing body"}, status_code=400)
+            dept = _scope_dept(actor)
+            new_dept = data.get("department")
+            if dept is not None:
+                # 部门管理员不得把成员迁出本部门
+                if new_dept is not None and (new_dept or "") != dept:
+                    raise HTTPException(403, "无权调整成员部门")
+                new_dept = dept
+            if data.get("role") is not None:
+                _guard_role_assign(actor, rbac, data.get("role"))
             rbac.update_user(
                 user_id=user_id,
                 name=data.get("name"),
-                department=data.get("department"),
+                department=new_dept,
                 role=data.get("role"),
                 display_name=data.get("display_name"),
             )
@@ -2298,17 +2430,22 @@ class WebServer:
 
         @self._app.delete("/api/rbac/users/{user_id}")
         async def rbac_delete_user(user_id: int, request: Request):
-            await _get_admin(request)
-            _require_rbac().delete_user(user_id)
+            actor = await _require_perm(request, "admin.users")
+            rbac = _require_rbac()
+            _guard_user_target(actor, rbac, user_id)
+            if actor.get("uid") == user_id:
+                return JSONResponse({"error": "不能删除当前登录账号"}, status_code=400)
+            rbac.delete_user(user_id)
             return {"success": True}
 
         @self._app.post("/api/rbac/users/{user_id}/toggle")
         async def rbac_toggle_user(user_id: int, request: Request):
-            await _get_admin(request)
+            actor = await _require_perm(request, "admin.users")
             rbac = _require_rbac()
+            _guard_user_target(actor, rbac, user_id)
+            if actor.get("uid") == user_id:
+                return JSONResponse({"error": "不能禁用当前登录账号"}, status_code=400)
             user = rbac.get_user(user_id)
-            if not user:
-                raise HTTPException(404, "User not found")
             if user["status"] == "active":
                 rbac.disable_user(user_id)
             else:
@@ -2318,8 +2455,9 @@ class WebServer:
 
         @self._app.post("/api/rbac/users/{user_id}/identities")
         async def rbac_bind_identity(user_id: int, request: Request):
-            await _get_admin(request)
+            actor = await _require_perm(request, "admin.users")
             rbac = _require_rbac()
+            _guard_user_target(actor, rbac, user_id)
             data = await request.json()
             if not data or "platform" not in data or "platform_uid" not in data:
                 return JSONResponse({"error": "Missing platform or platform_uid"}, status_code=400)
@@ -2327,8 +2465,52 @@ class WebServer:
             return {"success": True}
 
         @self._app.delete("/api/rbac/identities/{identity_id}")
-        async def rbac_unbind_identity(identity_id: int):
-            _require_rbac().unbind_identity(identity_id)
+        async def rbac_unbind_identity(identity_id: int, request: Request):
+            actor = await _require_perm(request, "admin.users")
+            rbac = _require_rbac()
+            with get_storage().get_connection() as conn:
+                row = conn.execute(
+                    "SELECT user_id FROM rbac_user_identities WHERE id=?", (identity_id,)
+                ).fetchone()
+            if row:
+                _guard_user_target(actor, rbac, row[0])
+            rbac.unbind_identity(identity_id)
+            return {"success": True}
+
+        # ===== 部门管理（数据隔离的归属维度） =====
+        @self._app.get("/api/rbac/departments")
+        async def rbac_list_departments(request: Request):
+            await _require_perm(request, "admin.departments")
+            return {"departments": _require_rbac().list_departments()}
+
+        @self._app.post("/api/rbac/departments")
+        async def rbac_create_department(request: Request):
+            await _require_perm(request, "admin.departments")
+            data = await request.json()
+            name = (data.get("name") or "").strip()
+            if not name:
+                return JSONResponse({"error": "Missing name"}, status_code=400)
+            _require_rbac().create_department(
+                name=name, description=data.get("description", ""),
+                manager_id=data.get("manager_id"))
+            return {"success": True, "name": name}
+
+        @self._app.put("/api/rbac/departments/{name}")
+        async def rbac_update_department(name: str, request: Request):
+            await _require_perm(request, "admin.departments")
+            data = await request.json()
+            _require_rbac().update_department(
+                name=name, description=data.get("description"),
+                manager_id=data.get("manager_id"),
+                new_name=(data.get("name") or "").strip() or None)
+            return {"success": True}
+
+        @self._app.delete("/api/rbac/departments/{name}")
+        async def rbac_delete_department(name: str, request: Request):
+            await _require_perm(request, "admin.departments")
+            ok, reason = _require_rbac().delete_department(name)
+            if not ok:
+                return JSONResponse({"error": reason}, status_code=400)
             return {"success": True}
 
         # ===== Memory 管理 API（WebUI 后台；列表为个人口径，增删改按归属校验） =====
@@ -2353,11 +2535,11 @@ class WebServer:
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            u = await _get_auth(request) if request is not None else {}
+            u = await _get_authz(request) if request is not None else {}
             visible_to = _mem_tag(u)
             if view == "all":
-                if u.get("role") != "admin":
-                    view = "mine"  # 非 admin 忽略全量请求，强制个人口径
+                if not _has_perm(u, "admin.memories"):
+                    view = "mine"  # 无全站权限忽略全量请求，强制个人口径
                 else:
                     visible_to = ""
             rows = storage.list_memories(scope=scope, owner_id=owner_id,
@@ -2371,15 +2553,15 @@ class WebServer:
             return {"memories": rows, "total": total}
 
         def _mem_write_allowed(u: dict, row: dict) -> bool:
-            """判断当前用户能否写这条记忆：admin 可；否则仅本人私有记忆的属主可。"""
-            if u.get("role") == "admin":
+            """判断当前用户能否写这条记忆：admin/全站记忆权限可；否则仅本人私有记忆的属主可。"""
+            if _has_perm(u, "admin.memories"):
                 return True
             return bool(row and row.get("scope") == "user"
                         and row.get("owner_id") == _mem_tag(u))
 
         @self._app.post("/api/memories")
         async def create_memory(request: Request):
-            await _get_admin(request)
+            await _require_perm(request, "admin.memories")
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
@@ -2402,7 +2584,7 @@ class WebServer:
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            u = await _get_auth(request)
+            u = await _get_authz(request)
             row = storage.get_memory(memory_id)
             if not row:
                 return JSONResponse({"error": "Memory not found"}, status_code=404)
@@ -2411,8 +2593,8 @@ class WebServer:
             data = await request.json()
             if not data:
                 return JSONResponse({"error": "Missing body"}, status_code=400)
-            if u.get("role") != "admin":
-                # 非 admin 仅能编辑自己私有记忆的内容字段，不得改归属/公开范围
+            if not _has_perm(u, "admin.memories"):
+                # 无全站记忆权限仅能编辑自己私有记忆的内容字段，不得改归属/公开范围
                 data.pop("scope", None)
                 data.pop("owner_id", None)
             ok = storage.update_memory(
@@ -2430,7 +2612,7 @@ class WebServer:
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
-            u = await _get_auth(request)
+            u = await _get_authz(request)
             row = storage.get_memory(memory_id)
             if not row:
                 return JSONResponse({"error": "Memory not found"}, status_code=404)
@@ -2441,11 +2623,11 @@ class WebServer:
                 return JSONResponse({"error": "Memory not found"}, status_code=404)
             return {"success": True}
 
-        # ===== Memory Proposals API（仅 admin，运维审批） =====
+        # ===== Memory Proposals API（全站记忆权限，运维审批） =====
         @self._app.get("/api/memory/proposals")
         async def memory_list_proposals(status: str = Query("pending"),
                                         request: Request = None):
-            await _get_admin(request)
+            await _require_perm(request, "admin.memories")
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=500)
@@ -2453,8 +2635,7 @@ class WebServer:
 
         @self._app.post("/api/memory/proposals/{pid}/approve")
         async def memory_approve(pid: int, request: Request):
-            await _get_admin(request)
-            # TODO: 校验调用者为 admin 角色；reviewer 待鉴权后替换
+            await _require_perm(request, "admin.memories")
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=500)
@@ -2470,8 +2651,7 @@ class WebServer:
 
         @self._app.post("/api/memory/proposals/{pid}/reject")
         async def memory_reject(pid: int, request: Request):
-            await _get_admin(request)
-            # TODO: 校验调用者为 admin 角色；reviewer 待鉴权后替换
+            await _require_perm(request, "admin.memories")
             storage = get_storage()
             if not storage:
                 return JSONResponse({"error": "storage unavailable"}, status_code=500)
@@ -2482,10 +2662,10 @@ class WebServer:
         from web.routers.admin import build_admin_router
         self._app.include_router(build_admin_router(self))
 
-        # ===== 工作区文件列表（服务端共享目录，仅 admin 可见）=====
+        # ===== 工作区文件列表（服务端共享目录，需工作区权限）=====
         @self._app.get("/api/workspace/files")
         async def workspace_files(request: Request):
-            await _get_admin(request)
+            await _require_perm(request, "admin.workspace")
             if not self.agent:
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
             ws = self.agent.workspace
@@ -2506,8 +2686,20 @@ class WebServer:
 
         # ===== 日志流（SSE） =====
         @self._app.get("/api/logs/stream")
-        async def log_stream():
-            """实时推送 agent 日志给前端 Logs 标签页"""
+        async def log_stream(request: Request):
+            """实时推送 agent 日志给前端 Logs 标签页（需 admin.logs 权限）。"""
+            allowed = os.environ.get("WEBUI_DISABLE_AUTH") == "1"
+            if not allowed:
+                h = request.headers.get("Authorization", "")
+                cred = h[7:] if h.startswith("Bearer ") else (request.query_params.get("token") or "")
+                try:
+                    payload = decode_jwt(cred)
+                    perms, _, _ = _resolve_role_perm(payload.get("role", ""), payload.get("uid"))
+                    allowed = payload.get("role") == "admin" or "*" in perms or "admin.logs" in perms
+                except Exception:
+                    allowed = False
+            if not allowed:
+                raise HTTPException(403, "权限不足")
             q = self._log_handler.subscribe()
 
             async def gen():

@@ -4,6 +4,29 @@ from datetime import datetime
 
 logger = logging.getLogger("agent.rbac")
 
+BUILTIN_ROLES = ("admin", "default")
+
+# Web 管理端权限目录（前端「角色管理」直接消费；* 为超管通配）。
+WEB_PERMISSIONS = [
+    {"key": "admin.users", "label": "用户管理", "description": "查看/新增/编辑/禁用用户与身份绑定"},
+    {"key": "admin.roles", "label": "角色管理", "description": "查看/新增/编辑/删除角色与权限"},
+    {"key": "admin.departments", "label": "部门管理", "description": "查看/新增/编辑/删除部门"},
+    {"key": "admin.monitor", "label": "运行监控", "description": "查看会话/用量/运行中/统计(受数据范围约束)"},
+    {"key": "admin.logs", "label": "日志查看", "description": "查看实时运行日志"},
+    {"key": "admin.memories", "label": "全站记忆", "description": "查看/管理全部用户记忆"},
+    {"key": "admin.scheduler", "label": "全站定时任务", "description": "查看/管理全部用户定时任务"},
+    {"key": "admin.workspace", "label": "工作区文件", "description": "查看服务端共享工作区文件"},
+]
+
+# 数据可见范围：role.data_scope（与本部门隔离配合）。
+DATA_SCOPES = [
+    {"key": "self", "label": "仅本人", "description": "只可见本人数据"},
+    {"key": "department", "label": "本部门", "description": "可见本部门成员数据"},
+    {"key": "all", "label": "全站", "description": "可见全部数据"},
+]
+
+_VALID_SCOPES = {s["key"] for s in DATA_SCOPES}
+
 
 class UserNotProvisionedError(Exception):
     """Platform identity has no usable bound agent user (unregistered/disabled).
@@ -67,6 +90,45 @@ class RBACManager:
         allowed = self._get_allowed(role, "allowed_agents")
         return "*" in allowed or agent_name in allowed
 
+    def get_permissions(self, role: str) -> list:
+        """角色的 Web 管理权限键列表；内置 admin 恒为全站通配 ``*``。"""
+        if role == "admin":
+            return ["*"]
+        if not role:
+            return []
+        with self.storage.get_connection() as conn:
+            row = conn.execute(
+                "SELECT permissions FROM rbac_roles WHERE name = ?", (role,)
+            ).fetchone()
+        if not row or not row[0]:
+            return []
+        try:
+            perms = json.loads(row[0])
+            return perms if isinstance(perms, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def get_data_scope(self, role: str) -> str:
+        """角色数据可见范围: all / department / self（内置 admin 恒 all）。"""
+        if role == "admin":
+            return "all"
+        if not role or role == "default":
+            return "self"
+        with self.storage.get_connection() as conn:
+            row = conn.execute(
+                "SELECT data_scope FROM rbac_roles WHERE name = ?", (role,)
+            ).fetchone()
+        scope = (row[0] if row and row[0] else "self")
+        return scope if scope in _VALID_SCOPES else "self"
+
+    def has_permission(self, role: str, perm: str) -> bool:
+        perms = self.get_permissions(role)
+        return "*" in perms or perm in perms
+
+    def permission_catalog(self) -> dict:
+        return {"permissions": WEB_PERMISSIONS, "data_scopes": DATA_SCOPES,
+                "builtin_roles": list(BUILTIN_ROLES)}
+
     def _get_allowed(self, role: str, column: str) -> list:
         with self.storage.get_connection() as conn:
             row = conn.execute(
@@ -81,12 +143,17 @@ class RBACManager:
             return []
 
     def create_role(self, name: str, description: str = "",
-                    allowed_tools: list = None, allowed_agents: list = None) -> bool:
+                    allowed_tools: list = None, allowed_agents: list = None,
+                    permissions: list = None, data_scope: str = "self") -> bool:
         now = datetime.now().isoformat()
+        scope = data_scope if data_scope in _VALID_SCOPES else "self"
         with self.storage.get_connection() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at) VALUES (?, ?, ?, ?, ?)",
-                (name, description, json.dumps(allowed_tools or []), json.dumps(allowed_agents or []), now)
+                "INSERT OR IGNORE INTO rbac_roles "
+                "(name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (name, description, json.dumps(allowed_tools or []),
+                 json.dumps(allowed_agents or []), json.dumps(permissions or []), scope, now)
             )
             conn.commit()
         return True
@@ -222,7 +289,8 @@ class RBACManager:
     def list_roles(self) -> list:
         with self.storage.get_connection() as conn:
             rows = conn.execute(
-                "SELECT name, description, allowed_tools, allowed_agents, created_at FROM rbac_roles ORDER BY name"
+                "SELECT name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at "
+                "FROM rbac_roles ORDER BY name"
             ).fetchall()
         result = []
         for r in rows:
@@ -230,14 +298,18 @@ class RBACManager:
                 "name": r[0], "description": r[1],
                 "allowed_tools": json.loads(r[2]) if r[2] else [],
                 "allowed_agents": json.loads(r[3]) if r[3] else [],
-                "created_at": r[4]
+                "permissions": json.loads(r[4]) if r[4] else [],
+                "data_scope": r[5] or "self",
+                "created_at": r[6],
+                "builtin": r[0] in BUILTIN_ROLES,
             })
         return result
 
     def get_role(self, name: str) -> dict | None:
         with self.storage.get_connection() as conn:
             row = conn.execute(
-                "SELECT name, description, allowed_tools, allowed_agents, created_at FROM rbac_roles WHERE name=?",
+                "SELECT name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at "
+                "FROM rbac_roles WHERE name=?",
                 (name,)
             ).fetchone()
         if not row:
@@ -246,11 +318,15 @@ class RBACManager:
             "name": row[0], "description": row[1],
             "allowed_tools": json.loads(row[2]) if row[2] else [],
             "allowed_agents": json.loads(row[3]) if row[3] else [],
-            "created_at": row[4]
+            "permissions": json.loads(row[4]) if row[4] else [],
+            "data_scope": row[5] or "self",
+            "created_at": row[6],
+            "builtin": row[0] in BUILTIN_ROLES,
         }
 
     def update_role(self, name: str, description: str = None,
-                    allowed_tools: list = None, allowed_agents: list = None) -> bool:
+                    allowed_tools: list = None, allowed_agents: list = None,
+                    permissions: list = None, data_scope: str = None) -> bool:
         sets = []
         vals = []
         if description is not None:
@@ -262,6 +338,12 @@ class RBACManager:
         if allowed_agents is not None:
             sets.append("allowed_agents=?")
             vals.append(json.dumps(allowed_agents))
+        if permissions is not None:
+            sets.append("permissions=?")
+            vals.append(json.dumps(permissions))
+        if data_scope is not None:
+            sets.append("data_scope=?")
+            vals.append(data_scope if data_scope in _VALID_SCOPES else "self")
         if not sets:
             return True
         vals.append(name)
@@ -271,12 +353,104 @@ class RBACManager:
         return True
 
     def delete_role(self, name: str) -> bool:
-        if name in ("default", "admin"):
+        if name in BUILTIN_ROLES:
             return False
         with self.storage.get_connection() as conn:
             conn.execute("DELETE FROM rbac_roles WHERE name=?", (name,))
             conn.commit()
         return True
+
+    # ---------------- 部门管理 ----------------
+
+    def list_departments(self) -> list:
+        """部门列表（含成员数；成员数由 rbac_users.department 字符串聚合）。"""
+        with self.storage.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT d.name, d.description, d.manager_id, d.created_at, "
+                "(SELECT COUNT(*) FROM rbac_users u WHERE u.department = d.name) AS member_count "
+                "FROM rbac_departments d ORDER BY d.name"
+            ).fetchall()
+            managers = {r["id"]: (r["display_name"] or r["name"]) for r in conn.execute(
+                "SELECT id, name, display_name FROM rbac_users").fetchall()}
+        return [{
+            "name": r[0], "description": r[1] or "", "manager_id": r[2],
+            "manager_name": managers.get(r[2], "") if r[2] else "",
+            "member_count": r[4] or 0, "created_at": r[3],
+        } for r in rows]
+
+    def get_department(self, name: str) -> dict | None:
+        with self.storage.get_connection() as conn:
+            row = conn.execute(
+                "SELECT name, description, manager_id, created_at FROM rbac_departments WHERE name=?",
+                (name,)
+            ).fetchone()
+        if not row:
+            return None
+        return {"name": row[0], "description": row[1] or "", "manager_id": row[2],
+                "created_at": row[3]}
+
+    def create_department(self, name: str, description: str = "",
+                          manager_id: int = None) -> bool:
+        now = datetime.now().isoformat()
+        with self.storage.get_connection() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO rbac_departments (name, description, manager_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (name, description, manager_id, now, now)
+            )
+            conn.commit()
+        return True
+
+    def update_department(self, name: str, description: str = None,
+                          manager_id: int = None, new_name: str = None) -> bool:
+        now = datetime.now().isoformat()
+        sets = ["updated_at=?"]
+        vals: list = [now]
+        if description is not None:
+            sets.append("description=?")
+            vals.append(description)
+        if manager_id is not None:
+            sets.append("manager_id=?")
+            vals.append(manager_id)
+        if new_name and new_name != name:
+            sets.append("name=?")
+            vals.append(new_name)
+        vals.append(name)
+        with self.storage.get_connection() as conn:
+            conn.execute(f"UPDATE rbac_departments SET {', '.join(sets)} WHERE name=?", vals)
+            if new_name and new_name != name:
+                # 部门改名同步成员归属，避免出现孤儿部门字符串
+                conn.execute("UPDATE rbac_users SET department=? WHERE department=?", (new_name, name))
+            conn.commit()
+        return True
+
+    def delete_department(self, name: str) -> tuple[bool, str]:
+        """删除部门。仍有成员时拒绝（返回 (False, 原因)），避免成员悬空。"""
+        with self.storage.get_connection() as conn:
+            cnt = conn.execute(
+                "SELECT COUNT(*) FROM rbac_users WHERE department=?", (name,)
+            ).fetchone()[0]
+            if cnt:
+                return False, f"部门下仍有 {cnt} 名成员，请先调整成员部门"
+            conn.execute("DELETE FROM rbac_departments WHERE name=?", (name,))
+            conn.commit()
+        return True, ""
+
+    def list_user_ids_by_department(self, department: str) -> list:
+        if not department:
+            return []
+        with self.storage.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id FROM rbac_users WHERE department=?", (department,)
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_user_department(self, user_id: int) -> str:
+        with self.storage.get_connection() as conn:
+            row = conn.execute(
+                "SELECT department FROM rbac_users WHERE id=?", (user_id,)
+            ).fetchone()
+        return (row[0] or "") if row else ""
 
     def list_user_identities(self, user_id: int) -> list:
         with self.storage.get_connection() as conn:

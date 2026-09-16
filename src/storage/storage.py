@@ -232,7 +232,17 @@ class Storage:
                     description TEXT DEFAULT '',
                     allowed_tools TEXT DEFAULT '[]',
                     allowed_agents TEXT DEFAULT '[]',
+                    permissions TEXT DEFAULT '[]',
+                    data_scope TEXT DEFAULT 'self',
                     created_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS rbac_departments (
+                    name TEXT PRIMARY KEY,
+                    description TEXT DEFAULT '',
+                    manager_id INTEGER,
+                    created_at TEXT,
+                    updated_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS rbac_users (
@@ -335,12 +345,12 @@ class Storage:
                 );
             """)
             conn.execute("""
-                INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at)
-                VALUES ('default', '默认角色-只能对话', '[]', '[]', datetime('now'))
+                INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
+                VALUES ('default', '默认角色-只能对话', '[]', '[]', '[]', 'self', datetime('now'))
             """)
             conn.execute("""
-                INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, created_at)
-                VALUES ('admin', '管理员-全部权限', '["*"]', '["*"]', datetime('now'))
+                INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
+                VALUES ('admin', '管理员-全部权限', '["*"]', '["*"]', '["*"]', 'all', datetime('now'))
             """)
             conn.commit()
             # migration: add columns 若缺失则补上（新库已在 CREATE TABLE 定义）
@@ -355,6 +365,19 @@ class Storage:
             _add_col("messages", "round_id TEXT DEFAULT ''")
             _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
             _add_col("rbac_users", "display_name TEXT DEFAULT ''")
+            _add_col("rbac_roles", "permissions TEXT DEFAULT '[]'")
+            _add_col("rbac_roles", "data_scope TEXT DEFAULT 'self'")
+            # 老库升级: 内置角色的 Web 权限/数据范围回填(仅当仍为默认空值时, 幂等)
+            with suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "UPDATE rbac_roles SET permissions = '[\"*\"]', data_scope = 'all' "
+                    "WHERE name = 'admin' AND (permissions IS NULL OR permissions IN ('', '[]'))"
+                )
+                conn.execute(
+                    "UPDATE rbac_roles SET permissions = '[]', data_scope = 'self' "
+                    "WHERE name = 'default' AND permissions IS NULL"
+                )
+                conn.commit()
             for _col in ("duration_ms REAL DEFAULT 0",
                          "cache_hit_tokens INTEGER DEFAULT 0",
                          "cache_miss_tokens INTEGER DEFAULT 0"):
@@ -1056,15 +1079,34 @@ class Storage:
             conn.commit()
         return len(rows)
 
-    def query_usage(self, user_id: str = "", limit: int = 100) -> list[dict[str, Any]]:
-        """查询用量记录（按 id 倒序）；user_id 为空时查全部。"""
+    @staticmethod
+    def _uid_scope_clause(uids) -> tuple[str, list]:
+        """按 rbac uid 集合过滤归属标签(web:{uid}/dingtalk:{uid}/裸 uid)。"""
+        uids = [str(u) for u in (uids or []) if str(u)]
+        if not uids:
+            return "", []
+        ph = ",".join("?" * len(uids))
+        clause = (f"(user_id IN ({ph}) OR (instr(user_id, ':') > 0 "
+                  f"AND substr(user_id, instr(user_id, ':') + 1) IN ({ph})))")
+        return clause, list(uids) * 2
+
+    def query_usage(self, user_id: str = "", limit: int = 100,
+                    uids: list = None) -> list[dict[str, Any]]:
+        """查询用量记录（按 id 倒序）；user_id 为空时查全部；uids 限制归属用户集合。"""
         sql = ("SELECT user_id, session_id, agent_id, model, prompt_tokens, "
                "completion_tokens, cost, is_stream, duration_ms, "
                "cache_hit_tokens, cache_miss_tokens, created_at FROM usage_records")
+        where: list[str] = []
         args: list[Any] = []
         if user_id:
-            sql += " WHERE user_id = ?"
+            where.append("user_id = ?")
             args.append(user_id)
+        if uids is not None:
+            clause, cargs = self._uid_scope_clause(uids)
+            where.append(clause or "0=1")
+            args += cargs
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
         with self._get_connection() as conn:
@@ -1078,6 +1120,7 @@ class Storage:
         user_id: str = "",
         model: str = "",
         limit: int = 30,
+        uids: list = None,
     ) -> list[dict[str, Any]]:
         """用量聚合，供管理端大盘/图表使用。
 
@@ -1110,14 +1153,19 @@ class Storage:
         if model:
             sql += " AND model = ?"
             args.append(model)
+        if uids is not None:
+            clause, cargs = self._uid_scope_clause(uids)
+            sql += " AND (" + (clause or "0=1") + ")"
+            args += cargs
         sql += f" GROUP BY {select_key} ORDER BY calls DESC, key DESC LIMIT ?"
         args.append(max(1, min(int(limit), 500)))
         with self._get_connection() as conn:
             rows = conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
-    def usage_totals(self, days: int = 7, user_id: str = "", model: str = "") -> dict[str, Any]:
-        """聚合总量（含今日）与常用性能分位统计。"""
+    def usage_totals(self, days: int = 7, user_id: str = "", model: str = "",
+                     uids: list = None) -> dict[str, Any]:
+        """聚合总量（含今日）与常用性能分位统计；uids 限制归属用户集合。"""
         sql = ("SELECT COUNT(*) AS calls, SUM(prompt_tokens) AS prompt_tokens, "
                "SUM(completion_tokens) AS completion_tokens, "
                "SUM(prompt_tokens + completion_tokens) AS total_tokens, "
@@ -1134,6 +1182,10 @@ class Storage:
         if model:
             sql += " AND model = ?"
             args.append(model)
+        if uids is not None:
+            clause, cargs = self._uid_scope_clause(uids)
+            sql += " AND (" + (clause or "0=1") + ")"
+            args += cargs
         with self._get_connection() as conn:
             row = conn.execute(sql, args).fetchone()
         result = dict(row) if row else {}
@@ -1148,6 +1200,10 @@ class Storage:
             if model:
                 pct_sql += " AND model = ?"
                 pct_args.append(model)
+            if uids is not None:
+                clause, cargs = self._uid_scope_clause(uids)
+                pct_sql += " AND (" + (clause or "0=1") + ")"
+                pct_args += cargs
         with self._get_connection() as conn:
             dur_rows = conn.execute(pct_sql, pct_args).fetchall()
         durations = sorted(float(r["duration_ms"]) for r in dur_rows)

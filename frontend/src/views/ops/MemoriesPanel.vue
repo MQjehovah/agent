@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { api, del, isAdmin } from '../../api'
+import { api, del, hasPerm } from '../../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 interface Memory { id: string; content: string; category: string; scope?: string; owner_id?: string; created_at?: string }
 
 const props = withDefaults(defineProps<{ viewAll?: boolean }>(), { viewAll: false })
 
-const admin = isAdmin()
+const admin = hasPerm('admin.memories')
 const memories = ref<Memory[]>([])
 const total = ref(0)
 const loading = ref(false)
