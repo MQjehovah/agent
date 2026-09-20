@@ -55,7 +55,17 @@ def _load_jwt_secret() -> str:
     return _jwt_secret
 
 
-def create_jwt(user: dict, expires_seconds: int = 86400 * 7) -> str:
+def _session_ttl_seconds() -> int:
+    """本地会话有效期(秒),默认 12 小时;SSO access token 的寿命另由 SSO 侧控制。"""
+    try:
+        return int(os.environ.get("AGENT_SESSION_TTL_SECONDS", "43200"))
+    except ValueError:
+        return 43200
+
+
+def create_jwt(user: dict, expires_seconds: int | None = None) -> str:
+    if expires_seconds is None:
+        expires_seconds = _session_ttl_seconds()
     import time
     payload = {"uid": user["id"], "name": user["name"], "role": user["role"],
                "display_name": user.get("display_name") or "",
