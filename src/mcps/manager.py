@@ -1,9 +1,11 @@
-import os
+import asyncio
 import json
 import logging
-import asyncio
+import os
+import re
 import subprocess
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -14,6 +16,28 @@ MCP_CONNECT_TIMEOUT = 30  # 连接超时（秒）
 MCP_RECONNECT_DELAY = 5  # 重连延迟（秒）
 MCP_MAX_RECONNECT_ATTEMPTS = 3  # 最大重连次数
 MCP_HEALTH_CHECK_INTERVAL = 60  # 健康检查间隔（秒）
+
+# 配置 env 中的 ${VAR} 占位符(真实凭证不入版本库,经进程环境注入子进程)
+_PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def resolve_env_values(env: dict[str, Any]) -> dict[str, str]:
+    """把配置中的 ${VAR} 占位符解析为进程环境变量。
+
+    未定义的变量不写入结果, 以便子进程继续继承父进程环境(而不是被空串覆盖)。
+    """
+    resolved: dict[str, str] = {}
+    for key, value in (env or {}).items():
+        if not isinstance(value, str):
+            continue
+        match = _PLACEHOLDER_RE.match(value.strip())
+        if match:
+            actual = os.environ.get(match.group(1))
+            if actual is not None:
+                resolved[key] = actual
+            continue
+        resolved[key] = value
+    return resolved
 
 
 class MCPServerConnection:
@@ -40,7 +64,7 @@ class MCPServerConnection:
 
         command = self.config.get("command", "python")
         args = self.config.get("args", [])
-        env = self.config.get("env", {})
+        env = resolve_env_values(self.config.get("env", {}))
 
         resolved_args = [os.path.join(
             self.base_dir, a) if not os.path.isabs(a) else a for a in args]

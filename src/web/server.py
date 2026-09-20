@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 import urllib.parse
@@ -23,6 +24,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
+from utils.env_guard import is_production, require_secret
 from web import sso_auth
 
 logger = logging.getLogger("agent.web")
@@ -35,7 +37,7 @@ def _load_jwt_secret() -> str:
     global _jwt_secret
     if _jwt_secret:
         return _jwt_secret
-    s = os.environ.get("JWT_SECRET", "")
+    s = require_secret("JWT_SECRET", os.environ.get("JWT_SECRET", "")) or ""
     if s:
         _jwt_secret = s
         return s
@@ -53,6 +55,21 @@ def _load_jwt_secret() -> str:
     with open(f, "w", encoding="utf-8") as fh:
         fh.write(_jwt_secret)
     return _jwt_secret
+
+
+def _initial_admin_password() -> str:
+    """首次初始化 admin 的口令:生产必须显式配置;开发缺省时随机生成并仅打印一次。"""
+    configured = os.environ.get("AGENT_ADMIN_PASSWORD", "")
+    if configured:
+        return require_secret("AGENT_ADMIN_PASSWORD", configured) or ""
+    if is_production():
+        raise RuntimeError("环境变量 AGENT_ADMIN_PASSWORD 未配置,生产环境拒绝创建默认管理员")
+    generated = secrets.token_urlsafe(12)
+    logger.warning(
+        "未配置 AGENT_ADMIN_PASSWORD,已生成一次性 admin 口令: %s (仅本次打印,请设置 AGENT_ADMIN_PASSWORD)",
+        generated,
+    )
+    return generated
 
 
 def _session_ttl_seconds() -> int:
@@ -863,7 +880,7 @@ class WebServer:
         logger.info("WebServer stopped")
 
     def _ensure_admin_user(self):
-        """首次启动时创建默认 admin 用户 (admin / admin123)，若无密码用户则初始化"""
+        """首次启动时创建默认 admin 用户，若无密码用户则初始化"""
         from storage.storage import get_storage
         storage = get_storage()
         if not storage:
@@ -885,8 +902,8 @@ class WebServer:
                     "SELECT id FROM rbac_users WHERE name = 'admin' AND role = 'admin'"
                 ).fetchone()[0]
             conn.commit()
-        storage.set_user_password(user_id, "admin123")
-        logger.info("已创建默认 admin 用户 (admin/admin123)，请尽快修改密码")
+        storage.set_user_password(user_id, _initial_admin_password())
+        logger.info("已创建默认 admin 用户 (admin)，请尽快设置/修改密码")
 
     # ------------------------------------------------------------------ #
     #  路由

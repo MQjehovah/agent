@@ -32,7 +32,7 @@
         ],
         "env": {
             "DEVICE_API_USERNAME": "rosiwit_robot",
-            "DEVICE_API_PASSWORD": "Xzrobot2022!"
+            "DEVICE_API_PASSWORD": "${DEVICE_API_PASSWORD}"
         },
         "description": "设备远程控制（rosiwit-cloud /remote/*，含影子/录包/控制/地图/任务等）"
     },
@@ -57,7 +57,7 @@
         ],
         "env": {
             "DEVICE_API_USERNAME": "rosiwit_robot",
-            "DEVICE_API_PASSWORD": "Xzrobot2022!"
+            "DEVICE_API_PASSWORD": "${DEVICE_API_PASSWORD}"
         },
         "description": "BMS工单 CRUD（rosiwit-cloud /ticket/*，含评论/附件/状态流转）"
     }
