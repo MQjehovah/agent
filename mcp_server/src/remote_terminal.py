@@ -23,6 +23,8 @@ from mcp.server.fastmcp import FastMCP
 from rich.logging import RichHandler
 from rich.console import Console
 
+from env_guard import require_secret
+
 nest_asyncio.apply()
 
 console = Console(stderr=True)
@@ -44,7 +46,8 @@ mcp = FastMCP("Terminal MCP Server")
 
 WS_BASE_URL = os.getenv("WS_BASE_URL", "wss://dev.xzrobot.com:10000")
 DEFAULT_USERNAME = os.getenv("TERM_USERNAME", "xzrobot")
-DEFAULT_PASSWORD = os.getenv("TERM_PASSWORD", "xzyz2022!")
+# 设备登录口令必须由环境变量 TERM_PASSWORD 注入; 生产缺失/弱值直接拒绝启动, 开发仅告警(代码内不再内置口令)
+DEFAULT_PASSWORD = require_secret("TERM_PASSWORD", os.getenv("TERM_PASSWORD", "")) or ""
 
 LoginErrorOffline = 0x01
 LoginErrorBusy = 0x02
@@ -708,7 +711,7 @@ def connect_terminal(sn: str, cols: int = 80, rows: int = 24, username: str = DE
     - cols: 终端列数（默认80）
     - rows: 终端行数（默认24）
     - username: 登录用户名（默认xzrobot）
-    - password: 登录密码（默认xzyz2022!）
+    - password: 登录密码（默认取环境变量 TERM_PASSWORD）
     - base_url: WebSocket基础URL（可选，默认为 wss://dev.xzrobot.com:10000）
     """
     global WS_BASE_URL

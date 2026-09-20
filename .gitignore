@@ -17,6 +17,9 @@ logs/
 .env
 config/config.json
 
+# JWT 开发回退密钥(web 首次启动自动生成; 生产走 JWT_SECRET 环境变量)
+config/jwt_secret
+
 # 钉钉/飞书插件配置（含客户端凭证；改由 .env 注入，模板见 *.example.json）
 config/plugins/dingtalk.json
 config/plugins/feishu.json

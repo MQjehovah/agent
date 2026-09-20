@@ -196,6 +196,8 @@ Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py
 - **飞书凭证走环境变量** — `config/plugins/feishu.json` 已移出版本库(模板 `feishu.example.json`)；`FEISHU_APP_ID`/`FEISHU_APP_SECRET` 优先于配置文件
 - **APP_ENV 分级守卫** — `src/utils/env_guard.py` 统一约定: `APP_ENV=production/prod`(大小写不敏感, 默认 `development`)下 `JWT_SECRET`/`AGENT_ADMIN_PASSWORD` 缺失或命中弱值(如 `admin123`/`change-me`/`xzyz2022!`)将拒绝启动(错误含变量名); 开发放行并打印 WARNING
 - **首次 admin 口令不写死** — `_ensure_admin_user` 读 `AGENT_ADMIN_PASSWORD`: 生产未配置即启动失败; 开发未配置时随机生成一次性口令并**仅打印一次**(日志中不再回显固定口令)
+- **JWT 密钥不落版本库** — `config/jwt_secret` 已移出版本库并 gitignore(模板无需, 首启自动生成); 生产必须注入 `JWT_SECRET`, 开发未配置时回退读取该文件
+- **MCP 数据库/终端口令走环境变量** — `mcp_server/src/mysql_query.py` 读 `DB_PASSWORD`、`remote_terminal.py` 读 `TERM_PASSWORD`, 经 `mcp_server/src/env_guard.py` 复用 `src/utils/env_guard.py` 的生产拒绝/开发告警语义, 代码内不再内置真实口令
 - **MCP 凭证走环境变量** — `config/mcp_servers.json` 与 `config/agents/*/mcp_servers.json` 中的 `SMTP_PASSWORD`/`DEVICE_API_PASSWORD` 已改为 `${SMTP_PASSWORD}`/`${DEVICE_API_PASSWORD}` 占位符; `src/mcps/manager.py` 启动 MCP 子进程时从进程环境解析占位符并合并父进程 env(未定义则不覆盖, 由子进程继承), 真实值放本机 gitignored `.env`
 - **`config/memory/` and `config/sessions/` are gitignored** — they contain runtime state
 - **`docs/plans/` is gitignored** — design docs live there but are not tracked

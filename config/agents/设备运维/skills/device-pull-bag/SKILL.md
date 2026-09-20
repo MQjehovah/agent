@@ -69,7 +69,7 @@ description: 通过运维平台 API 拉取设备录包文件并上传云端返�
 
 老设备不支持云端 `/remote/bag/upload` 指令，改用远程终端在**设备本地**把 bag 直传到云端文件上传接口。
 
-**4.1 连接设备终端**：`connect_terminal(sn=device_id)`（默认用户名 `xzrobot`，SC50 密码 `xzyz2022!`，T810 密码 `titan@810`，以现场为准）。
+**4.1 连接设备终端**：`connect_terminal(sn=device_id)`（默认用户名 `xzrobot`，密码由环境变量 `TERM_PASSWORD` 注入，以现场为准）。
 
 **4.2 在设备上执行以下命令**（`send_command` 或 `interactive_session`），把 `<SN>` 与 `<BAG_PATH>` 替换为实际值：
 

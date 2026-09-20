@@ -9,6 +9,15 @@ GitLab 云端分支合并脚本
 
 import urllib.request, urllib.parse, http.cookiejar, re, json, sys, os, time
 
+# 统一走 agent 环境守卫: 生产缺失/弱值拒绝启动, 开发仅告警; 代码内不再内置口令
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+while _ROOT != os.path.dirname(_ROOT) and not os.path.isfile(os.path.join(_ROOT, "src", "utils", "env_guard.py")):
+    _ROOT = os.path.dirname(_ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "src"))
+from utils.env_guard import require_secret  # noqa: E402
+
+IT_SYSTEM_PASSWORD = require_secret("IT_SYSTEM_PASSWORD", os.environ.get("IT_SYSTEM_PASSWORD", "")) or ""
+
 # ===================== 参数解析 =====================
 def parse_args():
     if len(sys.argv) < 4:
@@ -22,7 +31,7 @@ PROJECT_PATH, SOURCE_BRANCH, TARGET_BRANCH = parse_args()
 # ===================== 配置 =====================
 GITLAB_URL = "http://gitlab.xzrobot.com"
 USERNAME = "s_software"
-PASSWORD = os.environ.get("IT_SYSTEM_PASSWORD", "E2CO2Xnv6ga9")
+PASSWORD = IT_SYSTEM_PASSWORD
 
 # ===================== 工具函数 =====================
 results = []

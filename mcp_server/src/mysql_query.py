@@ -11,6 +11,8 @@ from mcp.server.fastmcp import FastMCP
 from rich.logging import RichHandler
 from rich.console import Console
 
+from env_guard import require_secret
+
 console = Console(stderr=True)
 
 logging.basicConfig(
@@ -24,11 +26,14 @@ logger = logging.getLogger("mcp.mysql_query")
 
 mcp = FastMCP("Rosiwit MCP Server")
 
+# 数据库口令必须由环境变量注入; 生产缺失/弱值直接拒绝启动, 开发仅告警(代码内不再内置口令)
+DB_PASSWORD = require_secret("DB_PASSWORD", os.getenv("DB_PASSWORD", "")) or ""
+
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "192.168.31.45"),
     "port": int(os.getenv("DB_PORT", "3306")),
     "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "xzyz2022!"),
+    "password": DB_PASSWORD,
     "database": os.getenv("DB_NAME", "rosiwit_erp_server"),
     "charset": "utf8mb4"
 }

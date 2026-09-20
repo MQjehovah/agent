@@ -82,7 +82,7 @@ server {
 mkdir -p ~/docker/mysql/data
 ```
 
-`docker run -d --name mysql -p 3306:3306 -v ~/docker/mysql/data:/var/lib/mysql -e MYSQL_ROOT_PASSWORD=xzyz2022! mysql`
+`docker run -d --name mysql -p 3306:3306 -v ~/docker/mysql/data:/var/lib/mysql -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" mysql`
 
 ## Redis安装
 
@@ -90,4 +90,4 @@ mkdir -p ~/docker/mysql/data
 mkdir -p ~/docker/redis/data
 ```
 
-`docker run --name redis -p 6379:6379 -v ~/docker/redis/data:/data -d redis redis-server --appendonly yes --requirepass "xzyz2022!"`
+`docker run --name redis -p 6379:6379 -v ~/docker/redis/data:/data -d redis redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"`

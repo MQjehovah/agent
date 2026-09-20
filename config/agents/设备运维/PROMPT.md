@@ -73,7 +73,7 @@ T810：采用RK3588芯片Ubuntu22.04系统、中间件ROS humble。用户数据�
 | `disconnect_terminal` | 断开终端连接 |
 
 - 仅在 API 无法解决，或已加载 `device-evidence-collect` 只读取证时使用
-- 登录：用户名默认 `xzrobot`；**T810/Titan 密码 `titan@810`**，SC50 等仍可能是 `xzyz2022!`（以现场为准）
+- 登录：用户名默认 `xzrobot`；密码由环境变量 `TERM_PASSWORD` 注入（不同机型/现场口令不同，以现场为准，切勿写死）
 - 操作完毕后务必断开连接
 - 取证禁止借终端做重启/改参/运动控制
 - 取证遵循 `device-evidence-collect` **取证边界原则**（时间锚定、有界探测、换维不停、产出契约、候选上限、收尾阶梯）
