@@ -190,6 +190,7 @@ Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py
 ## Pitfalls
 
 - **`.env` is gitignored** — never commit API keys. Use `.env.example` as template.
+- **钉钉凭证走环境变量** — `config/plugins/dingtalk.json` 已移出版本库(模板 `dingtalk.example.json`)；`DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET`(与 `mcp_server/src/dingtalk.py` 同名)优先于配置文件，`config/**/mcp_servers.json` 内不再存 AppSecret，MCP 子进程经进程环境继承
 - **`config/memory/` and `config/sessions/` are gitignored** — they contain runtime state
 - **`docs/plans/` is gitignored** — design docs live there but are not tracked
 - **Sub-agent names are Chinese** (e.g. `设备运维`) — this is intentional, not a mistake

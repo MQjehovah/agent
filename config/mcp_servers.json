@@ -24,7 +24,6 @@
         ],
         "env": {
             "DINGTALK_APP_KEY": "ding3xmu1gbsy11jbks3",
-            "DINGTALK_APP_SECRET": "VOJtrR834FJ3C59lf2kftdvlD_FGZpRJTZKxsbVTjTNMXjd2yVZXxIoH3CxLu66l",
             "DINGTALK_AGENT_ID": "4389947271",
             "DINGTALK_ROBOT_CODE": "ding3xmu1gbsy11jbks3"
         },

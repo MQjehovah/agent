@@ -1,0 +1,7 @@
+{
+    "enabled": true,
+    "stream": {
+        "client_id": "change-me",
+        "client_secret": "change-me"
+    }
+}

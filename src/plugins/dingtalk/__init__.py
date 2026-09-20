@@ -107,6 +107,19 @@ class DingTalkConfig:
         if "enabled" in data:
             self.enabled = data["enabled"]
 
+    def apply_env_overrides(self):
+        """环境变量优先注入凭证，配置文件仅作回退。
+
+        client_secret 属敏感信息，不入版本库；部署时经 .env / 进程环境注入
+        (变量名与 mcp_server/src/dingtalk.py 一致：DINGTALK_APP_KEY/SECRET)。
+        """
+        env_key = os.environ.get("DINGTALK_APP_KEY", "").strip()
+        env_secret = os.environ.get("DINGTALK_APP_SECRET", "").strip()
+        if env_key:
+            self.stream.client_id = env_key
+        if env_secret:
+            self.stream.client_secret = env_secret
+
 
 @dataclass
 class DingTalkSession:
@@ -173,6 +186,9 @@ class DingTalkPlugin(BasePlugin):
                 logger.error(f"Failed to load dingtalk config: {e!r}")
         else:
             logger.warning(f"DingTalk config file not found: {config_file}")
+
+        # 敏感凭证优先取环境变量(密钥不入库)，配置文件仅作回退
+        self.config.apply_env_overrides()
 
         self.sessions: dict[str, DingTalkSession] = {}
         # scope -> session_id：单聊 scope=("s", agent_uid)；群聊 scope=("g", cid 规范前缀)。

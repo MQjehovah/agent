@@ -114,6 +114,32 @@ def test_config_load_from_dict():
     assert config.stream.client_secret == "secret_test"
 
 
+def test_config_env_overrides_file(monkeypatch):
+    """DINGTALK_APP_KEY/SECRET 优先于配置文件(密钥不入库)。"""
+    monkeypatch.setenv("DINGTALK_APP_KEY", "env_key")
+    monkeypatch.setenv("DINGTALK_APP_SECRET", "env_secret")
+    config = DingTalkConfig()
+    config.load_from_dict({
+        "stream": {"client_id": "file_key", "client_secret": "file_secret"},
+    })
+    config.apply_env_overrides()
+    assert config.stream.client_id == "env_key"
+    assert config.stream.client_secret == "env_secret"
+
+
+def test_config_env_missing_falls_back_to_file(monkeypatch):
+    """未设置环境变量时回退配置文件(本地无 .env 也能跑)。"""
+    monkeypatch.delenv("DINGTALK_APP_KEY", raising=False)
+    monkeypatch.delenv("DINGTALK_APP_SECRET", raising=False)
+    config = DingTalkConfig()
+    config.load_from_dict({
+        "stream": {"client_id": "file_key", "client_secret": "file_secret"},
+    })
+    config.apply_env_overrides()
+    assert config.stream.client_id == "file_key"
+    assert config.stream.client_secret == "file_secret"
+
+
 def test_plugin_init_no_config():
     plugin = _plugin()
     assert plugin.name == "dingtalk"
