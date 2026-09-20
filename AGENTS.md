@@ -29,6 +29,8 @@ AGENT_WEB_POOL_OVERFLOW=0 AGENT_WEB_POOL_ACQUIRE_TIMEOUT=15 python src/main.py -
 AGENT_WEB_MAX_CONCURRENT_STREAMS=2 AGENT_WEB_RATELIMIT_PER_MIN=20 python src/main.py --web
 # 危险操作确认(审批联动): 1=写操作经 SSE ask 由员工确认(admin 豁免)
 AGENT_WEB_CONFIRM=1 python src/main.py --web
+# Web 登录会话(agent JWT)有效期(秒); 默认 43200(12h), 非正数/非法值回退默认
+AGENT_SESSION_TTL_SECONDS=43200 python src/main.py --web
 # 健康检查/指标: GET /healthz /metrics(内网/监控用, 不鉴权)
 ```
 
