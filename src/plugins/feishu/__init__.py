@@ -28,6 +28,19 @@ class FeishuConfig:
         if "enabled" in data:
             self.enabled = data["enabled"]
 
+    def apply_env_overrides(self):
+        """环境变量优先注入凭证，配置文件仅作回退。
+
+        app_secret 属敏感信息，不入版本库；部署时经 .env / 进程环境注入
+        (FEISHU_APP_ID / FEISHU_APP_SECRET)。
+        """
+        env_id = os.environ.get("FEISHU_APP_ID", "").strip()
+        env_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
+        if env_id:
+            self.app_id = env_id
+        if env_secret:
+            self.app_secret = env_secret
+
 
 @dataclass
 class FeishuSession:
@@ -248,6 +261,9 @@ class FeishuPlugin(BasePlugin):
                 logger.error(f"加载飞书配置失败: {e!r}")
         else:
             logger.warning(f"飞书配置文件不存在: {config_file}")
+
+        # 敏感凭证优先取环境变量(密钥不入库)，配置文件仅作回退
+        self.config.apply_env_overrides()
 
         self.enabled = self.config.enabled
 

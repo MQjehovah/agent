@@ -26,6 +26,27 @@ def test_config_load_from_dict():
     assert config.app_secret == "secret456"
 
 
+def test_config_env_overrides_file(monkeypatch):
+    """FEISHU_APP_ID/SECRET 优先于配置文件(密钥不入库)。"""
+    monkeypatch.setenv("FEISHU_APP_ID", "env_id")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "env_secret")
+    config = FeishuConfig()
+    config.load_from_dict({"app_id": "file_id", "app_secret": "file_secret"})
+    config.apply_env_overrides()
+    assert config.app_id == "env_id"
+    assert config.app_secret == "env_secret"
+
+
+def test_config_env_missing_falls_back_to_file(monkeypatch):
+    monkeypatch.delenv("FEISHU_APP_ID", raising=False)
+    monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
+    config = FeishuConfig()
+    config.load_from_dict({"app_id": "file_id", "app_secret": "file_secret"})
+    config.apply_env_overrides()
+    assert config.app_id == "file_id"
+    assert config.app_secret == "file_secret"
+
+
 def test_plugin_init_no_config():
     plugin = FeishuPlugin(config_path="/nonexistent/feishu.json")
     assert plugin.name == "feishu"

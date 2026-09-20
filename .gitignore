@@ -17,8 +17,9 @@ logs/
 .env
 config/config.json
 
-# 钉钉插件配置（含客户端凭证；改由 .env 注入，模板见 dingtalk.example.json）
+# 钉钉/飞书插件配置（含客户端凭证；改由 .env 注入，模板见 *.example.json）
 config/plugins/dingtalk.json
+config/plugins/feishu.json
 
 .claude/
 
