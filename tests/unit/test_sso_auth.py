@@ -216,15 +216,20 @@ def test_sso_start_redirects_when_configured(sso_env):
     assert "state=" in loc
 
 
-def test_sso_callback_rejects_bad_state(sso_env):
+def test_sso_callback_rejects_bad_state(sso_env, monkeypatch):
+    """state 失效时跳回前端登录页并带 error,不把 JSON 错误丢给浏览器。"""
     from fastapi.testclient import TestClient
 
     from web.server import WebServer
 
+    monkeypatch.setenv("SSO_REDIRECT_TARGET", "/agent/#/login")
     w = WebServer()
-    client = TestClient(w._app)
+    client = TestClient(w._app, follow_redirects=False)
     resp = client.get("/api/auth/sso/callback", params={"code": "abc", "state": "bad"})
-    assert resp.status_code == 401
+    assert resp.status_code == 302
+    loc = resp.headers["location"]
+    assert loc.startswith("/agent/#/login?error=")
+    assert "sso_token=" not in loc
 
 
 # ---- server _get_auth 双轨(HS256 失败 → SSO 兜底) ----

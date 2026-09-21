@@ -1081,27 +1081,39 @@ class WebServer:
                 return JSONResponse({"error": str(e)}, status_code=500)
             return RedirectResponse(url, status_code=302)
 
+        def _sso_login_redirect(error: str = "") -> RedirectResponse:
+            """SSO 出错时回到前端登录页并带 error 文案,不把 JSON 错误丢给浏览器。
+
+            与成功路径同样把参数拼在 redirect_target 之后(hash 路由时落在 #/login 的
+            query 里),前端 LoginView 读 route.query.error 展示。
+            """
+            target = sso_auth.sso_redirect_target() or "/#/login"
+            if error:
+                sep = "&" if "?" in target else "?"
+                target = f"{target}{sep}error={urllib.parse.quote(error)}"
+            return RedirectResponse(target, status_code=302)
+
         @self._app.get("/api/auth/sso/callback")
         async def sso_callback(request: Request, code: str = "", state: str = ""):
             """SSO 回调: code→id_token→校验→查/建用户→签 agent JWT→302 回前端。"""
             if not sso_auth.is_configured():
-                return JSONResponse({"error": "SSO not enabled"}, status_code=404)
+                return _sso_login_redirect("SSO 登录未启用")
             if not code or not state:
-                return JSONResponse({"error": "Missing code or state"}, status_code=400)
+                return _sso_login_redirect("SSO 回调参数缺失")
             if not sso_auth.validate_state(state):
-                return JSONResponse({"error": "Invalid or expired state"}, status_code=401)
+                return _sso_login_redirect("SSO 登录状态已失效,请重试")
             try:
                 id_token = sso_auth.exchange_code(code)
                 claims = sso_auth.verify_sso_token(id_token)
             except sso_auth.SsoAuthError as e:
-                return JSONResponse({"error": str(e)}, status_code=401)
+                return _sso_login_redirect(f"SSO 登录失败: {e}")
             sub = (claims.get("sub") or "").strip()
             if not sub:
-                return JSONResponse({"error": "Missing sub"}, status_code=401)
+                return _sso_login_redirect("SSO 身份缺少工号")
             try:
                 user = _sso_ensure_user(sub, claims)
             except HTTPException as e:
-                return JSONResponse({"error": e.detail}, status_code=e.status_code)
+                return _sso_login_redirect(str(e.detail))
             token = create_jwt(user)
             target = sso_auth.sso_redirect_target()
             sep = "&" if "?" in target else "?"

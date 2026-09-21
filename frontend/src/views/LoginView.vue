@@ -43,8 +43,10 @@ async function loginWithSso() {
   window.location.href = apiUrl('/api/auth/sso/start')
 }
 
-/** SSO 回调:读取 sso_token 写入会话并进入工作台 */
+/** SSO 回调:读取 sso_token 写入会话并进入工作台;带 error 则展示原因 */
 function handleSsoCallback() {
+  const e = route.query.error
+  if (typeof e === 'string' && e) error.value = e
   const q = route.query.sso_token
   if (typeof q === 'string' && q) {
     setToken(q)
