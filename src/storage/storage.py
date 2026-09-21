@@ -352,6 +352,8 @@ class Storage:
             # 老库升级: rbac_roles 新列须在建种子之前补齐(种子 INSERT 引用了这些列)
             _add_col("rbac_roles", "permissions TEXT DEFAULT '[]'")
             _add_col("rbac_roles", "data_scope TEXT DEFAULT 'self'")
+            # 老库升级: rbac_users 增加 email(SSO 识别/建号用)
+            _add_col("rbac_users", "email TEXT")
 
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)

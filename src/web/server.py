@@ -182,14 +182,22 @@ class _AuthMiddleware:
         await self.app(scope, receive, send)
 
 
-_SSO_USER_COLS = "id, name, display_name, department, role, status"
+def _sso_claim_email(claims: dict) -> str:
+    """SSO claims 里的邮箱(LDAP mail),归一化为小写;缺失/非法返回空串。"""
+    v = claims.get("email")
+    return str(v).strip().lower() if isinstance(v, str) and v.strip() else ""
+
+
+_SSO_USER_COLS = "id, name, display_name, department, role, status, email"
 
 
 def _sso_user_payload(row) -> dict:
     """把 rbac_users 行转成鉴权 payload。name 恒为工号(身份键), display_name 为中文/显示名。"""
     return {"id": row["id"], "name": row["name"], "department": row["department"],
             "role": row["role"], "status": row["status"],
-            "display_name": row["display_name"] or row["name"]}
+            "display_name": row["display_name"] or row["name"],
+            # sqlite3.Row 的 in 判断的是值而非键, 必须用 row.keys()
+            "email": (row["email"] or "") if "email" in row.keys() else ""}  # noqa: SIM118
 
 
 def _display_name_for_uid(uid) -> str:
@@ -288,12 +296,49 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
         return _sso_user_payload(merged)
 
     # 1) 按工号查(常规路径)
+    # 0) 邮箱优先: 系统自建账号的 name 未必是工号, 邮箱(LDAP mail)才是最可靠的对齐键;
+    #    命中即复用并把 name 改成工号(与"中文名合并"同语义), 避免同一人两份账号。
+    claim_email = _sso_claim_email(claims)
+    if claim_email:
+        with storage.get_connection() as conn:
+            email_row = conn.execute(
+                f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE lower(email) = ?", (claim_email,)
+            ).fetchone()
+        if email_row:
+            if email_row["status"] != "active":
+                raise HTTPException(status_code=403, detail="账号已被禁用")
+            uid = email_row["id"]
+            with storage.get_connection() as conn:
+                if email_row["name"] != sub:
+                    conn.execute(
+                        "UPDATE rbac_users SET name=?, display_name=?, email=?, "
+                        "updated_at=datetime('now') WHERE id=?",
+                        (sub, email_row["display_name"] or claim_name or sub, claim_email, uid),
+                    )
+                elif not email_row["email"]:
+                    conn.execute(
+                        "UPDATE rbac_users SET email=?, updated_at=datetime('now') WHERE id=?",
+                        (claim_email, uid),
+                    )
+                conn.commit()
+                email_row = _refresh(conn, uid)
+            _sso_bind_dingtalk(storage, uid, claims)
+            return _sso_user_payload(email_row)
+
     with storage.get_connection() as conn:
         row = _row_to_dict(conn, sub)
     if row:
         if row["status"] != "active":
             raise HTTPException(status_code=403, detail="账号已被禁用")
         uid = row["id"]
+        if claim_email and not row["email"]:
+            with storage.get_connection() as conn:
+                conn.execute(
+                    "UPDATE rbac_users SET email=?, updated_at=datetime('now') WHERE id=?",
+                    (claim_email, uid),
+                )
+                conn.commit()
+                row = _refresh(conn, uid)
         if not row["display_name"] and claim_name and claim_name != sub:
             with storage.get_connection() as conn:
                 conn.execute(
@@ -322,9 +367,13 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
     # 随机不可登录密码(SSO 用户不走密码登录)
     import secrets as _secrets
     storage.set_user_password(uid, _secrets.token_urlsafe(24))
+    if claim_email:
+        with storage.get_connection() as conn:
+            conn.execute("UPDATE rbac_users SET email=? WHERE id=?", (claim_email, uid))
+            conn.commit()
     _sso_bind_dingtalk(storage, uid, claims)
     return {"id": uid, "name": sub, "department": dept, "role": role, "status": "active",
-            "display_name": claim_name or sub}
+            "display_name": claim_name or sub, "email": claim_email}
 
 
 def _sse(payload: dict) -> str:
