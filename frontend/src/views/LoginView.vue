@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { post, setToken, setIdentity } from '../api'
+import { apiUrl, post, setToken, setIdentity } from '../api'
 
 const router = useRouter()
 const route = useRoute()
@@ -40,7 +40,7 @@ async function loginWithSso() {
   if (ssoLoading.value) return
   ssoLoading.value = true
   error.value = ''
-  window.location.href = '/api/auth/sso/start'
+  window.location.href = apiUrl('/api/auth/sso/start')
 }
 
 /** SSO 回调:读取 sso_token 写入会话并进入工作台 */

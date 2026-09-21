@@ -2,6 +2,15 @@
 
 const TOKEN_KEY = 'agent_jwt'
 const ROLE_KEY = 'agent_role'
+
+/** 部署子路径(由 Vite base 决定,如 /agent);API 调用统一带此前缀 */
+const API_BASE = (((import.meta as any).env?.BASE_URL) || '/').replace(/\/$/, '')
+
+/** 把绝对 API 路径加上部署前缀 */
+export function apiUrl(path: string): string {
+  return path.startsWith('/') ? API_BASE + path : path
+}
+
 const PERMS_KEY = 'agent_perms'
 const SCOPE_KEY = 'agent_scope'
 const DEPT_KEY = 'agent_dept'
@@ -103,7 +112,7 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   if (token) headers['Authorization'] = `Bearer ${token}`
   if (options.body && typeof options.body === 'string') headers['Content-Type'] = 'application/json'
 
-  const res = await fetch(path, { ...options, headers })
+  const res = await fetch(apiUrl(path), { ...options, headers })
   if (res.status === 401) {
     clearToken()
     location.hash = '#/login'
@@ -150,7 +159,7 @@ export async function streamChat(
   onEvent: (event: { type: string; content?: string; data?: any }) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const res = await fetch('/api/chat/stream', {
+  const res = await fetch(apiUrl('/api/chat/stream'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', Authorization: `Bearer ${getToken()}` },
     body: JSON.stringify(body),

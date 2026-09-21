@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { getToken } from '../../api'
+import { apiUrl, getToken } from '../../api'
 
 const lines = ref<string[]>([])
 const connected = ref(false)
@@ -8,7 +8,7 @@ let es: EventSource | null = null
 
 function connect() {
   // logs/stream 为 GET SSE:带 token 用查询参数(EventSource 无法带 header),与旧版一致
-  es = new EventSource(`/api/logs/stream?token=${encodeURIComponent(getToken())}`)
+  es = new EventSource(apiUrl('/api/logs/stream') + '?token=' + encodeURIComponent(getToken()))
   es.onopen = () => (connected.value = true)
   es.onerror = () => (connected.value = false)
   es.onmessage = (ev) => {
