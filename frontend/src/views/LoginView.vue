@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { apiUrl, post, setToken, setIdentity } from '../api'
+  import { apiUrl, post, setToken, setIdentity } from '../api'
+  import logoUrl from '../assets/logo.svg'
 
 const router = useRouter()
 const route = useRoute()
@@ -61,7 +62,7 @@ onMounted(handleSsoCallback)
 <template>
   <div class="login-wrap">
     <div class="login-card">
-      <div class="login-logo">零</div>
+      <img class="login-logo" :src="logoUrl" alt="Rosiwit" />
       <h1>零号员工</h1>
       <p class="login-sub">登录以使用公司数字员工服务</p>
       <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-bottom: 14px" />

@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../theme'
-import { api, clearToken, getRole, hasPerm, setIdentity } from '../api'
+  import { api, clearToken, getRole, hasPerm, setIdentity } from '../api'
+  import logoUrl from '../assets/logo.svg'
 import {
   Monitor, ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton
@@ -93,7 +94,7 @@ function onUserCommand(cmd: string | number | object) {
 <template>
   <div class="layout" :class="{ collapsed }">
     <aside class="sider">
-      <div class="brand"><span class="logo">零</span><span class="side-label">零号员工</span></div>
+      <div class="brand"><img class="logo" :src="logoUrl" alt="Rosiwit" /><span class="side-label">零号员工</span></div>
       <nav>
         <div class="side-group-title">个人空间</div>
         <a v-for="item in personalItems" :key="item.path" href="#"
