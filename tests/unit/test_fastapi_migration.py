@@ -553,3 +553,52 @@ def test_session_delete_is_soft(tmp_path):
     finally:
         s.close()
         storage_mod._storage_instance = prev
+
+
+# ===== 会话重命名/置顶/全文搜索 =====
+
+def test_session_title_pin_and_search(tmp_path):
+    """PATCH 重命名/置顶 + 全文搜索(排除已逻辑删除的对话)"""
+    from types import SimpleNamespace
+
+    import storage.storage as storage_mod
+    from storage.storage import Storage
+    from web.server import WebServer
+
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    s.save_message_sync("agentA", "convA", "user", "报销制度怎么走流程")
+    s.save_message_sync("agentA", "convA", "assistant", "先填单子再找财务")
+    s.save_message_sync("agentA", "convB", "user", "设备点检注意事项")
+
+    try:
+        w = WebServer()
+        w.agent = SimpleNamespace(session_manager=SimpleNamespace(sessions={}))
+        client = TestClient(w._app)
+
+        r = client.patch("/api/agent/sessions?session_id=convA", json={"title": "报销流程", "pinned": True})
+        assert r.status_code == 200
+        assert r.json()["title"] == "报销流程" and r.json()["pinned"] == 1
+
+        lst = client.get("/api/agent/sessions/history?limit=20&scope=all").json()["sessions"]
+        row = next(x for x in lst if x["id"] == "convA")
+        assert row["title"] == "报销流程" and row["pinned"] == 1
+
+        res = client.get("/api/agent/sessions/search?q=报销").json()
+        assert res["total"] >= 1
+        assert any(x["conversation_id"] == "convA" for x in res["results"])
+        assert all("设备点检" not in (x.get("snippet") or "") for x in res["results"])
+
+        # 逻辑删除后不再被搜到
+        s.soft_delete_conversation("convA")
+        res2 = client.get("/api/agent/sessions/search?q=报销").json()
+        assert not any(x["conversation_id"] == "convA" for x in res2["results"])
+
+        # 只置顶(不改标题)也生效, 且标题保持为空
+        r2 = client.patch("/api/agent/sessions?session_id=convB", json={"pinned": True})
+        assert r2.status_code == 200 and r2.json()["pinned"] == 1
+        assert r2.json()["title"] == ""
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev

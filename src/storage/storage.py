@@ -333,7 +333,9 @@ class Storage:
                     last_summary TEXT DEFAULT '',
                     summary_at TEXT,
                     context_stats TEXT DEFAULT '',
-                    updated_at TEXT
+                    updated_at TEXT,
+                    title TEXT DEFAULT '',
+                    pinned INTEGER DEFAULT 0
                 );
 
                 -- 逻辑删除的对话: 只登记标记, 消息数据保留(会话数据对审计/分析有价值)
@@ -379,6 +381,9 @@ class Storage:
             _add_col("messages", "channel TEXT DEFAULT ''")
             _add_col("messages", "conversation_id TEXT DEFAULT ''")
             _add_col("messages", "round_id TEXT DEFAULT ''")
+            # 老库升级: session_meta 增加会话自定义标题与置顶标记
+            _add_col("session_meta", "title TEXT DEFAULT ''")
+            _add_col("session_meta", "pinned INTEGER DEFAULT 0")
             _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
             _add_col("rbac_users", "display_name TEXT DEFAULT ''")
             # 老库升级: 内置角色的 Web 权限/数据范围回填(仅当仍为默认空值时, 幂等)
@@ -735,8 +740,10 @@ class Storage:
             "(SELECT COUNT(DISTINCT x.session_id) FROM messages x "
             "  WHERE x.conversation_id = m.conversation_id "
             "    AND x.session_id != m.conversation_id) AS thread_count, "
-            "MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at "
+            "MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at, "
+            "MAX(COALESCE(sm.title, '')) AS title, MAX(COALESCE(sm.pinned, 0)) AS pinned "
                 "FROM messages m "
+                "LEFT JOIN session_meta sm ON sm.session_id = m.conversation_id "
                 "WHERE m.conversation_id IS NOT NULL AND m.conversation_id != '' "
                 "  AND m.session_id = m.conversation_id "
                 "  AND NOT EXISTS (SELECT 1 FROM deleted_conversations d "
@@ -789,8 +796,10 @@ class Storage:
             "(SELECT COUNT(DISTINCT x.session_id) FROM messages x "
             "  WHERE x.conversation_id = m.conversation_id "
             "    AND x.session_id != m.conversation_id) AS thread_count, "
-            "MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at "
+            "MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at, "
+            "MAX(COALESCE(sm.title, '')) AS title, MAX(COALESCE(sm.pinned, 0)) AS pinned "
             "FROM messages m "
+            "LEFT JOIN session_meta sm ON sm.session_id = m.conversation_id "
             "WHERE m.conversation_id IS NOT NULL AND m.conversation_id != '' "
             "  AND m.session_id = m.conversation_id "
             "  AND ("
@@ -1357,6 +1366,101 @@ class Storage:
             cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    def set_conversation_flags(self, conversation_id: str, title: str | None = None,
+                               pinned: bool | None = None) -> dict:
+        """设置会话自定义标题/置顶(只动 session_meta, 不影响摘要等其他字段)。
+
+        返回当前生效值; 会话不存在于 session_meta 时按需插入一行。
+        """
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            return {"title": "", "pinned": 0}
+        sets: list[str] = []
+        args: list[Any] = []
+        if title is not None:
+            sets.append("title = ?")
+            args.append(str(title).strip()[:80])
+        if pinned is not None:
+            sets.append("pinned = ?")
+            args.append(1 if pinned else 0)
+        with self._write_lock, self._get_connection() as conn:
+            row = conn.execute("SELECT session_id FROM session_meta WHERE session_id = ?", (cid,)).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO session_meta (session_id, last_summary, context_stats, updated_at, title, pinned) "
+                    "VALUES (?, '', '', ?, ?, ?)",
+                    (cid, datetime.now().isoformat(),
+                     str(title).strip()[:80] if title is not None else "",
+                     1 if pinned else 0),
+                )
+            elif sets:
+                conn.execute(
+                    f"UPDATE session_meta SET {', '.join(sets)}, updated_at = ? WHERE session_id = ?",
+                    (*args, datetime.now().isoformat(), cid),
+                )
+            conn.commit()
+            cur = conn.execute("SELECT title, pinned FROM session_meta WHERE session_id = ?", (cid,)).fetchone()
+        return {"title": (cur[0] if cur else "") or "", "pinned": int((cur[1] if cur else 0) or 0)}
+
+    def search_conversation_messages(self, query: str, agent_user_id: int | str | None = None,
+                                     limit: int = 30, admin: bool = False) -> list[dict[str, Any]]:
+        """在对话消息里做内容检索(个人口径: 仅本人跨渠道会话; admin 可全站)。
+
+        返回每个命中的对话: {conversation_id, title, pinned, snippet, hits, last_at}。
+        """
+        q = str(query or "").strip()
+        if not q:
+            return []
+        like = f"%{q}%"
+        cap = max(1, min(int(limit), 100))
+        sql = (
+            "SELECT m.conversation_id AS conversation_id, "
+            "COUNT(*) AS hits, MAX(m.created_at) AS last_at, "
+            "(SELECT x.content FROM messages x "
+            "  WHERE x.conversation_id = m.conversation_id "
+            "    AND x.content LIKE ? AND x.role IN ('user', 'assistant') "
+            "  ORDER BY x.id DESC LIMIT 1) AS snippet, "
+            "MAX(COALESCE(sm.title, '')) AS title, MAX(COALESCE(sm.pinned, 0)) AS pinned "
+            "FROM messages m "
+            "LEFT JOIN session_meta sm ON sm.session_id = m.conversation_id "
+            "WHERE m.conversation_id IS NOT NULL AND m.conversation_id != '' "
+            "  AND m.role IN ('user', 'assistant') AND m.content LIKE ? "
+            "  AND NOT EXISTS (SELECT 1 FROM deleted_conversations d "
+            "                  WHERE d.conversation_id = m.conversation_id) "
+        )
+        args: list[Any] = [like, like]
+        if not admin and agent_user_id is not None:
+            uid = str(agent_user_id)
+            sql += (
+                "  AND ("
+                "    (m.user_id != '' AND instr(m.user_id, ':') > 0 "
+                "     AND substr(m.user_id, instr(m.user_id, ':') + 1) = ? "
+                "     AND m.session_id LIKE (m.user_id || ':%')) "
+                "    OR m.session_id LIKE 'web:' || ? || ':%' "
+                "  ) "
+            )
+            args += [uid, uid]
+        sql += "GROUP BY m.conversation_id ORDER BY pinned DESC, last_at DESC LIMIT ?"
+        args.append(cap)
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        out = []
+        for r in rows:
+            item = dict(r)
+            snippet = str(item.get("snippet") or "")
+            idx = snippet.find(q)
+            if idx < 0:
+                snippet = snippet[:120]
+            else:
+                start = max(0, idx - 40)
+                snippet = ("…" if start > 0 else "") + snippet[start:start + 160]
+            item["snippet"] = snippet.replace("\n", " ")
+            item["pinned"] = int(item.get("pinned") or 0)
+            item["channel"] = channel_of_conversation(
+                item["conversation_id"], "")
+            out.append(item)
+        return out
 
     def soft_delete_conversation(self, conversation_id: str, deleted_by: str = "", reason: str = "") -> dict:
         """逻辑删除对话: 只登记删除标记, 消息/元数据全部保留(供审计与分析)。

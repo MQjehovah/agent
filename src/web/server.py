@@ -2047,8 +2047,60 @@ class WebServer:
                 "thread_count": r.get("thread_count") or 0,
                 "last_accessed": r["last_at"],
                 "first_accessed": r["first_at"],
+                "title": r.get("title") or "",
+                "pinned": int(r.get("pinned") or 0),
             } for r in rows]
             return {"total": len(sessions), "sessions": sessions}
+
+        @self._app.get("/api/agent/sessions/search")
+        async def agent_sessions_search(q: str = Query(""), limit: int = Query(30), request: Request = None):
+            """在我的会话消息里做内容检索(个人跨渠道口径; admin 走全站)"""
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            keyword = str(q or "").strip()
+            if len(keyword) < 1:
+                return {"total": 0, "results": []}
+            admin, uid = False, None
+            if request is not None:
+                try:
+                    actor = await _get_authz(request)
+                    admin = _has_perm(actor, "admin.monitor")
+                    uid = actor.get("uid")
+                except Exception:
+                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            results = storage.search_conversation_messages(keyword, uid, limit, admin=admin)
+            return {"total": len(results), "results": results}
+
+        @self._app.patch("/api/agent/sessions")
+        async def agent_session_update(request: Request = None, session_id: str = Query(...)):
+            """重命名/置顶会话(仅归属人或 admin)"""
+            sid = str(session_id or "").strip()
+            if not sid:
+                return JSONResponse({"error": "Missing session_id"}, status_code=400)
+            try:
+                u = await _get_auth(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            admin = u.get("role") == "admin"
+            tag = WebServer._owner_tag(str(u.get("uid")))
+            if self._session_access(sid, tag, admin) == "deny":
+                return JSONResponse({"error": "Session not found"}, status_code=404)
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "请求体需为 JSON"}, status_code=400)
+            title = body.get("title") if "title" in body else None
+            pinned = body.get("pinned") if "pinned" in body else None
+            if title is not None and not isinstance(title, str):
+                return JSONResponse({"error": "title 需为字符串"}, status_code=400)
+            if pinned is not None and not isinstance(pinned, bool):
+                return JSONResponse({"error": "pinned 需为布尔值"}, status_code=400)
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            flags = storage.set_conversation_flags(sid, title=title, pinned=pinned)
+            return {"success": True, "session_id": sid, **flags}
 
         @self._app.delete("/api/agent/sessions")
         async def agent_session_delete(session_id: str = Query(...), request: Request = None):
