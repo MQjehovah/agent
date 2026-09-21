@@ -509,8 +509,8 @@ def test_workspace_upload_sanitizes_traversal_name(tmp_path):
 
 # ===== 在线会话删除 =====
 
-def test_session_delete_removes_conversation(tmp_path):
-    """DELETE /api/agent/sessions: 删除消息行与元信息, 再次删除返回 404"""
+def test_session_delete_is_soft(tmp_path):
+    """DELETE /api/agent/sessions: 逻辑删除 —— 列表不再显示, 消息数据保留, 可恢复"""
     from types import SimpleNamespace
 
     import storage.storage as storage_mod
@@ -532,17 +532,24 @@ def test_session_delete_removes_conversation(tmp_path):
         resp = client.delete("/api/agent/sessions?session_id=delme")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["success"] is True
+        assert body["success"] is True and body["soft"] is True
         assert body["messages"] == 2
-        assert s.get_messages("delme") == []
-        assert len(s.get_messages("keep")) > 0
+
+        # 数据保留(审计/分析用), 但列表与元信息视角已排除
+        assert len(s.get_messages("delme")) == 2
+        assert s.is_conversation_deleted("delme") is True
+        listed = [r["conversation_id"] for r in s.list_conversations()]
+        assert "delme" not in listed and "keep" in listed
+        # 内存会话已摘除
         assert w.agent.session_manager.sessions == {}
 
-        # 再次删除: 已无数据可删(测试环境鉴权关闭时视为 admin, 故仍 200 但删除行数为 0)
-        again = client.delete("/api/agent/sessions?session_id=delme")
-        assert again.status_code in (200, 404)
-        if again.status_code == 200:
-            assert again.json()["messages"] == 0
+        # 删除清单可查, 且可恢复
+        deleted = s.list_deleted_conversations()
+        assert any(d["conversation_id"] == "delme" for d in deleted)
+        restore = client.post("/api/agent/sessions/restore?session_id=delme")
+        assert restore.status_code == 200
+        assert s.is_conversation_deleted("delme") is False
+        assert "delme" in [r["conversation_id"] for r in s.list_conversations()]
     finally:
         s.close()
         storage_mod._storage_instance = prev

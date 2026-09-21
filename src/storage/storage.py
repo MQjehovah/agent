@@ -336,6 +336,15 @@ class Storage:
                     updated_at TEXT
                 );
 
+                -- 逻辑删除的对话: 只登记标记, 消息数据保留(会话数据对审计/分析有价值)
+                CREATE TABLE IF NOT EXISTS deleted_conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    deleted_at TEXT,
+                    deleted_by TEXT DEFAULT '',
+                    reason TEXT DEFAULT '',
+                    message_count INTEGER DEFAULT 0
+                );
+
                 CREATE TABLE IF NOT EXISTS dingtalk_scopes (
                     scope_kind TEXT NOT NULL,
                     scope_key TEXT NOT NULL,
@@ -727,10 +736,12 @@ class Storage:
             "  WHERE x.conversation_id = m.conversation_id "
             "    AND x.session_id != m.conversation_id) AS thread_count, "
             "MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at "
-            "FROM messages m "
-            "WHERE m.conversation_id IS NOT NULL AND m.conversation_id != '' "
-            "  AND m.session_id = m.conversation_id"
-        )
+                "FROM messages m "
+                "WHERE m.conversation_id IS NOT NULL AND m.conversation_id != '' "
+                "  AND m.session_id = m.conversation_id "
+                "  AND NOT EXISTS (SELECT 1 FROM deleted_conversations d "
+                "                  WHERE d.conversation_id = m.conversation_id)"
+            )
         args: list[Any] = []
         if channel:
             sql += " AND m.session_id LIKE ?"
@@ -792,6 +803,8 @@ class Storage:
             "        WHERE gp.conversation_id = m.conversation_id "
             "          AND gp.user_id = 'dingtalk:' || ?)) "
             "  ) "
+            "  AND NOT EXISTS (SELECT 1 FROM deleted_conversations d "
+            "                  WHERE d.conversation_id = m.conversation_id) "
             "GROUP BY m.conversation_id ORDER BY MAX(m.created_at) DESC LIMIT ?"
         )
         with self._get_connection() as conn:
@@ -1345,43 +1358,60 @@ class Storage:
             conn.commit()
             return cur.rowcount > 0
 
-    def delete_conversation(self, conversation_id: str) -> dict:
-        """删除一个对话(按 conversation_id 聚合): 消息行 + 会话元信息 + 话题指针。
+    def soft_delete_conversation(self, conversation_id: str, deleted_by: str = "", reason: str = "") -> dict:
+        """逻辑删除对话: 只登记删除标记, 消息/元数据全部保留(供审计与分析)。
 
-        只删数据, 不做权限判定(调用方须先通过 _session_access)。
-        返回各表删除行数, 便于日志与前端提示。
+        列表与历史查询会排除已删除对话; 需要查看时可经 list_deleted_conversations
+        或 restore_conversation 恢复。重复删除幂等(刷新标记)。
         """
         cid = str(conversation_id or "").strip()
         if not cid:
-            return {"messages": 0, "threads": 0, "private": 0, "meta": 0}
+            return {"deleted": 0, "messages": 0}
         with self._write_lock, self._get_connection() as conn:
-            cur = conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
-            deleted_messages = cur.rowcount
-            deleted_threads = 0
-            # 子代理内部线程: conversation_id 相同但 session_id 形如 <root>#<agent>
-            with suppress(sqlite3.OperationalError):
-                cur = conn.execute(
-                    "DELETE FROM messages WHERE session_id LIKE ?",
-                    (f"{cid}#%",),
-                )
-                deleted_threads = cur.rowcount
-            deleted_private = 0
-            with suppress(sqlite3.OperationalError):
-                cur = conn.execute("DELETE FROM dingtalk_private_messages WHERE conversation_id = ?", (cid,))
-                deleted_private = cur.rowcount
-            cur = conn.execute("DELETE FROM session_meta WHERE session_id = ?", (cid,))
-            deleted_meta = cur.rowcount
-            with suppress(sqlite3.OperationalError):
-                conn.execute(
-                    "DELETE FROM dingtalk_scopes WHERE root_session_id = ?", (cid,)
-                )
+            row = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (cid,)).fetchone()
+            msg_count = int(row[0]) if row else 0
+            conn.execute(
+                "INSERT INTO deleted_conversations "
+                "(conversation_id, deleted_at, deleted_by, reason, message_count) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(conversation_id) DO UPDATE SET "
+                "deleted_at = excluded.deleted_at, deleted_by = excluded.deleted_by, "
+                "reason = excluded.reason, message_count = excluded.message_count",
+                (cid, datetime.now().isoformat(), str(deleted_by or ""), str(reason or ""), msg_count),
+            )
             conn.commit()
-        return {
-            "messages": deleted_messages,
-            "threads": deleted_threads,
-            "private": deleted_private,
-            "meta": deleted_meta,
-        }
+        return {"deleted": 1, "messages": msg_count}
+
+    def restore_conversation(self, conversation_id: str) -> bool:
+        """恢复被逻辑删除的对话(删掉删除标记, 数据本就还在)"""
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            return False
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM deleted_conversations WHERE conversation_id = ?", (cid,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def is_conversation_deleted(self, conversation_id: str) -> bool:
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            return False
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM deleted_conversations WHERE conversation_id = ? LIMIT 1", (cid,)
+            ).fetchone()
+        return row is not None
+
+    def list_deleted_conversations(self, limit: int = 100) -> list[dict[str, Any]]:
+        """已逻辑删除的对话清单(运维/审计用)"""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT conversation_id, deleted_at, deleted_by, reason, message_count "
+                "FROM deleted_conversations ORDER BY deleted_at DESC LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
 
     def save_proposal(self, content: str, source_users: str = "[]", reason: str = "") -> int:
         now = datetime.now().isoformat()

@@ -2052,10 +2052,10 @@ class WebServer:
 
         @self._app.delete("/api/agent/sessions")
         async def agent_session_delete(session_id: str = Query(...), request: Request = None):
-            """删除在线会话(对话根): 内存会话 + 数据库消息/元信息 + 归属记录。
+            """逻辑删除在线会话(对话根): 列表不再显示, 消息数据保留供审计/分析。
 
             仅会话所属人(或 admin)可删; 群会话与子代理内部线程不允许直接删除,
-            正在执行中的会话返回 409 提示先停止。
+            正在执行中的会话返回 409 提示先停止。误删可经 /api/agent/sessions/restore 恢复。
             """
             sid = str(session_id or "").strip()
             if not sid:
@@ -2085,12 +2085,35 @@ class WebServer:
                     self.agent.session_manager.sessions.pop(key, None)
 
             storage = get_storage()
-            stats = storage.delete_conversation(sid) if storage else {}
+            stats = storage.soft_delete_conversation(sid, deleted_by=tag) if storage else {}
             with self._session_lock:
                 self._session_owners.pop(sid, None)
                 self._session_owner_names.pop(sid, None)
-            logger.info(f"[Sessions API] 删除会话 {sid} 归属={tag}: {stats}")
-            return {"success": True, "session_id": sid, **stats}
+            logger.info(f"[Sessions API] 逻辑删除会话 {sid} 归属={tag}: {stats}")
+            return {"success": True, "session_id": sid, "soft": True, **stats}
+
+        @self._app.post("/api/agent/sessions/restore")
+        async def agent_session_restore(session_id: str = Query(...), request: Request = None):
+            """恢复被逻辑删除的会话(会话归属人或 admin)"""
+            sid = str(session_id or "").strip()
+            if not sid:
+                return JSONResponse({"error": "Missing session_id"}, status_code=400)
+            try:
+                u = await _get_auth(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            admin = u.get("role") == "admin"
+            tag = WebServer._owner_tag(str(u.get("uid")))
+            # 消息数据仍在, 归属判定照旧可用(admin 恒 allow)
+            if self._session_access(sid, tag, admin) == "deny":
+                return JSONResponse({"error": "Session not found"}, status_code=404)
+            storage = get_storage()
+            if not storage:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            if not storage.restore_conversation(sid):
+                return JSONResponse({"error": "该会话未被删除"}, status_code=404)
+            logger.info(f"[Sessions API] 恢复会话 {sid} 归属={tag}")
+            return {"success": True, "session_id": sid}
 
         @self._app.get("/api/agent/sessions/running")
         async def agent_sessions_running(request: Request = None):
