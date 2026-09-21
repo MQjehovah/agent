@@ -967,8 +967,15 @@ class WebServer:
         from web.security import scope_department as _scope_dept
 
         async def _get_authz(request: Request) -> dict[str, Any]:
-            """身份 + 角色权限 + 数据范围 + 部门（SSO/JWT 均适用）。"""
-            u = dict(await _get_auth(request))
+            """身份 + 角色权限 + 数据范围 + 部门（SSO/JWT 均适用）。
+
+            服务间凭证(X-Service-Token)按服务账号处理,与 _get_admin 语义一致:
+            网关/工作台等可信服务经此访问 RBAC、记忆、工作区等细粒度端点。
+            """
+            if _is_service_request(request):
+                u = {"uid": 0, "name": "service", "role": "admin"}
+            else:
+                u = dict(await _get_auth(request))
             try:
                 from web.security import _resolve_role
                 perms, scope, dept = _resolve_role(u.get("role", ""), u.get("uid"))

@@ -7,12 +7,22 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+import pytest
 
-os.environ["WEBUI_DISABLE_AUTH"] = "1"  # 测试模式
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import storage.storage as storage_mod
 from storage.storage import Storage, get_storage
+
+
+@pytest.fixture(autouse=True)
+def _disable_webui_auth(monkeypatch):
+    """测试模式关闭 WebUI 鉴权。
+
+    注意:必须在 fixture 内设置而非模块导入时设置 —— 否则环境变量会泄漏给
+    后续测试文件(曾导致 test_sso_auth 的双轨鉴权用例假失败)。
+    """
+    monkeypatch.setenv("WEBUI_DISABLE_AUTH", "1")
 
 # ===== 存储层行为测试（验证 approve/reject 的业务语义） =====
 
@@ -49,7 +59,6 @@ def test_reject_flow_keeps_no_global(tmp_path):
 
 def _make_app(tmp_path):
     """构造 WebServer 的 FastAPI app 并注入临时 storage 单例，返回 (client, restore)"""
-    os.environ["WEBUI_DISABLE_AUTH"] = "1"  # 确保测试模式
     prev = storage_mod._storage_instance
     s = Storage(str(tmp_path))
     storage_mod._storage_instance = s
