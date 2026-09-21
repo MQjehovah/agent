@@ -1345,6 +1345,44 @@ class Storage:
             conn.commit()
             return cur.rowcount > 0
 
+    def delete_conversation(self, conversation_id: str) -> dict:
+        """删除一个对话(按 conversation_id 聚合): 消息行 + 会话元信息 + 话题指针。
+
+        只删数据, 不做权限判定(调用方须先通过 _session_access)。
+        返回各表删除行数, 便于日志与前端提示。
+        """
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            return {"messages": 0, "threads": 0, "private": 0, "meta": 0}
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+            deleted_messages = cur.rowcount
+            deleted_threads = 0
+            # 子代理内部线程: conversation_id 相同但 session_id 形如 <root>#<agent>
+            with suppress(sqlite3.OperationalError):
+                cur = conn.execute(
+                    "DELETE FROM messages WHERE session_id LIKE ?",
+                    (f"{cid}#%",),
+                )
+                deleted_threads = cur.rowcount
+            deleted_private = 0
+            with suppress(sqlite3.OperationalError):
+                cur = conn.execute("DELETE FROM dingtalk_private_messages WHERE conversation_id = ?", (cid,))
+                deleted_private = cur.rowcount
+            cur = conn.execute("DELETE FROM session_meta WHERE session_id = ?", (cid,))
+            deleted_meta = cur.rowcount
+            with suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "DELETE FROM dingtalk_scopes WHERE root_session_id = ?", (cid,)
+                )
+            conn.commit()
+        return {
+            "messages": deleted_messages,
+            "threads": deleted_threads,
+            "private": deleted_private,
+            "meta": deleted_meta,
+        }
+
     def save_proposal(self, content: str, source_users: str = "[]", reason: str = "") -> int:
         now = datetime.now().isoformat()
         with self._write_lock, self._get_connection() as conn:

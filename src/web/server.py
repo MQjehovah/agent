@@ -2050,6 +2050,48 @@ class WebServer:
             } for r in rows]
             return {"total": len(sessions), "sessions": sessions}
 
+        @self._app.delete("/api/agent/sessions")
+        async def agent_session_delete(session_id: str = Query(...), request: Request = None):
+            """删除在线会话(对话根): 内存会话 + 数据库消息/元信息 + 归属记录。
+
+            仅会话所属人(或 admin)可删; 群会话与子代理内部线程不允许直接删除,
+            正在执行中的会话返回 409 提示先停止。
+            """
+            sid = str(session_id or "").strip()
+            if not sid:
+                return JSONResponse({"error": "Missing session_id"}, status_code=400)
+            try:
+                u = await _get_auth(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            admin = u.get("role") == "admin"
+            tag = WebServer._owner_tag(str(u.get("uid")))
+            if self._session_access(sid, tag, admin) == "deny":
+                return JSONResponse({"error": "Session not found"}, status_code=404)
+            if sid.startswith("dingtalk_group:"):
+                return JSONResponse({"error": "群会话不支持删除"}, status_code=400)
+            if "#" in sid or sid.startswith("dingtalk:"):
+                return JSONResponse({"error": "外部渠道会话请在其来源应用内处理"}, status_code=400)
+
+            if self.agent and self.agent.session_manager:
+                sess = self.agent.session_manager.sessions.get(sid)
+                if sess is not None and getattr(sess, "is_streaming", False):
+                    return JSONResponse({"error": "会话正在执行，请先停止后再删除"}, status_code=409)
+                targets = [
+                    k for k in list(self.agent.session_manager.sessions.keys())
+                    if k == sid or k.startswith(sid + "#")
+                ]
+                for key in targets:
+                    self.agent.session_manager.sessions.pop(key, None)
+
+            storage = get_storage()
+            stats = storage.delete_conversation(sid) if storage else {}
+            with self._session_lock:
+                self._session_owners.pop(sid, None)
+                self._session_owner_names.pop(sid, None)
+            logger.info(f"[Sessions API] 删除会话 {sid} 归属={tag}: {stats}")
+            return {"success": True, "session_id": sid, **stats}
+
         @self._app.get("/api/agent/sessions/running")
         async def agent_sessions_running(request: Request = None):
             """「运行中」会话（本人）：正在执行、占用 Agent worker 的活跃会话。

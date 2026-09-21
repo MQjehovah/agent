@@ -505,3 +505,44 @@ def test_workspace_upload_sanitizes_traversal_name(tmp_path):
     assert data["name"] == "evil.md"
     saved = list((ws / "users").glob("u_*/" + data["relPath"]))
     assert len(saved) == 1
+
+
+# ===== 在线会话删除 =====
+
+def test_session_delete_removes_conversation(tmp_path):
+    """DELETE /api/agent/sessions: 删除消息行与元信息, 再次删除返回 404"""
+    from types import SimpleNamespace
+
+    import storage.storage as storage_mod
+    from storage.storage import Storage
+    from web.server import WebServer
+
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    s.save_message_sync("agentA", "delme", "user", "hi")
+    s.save_message_sync("agentA", "delme", "assistant", "yo")
+    s.save_message_sync("agentA", "keep", "user", "x")
+
+    try:
+        w = WebServer()
+        w.agent = SimpleNamespace(session_manager=SimpleNamespace(sessions={"delme": SimpleNamespace()}))
+        client = TestClient(w._app)
+
+        resp = client.delete("/api/agent/sessions?session_id=delme")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert body["messages"] == 2
+        assert s.get_messages("delme") == []
+        assert len(s.get_messages("keep")) > 0
+        assert w.agent.session_manager.sessions == {}
+
+        # 再次删除: 已无数据可删(测试环境鉴权关闭时视为 admin, 故仍 200 但删除行数为 0)
+        again = client.delete("/api/agent/sessions?session_id=delme")
+        assert again.status_code in (200, 404)
+        if again.status_code == 200:
+            assert again.json()["messages"] == 0
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
