@@ -195,3 +195,44 @@ interactive_session(sn="SN12345", commands=["cd /tmp", "ls", "pwd"])
   }
 }
 ```
+
+## ComfyUI 远程调用 (comfyui_remote.py)
+
+通过 ComfyUI 原生 HTTP API 远程驱动其它机器上的 ComfyUI（默认 `http://192.168.31.34:8188`），
+无需在本地安装 ComfyUI 或 comfy-cli。环境变量 `COMFYUI_URL` 可覆盖目标地址。
+
+### 工具列表
+
+| 工具 | 说明 |
+|------|------|
+| `set_comfyui_server` / `get_comfyui_server` | 切换 / 查看目标 ComfyUI 地址 |
+| `get_server_status` | 版本、内存、显卡与显存、队列长度 |
+| `list_models` | 列出磁盘上的模型（checkpoints / loras / vae / ...） |
+| `search_nodes` / `get_node_info` | 搜索节点、查看节点输入输出定义 |
+| `validate_workflow` | 提交前校验节点类型、输入名与连线 |
+| `upload_image` | 上传本地图片到远程 input 目录 |
+| `run_workflow` | 提交工作流（API 格式或 UI 导出格式）、等待、下载并内联返回图片 |
+| `get_job_status` / `wait_for_job` | 查询 / 等待任务状态 |
+| `get_outputs` | 取回已完成任务的输出文件 |
+| `get_queue_status` / `interrupt` / `clear_queue` | 队列查看、中断当前任务、清空队列 |
+| `free_memory` | 释放远程显存 |
+| `generate_image` | 内置 SD 文生图工作流快速出图 |
+
+### 使用示例
+
+```python
+get_server_status()
+list_models(folder="checkpoints")
+
+upload = upload_image(file_path=r"C:\pics\in.png")
+run_workflow(
+    workflow_file=r"C:\workflows\txt2img_api.json",
+    download_dir=r"C:\comfy_out",
+    include_images=True,
+)
+generate_image(prompt="a cat astronaut", width=1024, height=1024, download_dir=r"C:\comfy_out")
+```
+
+工作流推荐使用 ComfyUI 的 **Workflow -> Export (API)** 导出的 JSON；直接使用前端导出的
+UI 格式也可以，服务端会自动按目标 ComfyUI 的 `object_info` 转换，并在日志中给出无法映射的
+控件警告。
