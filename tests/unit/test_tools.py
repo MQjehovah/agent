@@ -1,11 +1,12 @@
 """工具单元测试"""
-import os
-import json
 import asyncio
-import pytest
+import json
+import os
+import sys
 from unittest.mock import MagicMock
 
-import sys
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 
@@ -828,7 +829,7 @@ class TestTodoTool:
 
 class TestTaskManager:
     def setup_method(self):
-        from tools.task import TaskManager, TaskCreateTool, TaskListTool, TaskGetTool, TaskCancelTool
+        from tools.task import TaskCancelTool, TaskCreateTool, TaskGetTool, TaskListTool, TaskManager
         self.manager = TaskManager()
         self.create_tool = TaskCreateTool(self.manager)
         self.list_tool = TaskListTool(self.manager)
@@ -1107,8 +1108,9 @@ class TestAskUserTool:
 
 class TestMemoryTool:
     def setup_method(self):
-        from tools.memory import MemoryTool
         from unittest.mock import MagicMock
+
+        from tools.memory import MemoryTool
         self.mock_manager = MagicMock()
         self.tool = MemoryTool(self.mock_manager)
 
@@ -1270,7 +1272,7 @@ class TestToolRegistry:
 
 class TestPermissionChecker:
     def setup_method(self):
-        from permissions import PermissionChecker, PermissionConfig, PermissionMode
+        from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
         self.auto_checker = PermissionChecker(PermissionConfig(mode=PermissionMode.AUTO))
         self.default_checker = PermissionChecker(PermissionConfig(mode=PermissionMode.DEFAULT))
         self.plan_checker = PermissionChecker(PermissionConfig(mode=PermissionMode.PLAN))
@@ -1280,20 +1282,20 @@ class TestPermissionChecker:
         assert result.allowed is True
 
     def test_plan_mode_blocks_writes(self):
-        result = self.plan_checker.check("file_operation", {"operation": "write", "path": "/tmp/test"})
+        result = self.plan_checker.check("file", {"operation": "write", "path": "/tmp/test"})
         assert result.allowed is False
 
     def test_plan_mode_allows_reads(self):
-        result = self.plan_checker.check("file_operation", {"operation": "read", "path": "/tmp/test"})
+        result = self.plan_checker.check("file", {"operation": "read", "path": "/tmp/test"})
         assert result.allowed is True
 
     def test_default_mode_needs_confirm_for_writes(self):
-        result = self.default_checker.check("file_operation", {"operation": "write", "path": "/tmp/test"})
+        result = self.default_checker.check("file", {"operation": "write", "path": "/tmp/test"})
         assert result.allowed is True
         assert "确认" in result.reason
 
     def test_default_mode_allows_reads(self):
-        result = self.default_checker.check("file_operation", {"operation": "read", "path": "/tmp/test"})
+        result = self.default_checker.check("file", {"operation": "read", "path": "/tmp/test"})
         assert result.allowed is True
         assert result.reason == ""
 
@@ -1301,6 +1303,45 @@ class TestPermissionChecker:
         result = self.default_checker.check("shell", {"command": "ls -la"})
         assert result.allowed is True
         assert result.reason == ""
+
+    def test_smart_mode_allows_normal_writes(self):
+        """必要时询问: 普通写文件不打扰用户"""
+        from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
+        checker = PermissionChecker(PermissionConfig(mode=PermissionMode.SMART))
+        result = checker.check("file", {"operation": "write", "path": "/tmp/test"})
+        assert result.allowed is True
+        assert result.reason == ""
+
+    def test_smart_mode_allows_read_commands(self):
+        from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
+        checker = PermissionChecker(PermissionConfig(mode=PermissionMode.SMART))
+        result = checker.check("shell", {"command": "ls -la"})
+        assert result.allowed is True
+        assert result.reason == ""
+
+    def test_smart_mode_asks_before_dangerous_command(self):
+        from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
+        checker = PermissionChecker(PermissionConfig(mode=PermissionMode.SMART))
+        result = checker.check("shell", {"command": "rm -rf build"})
+        assert result.allowed is True
+        assert "确认" in result.reason
+
+    def test_smart_mode_asks_before_delete(self):
+        from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
+        checker = PermissionChecker(PermissionConfig(mode=PermissionMode.SMART))
+        result = checker.check("file", {"operation": "delete", "path": "/tmp/test"})
+        assert result.allowed is True
+        assert "确认" in result.reason
+
+    def test_smart_mode_asks_when_writing_outside_workspace(self, tmp_path):
+        from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        checker = PermissionChecker(PermissionConfig(mode=PermissionMode.SMART, workspace_root=str(ws)))
+        inside = checker.check("file", {"operation": "write", "path": str(ws / "a.txt")})
+        assert inside.reason == ""
+        outside = checker.check("file", {"operation": "write", "path": str(tmp_path / "other.txt")})
+        assert "确认" in outside.reason
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1334,7 +1375,7 @@ class TestUsageTracker:
 class TestHookManager:
     @pytest.mark.asyncio
     async def test_fire_hooks(self):
-        from hooks import HookManager, HookEvent
+        from hooks import HookEvent, HookManager
         manager = HookManager()
         events = []
 
@@ -1354,7 +1395,7 @@ class TestHookManager:
 
     @pytest.mark.asyncio
     async def test_hook_error_does_not_break(self):
-        from hooks import HookManager, HookEvent
+        from hooks import HookEvent, HookManager
         manager = HookManager()
 
         async def bad_hook(ctx):

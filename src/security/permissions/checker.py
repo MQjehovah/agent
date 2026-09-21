@@ -48,6 +48,32 @@ class PermissionChecker:
                     reason=f"PLAN 模式禁止执行写操作工具: {tool_name}"
                 )
 
+        # SMART 模式(必要时询问): 仅危险文件操作与高危命令需要确认, 其余写操作直接放行
+        if self.config.mode == PermissionMode.SMART:
+            if tool_name == "file":
+                op = str(arguments.get("operation", "")).lower()
+                if op in ("read", "exists", "list", "preview"):
+                    return PermissionCheckResult(allowed=True)
+                if op in self.config.dangerous_file_ops:
+                    return PermissionCheckResult(allowed=True, reason="需要用户确认")
+                # 写到工作区之外的文件也需要确认
+                raw = str(arguments.get("path", "") or "")
+                if raw and self.config.workspace_root:
+                    try:
+                        Path(raw).resolve().relative_to(Path(self.config.workspace_root).resolve())
+                    except ValueError:
+                        return PermissionCheckResult(allowed=True, reason="需要用户确认")
+                    except OSError:
+                        pass
+                return PermissionCheckResult(allowed=True)
+            if tool_name == "shell":
+                command = str(arguments.get("command", "") or "").lower()
+                for frag in self.config.dangerous_commands:
+                    if frag in command:
+                        return PermissionCheckResult(allowed=True, reason="需要用户确认")
+                return PermissionCheckResult(allowed=True)
+            return PermissionCheckResult(allowed=True)
+
         # 检查命令黑名单
         if tool_name == "shell":
             command = arguments.get("command", "")

@@ -1536,17 +1536,27 @@ class WebServer:
                     _old_mode = None
                     _old_confirm = None
                     try:
-                        # F7 审批联动：AGENT_WEB_CONFIRM=1 且非 admin 时，写/危险操作经 ask 双向确认
-                        if os.environ.get("AGENT_WEB_CONFIRM", "") == "1" \
-                                and auth.get("role") != "admin":
+                        # 会话级权限模式: default(每次询问)/smart(必要时询问)/auto(完全访问)/plan(只读)
+                        # 未指定时沿用 AGENT_WEB_CONFIRM 审批联动(非 admin 强制 default)
+                        _mode_aliases = {"default": "default", "ask": "default",
+                                         "smart": "smart", "necessary": "smart",
+                                         "auto": "auto", "full": "auto", "plan": "plan"}
+                        _confirm_guard = os.environ.get("AGENT_WEB_CONFIRM", "") == "1"
+                        _is_admin = auth.get("role") == "admin"
+                        _want = _mode_aliases.get(str(data.get("permission_mode") or "").strip().lower(), "")
+                        if _want == "auto" and _confirm_guard and not _is_admin:
+                            _want = "smart"  # 非 admin 不允许完全访问, 降级为必要时询问
+                        _effective = _want or ("default" if (_confirm_guard and not _is_admin) else "")
+                        if _effective:
                             try:
                                 _pc = agent_ref._permission_config
                                 if _pc is not None:
                                     from security.permissions import PermissionMode
                                     _old_mode = _pc.mode
-                                    _pc.mode = PermissionMode.DEFAULT
+                                    _pc.mode = PermissionMode(_effective)
                             except Exception:
                                 _old_mode = None
+                        if _effective in ("default", "smart"):
                             _old_confirm = getattr(agent_ref, "on_confirm", None)
 
                             async def _confirm_cb(name, args):
@@ -2779,6 +2789,54 @@ class WebServer:
                     })
             entries.sort(key=lambda e: e["modified"], reverse=True)
             return {"files": entries}
+
+        # ===== 对话附件上传(在线模式): 写入「我的工作区」uploads/ =====
+        max_upload_bytes = 20 * 1024 * 1024
+        allowed_upload_exts = {
+            ".txt", ".md", ".json", ".csv", ".py", ".ts", ".js", ".go", ".java", ".sh",
+            ".yaml", ".yml", ".log", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+            ".docx", ".xlsx", ".pptx",
+        }
+
+        def _user_workspace_dir(uid: str) -> str:
+            """调用方自己的工作区(与 worker 池布局一致: <root workspace>/users/u_{uid})"""
+            try:
+                from web.worker_pool import WebUserWorkerPool
+                safe = WebUserWorkerPool._safe_dir(str(uid))
+            except Exception:
+                safe = "".join(c for c in str(uid) if c.isalnum() or c in ("-", "_")) or "anon"
+            return os.path.join(self.agent.workspace, "users", f"u_{safe}")
+
+        @self._app.post("/api/workspace/upload")
+        async def workspace_upload(request: Request):
+            """上传对话附件, 返回 file 工具可直接读取的相对路径(uploads/xxx)"""
+            if not self.agent:
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            cl = request.headers.get("content-length", "")
+            if cl.isdigit() and int(cl) > max_upload_bytes + 16 * 1024:
+                return JSONResponse({"error": "文件超过 20MB 上限"}, status_code=413)
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read"):
+                return JSONResponse({"error": "缺少 file 字段"}, status_code=400)
+            raw_name = os.path.basename(str(getattr(upload, "filename", "") or "file.bin").replace("\\", "/"))
+            name = raw_name.replace("..", "").strip() or "file.bin"
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in allowed_upload_exts:
+                return JSONResponse({"error": f"不支持的文件类型: {ext or '(无扩展名)'}"}, status_code=400)
+            data = await upload.read()
+            if len(data) > max_upload_bytes:
+                return JSONResponse({"error": "文件超过 20MB 上限"}, status_code=400)
+            dest_dir = os.path.join(_user_workspace_dir(str(auth.get("uid", "anon"))), "uploads")
+            os.makedirs(dest_dir, exist_ok=True)
+            target_name = f"{int(time.time() * 1000)}-{name}"
+            with open(os.path.join(dest_dir, target_name), "wb") as f:
+                f.write(data)
+            return {"name": name, "relPath": f"uploads/{target_name}", "size": len(data)}
 
         # ===== 日志流（SSE） =====
         @self._app.get("/api/logs/stream")

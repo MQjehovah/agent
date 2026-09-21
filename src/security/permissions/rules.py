@@ -44,6 +44,19 @@ class PermissionConfig:
         "shell",
         "edit",
     ])
+    # SMART 模式(必要时询问): 命中以下片段的 shell 命令需用户确认
+    dangerous_commands: list = field(default_factory=lambda: [
+        "rm ", "rmdir", "del ", "erase ", "mkfs", "dd ", "mv ", "move ",
+        "chmod", "chown", "chattr", "kill", "pkill", "taskkill",
+        "systemctl", "service ", "docker ", "kubectl ", "git reset",
+        "git clean", "git checkout --", "reg delete", "sc delete",
+        "shutdown", "reboot", "poweroff", "format ", "sudo ",
+        "> /", ">> /", "curl | sh", "wget | sh", "curl | bash", "wget | bash",
+    ])
+    # SMART 模式: 命中以下 file 操作的需用户确认
+    dangerous_file_ops: list = field(default_factory=lambda: [
+        "delete", "move", "rename",
+    ])
     path_params: dict = field(default_factory=lambda: {
         "file": "path",
         "edit": "path",

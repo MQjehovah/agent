@@ -442,3 +442,66 @@ def test_memories_crud(tmp_path):
     finally:
         s.close()
         storage_mod._storage_instance = prev
+
+
+# ===== 对话附件上传(在线模式) =====
+
+def test_workspace_upload_writes_to_user_dir(tmp_path):
+    """附件上传: 落到 <workspace>/users/u_{uid}/uploads/, 返回相对路径供 file 工具读取"""
+    from types import SimpleNamespace
+
+    from web.server import WebServer
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    w = WebServer()
+    w.agent = SimpleNamespace(workspace=str(ws))
+    client = TestClient(w._app)
+
+    resp = client.post("/api/workspace/upload", files={"file": ("note.txt", b"hello attachment", "text/plain")})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["relPath"].startswith("uploads/")
+    assert data["name"] == "note.txt"
+    assert data["size"] == len(b"hello attachment")
+
+    saved = list((ws / "users").glob("u_*/" + data["relPath"]))
+    assert len(saved) == 1
+    assert saved[0].read_bytes() == b"hello attachment"
+
+
+def test_workspace_upload_rejects_bad_extension(tmp_path):
+    """不在白名单的扩展名一律拒绝"""
+    from types import SimpleNamespace
+
+    from web.server import WebServer
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    w = WebServer()
+    w.agent = SimpleNamespace(workspace=str(ws))
+    client = TestClient(w._app)
+
+    resp = client.post("/api/workspace/upload", files={"file": ("evil.exe", b"MZ", "application/octet-stream")})
+    assert resp.status_code == 400
+
+
+def test_workspace_upload_sanitizes_traversal_name(tmp_path):
+    """文件名里的路径穿越片段被清洗, 不能逃出 uploads/"""
+    from types import SimpleNamespace
+
+    from web.server import WebServer
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    w = WebServer()
+    w.agent = SimpleNamespace(workspace=str(ws))
+    client = TestClient(w._app)
+
+    resp = client.post("/api/workspace/upload", files={"file": ("../../evil.md", b"x", "text/markdown")})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert ".." not in data["relPath"]
+    assert data["name"] == "evil.md"
+    saved = list((ws / "users").glob("u_*/" + data["relPath"]))
+    assert len(saved) == 1
