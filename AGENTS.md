@@ -189,6 +189,8 @@ docker run --rm -e OPENAI_API_KEY=sk-... agent
 
 Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py --debug`.
 
+员工端前端(`frontend/`)由镜像**阶段 1** 用 node 构建, 产物 `src/web/static_vue/` **不入库**(`.gitignore`/`.dockerignore` 均忽略; `.dockerignore` 只排除 `frontend/node_modules`)。本地开发需先 `cd frontend && npm run build`, 否则 `/` 回落旧版单页控制台(`static/`)。
+
 ## Pitfalls
 
 - **`.env` is gitignored** — never commit API keys. Use `.env.example` as template.
