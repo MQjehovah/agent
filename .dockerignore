@@ -1,0 +1,9 @@
+.git
+config
+workspace
+logs
+tests
+docs
+frontend/node_modules
+frontend/dist
+*.bak

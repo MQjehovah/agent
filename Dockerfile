@@ -27,12 +27,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+# 前端产物以构建阶段为准(仓库不再提交编译产物, 目录可能残留旧 bundle)
+RUN rm -rf /app/src/web/static_vue
 COPY --from=frontend-build /src/web/static_vue /app/src/web/static_vue
 
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-EXPOSE 8080
+EXPOSE 8081 8080
 
 # HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 #     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')" || exit 1
