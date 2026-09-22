@@ -4,11 +4,12 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import urllib.parse
 
 import requests
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -23,7 +24,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("mcp.dingtalk")
 
-mcp = FastMCP("DingTalk MCP Server")
+mcp = MCPServer("DingTalk MCP Server")
 
 APP_KEY = os.getenv("DINGTALK_APP_KEY", "")
 APP_SECRET = os.getenv("DINGTALK_APP_SECRET", "")
@@ -31,26 +32,29 @@ AGENT_ID = os.getenv("DINGTALK_AGENT_ID", "")
 ROBOT_CODE = os.getenv("DINGTALK_ROBOT_CODE", APP_KEY)
 
 _access_token_cache = {"token": "", "expire_at": 0}
+# v2 起同步 handler 运行在 anyio worker 线程: 并发首调需串行化, 保证只取一次 token
+_token_lock = threading.Lock()
 
 
 def _get_access_token() -> str:
-    if _access_token_cache["token"] and time.time() < _access_token_cache["expire_at"]:
+    with _token_lock:
+        if _access_token_cache["token"] and time.time() < _access_token_cache["expire_at"]:
+            return _access_token_cache["token"]
+
+        url = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
+        resp = requests.post(url, json={
+            "appKey": APP_KEY,
+            "appSecret": APP_SECRET
+        }, timeout=10)
+        data = resp.json()
+
+        if "accessToken" not in data:
+            raise RuntimeError(f"获取access_token失败: {data}")
+
+        _access_token_cache["token"] = data["accessToken"]
+        _access_token_cache["expire_at"] = time.time() + data.get("expireIn", 7200) - 300
+        logger.info("access_token 已刷新")
         return _access_token_cache["token"]
-
-    url = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
-    resp = requests.post(url, json={
-        "appKey": APP_KEY,
-        "appSecret": APP_SECRET
-    }, timeout=10)
-    data = resp.json()
-
-    if "accessToken" not in data:
-        raise RuntimeError(f"获取access_token失败: {data}")
-
-    _access_token_cache["token"] = data["accessToken"]
-    _access_token_cache["expire_at"] = time.time() + data.get("expireIn", 7200) - 300
-    logger.info("access_token 已刷新")
-    return _access_token_cache["token"]
 
 
 def _check_config() -> str:

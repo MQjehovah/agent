@@ -13,7 +13,7 @@ import re
 from typing import Any, Optional
 
 import requests
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -30,7 +30,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("ticket-ops-mcp")
 
-mcp = FastMCP("Ticket Operations MCP Server")
+mcp = MCPServer("Ticket Operations MCP Server")
 
 TICKET_DETAIL_PATH = os.getenv(
     "TICKET_DETAIL_PATH",

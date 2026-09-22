@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Optional, List, Dict, Union
 
 import requests
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.mcpserver import MCPServer, Image
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -39,7 +39,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("comfyui-mcp")
 
-mcp = FastMCP("ComfyUI Remote MCP Server")
+mcp = MCPServer("ComfyUI Remote MCP Server")
 
 # ============================================================================
 # 配置常量
@@ -59,7 +59,6 @@ STATE: Dict[str, Any] = {
     "client_id": uuid.uuid4().hex,
 }
 
-_session = requests.Session()
 _object_info_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 OBJECT_INFO_TTL = 300.0
 TEMP_DIR = Path(os.getenv("TEMP") or os.getenv("TMP") or ".") / "comfyui_mcp"
@@ -80,7 +79,9 @@ def _base_url() -> str:
 def _request(method: str, path: str, *, timeout: Optional[float] = None, **kwargs):
     url = _base_url() + path
     try:
-        resp = _session.request(method, url, timeout=timeout or HTTP_TIMEOUT, **kwargs)
+        # requests.Session 非线程安全; v2 同步 handler 跑在 anyio worker 线程且可能并发,
+        # 故不再全局复用 Session, 每次请求由 requests.request 自建独立 Session(短连接, 换取安全)。
+        resp = requests.request(method, url, timeout=timeout or HTTP_TIMEOUT, **kwargs)
     except requests.RequestException as exc:
         raise ComfyError(f"无法连接 ComfyUI ({url}): {exc}") from exc
     if resp.status_code >= 400:

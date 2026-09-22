@@ -7,7 +7,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Optional
 import pymysql
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -22,7 +22,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("mcp.default")
 
-mcp = FastMCP("Rosiwit MCP Server")
+mcp = MCPServer("Rosiwit MCP Server")
 
 SMTP_CONFIG = {
     "host": os.getenv("SMTP_HOST", "smtp.qiye.aliyun.com"),

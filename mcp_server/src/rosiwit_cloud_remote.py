@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -32,7 +32,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("device-ops-mcp")
 
-mcp = FastMCP("Device Operations MCP Server")
+mcp = MCPServer("Device Operations MCP Server")
 
 # ==================== rosiwit-cloud ====================
 DEVICE_SHADOW_PATH = os.getenv("DEVICE_SHADOW_PATH", "/rosiwit-cloud/device/shadow")

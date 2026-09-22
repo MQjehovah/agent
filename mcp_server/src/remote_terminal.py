@@ -14,18 +14,15 @@ import json
 import time
 import logging
 import asyncio
-import nest_asyncio
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import websockets
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from rich.logging import RichHandler
 from rich.console import Console
 
 from env_guard import require_secret
-
-nest_asyncio.apply()
 
 console = Console(stderr=True)
 
@@ -38,7 +35,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("terminal-mcp")
 
-mcp = FastMCP("Terminal MCP Server")
+mcp = MCPServer("Terminal MCP Server")
 
 # ============================================================================
 # 配置常量
@@ -703,7 +700,7 @@ async def _receive_output(sn: str, timeout: float = 2.0) -> list:
 # ============================================================================
 
 @mcp.tool()
-def connect_terminal(sn: str, cols: int = 80, rows: int = 24, username: str = DEFAULT_USERNAME, password: str = DEFAULT_PASSWORD, base_url: str = None):
+async def connect_terminal(sn: str, cols: int = 80, rows: int = 24, username: str = DEFAULT_USERNAME, password: str = DEFAULT_PASSWORD, base_url: str = None):
     """连接设备终端并自动登录
 
     参数:
@@ -718,45 +715,39 @@ def connect_terminal(sn: str, cols: int = 80, rows: int = 24, username: str = DE
     if base_url:
         WS_BASE_URL = base_url.rstrip("/")
 
-    async def _connect():
-        try:
-            session = await _connect_ws(sn, cols, rows, username, password)
-            return {
-                "success": True,
-                "sn": sn,
-                "sid": session.sid,
-                "cols": cols,
-                "rows": rows,
-                "username": username,
-                "message": "终端连接并登录成功"
-            }
-        except Exception as e:
-            return {"success": False, "sn": sn, "error": str(e)}
-
-    return asyncio.get_event_loop().run_until_complete(_connect())
+    try:
+        session = await _connect_ws(sn, cols, rows, username, password)
+        return {
+            "success": True,
+            "sn": sn,
+            "sid": session.sid,
+            "cols": cols,
+            "rows": rows,
+            "username": username,
+            "message": "终端连接并登录成功"
+        }
+    except Exception as e:
+        return {"success": False, "sn": sn, "error": str(e)}
 
 
 @mcp.tool()
-def disconnect_terminal(sn: str):
+async def disconnect_terminal(sn: str):
     """断开设备终端连接
 
     参数:
     - sn: 设备编码
     """
-    async def _disconnect():
-        await _disconnect_ws(sn)
-        if sn in sessions:
-            del sessions[sn]
-        return {"success": True, "sn": sn, "message": "终端已断开"}
-
     if sn not in sessions:
         return {"success": True, "sn": sn, "message": "终端未连接"}
 
-    return asyncio.get_event_loop().run_until_complete(_disconnect())
+    await _disconnect_ws(sn)
+    if sn in sessions:
+        del sessions[sn]
+    return {"success": True, "sn": sn, "message": "终端已断开"}
 
 
 @mcp.tool()
-def send_command(sn: str, command: str, wait_output: bool = True, timeout: float = 2.0, parse_output: bool = True):
+async def send_command(sn: str, command: str, wait_output: bool = True, timeout: float = 2.0, parse_output: bool = True):
     """发送命令到终端并解析响应
 
     参数:
@@ -776,66 +767,63 @@ def send_command(sn: str, command: str, wait_output: bool = True, timeout: float
     if sn not in sessions or not sessions[sn].is_logged_in:
         return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
 
-    async def _send():
-        try:
-            session = sessions[sn]
+    try:
+        session = sessions[sn]
 
-            # 记录开始执行命令
-            session.interactive.start_command(command)
+        # 记录开始执行命令
+        session.interactive.start_command(command)
 
-            await _send_term_data(session, command + "\n")
-            logger.info(f"发送命令: {command}")
+        await _send_term_data(session, command + "\n")
+        logger.info(f"发送命令: {command}")
 
-            if wait_output:
-                outputs = await _receive_output(sn, timeout)
+        if wait_output:
+            outputs = await _receive_output(sn, timeout)
 
-                # 收集原始输出文本
-                raw_texts = []
-                for o in outputs:
-                    if o["type"] == "output":
-                        raw_texts.append(o["data"])
+            # 收集原始输出文本
+            raw_texts = []
+            for o in outputs:
+                if o["type"] == "output":
+                    raw_texts.append(o["data"])
 
-                # 解析命令响应
-                result = session.interactive.parser.parse_command_response(raw_texts, command)
+            # 解析命令响应
+            result = session.interactive.parser.parse_command_response(raw_texts, command)
 
-                if parse_output:
-                    # 返回解析后的结构化输出
-                    return {
-                        "success": True,
-                        "sn": sn,
-                        "command": command,
-                        "output": result.output,
-                        "command_success": result.success,
-                        "error": result.error if not result.success else "",
-                        "raw_outputs": raw_texts,
-                        "parsed": {
-                            "lines": result.output.split('\n') if result.output else [],
-                            "line_count": len(result.output.split('\n')) if result.output else 0
-                        }
+            if parse_output:
+                # 返回解析后的结构化输出
+                return {
+                    "success": True,
+                    "sn": sn,
+                    "command": command,
+                    "output": result.output,
+                    "command_success": result.success,
+                    "error": result.error if not result.success else "",
+                    "raw_outputs": raw_texts,
+                    "parsed": {
+                        "lines": result.output.split('\n') if result.output else [],
+                        "line_count": len(result.output.split('\n')) if result.output else 0
                     }
-                else:
-                    # 返回简化输出
-                    return {
-                        "success": True,
-                        "sn": sn,
-                        "command": command,
-                        "output": result.output,
-                        "raw_outputs": raw_texts
-                    }
+                }
+            else:
+                # 返回简化输出
+                return {
+                    "success": True,
+                    "sn": sn,
+                    "command": command,
+                    "output": result.output,
+                    "raw_outputs": raw_texts
+                }
 
-            return {"success": True, "sn": sn, "command": command}
-        except websockets.exceptions.ConnectionClosed:
-            sessions[sn].is_connected = False
-            sessions[sn].is_logged_in = False
-            return {"success": False, "error": "连接已断开"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return asyncio.get_event_loop().run_until_complete(_send())
+        return {"success": True, "sn": sn, "command": command}
+    except websockets.exceptions.ConnectionClosed:
+        sessions[sn].is_connected = False
+        sessions[sn].is_logged_in = False
+        return {"success": False, "error": "连接已断开"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @mcp.tool()
-def send_raw(sn: str, data: str):
+async def send_raw(sn: str, data: str):
     """发送原始数据到终端（不添加换行符）
 
     参数:
@@ -845,19 +833,16 @@ def send_raw(sn: str, data: str):
     if sn not in sessions or not sessions[sn].is_logged_in:
         return {"success": False, "error": "终端未连接"}
 
-    async def _send():
-        try:
-            session = sessions[sn]
-            await _send_term_data(session, data)
-            return {"success": True, "sn": sn, "data": data}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return asyncio.get_event_loop().run_until_complete(_send())
+    try:
+        session = sessions[sn]
+        await _send_term_data(session, data)
+        return {"success": True, "sn": sn, "data": data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @mcp.tool()
-def receive_output(sn: str, timeout: float = 2.0):
+async def receive_output(sn: str, timeout: float = 2.0):
     """接收终端输出
 
     参数:
@@ -867,19 +852,16 @@ def receive_output(sn: str, timeout: float = 2.0):
     if sn not in sessions or not sessions[sn].is_connected:
         return {"success": False, "error": "终端未连接"}
 
-    async def _receive():
-        outputs = await _receive_output(sn, timeout)
-        return {
-            "success": True,
-            "sn": sn,
-            "outputs": outputs
-        }
-
-    return asyncio.get_event_loop().run_until_complete(_receive())
+    outputs = await _receive_output(sn, timeout)
+    return {
+        "success": True,
+        "sn": sn,
+        "outputs": outputs
+    }
 
 
 @mcp.tool()
-def resize_terminal(sn: str, cols: int, rows: int):
+async def resize_terminal(sn: str, cols: int, rows: int):
     """调整终端窗口大小
 
     参数:
@@ -890,23 +872,22 @@ def resize_terminal(sn: str, cols: int, rows: int):
     if sn not in sessions or not sessions[sn].is_logged_in:
         return {"success": False, "error": "终端未连接"}
 
-    async def _resize():
-        session = sessions[sn]
-        session.cols = cols
-        session.rows = rows
-        await _send_winsize(session)
-        return {"success": True, "sn": sn, "cols": cols, "rows": rows}
-
-    return asyncio.get_event_loop().run_until_complete(_resize())
+    session = sessions[sn]
+    session.cols = cols
+    session.rows = rows
+    await _send_winsize(session)
+    return {"success": True, "sn": sn, "cols": cols, "rows": rows}
 
 
 @mcp.tool()
-def get_session_status(sn: str = None):
+async def get_session_status(sn: str = None):
     """获取终端会话状态
 
     参数:
     - sn: 设备编码（可选，不传则返回所有会话）
     """
+    # sessions 由事件循环上的 reader/工具协程维护; 改 async 保证在 loop 线程读快照,
+    # 避免 worker 线程遍历过程中与 loop 上的增删并发.
     if sn:
         if sn in sessions:
             session = sessions[sn]
@@ -936,12 +917,13 @@ def get_session_status(sn: str = None):
 
 
 @mcp.tool()
-def clear_buffer(sn: str):
+async def clear_buffer(sn: str):
     """清空终端输出缓冲区
 
     参数:
     - sn: 设备编码
     """
+    # output_buffer/unack 会被 reader 协程写; 改 async 与 loop 串行化.
     if sn in sessions:
         sessions[sn].output_buffer = []
         sessions[sn].unack = 0
@@ -950,13 +932,14 @@ def clear_buffer(sn: str):
 
 
 @mcp.tool()
-def get_buffer(sn: str, lines: int = 100):
+async def get_buffer(sn: str, lines: int = 100):
     """获取终端输出缓冲区内容
 
     参数:
     - sn: 设备编码
     - lines: 获取最后N行（默认100）
     """
+    # output_buffer 会被 reader 协程追加; 改 async 保证读到的切片一致.
     if sn not in sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -973,7 +956,7 @@ def get_buffer(sn: str, lines: int = 100):
 
 
 @mcp.tool()
-def interactive_session(sn: str, commands: list, delay: float = 0.5, parse_outputs: bool = True):
+async def interactive_session(sn: str, commands: list, delay: float = 0.5, parse_outputs: bool = True):
     """交互式会话 - 发送多个命令并收集解析后的输出
 
     参数:
@@ -993,59 +976,57 @@ def interactive_session(sn: str, commands: list, delay: float = 0.5, parse_outpu
     if sn not in sessions or not sessions[sn].is_logged_in:
         return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
 
-    async def _interactive():
-        results = []
-        session = sessions[sn]
+    results = []
+    session = sessions[sn]
 
-        for cmd in commands:
-            try:
-                session.interactive.start_command(cmd)
-                await _send_term_data(session, cmd + "\n")
-                logger.info(f"发送命令: {cmd}")
-                await asyncio.sleep(delay)
-                outputs = await _receive_output(sn, timeout=1.0)
+    for cmd in commands:
+        try:
+            session.interactive.start_command(cmd)
+            await _send_term_data(session, cmd + "\n")
+            logger.info(f"发送命令: {cmd}")
+            await asyncio.sleep(delay)
+            outputs = await _receive_output(sn, timeout=1.0)
 
-                raw_texts = [o["data"] for o in outputs if o["type"] == "output"]
+            raw_texts = [o["data"] for o in outputs if o["type"] == "output"]
 
-                if parse_outputs:
-                    result = session.interactive.parser.parse_command_response(raw_texts, cmd)
-                    results.append({
-                        "command": cmd,
-                        "output": result.output,
-                        "success": result.success,
-                        "error": result.error if not result.success else ""
-                    })
-                else:
-                    results.append({
-                        "command": cmd,
-                        "output": '\n'.join(raw_texts),
-                        "success": True
-                    })
-            except Exception as e:
+            if parse_outputs:
+                result = session.interactive.parser.parse_command_response(raw_texts, cmd)
                 results.append({
                     "command": cmd,
-                    "output": "",
-                    "success": False,
-                    "error": str(e)
+                    "output": result.output,
+                    "success": result.success,
+                    "error": result.error if not result.success else ""
                 })
+            else:
+                results.append({
+                    "command": cmd,
+                    "output": '\n'.join(raw_texts),
+                    "success": True
+                })
+        except Exception as e:
+            results.append({
+                "command": cmd,
+                "output": "",
+                "success": False,
+                "error": str(e)
+            })
 
-        return {
-            "success": True,
-            "sn": sn,
-            "total_commands": len(commands),
-            "results": results
-        }
-
-    return asyncio.get_event_loop().run_until_complete(_interactive())
+    return {
+        "success": True,
+        "sn": sn,
+        "total_commands": len(commands),
+        "results": results
+    }
 
 
 @mcp.tool()
-def set_ws_base_url(base_url: str):
+async def set_ws_base_url(base_url: str):
     """设置WebSocket基础URL
 
     参数:
     - base_url: 基础URL，如 wss://dev.xzrobot.com:10000
     """
+    # WS_BASE_URL 由 connect_terminal(loop 线程) 读取; 改 async 避免跨线程写全局.
     global WS_BASE_URL
     WS_BASE_URL = base_url.rstrip("/")
     logger.info(f"WebSocket基础URL已设置: {WS_BASE_URL}")
@@ -1090,7 +1071,7 @@ def parse_output(outputs: list, command: str = None):
 
 
 @mcp.tool()
-def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay: float = 1.0, timeout: float = 3.0):
+async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay: float = 1.0, timeout: float = 3.0):
     """执行命令并支持失败重试
 
     参数:
@@ -1106,57 +1087,54 @@ def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay:
     if sn not in sessions or not sessions[sn].is_logged_in:
         return {"success": False, "error": "终端未连接，请先调用 connect_terminal"}
 
-    async def _execute_with_retry():
-        session = sessions[sn]
-        last_error = None
+    session = sessions[sn]
+    last_error = None
 
-        for attempt in range(max_retries):
-            try:
-                session.interactive.start_command(command)
-                await _send_term_data(session, command + "\n")
-                logger.info(f"发送命令 (尝试 {attempt + 1}/{max_retries}): {command}")
+    for attempt in range(max_retries):
+        try:
+            session.interactive.start_command(command)
+            await _send_term_data(session, command + "\n")
+            logger.info(f"发送命令 (尝试 {attempt + 1}/{max_retries}): {command}")
 
-                await asyncio.sleep(0.5)
-                outputs = await _receive_output(sn, timeout)
+            await asyncio.sleep(0.5)
+            outputs = await _receive_output(sn, timeout)
 
-                raw_texts = [o["data"] for o in outputs if o["type"] == "output"]
-                result = session.interactive.parser.parse_command_response(raw_texts, command)
+            raw_texts = [o["data"] for o in outputs if o["type"] == "output"]
+            result = session.interactive.parser.parse_command_response(raw_texts, command)
 
-                if result.success or attempt == max_retries - 1:
-                    return {
-                        "success": True,
-                        "sn": sn,
-                        "command": command,
-                        "output": result.output,
-                        "command_success": result.success,
-                        "error": result.error if not result.success else "",
-                        "attempts": attempt + 1,
-                        "raw_outputs": raw_texts
-                    }
+            if result.success or attempt == max_retries - 1:
+                return {
+                    "success": True,
+                    "sn": sn,
+                    "command": command,
+                    "output": result.output,
+                    "command_success": result.success,
+                    "error": result.error if not result.success else "",
+                    "attempts": attempt + 1,
+                    "raw_outputs": raw_texts
+                }
 
-                # 命令执行失败，准备重试
-                logger.warning(f"命令执行失败，准备重试: {result.error}")
+            # 命令执行失败，准备重试
+            logger.warning(f"命令执行失败，准备重试: {result.error}")
+            await asyncio.sleep(retry_delay)
+
+        except Exception as e:
+            last_error = str(e)
+            logger.error(f"命令执行异常 (尝试 {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
 
-            except Exception as e:
-                last_error = str(e)
-                logger.error(f"命令执行异常 (尝试 {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-
-        return {
-            "success": False,
-            "sn": sn,
-            "command": command,
-            "error": last_error or "命令执行失败",
-            "attempts": max_retries
-        }
-
-    return asyncio.get_event_loop().run_until_complete(_execute_with_retry())
+    return {
+        "success": False,
+        "sn": sn,
+        "command": command,
+        "error": last_error or "命令执行失败",
+        "attempts": max_retries
+    }
 
 
 @mcp.tool()
-def wait_for_prompt(sn: str, timeout: float = 5.0):
+async def wait_for_prompt(sn: str, timeout: float = 5.0):
     """等待终端提示符出现
 
     参数:
@@ -1169,28 +1147,25 @@ def wait_for_prompt(sn: str, timeout: float = 5.0):
     if sn not in sessions or not sessions[sn].is_connected:
         return {"success": False, "error": "终端未连接"}
 
-    async def _wait():
-        session = sessions[sn]
-        start_time = time.time()
+    session = sessions[sn]
+    start_time = time.time()
 
-        while time.time() - start_time < timeout:
-            try:
-                outputs = await _receive_output(sn, timeout=1.0)
-                for o in outputs:
-                    if o["type"] == "output":
-                        clean = ANSIStripper.clean_for_display(o["data"])
-                        if session.parser._is_prompt(clean):
-                            return {
-                                "success": True,
-                                "sn": sn,
-                                "prompt": clean.strip()
-                            }
-            except Exception as e:
-                logger.error(f"等待提示符异常: {e}")
+    while time.time() - start_time < timeout:
+        try:
+            outputs = await _receive_output(sn, timeout=1.0)
+            for o in outputs:
+                if o["type"] == "output":
+                    clean = ANSIStripper.clean_for_display(o["data"])
+                    if session.parser._is_prompt(clean):
+                        return {
+                            "success": True,
+                            "sn": sn,
+                            "prompt": clean.strip()
+                        }
+        except Exception as e:
+            logger.error(f"等待提示符异常: {e}")
 
-        return {"success": False, "error": "等待提示符超时"}
-
-    return asyncio.get_event_loop().run_until_complete(_wait())
+    return {"success": False, "error": "等待提示符超时"}
 
 
 if __name__ == "__main__":

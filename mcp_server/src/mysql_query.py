@@ -7,7 +7,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Optional
 import pymysql
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -24,7 +24,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("mcp.mysql_query")
 
-mcp = FastMCP("Rosiwit MCP Server")
+mcp = MCPServer("Rosiwit MCP Server")
 
 # 数据库口令必须由环境变量注入; 生产缺失/弱值直接拒绝启动, 开发仅告警(代码内不再内置口令)
 DB_PASSWORD = require_secret("DB_PASSWORD", os.getenv("DB_PASSWORD", "")) or ""
