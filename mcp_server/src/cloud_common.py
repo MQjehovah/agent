@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 rosiwit-cloud 共享鉴权与 HTTP 封装。
 
@@ -22,7 +21,7 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -72,7 +71,7 @@ TOKEN_STATE_PATH = _default_state_path("CLOUD_TOKEN_STATE_PATH", "cloud_tokens.j
 _lock = threading.RLock()
 _tls = threading.local()
 _active_base: str = API_BASE_URL.rstrip("/")
-_token_by_base: dict[str, Optional[str]] = {}
+_token_by_base: dict[str, str | None] = {}
 _token_expires_at: dict[str, float] = {}
 _ticket_base_cache: dict[str, str] = {}
 _login_cooldown_until: dict[str, float] = {}
@@ -186,7 +185,7 @@ def _interprocess_lock():
         fh.close()
 
 
-def _as_epoch(value: Any) -> Optional[float]:
+def _as_epoch(value: Any) -> float | None:
     """把过期字段收成 epoch 秒：绝对时间 / 毫秒 / 剩余秒数 / 日期字符串。"""
     if value is None or isinstance(value, bool):
         return None
@@ -220,7 +219,7 @@ def _as_epoch(value: Any) -> Optional[float]:
     return None
 
 
-def _jwt_exp(token: str) -> Optional[float]:
+def _jwt_exp(token: str) -> float | None:
     parts = (token or "").split(".")
     if len(parts) != 3:
         return None
@@ -235,7 +234,7 @@ def _jwt_exp(token: str) -> Optional[float]:
     return _as_epoch(data.get("exp"))
 
 
-def extract_expires_at(result: dict[str, Any], token: Optional[str] = None) -> float:
+def extract_expires_at(result: dict[str, Any], token: str | None = None) -> float:
     """从登录响应 / JWT 解析过期时间；都没有则用默认 TTL。"""
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     token_info = data.get("tokenInfo") if isinstance(data.get("tokenInfo"), dict) else {}
@@ -279,7 +278,7 @@ def _parse_token_entry(value: Any, fallback_updated_at: float = 0.0) -> tuple[st
     return "", 0.0
 
 
-def _token_if_valid(base: str) -> Optional[str]:
+def _token_if_valid(base: str) -> str | None:
     token = _token_by_base.get(base)
     if not token:
         return None
@@ -397,13 +396,13 @@ def set_active_base(url: str, ticket_id: str | None = None) -> None:
         _write_bind_state(ticket_id)
 
 
-def get_token() -> Optional[str]:
+def get_token() -> str | None:
     _load_token_state()
     with _lock:
         return _token_if_valid(get_base_url())
 
 
-def set_token(token: Optional[str], expires_at: Optional[float] = None) -> None:
+def set_token(token: str | None, expires_at: float | None = None) -> None:
     value = (token or "").strip() or None
     exp = float(expires_at or 0)
     if value and exp <= 0:
@@ -457,7 +456,7 @@ def browser_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
     return headers
 
 
-def extract_token(result: dict[str, Any]) -> Optional[str]:
+def extract_token(result: dict[str, Any]) -> str | None:
     data = result.get("data")
     if isinstance(data, dict):
         token_info = data.get("tokenInfo")
@@ -632,7 +631,7 @@ def _probe_order(urls: list[str]) -> list[str]:
     return ordered
 
 
-def resolve_base_for_ticket(ticket_id: str) -> Optional[str]:
+def resolve_base_for_ticket(ticket_id: str) -> str | None:
     """按 ticket_id 探测并绑定所在云；结果缓存。单云时直接绑定默认 URL。"""
     tid = str(ticket_id or "").strip()
     if not tid:
@@ -655,7 +654,7 @@ def resolve_base_for_ticket(ticket_id: str) -> Optional[str]:
         _write_bind_state(tid)
         return urls[0]
 
-    last_error: Optional[str] = None
+    last_error: str | None = None
     for base in _probe_order(urls):
         if _login_in_cooldown(base):
             logger.info("跳过探测（登录冷却中）: ticket=%s base=%s", tid, base)

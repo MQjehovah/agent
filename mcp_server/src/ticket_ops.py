@@ -10,14 +10,13 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Optional
+from typing import Any
 
+import cloud_common as cloud
 import requests
 from mcp.server.mcpserver import MCPServer
 from rich.console import Console
 from rich.logging import RichHandler
-
-import cloud_common as cloud
 
 console = Console(stderr=True)
 
@@ -89,7 +88,7 @@ def _change_status(ticket_id: str, status: int) -> dict[str, Any]:
 
 
 def _create_comment(
-    ticket_id: str, content: str, parent_id: Optional[str] = None
+    ticket_id: str, content: str, parent_id: str | None = None
 ) -> dict[str, Any]:
     url = f"{cloud.get_base_url().rstrip('/')}{TICKET_COMMENT_CREATE_PATH}"
     body: dict[str, Any] = {
@@ -178,7 +177,7 @@ def _summarize_comment_records(records: list[Any]) -> list[dict[str, Any]]:
 
 def _find_matching_comment(
     content: str, records: list[Any]
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     for r in records:
         if not isinstance(r, dict):
             continue
@@ -448,7 +447,7 @@ def _looks_like_ai_comment(content: str) -> bool:
     return any(m in head for m in _AI_COMMENT_MARKERS)
 
 
-def _find_existing_ai_comment(records: list[Any]) -> Optional[dict[str, Any]]:
+def _find_existing_ai_comment(records: list[Any]) -> dict[str, Any] | None:
     """在评论分页中找已有 AI 诊断类评论（防跨会话双发）。"""
     for r in records:
         if not isinstance(r, dict):
@@ -494,7 +493,7 @@ def create_ticket_comment(ticket_id: str, content: str, parent_id: str = ""):
         return bound
 
     pid_raw = (parent_id or "").strip()
-    parent: Optional[str] = pid_raw if pid_raw else None
+    parent: str | None = pid_raw if pid_raw else None
 
     # 跨会话防双发：page 已有 AI 评论则不落第二条
     page_before = _list_comments(tid, current=1, size=20)

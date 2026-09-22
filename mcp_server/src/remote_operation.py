@@ -12,14 +12,13 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+import cloud_common as cloud
 import requests
 from mcp.server.mcpserver import MCPServer
 from rich.console import Console
 from rich.logging import RichHandler
-
-import cloud_common as cloud
 
 console = Console(stderr=True)
 
@@ -116,7 +115,7 @@ def _remote_post(
     device_id: str,
     product_id: str,
     req_id: int = 0,
-    param: Optional[dict] = None,
+    param: dict | None = None,
 ) -> dict:
     """POST RemoteForm to /rosiwit-cloud/remote/..."""
     did = str(device_id or "").strip()
@@ -166,7 +165,7 @@ def _remote_get(suffix: str, device_id: str, product_id: str, **extra_params: An
         return {"success": False, "error": str(e)}
 
 
-def _extract_upload_url(result: Any) -> Optional[str]:
+def _extract_upload_url(result: Any) -> str | None:
     if isinstance(result, str):
         text = result.strip()
         return text if text.startswith("http://") or text.startswith("https://") else None
@@ -236,12 +235,12 @@ def _cloud_request_station_back(
     device_id: str,
     product_id: str,
     req_id: int = 0,
-    param: Optional[dict] = None,
+    param: dict | None = None,
 ) -> dict:
     return _remote_post("station/back", device_id, product_id, req_id=req_id, param=param)
 
 
-def _as_bool(value: Any) -> Optional[bool]:
+def _as_bool(value: Any) -> bool | None:
     if value is None:
         return None
     if isinstance(value, bool):
@@ -261,7 +260,7 @@ def _as_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def _as_int(value: Any) -> Optional[int]:
+def _as_int(value: Any) -> int | None:
     if value is None or isinstance(value, bool):
         return None
     try:
@@ -270,7 +269,7 @@ def _as_int(value: Any) -> Optional[int]:
         return None
 
 
-def _enum_name(mapping: dict, value: Any) -> Optional[str]:
+def _enum_name(mapping: dict, value: Any) -> str | None:
     if value is None:
         return None
     if value in mapping:
@@ -374,7 +373,7 @@ def _summarize_shadow(data: dict) -> dict:
     }
 
 
-def _parse_bag_start(file_name: str) -> Optional[datetime]:
+def _parse_bag_start(file_name: str) -> datetime | None:
     m = _BAG_TIME_RE.search(file_name or "")
     if not m:
         return None
@@ -384,7 +383,7 @@ def _parse_bag_start(file_name: str) -> Optional[datetime]:
         return None
 
 
-def _parse_happen_time(value: str) -> Optional[datetime]:
+def _parse_happen_time(value: str) -> datetime | None:
     raw = (value or "").strip()
     if not raw:
         return None
