@@ -602,3 +602,39 @@ def test_session_title_pin_and_search(tmp_path):
     finally:
         s.close()
         storage_mod._storage_instance = prev
+
+
+# ===== 对话产物(我的工作区) =====
+
+def test_my_workspace_files_and_read(tmp_path):
+    """产物面板: 列出我的工作区文件 + 按相对路径读取 + 路径越界防护"""
+    from types import SimpleNamespace
+
+    from web.server import WebServer
+
+    ws = tmp_path / "ws"
+    (ws / "users").mkdir(parents=True)
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    w = WebServer()
+    w.agent = SimpleNamespace(workspace=str(ws))
+    client = TestClient(w._app)
+
+    # 先上传一个文件以确定调用方的工作区目录(测试环境 uid 不固定)
+    up = client.post("/api/workspace/upload", files={"file": ("seed.md", b"seed", "text/markdown")})
+    assert up.status_code == 200
+    root = next(p for p in (ws / "users").glob("u_*"))
+    (root / "uploads").mkdir(parents=True, exist_ok=True)
+    (root / "uploads" / "report.md").write_text("# 报告\n内容", encoding="utf-8")
+
+    lst = client.get("/api/workspace/my/files").json()["files"]
+    assert any(f["relPath"] == "uploads/report.md" for f in lst)
+    item = next(f for f in lst if f["relPath"] == "uploads/report.md")
+    assert item["name"] == "report.md" and item["size"] > 0
+
+    ok = client.get("/api/workspace/my/file?path=uploads/report.md")
+    assert ok.status_code == 200 and "报告" in ok.text
+
+    assert client.get("/api/workspace/my/file?path=../../secret.txt").status_code in (400, 404)
+    assert client.get("/api/workspace/my/file?path=nope.md").status_code == 404

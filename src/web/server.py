@@ -2924,6 +2924,52 @@ class WebServer:
                 safe = "".join(c for c in str(uid) if c.isalnum() or c in ("-", "_")) or "anon"
             return os.path.join(self.agent.workspace, "users", f"u_{safe}")
 
+        @self._app.get("/api/workspace/my/files")
+        async def my_workspace_files(limit: int = Query(200), request: Request = None):
+            """列出「我的工作区」文件(对话产物), 供员工端产物面板预览"""
+            if not self.agent:
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            root = _user_workspace_dir(str(auth.get("uid", "anon")))
+            if not os.path.isdir(root):
+                return {"files": []}
+            entries = []
+            for dirpath, _dirs, files in os.walk(root):
+                for fn in files:
+                    fp = os.path.join(dirpath, fn)
+                    try:
+                        st = os.stat(fp)
+                    except OSError:
+                        continue
+                    entries.append({
+                        "relPath": os.path.relpath(fp, root).replace(os.sep, "/"),
+                        "name": fn,
+                        "size": st.st_size,
+                        "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                    })
+            entries.sort(key=lambda e: e["modified"], reverse=True)
+            return {"files": entries[: max(1, min(int(limit), 500))]}
+
+        @self._app.get("/api/workspace/my/file")
+        async def my_workspace_file(path: str = Query(...), request: Request = None):
+            """读取「我的工作区」里的文件(产物预览/下载); 路径必须落在自己的工作区内"""
+            if not self.agent:
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            root = os.path.realpath(_user_workspace_dir(str(auth.get("uid", "anon"))))
+            target = os.path.realpath(os.path.join(root, str(path or "")))
+            if not (target == root or target.startswith(root + os.sep)):
+                return JSONResponse({"error": "路径越界"}, status_code=400)
+            if not os.path.isfile(target):
+                return JSONResponse({"error": "文件不存在"}, status_code=404)
+            return FileResponse(target)
+
         @self._app.post("/api/workspace/upload")
         async def workspace_upload(request: Request):
             """上传对话附件, 返回 file 工具可直接读取的相对路径(uploads/xxx)"""
