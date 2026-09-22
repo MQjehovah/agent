@@ -207,7 +207,7 @@ Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py
 - **`OPENAI_BASE_URL` defaults to Alibaba DashScope**, not `api.openai.com` — change in `.env` if using a different provider
 - **`max_retries=0` on OpenAI client** — all retries are handled by our application-level retry logic in `LLMClient`, not by the httpx SDK
 - **LLM timeout is configurable**: `LLM_TIMEOUT` (default 300s, read timeout) and `LLM_CONNECT_TIMEOUT` (default 30s, connection timeout)
-- **MCP SDK v2(Python)** — 已迁 `mcp>=2.2,<3`(客户端与自研 server 同步)：`FastMCP`→`MCPServer`(`from mcp.server.mcpserver import MCPServer`)、协议字段 snake_case(`input_schema/is_error/structured_content`)、**同步 handler 跑 anyio worker 线程**(涉及事件循环或共享可变状态的工具必须 `async def` 或加锁)、SDK 网络改用 `httpx2`(日志记录器 `httpx2`/`httpcore2`)、`nest_asyncio` 已移除
+- **MCP SDK v2(Python)** — 已迁 `mcp>=2.2,<3`(客户端与自研 server 同步)：`FastMCP`→`MCPServer`(`from mcp.server.mcpserver import MCPServer`)、协议字段 snake_case(`input_schema/is_error/structured_content`)、**同步 handler 跑 anyio worker 线程**(涉及事件循环或共享可变状态的工具必须 `async def` 或加锁)、SDK 网络改用 `httpx2`(日志记录器 `httpx2`/`httpcore2`)、`nest_asyncio` 已移除、**stdio 关闭语义**: 先关 stdin 等优雅退出再升级杀进程树(POSIX 优雅退出不杀孙进程, 超时对新进程组 SIGTERM→SIGKILL; Windows Job Object 直接终止进程树), **客户端连接/收尾走专属连接任务**(anyio cancel scope 进出同任务, 关闭 shielded 等待不被取消打断)
 - **MCP servers in `mcp_servers.json` are disabled by default** (`"enabled": false`) — must be explicitly enabled
 - **`AGENT_WEB_POOL_SIZE` 默认 0** — 多用户部署需显式设 >0; 启用后每个用户首次请求会触发 worker 冷初始化; 回滚/单实例直接置 0
 - **DB 迁移幂等自愈** — `messages.user_id/channel`、`usage_records.duration_ms/cache_*`、`rbac_users.display_name` 由启动时 `ALTER` 自动补齐并回填一次历史(web:{uid}); 无需手工

@@ -4,7 +4,8 @@
 - 工具定义字段 snake_case: Tool.input_schema → tool_defs.parameters;
 - CallToolResult 文本拼接、structured_content 兜底 JSON(ensure_ascii=False)、is_error 文案;
 - MCPError(CONNECTION_CLOSED/REQUEST_TIMEOUT) 置断连, 其它 code 保持连接;
-- 关闭清理在调用方被取消时仍能在同任务内续跑剩余 ExitStack 回调。
+- 关闭清理在专属连接任务内 unwind, 调用方被取消(含反复取消)时 shielded 等待,
+  在飞回调(stdio 子进程收尾)完整跑完。
 """
 import asyncio
 import json
@@ -121,37 +122,69 @@ async def test_call_tool_marks_disconnected_on_os_error():
     assert conn._connected is False
 
 
-async def test_cleanup_finishes_remaining_unwind_after_cancellation():
+async def test_cleanup_waits_for_inflight_callback_under_cancellation():
     events = []
-
-    @asynccontextmanager
-    async def plain_resource():
-        try:
-            yield
-        finally:
-            events.append("plain-closed")
+    close_requested = asyncio.Event()
 
     @asynccontextmanager
     async def cancellable_resource():
         try:
             yield
         finally:
-            events.append("cancellable-entered")
-            await asyncio.sleep(0.1)
-            events.append("cancellable-closed")
+            events.append("entered")
+            await asyncio.sleep(0.05)
+            events.append("closed")
+
+    async def session_main():
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(cancellable_resource())
+            await close_requested.wait()
 
     conn = manager.MCPServerConnection("demo", {})
-    stack = AsyncExitStack()
-    await stack.enter_async_context(plain_resource())
-    await stack.enter_async_context(cancellable_resource())
-    conn._exit_stack = stack
+    conn._conn_task = asyncio.create_task(session_main())
+    conn._close_requested = close_requested
     conn._connected = True
+    await asyncio.sleep(0)
 
-    task = asyncio.create_task(conn._safe_exit_stack_cleanup())
-    await asyncio.sleep(0.02)
-    task.cancel()
-    await task
+    closer = asyncio.create_task(conn._safe_exit_stack_cleanup())
+    await asyncio.sleep(0.01)
+    closer.cancel()
+    await closer
 
-    assert events == ["cancellable-entered", "plain-closed"]
-    assert conn._exit_stack is None
+    assert events == ["entered", "closed"]
+    assert conn._conn_task is None
     assert conn._connected is False
+
+
+async def test_cleanup_keeps_waiting_through_repeated_cancellations():
+    events = []
+    close_requested = asyncio.Event()
+
+    @asynccontextmanager
+    async def slow_resource():
+        try:
+            yield
+        finally:
+            events.append("closing")
+            await asyncio.sleep(0.05)
+            events.append("closed")
+
+    async def session_main():
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(slow_resource())
+            await close_requested.wait()
+
+    conn = manager.MCPServerConnection("demo", {})
+    conn._conn_task = asyncio.create_task(session_main())
+    conn._close_requested = close_requested
+
+    closer = asyncio.create_task(conn._safe_exit_stack_cleanup())
+    await asyncio.sleep(0.01)
+    for _ in range(3):
+        closer.cancel()
+        await asyncio.sleep(0)
+
+    await asyncio.wait_for(closer, timeout=2)
+
+    assert events == ["closing", "closed"]
+    assert conn._conn_task is None

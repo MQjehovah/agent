@@ -1012,10 +1012,12 @@ class Agent:
             self.learner.stop_daily_task()
         if self.mcp:
             try:
+                # MCP close 在专属连接任务内收尾并以 shielded 等待: 这里的 10s 超时触发取消后
+                # 不会打断在飞回调, close 仍会等清理完成, 只是由 asyncio.timeout 记一次 TimeoutError
                 async with asyncio.timeout(10):
                     await self.mcp.close()
             except asyncio.TimeoutError:
-                logger.warning(f"Agent [{self.name}] MCP close 超时(10s)，强制跳过")
+                logger.warning(f"Agent [{self.name}] MCP close 超时(10s)，等待清理完成后返回")
             except Exception as e:
                 logger.warning(f"Agent [{self.name}] MCP close 失败: {e}")
 

@@ -6,7 +6,6 @@ import re
 import subprocess
 from typing import Any
 
-import anyio
 from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
@@ -50,7 +49,10 @@ class MCPServerConnection:
         self.config = config
         self.base_dir = base_dir
         self.session: ClientSession | None = None
-        self._exit_stack = None
+        self._conn_task: asyncio.Task | None = None
+        self._ready: asyncio.Future | None = None
+        self._close_requested: asyncio.Event | None = None
+        self._server_params: StdioServerParameters | None = None
         self.tool_defs: list[dict[str, Any]] = []
         self._connected = False
         self._reconnect_attempts = 0
@@ -61,8 +63,14 @@ class MCPServerConnection:
         return self._connected and self.session is not None
 
     async def connect(self, timeout: int = MCP_CONNECT_TIMEOUT) -> bool:
-        """连接MCP服务器"""
-        from contextlib import AsyncExitStack
+        """连接MCP服务器
+
+        连接(stdio 子进程 + ClientSession)在专属连接任务内建立并保持, __aexit__ 也在
+        同一任务内执行: anyio 的 cancel scope 要求进出同任务(跨任务退出会 RuntimeError),
+        而连接任务不接收调用方取消, 关闭时的在飞回调(stdio 子进程收尾)不会被取消打断。
+        """
+        if self._conn_task is not None and not self._conn_task.done():
+            await self.close()
 
         command = self.config.get("command", "python")
         args = self.config.get("args", [])
@@ -75,82 +83,104 @@ class MCPServerConnection:
         merged_env["PYTHONUNBUFFERED"] = "1"
         merged_env.update(env)
 
-        server_params = StdioServerParameters(
+        self._server_params = StdioServerParameters(
             command=command,
             args=resolved_args,
             env=merged_env
         )
+        self._close_requested = asyncio.Event()
+        self._ready = asyncio.get_running_loop().create_future()
+        self._conn_task = asyncio.create_task(self._session_main(timeout))
 
         try:
-            self._exit_stack = AsyncExitStack()
-            async with asyncio.timeout(timeout):
-                await self._exit_stack.__aenter__()
+            return await self._ready
+        except asyncio.CancelledError:
+            # 调用方被取消: 仍请求连接任务优雅收尾并等它完成, 再继续传播取消
+            await self.close()
+            raise
 
-            try:
-                async with asyncio.timeout(timeout):
-                    stdio_transport = await self._exit_stack.enter_async_context(
-                        stdio_client(server_params, errlog=subprocess.DEVNULL),
-                    )
-            except (asyncio.TimeoutError, asyncio.CancelledError) as e:
-                logger.error(f"✗ MCP [{self.name}] 连接超时或被取消: {e}")
-                await self._safe_exit_stack_cleanup()
-                return False
+    async def _session_main(self, timeout: int) -> None:
+        """专属连接任务: 在自身任务内进出 AsyncExitStack, 停放直到 close() 请求收尾。"""
+        from contextlib import AsyncExitStack
 
-            self.session = await self._exit_stack.enter_async_context(
-                ClientSession(stdio_transport[0], stdio_transport[1])
-            )
-            await self.session.initialize()
+        ready = self._ready
+        close_requested = self._close_requested
+        try:
+            async with AsyncExitStack() as stack:
+                try:
+                    async with asyncio.timeout(timeout):
+                        stdio_transport = await stack.enter_async_context(
+                            stdio_client(self._server_params, errlog=subprocess.DEVNULL),
+                        )
+                        session = await stack.enter_async_context(
+                            ClientSession(stdio_transport[0], stdio_transport[1])
+                        )
+                        await session.initialize()
+                        mcp_tools = await session.list_tools()
+                except asyncio.CancelledError:
+                    if ready is not None and not ready.done():
+                        ready.set_result(False)
+                    raise
+                except Exception as e:
+                    logger.error(f"✗ MCP [{self.name}] 连接失败: {e}")
+                    if ready is not None and not ready.done():
+                        ready.set_result(False)
+                    return
 
-            mcp_tools = await self.session.list_tools()
-            self.tool_defs = []
-            for t in mcp_tools.tools:
-                self.tool_defs.append({
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description or "",
-                        "parameters": t.input_schema
+                self.session = session
+                self.tool_defs = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description or "",
+                            "parameters": t.input_schema
+                        }
                     }
-                })
+                    for t in mcp_tools.tools
+                ]
+                self._connected = True
+                self._reconnect_attempts = 0
+                if ready is not None and not ready.done():
+                    ready.set_result(True)
 
-            self._connected = True
-            self._reconnect_attempts = 0
-            return True
-
-        except asyncio.TimeoutError:
-            logger.error(f"✗ MCP [{self.name}] 连接超时")
-            await self._safe_exit_stack_cleanup()
-            return False
-        except Exception as e:
-            logger.error(f"✗ MCP [{self.name}] 连接失败: {e}")
-            await self._safe_exit_stack_cleanup()
-            return False
+                if close_requested is not None:
+                    await close_requested.wait()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:
+            logger.debug(f"MCP [{self.name}] 连接收尾异常(可忽略): {e}")
+        finally:
+            self.session = None
+            self._connected = False
 
     async def _safe_exit_stack_cleanup(self):
-        """安全清理 ExitStack
+        """安全清理连接(独立任务 + shielded 等待)
 
-        v2 取消语义更严格: __aexit__ 可能中途收到 asyncio 取消。
-        anyio.CancelScope(shield=True) 只能挡 anyio 层取消, 原生 task.cancel() 仍会打断
-        (v2 stdio_client 自身也只对 anyio 层取消 shield), 所以捕获 CancelledError 后
-        在同一任务内续跑剩余回调——AsyncExitStack 先弹出再执行, 续跑不会重复释放,
-        stdio 子进程句柄不会因取消而漏清理。取消不再向上传播, 保证整体关闭流程走完。
+        unwind 在专属连接任务内执行(anyio cancel scope 进出同任务), 该任务不被取消,
+        shield 只保护等待方: 调用方反复取消时循环等待到 task.done(), 再取回结果避免
+        "exception never retrieved"。这样在飞回调(v2 stdio 子进程收尾)完整跑完,
+        stdio 句柄不会因取消而漏清理; 等待期间取消不向调用方传播, 保证关闭流程走完。
         """
-        if not self._exit_stack:
+        task = self._conn_task
+        self._conn_task = None
+        if task is None:
             return
-        stack = self._exit_stack
-        for attempt in range(3):
+        if self._close_requested is not None:
+            self._close_requested.set()
+        self._connected = False
+
+        while not task.done():
             try:
-                with anyio.CancelScope(shield=True):
-                    await stack.__aexit__(None, None, None)
-                break
-            except asyncio.CancelledError as e:
-                logger.debug(f"MCP [{self.name}] 清理被取消(第 {attempt + 1} 次), 继续卸载剩余资源: {e}")
-            except BaseException as e:
-                logger.debug(f"MCP [{self.name}] 清理异常(可忽略): {e}")
-                break
-        else:
-            logger.warning(f"MCP [{self.name}] 清理被反复取消, 剩余资源可能未释放")
-        self._exit_stack = None
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue  # 等待方被取消: 连接任务不受影响, 继续等它收尾
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"MCP [{self.name}] 连接收尾回调异常(可忽略): {e}")
         self.session = None
         self._connected = False
 
