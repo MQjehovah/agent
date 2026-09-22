@@ -29,7 +29,8 @@ if str(MCP_SRC) not in sys.path:
 import env_guard  # noqa: E402
 from mcp import Client  # noqa: E402
 
-# 各 server 的工具数(v2 迁移前的 130 个工具需一个不少)
+# 各 server 的工具数(v2 迁移后的 173 个工具需一个不少; remote_operation/ticket_ops
+# 为生产侧独有模块, 已回流仓库并同步迁移)
 SERVER_TOOL_COUNTS = {
     "default": 2,
     "dingtalk": 15,
@@ -38,6 +39,8 @@ SERVER_TOOL_COUNTS = {
     "rosiwit_cloud_remote": 71,
     "rosiwit_cloud_ticket": 7,
     "comfyui_remote": 17,
+    "remote_operation": 36,
+    "ticket_ops": 7,
 }
 
 REMOTE_TERMINAL_ASYNC_TOOLS = (
@@ -164,6 +167,15 @@ async def test_ticket_lists_statuses():
     payload = _payload(await _call(module, "list_ticket_statuses"))
     assert payload["success"] is True
     assert len(payload["statuses"]) == 6
+
+
+async def test_ticket_ops_lists_statuses():
+    """生产侧独有的 ticket_ops 回流后同规则: list_ticket_statuses 纯映射, 不触网。"""
+    module = _load("ticket_ops")
+    payload = _payload(await _call(module, "list_ticket_statuses"))
+    assert payload["success"] is True
+    assert len(payload["statuses"]) == 6
+
 
 
 async def test_cloud_remote_validates_blank_device_without_network():
