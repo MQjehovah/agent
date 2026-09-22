@@ -4,10 +4,12 @@ import logging
 import os
 import re
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
+import anyio
+from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
 logger = logging.getLogger("agent")
 
@@ -43,16 +45,16 @@ def resolve_env_values(env: dict[str, Any]) -> dict[str, str]:
 class MCPServerConnection:
     """MCP服务器连接管理"""
 
-    def __init__(self, name: str, config: Dict[str, Any], base_dir: str = ""):
+    def __init__(self, name: str, config: dict[str, Any], base_dir: str = ""):
         self.name = name
         self.config = config
         self.base_dir = base_dir
-        self.session: Optional[ClientSession] = None
+        self.session: ClientSession | None = None
         self._exit_stack = None
-        self.tool_defs: List[Dict[str, Any]] = []
+        self.tool_defs: list[dict[str, Any]] = []
         self._connected = False
         self._reconnect_attempts = 0
-        self._health_check_task: Optional[asyncio.Task] = None
+        self._health_check_task: asyncio.Task | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -107,7 +109,7 @@ class MCPServerConnection:
                     "function": {
                         "name": t.name,
                         "description": t.description or "",
-                        "parameters": t.inputSchema
+                        "parameters": t.input_schema
                     }
                 })
 
@@ -125,16 +127,32 @@ class MCPServerConnection:
             return False
 
     async def _safe_exit_stack_cleanup(self):
-        """安全清理 ExitStack"""
-        if self._exit_stack:
+        """安全清理 ExitStack
+
+        v2 取消语义更严格: __aexit__ 可能中途收到 asyncio 取消。
+        anyio.CancelScope(shield=True) 只能挡 anyio 层取消, 原生 task.cancel() 仍会打断
+        (v2 stdio_client 自身也只对 anyio 层取消 shield), 所以捕获 CancelledError 后
+        在同一任务内续跑剩余回调——AsyncExitStack 先弹出再执行, 续跑不会重复释放,
+        stdio 子进程句柄不会因取消而漏清理。取消不再向上传播, 保证整体关闭流程走完。
+        """
+        if not self._exit_stack:
+            return
+        stack = self._exit_stack
+        for attempt in range(3):
             try:
-                await self._exit_stack.__aexit__(None, None, None)
-            except (RuntimeError, asyncio.CancelledError, BaseException) as e:
+                with anyio.CancelScope(shield=True):
+                    await stack.__aexit__(None, None, None)
+                break
+            except asyncio.CancelledError as e:
+                logger.debug(f"MCP [{self.name}] 清理被取消(第 {attempt + 1} 次), 继续卸载剩余资源: {e}")
+            except BaseException as e:
                 logger.debug(f"MCP [{self.name}] 清理异常(可忽略): {e}")
-            finally:
-                self._exit_stack = None
-                self.session = None
-                self._connected = False
+                break
+        else:
+            logger.warning(f"MCP [{self.name}] 清理被反复取消, 剩余资源可能未释放")
+        self._exit_stack = None
+        self.session = None
+        self._connected = False
 
     async def reconnect(self) -> bool:
         """重连MCP服务器"""
@@ -183,7 +201,7 @@ class MCPServerConnection:
         await self._safe_exit_stack_cleanup()
         logger.debug(f"MCP [{self.name}] 连接已关闭")
 
-    async def call_tool(self, name: str, args: Dict) -> str:
+    async def call_tool(self, name: str, args: dict) -> str:
         """调用工具"""
         if not self.session or not self._connected:
             return "MCP未连接"
@@ -193,19 +211,29 @@ class MCPServerConnection:
                 self.session.call_tool(name, args),
                 timeout=60
             )
-            if hasattr(result, 'content') and result.content:
-                parts = []
-                for item in result.content:
-                    text = getattr(item, 'text', None)
-                    if text is not None:
-                        parts.append(text)
-                    elif isinstance(item, str):
-                        parts.append(item)
+            parts = []
+            for item in getattr(result, 'content', None) or []:
+                text = getattr(item, 'text', None)
+                if text is not None:
+                    parts.append(text)
+                elif isinstance(item, str):
+                    parts.append(item)
+            if parts:
                 return "\n".join(parts)
+            structured = getattr(result, 'structured_content', None)
+            if structured is not None:
+                return json.dumps(structured, ensure_ascii=False, default=str)
+            if getattr(result, 'is_error', False):
+                return "执行失败"
             return "执行成功"
         except asyncio.TimeoutError:
             logger.error(f"MCP [{self.name}] 工具调用超时: {name}")
             return "执行失败: 工具调用超时"
+        except MCPError as e:
+            logger.error(f"MCP [{self.name}] 工具调用失败: {name}, MCPError({e.code}): {e}")
+            if e.code in (CONNECTION_CLOSED, REQUEST_TIMEOUT):
+                self._connected = False
+            return f"执行失败: {e}"
         except Exception as e:
             logger.error(f"MCP [{self.name}] 工具调用失败: {name}, {type(e).__name__}: {e}")
             if isinstance(e, (ConnectionError, OSError, BrokenPipeError)):
@@ -216,16 +244,16 @@ class MCPServerConnection:
 class MCPManager:
     """MCP服务器管理器"""
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: str | None = None):
         self.config_path = config_path
-        self.servers: Dict[str, MCPServerConnection] = {}
-        self.tool_defs: List[Dict[str, Any]] = []
-        self._tool_to_server: Dict[str, str] = {}
-        self._config_data: List[Dict[str, Any]] = []
-        self._health_check_task: Optional[asyncio.Task] = None
+        self.servers: dict[str, MCPServerConnection] = {}
+        self.tool_defs: list[dict[str, Any]] = []
+        self._tool_to_server: dict[str, str] = {}
+        self._config_data: list[dict[str, Any]] = []
+        self._health_check_task: asyncio.Task | None = None
         self._closing = False
 
-    def load_config(self) -> List[Dict[str, Any]]:
+    def load_config(self) -> list[dict[str, Any]]:
         """加载MCP配置文件"""
         if not self.config_path or not os.path.exists(self.config_path):
             logger.warning(f"MCP配置文件不存在: {self.config_path}")
@@ -239,7 +267,7 @@ class MCPManager:
         logger.info(f"发现 {len(enabled)} 个启用的MCP服务")
         return enabled
 
-    def _get_server_config(self, name: str) -> Optional[Dict[str, Any]]:
+    def _get_server_config(self, name: str) -> dict[str, Any] | None:
         """获取指定服务器的配置"""
         for config in self._config_data:
             if config.get("name") == name:
@@ -333,7 +361,7 @@ class MCPManager:
         """检查是否有指定工具"""
         return name in self._tool_to_server
 
-    async def call_tool(self, name: str, args: Dict) -> str:
+    async def call_tool(self, name: str, args: dict) -> str:
         """调用MCP工具"""
         server_name = self._tool_to_server.get(name)
         if not server_name:
@@ -350,7 +378,7 @@ class MCPManager:
 
         return await server.call_tool(name, args)
 
-    def list_servers(self) -> List[Dict[str, Any]]:
+    def list_servers(self) -> list[dict[str, Any]]:
         """列出所有MCP服务器"""
         return [
             {
@@ -361,7 +389,7 @@ class MCPManager:
             for name, s in self.servers.items()
         ]
 
-    async def connect_server(self, config: Dict[str, Any]) -> bool:
+    async def connect_server(self, config: dict[str, Any]) -> bool:
         """动态连接MCP服务器
 
         Args:
@@ -425,7 +453,7 @@ class MCPManager:
 
         return await self.connect_server(config)
 
-    async def reload_all(self) -> Dict[str, bool]:
+    async def reload_all(self) -> dict[str, bool]:
         """重载所有MCP服务器
 
         Returns:
