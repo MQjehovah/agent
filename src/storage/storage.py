@@ -13,6 +13,10 @@ logger = logging.getLogger("agent.storage")
 
 _storage_instance: Optional["Storage"] = None
 
+# MCP 调用审计: 错误摘要最大长度 / 查询 limit 硬上限
+MCP_CALL_ERROR_MAX_LEN = 300
+MCP_CALL_QUERY_MAX_LIMIT = 1000
+
 
 def get_storage() -> Optional["Storage"]:
     return _storage_instance
@@ -354,6 +358,26 @@ class Storage:
                     updated_at TEXT,
                     PRIMARY KEY (scope_kind, scope_key)
                 );
+
+                -- MCP 工具调用审计(成功/失败都落库, admin 可查)
+                CREATE TABLE IF NOT EXISTS mcp_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL,
+                    server TEXT DEFAULT '',
+                    tool TEXT DEFAULT '',
+                    exposed TEXT DEFAULT '',
+                    ok INTEGER DEFAULT 1,
+                    duration_ms INTEGER DEFAULT 0,
+                    result_chars INTEGER DEFAULT 0,
+                    error TEXT DEFAULT '',
+                    conversation_id TEXT DEFAULT '',
+                    user_id TEXT DEFAULT '',
+                    channel TEXT DEFAULT '',
+                    agent_name TEXT DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_mcp_calls_ts ON mcp_calls(ts);
+                CREATE INDEX IF NOT EXISTS idx_mcp_calls_server ON mcp_calls(server);
+                CREATE INDEX IF NOT EXISTS idx_mcp_calls_tool ON mcp_calls(tool);
             """)
             # migration: add columns 若缺失则补上（新库已在 CREATE TABLE 定义）
             def _add_col(table: str, col_def: str):
@@ -1252,6 +1276,67 @@ class Storage:
         result["avg_duration_ms"] = round(result.get("avg_duration_ms") or 0, 1)
         result["max_duration_ms"] = round(result.get("max_duration_ms") or 0, 1)
         return result
+
+    # ---------------- MCP 调用审计 ----------------
+
+    def record_mcp_call(
+        self,
+        *,
+        server: str = "",
+        tool: str = "",
+        exposed: str = "",
+        ok: bool = True,
+        duration_ms: int = 0,
+        result_chars: int = 0,
+        error: str = "",
+        conversation_id: str = "",
+        user_id: str = "",
+        channel: str = "",
+        agent_name: str = "",
+        ts: str = "",
+    ) -> int:
+        """记录一次 MCP 工具调用(成功/失败都落库), 返回行 id; error 截断 ≤300 字。"""
+        row = (
+            ts or datetime.now().isoformat(),
+            server or "", tool or "", exposed or "",
+            1 if ok else 0,
+            max(0, int(duration_ms or 0)),
+            max(0, int(result_chars or 0)),
+            (error or "")[:MCP_CALL_ERROR_MAX_LEN],
+            conversation_id or "", user_id or "", channel or "", agent_name or "",
+        )
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute("""
+                INSERT INTO mcp_calls (ts, server, tool, exposed, ok, duration_ms,
+                    result_chars, error, conversation_id, user_id, channel, agent_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, row)
+            conn.commit()
+            return cur.lastrowid
+
+    def query_mcp_calls(self, limit: int = 100, server: str | None = None,
+                        tool: str | None = None, since: str | None = None) -> list[dict[str, Any]]:
+        """查询 MCP 调用审计(按 id 倒序); limit 上限 1000, since 为 ISO 时间下界。"""
+        sql = ("SELECT id, ts, server, tool, exposed, ok, duration_ms, result_chars, "
+               "error, conversation_id, user_id, channel, agent_name FROM mcp_calls")
+        where: list[str] = []
+        args: list[Any] = []
+        if server:
+            where.append("server = ?")
+            args.append(server)
+        if tool:
+            where.append("tool = ?")
+            args.append(tool)
+        if since:
+            where.append("ts >= ?")
+            args.append(since)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(max(1, min(int(limit), MCP_CALL_QUERY_MAX_LIMIT)))
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
 
     # ---------------- 会话元状态（P4c：压缩摘要持久化与重建）----------------
 

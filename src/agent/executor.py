@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 
 
 # 延迟导入 current_run，避免与 agent.py 的循环导入问题
@@ -18,12 +19,17 @@ def _current_run():
 # 工具输出最大字符数（与 agent.py 保持一致）
 MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 5000))
 
+# MCP 调用审计: 失败结果文案前缀(manager.call_tool 的已知失败出口)
+_MCP_FAILURE_PREFIXES = ("执行失败", "MCP未连接", "MCP服务", "MCP [", "工具执行错误")
+
 logger = logging.getLogger("agent.agent")
 
 
-def _mark_run_sensitive_if_hit(name: str) -> None:
-    """命中敏感清单的工具名 → 给当前 run 打「含敏感产出」标记(保守: 调过即敏感)。
+def _mark_run_sensitive_if_hit(agent, name: str) -> None:
+    """命中敏感清单或 destructive MCP 工具 → 给当前 run 打「含敏感产出」标记(保守: 调过即敏感)。
 
+    敏感清单见 agent.sensitive(可配置); MCP 工具按风险注解判定: destructive 注解的
+    工具(如设备控制/终端命令)结果同样按敏感处理, 触发渠道层「钉钉群不落群、私聊送达」。
     在工具真正执行前置位(已过权限/RBAC/确认/Sandbox 拦截)，保证被允许执行的
     敏感工具一旦运行即为敏感；写入当前 run 的 RunContext.sensitive_hit，
     嵌套 run(子代理调用链)由 agent.core.run 结束时会聚到父级上下文。
@@ -31,7 +37,13 @@ def _mark_run_sensitive_if_hit(name: str) -> None:
     """
     from agent.sensitive import is_sensitive_tool
     if not is_sensitive_tool(name):
-        return
+        mcp = getattr(agent, "mcp", None)
+        try:
+            mcp_risk = mcp.tool_risk(name) if mcp else None
+        except Exception:
+            mcp_risk = None
+        if mcp_risk != "destructive":
+            return
     rc = _current_run()
     if rc is None or not getattr(rc, "run_id", ""):
         return
@@ -53,6 +65,53 @@ def _get_user_circuit_breaker(agent):
         from quality.circuit_breaker import get_circuit_breaker_for
         return get_circuit_breaker_for(uid)
     return getattr(agent, '_circuit_breaker', None)
+
+
+def _mcp_call_failed(result: str) -> bool:
+    """manager.call_tool 返回文本是否代表失败(前缀启发式, 与 manager 失败出口对齐)。"""
+    return str(result or "").startswith(_MCP_FAILURE_PREFIXES)
+
+
+def _record_mcp_call(agent, exposed_name: str, duration_ms: int,
+                     result: str = "", error: str = "") -> None:
+    """MCP 调用审计落库(成功/失败都记; 审计异常只告警, 不影响工具执行)。
+
+    conversation_id/user_id/channel 取当前 run 上下文(缺失则空);
+    agent_name 取 agent 显示名(缺失回退 run 的 agent_id/user_name)。
+    """
+    try:
+        from storage.storage import get_storage
+        storage = getattr(agent, "storage", None) or get_storage()
+        if storage is None:
+            return
+        mcp = getattr(agent, "mcp", None)
+        failed = bool(error) or _mcp_call_failed(result)
+        rc = _current_run()
+        user_id = getattr(rc, "user_id", "") or ""
+        conv_id = getattr(rc, "conversation_id", "") or ""
+        if ":" in conv_id:
+            channel = conv_id.split(":", 1)[0]
+        elif ":" in user_id:
+            channel = user_id.split(":", 1)[0]
+        else:
+            channel = ""
+        if channel == "dingtalk_group":
+            channel = "dingtalk"
+        storage.record_mcp_call(
+            server=(mcp.tool_server(exposed_name) if mcp else None) or "",
+            tool=(mcp.tool_raw(exposed_name) if mcp else None) or exposed_name,
+            exposed=exposed_name,
+            ok=not failed,
+            duration_ms=max(0, int(duration_ms or 0)),
+            result_chars=len(result or ""),
+            error=error or (result if failed else ""),
+            conversation_id=conv_id,
+            user_id=user_id,
+            channel=channel,
+            agent_name=getattr(agent, "name", "") or getattr(rc, "agent_id", "") or "",
+        )
+    except Exception as e:
+        logger.warning(f"MCP 调用审计写入失败(忽略): {e}")
 
 
 async def execute_tool_safe(agent, name: str, args: dict) -> str:
@@ -107,7 +166,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
 
     await agent.hooks.fire(agent._hook_event.TOOL_START, tool_name=name, arguments=args)
 
-    _mark_run_sensitive_if_hit(name)
+    _mark_run_sensitive_if_hit(agent, name)
 
     try:
         result = await execute_tool(agent, name, args)
@@ -176,7 +235,17 @@ async def execute_tool(agent, name: str, args: dict) -> str:
             return await agent.skill_manager.execute_tool(name, args)
 
         if agent.mcp and agent.mcp.has_tool(name):
-            return await agent.mcp.call_tool(name, args)
+            # MCP 工具: 调用前后测耗时并落审计(成功/失败都记); 审计失败不影响调用
+            if agent.mcp.tool_risk(name) is None:
+                return await agent.mcp.call_tool(name, args)
+            started = time.monotonic()
+            try:
+                result = await agent.mcp.call_tool(name, args)
+            except Exception as e:
+                _record_mcp_call(agent, name, int((time.monotonic() - started) * 1000), error=str(e))
+                raise
+            _record_mcp_call(agent, name, int((time.monotonic() - started) * 1000), result=result)
+            return result
 
         if agent.plugin_manager:
             for plugin in agent.plugin_manager.plugins.values():

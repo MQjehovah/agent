@@ -10,6 +10,7 @@ import urllib.parse
 
 import requests
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -25,6 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger("mcp.dingtalk")
 
 mcp = MCPServer("DingTalk MCP Server")
+_READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+_SAFE_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 
 APP_KEY = os.getenv("DINGTALK_APP_KEY", "")
 APP_SECRET = os.getenv("DINGTALK_APP_SECRET", "")
@@ -63,7 +66,7 @@ def _check_config() -> str:
     return ""
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_get_access_token():
     """获取钉钉应用的 access_token。调用任何钉钉 API 前需要先获取 token。"""
     logger.info("获取 access_token")
@@ -78,7 +81,7 @@ def dingtalk_get_access_token():
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_work_notification(
     user_ids: str,
     msg_type: str,
@@ -143,7 +146,7 @@ def dingtalk_send_work_notification(
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_robot_single_message(
     user_ids: list[str],
     msg_key: str,
@@ -199,7 +202,7 @@ def dingtalk_send_robot_single_message(
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_robot_group_message(
     conversation_id: str,
     msg_key: str,
@@ -258,7 +261,7 @@ def dingtalk_send_robot_group_message(
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_webhook_message(
     webhook_url: str,
     msg_type: str,
@@ -351,7 +354,7 @@ def dingtalk_send_webhook_message(
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_get_department_list(
     dept_id: int = 1,
     fetch_child: bool = False,
@@ -415,7 +418,7 @@ def dingtalk_get_department_list(
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_get_department_users(
     dept_id: int,
     cursor: int = 0,
@@ -476,7 +479,7 @@ def dingtalk_get_department_users(
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_get_user_detail(userid: str, language: str = "zh_CN"):
     """获取用户详情。
 
@@ -524,7 +527,7 @@ def dingtalk_get_user_detail(userid: str, language: str = "zh_CN"):
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_get_user_by_mobile(mobile: str):
     """根据手机号获取用户ID。
 
@@ -559,7 +562,7 @@ def dingtalk_get_user_by_mobile(mobile: str):
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_interactive_card(
     conversation_id: str,
     card_template_id: str,
@@ -621,7 +624,7 @@ def dingtalk_send_interactive_card(
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_markdown_single(
     user_ids: list[str],
     title: str,
@@ -640,7 +643,7 @@ def dingtalk_send_markdown_single(
     return dingtalk_send_robot_single_message(user_ids, "sampleMarkdown", msg_param, robot_code)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_markdown_group(
     conversation_id: str,
     title: str,
@@ -663,7 +666,7 @@ def dingtalk_send_markdown_group(
     return dingtalk_send_robot_group_message(conversation_id, "sampleMarkdown", msg_param, robot_code, at_user_ids, at_all)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_text_single(
     user_ids: list[str],
     content: str,
@@ -680,7 +683,7 @@ def dingtalk_send_text_single(
     return dingtalk_send_robot_single_message(user_ids, "sampleText", msg_param, robot_code)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_text_group(
     conversation_id: str,
     content: str,
@@ -701,7 +704,7 @@ def dingtalk_send_text_group(
     return dingtalk_send_robot_group_message(conversation_id, "sampleText", msg_param, robot_code, at_user_ids, at_all)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_get_conversation(conversation_id: str):
     """获取群会话信息。
 

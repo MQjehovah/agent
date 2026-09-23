@@ -159,12 +159,15 @@ class Agent:
         # 沙箱系统
         self.sandbox = None
 
-        # 权限系统
+        # 权限系统(risk_resolver 延迟解析当前 MCP manager: MCP 连接晚于 checker 创建)
         from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
         self._permission_config = PermissionConfig(
             mode=PermissionMode(permission_mode)
         )
-        self.permission = PermissionChecker(self._permission_config)
+        self.permission = PermissionChecker(
+            self._permission_config,
+            risk_resolver=lambda name: self.mcp.tool_risk(name) if self.mcp else None,
+        )
 
         # 钩子系统
         from hooks import HookEvent, HookManager

@@ -8,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from typing import List, Optional
 import pymysql
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -23,6 +24,8 @@ logging.basicConfig(
 logger = logging.getLogger("mcp.default")
 
 mcp = MCPServer("Rosiwit MCP Server")
+_READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+_SAFE_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 
 SMTP_CONFIG = {
     "host": os.getenv("SMTP_HOST", "smtp.qiye.aliyun.com"),
@@ -32,7 +35,7 @@ SMTP_CONFIG = {
     "from_name": os.getenv("SMTP_FROM_NAME", "xxx")
 }
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_current_time():
     """获取服务器当前的本地时间。
 
@@ -64,7 +67,7 @@ def get_current_time():
         "timezone": tz_str,
     }
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def send_email(
     to_recipients: List[str],
     subject: str,

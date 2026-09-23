@@ -8,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from typing import List, Optional
 import pymysql
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -25,6 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger("mcp.mysql_query")
 
 mcp = MCPServer("Rosiwit MCP Server")
+_READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 
 # 数据库口令必须由环境变量注入; 生产缺失/弱值直接拒绝启动, 开发仅告警(代码内不再内置口令)
 DB_PASSWORD = require_secret("DB_PASSWORD", os.getenv("DB_PASSWORD", "")) or ""
@@ -38,7 +40,7 @@ DB_CONFIG = {
     "charset": "utf8mb4"
 }
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def list_tables():
     """列出数据库中所有表"""
     logger.info("列出所有数据库表")
@@ -50,7 +52,7 @@ def list_tables():
     logger.debug(f"找到 {len(tables)} 个表")
     return tables
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def describe_table(table_name: str):
     """获取表结构"""
     logger.info(f"获取表结构: {table_name}")
@@ -62,7 +64,7 @@ def describe_table(table_name: str):
     logger.debug(f"表 {table_name} 有 {len(result)} 个字段")
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def execute_query(query: str):
     """执行SQL查询（仅支持SELECT）"""
     query = query.strip()

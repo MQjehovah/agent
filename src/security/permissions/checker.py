@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from .modes import PermissionMode
@@ -17,8 +18,22 @@ class PermissionCheckResult:
 
 
 class PermissionChecker:
-    def __init__(self, config: PermissionConfig = None):
+    def __init__(self, config: PermissionConfig = None,
+                 risk_resolver: Callable[[str], str | None] | None = None):
         self.config = config or PermissionConfig()
+        # MCP 工具风险解析器(暴露工具名 → read/write/destructive/unknown);
+        # 缺省 None 时行为与旧版完全一致(非 MCP 场景零影响)。
+        self.risk_resolver = risk_resolver
+
+    def _mcp_risk(self, tool_name: str) -> str | None:
+        """解析 MCP 工具风险级别; 非 MCP/解析异常一律返回 None。"""
+        if self.risk_resolver is None:
+            return None
+        try:
+            risk = self.risk_resolver(tool_name)
+        except Exception:
+            return None
+        return risk if risk in ("read", "write", "destructive", "unknown") else None
 
     def check(self, tool_name: str, arguments: dict) -> PermissionCheckResult:
         """检查工具调用是否被允许"""
@@ -31,6 +46,9 @@ class PermissionChecker:
                 if not path_result.allowed:
                     return path_result
             return PermissionCheckResult(allowed=True)
+
+        # MCP 工具级风险(注解 → 风险); 非 MCP 工具为 None, 不影响既有规则
+        mcp_risk = self._mcp_risk(tool_name)
 
         # PLAN 模式：禁止所有写操作
         if self.config.mode == PermissionMode.PLAN:
@@ -46,6 +64,11 @@ class PermissionChecker:
                 return PermissionCheckResult(
                     allowed=False,
                     reason=f"PLAN 模式禁止执行写操作工具: {tool_name}"
+                )
+            if mcp_risk in ("write", "destructive"):
+                return PermissionCheckResult(
+                    allowed=False,
+                    reason=f"PLAN 模式禁止执行写类工具: {tool_name}"
                 )
 
         # SMART 模式(必要时询问): 仅危险文件操作与高危命令需要确认, 其余写操作直接放行
@@ -72,6 +95,8 @@ class PermissionChecker:
                     if frag in command:
                         return PermissionCheckResult(allowed=True, reason="需要用户确认")
                 return PermissionCheckResult(allowed=True)
+            if mcp_risk == "destructive":
+                return PermissionCheckResult(allowed=True, reason="需要用户确认")
             return PermissionCheckResult(allowed=True)
 
         # 检查命令黑名单
@@ -116,6 +141,13 @@ class PermissionChecker:
                 for prefix in read_prefixes:
                     if command.startswith(prefix):
                         return PermissionCheckResult(allowed=True)
+            return PermissionCheckResult(
+                allowed=True,
+                reason="需要用户确认"
+            )
+
+        # DEFAULT 模式下 MCP 写类工具与既有 write_tools 同语义: 需用户确认
+        if self.config.mode == PermissionMode.DEFAULT and mcp_risk in ("write", "destructive"):
             return PermissionCheckResult(
                 allowed=True,
                 reason="需要用户确认"

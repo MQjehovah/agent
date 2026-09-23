@@ -3044,6 +3044,19 @@ class WebServer:
             from mcps import MCPManager
             return MCPManager.status_all()
 
+        @self._app.get("/api/admin/mcp/calls")
+        async def admin_mcp_calls(limit: int = Query(100), server: str = Query(""),
+                                  tool: str = Query(""), request: Request = None):
+            """MCP 调用审计(需 admin.monitor 权限): 倒序返回调用记录, limit 夹紧 ≤1000。"""
+            await _require_perm(request, "admin.monitor")
+            from storage.storage import get_storage
+            storage = get_storage()
+            if storage is None:
+                return JSONResponse({"error": "storage unavailable"}, status_code=503)
+            calls = storage.query_mcp_calls(
+                limit=limit, server=server or None, tool=tool or None)
+            return {"calls": calls, "count": len(calls)}
+
         @self._app.get("/healthz")
         async def healthz():
             db_ok = False

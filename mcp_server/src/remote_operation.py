@@ -17,6 +17,7 @@ from typing import Any
 import cloud_common as cloud
 import requests
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -32,6 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger("device-ops-mcp")
 
 mcp = MCPServer("Device Operations MCP Server")
+_READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+_SAFE_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 # ==================== rosiwit-cloud ====================
 DEVICE_SHADOW_PATH = os.getenv("DEVICE_SHADOW_PATH", "/rosiwit-cloud/device/shadow")
@@ -425,7 +429,7 @@ def _summarize_bag(rec: dict) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def set_cloud_token(token: str):
     """手动设置 rosiwit-cloud API token。"""
     cloud.set_token(token)
@@ -435,7 +439,7 @@ def set_cloud_token(token: str):
     return {"success": True, "message": "token 已设置"}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_device_shadow(device_id: str, product_id: str):
     """获取设备实时状态（rosiwit-cloud 设备影子）。
 
@@ -473,7 +477,7 @@ def get_device_shadow(device_id: str, product_id: str):
     return summary
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def list_device_bags(device_id: str, product_id: str, current: int = 1, size: int = 20):
     """云端录包列表。"""
     did = str(device_id or "").strip()
@@ -507,7 +511,7 @@ def list_device_bags(device_id: str, product_id: str, current: int = 1, size: in
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def device_backward(device_id: str, product_id: str):
     """云端倒退（碰撞脱困）。"""
     did = str(device_id or "").strip()
@@ -530,7 +534,7 @@ def device_backward(device_id: str, product_id: str):
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def device_back_to_station(device_id: str, product_id: str, req_id: int = 0):
     """云端回桩。
 
@@ -561,7 +565,7 @@ def device_back_to_station(device_id: str, product_id: str, req_id: int = 0):
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def find_bags_near_time(
     device_id: str,
     product_id: str,
@@ -765,7 +769,7 @@ def _extract_bag_name(result: Any, file_path: str = "") -> str:
     return ""
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def upload_bag_file(
     device_id: str,
     product_id: str,
@@ -832,7 +836,7 @@ def upload_bag_file(
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def upload_bag_list(
     device_id: str,
     product_id: str,
@@ -864,7 +868,7 @@ def upload_bag_list(
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def soft_restart(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
     """机器重启（POST /remote/device/restart）。对应原 FAE soft_restart。"""
     logger.info("云端重启: %s / %s", device_id, product_id)
@@ -874,7 +878,7 @@ def soft_restart(device_id: str, product_id: str, req_id: int = 0, param: Any = 
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def factory_reset(device_id: str, product_id: str, req_id: int = 0, param: Any = None):
     """设备恢复出厂设置（POST /remote/device/reset）。对应原 FAE factory_reset。慎用。"""
     result = _remote_post(
@@ -883,7 +887,7 @@ def factory_reset(device_id: str, product_id: str, req_id: int = 0, param: Any =
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def set_control_mode(
     device_id: str,
     product_id: str,
@@ -907,7 +911,7 @@ def set_control_mode(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def relocate(
     device_id: str,
     product_id: str,
@@ -931,7 +935,7 @@ def relocate(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def station_relocation(
     device_id: str,
     product_id: str,
@@ -949,7 +953,7 @@ def station_relocation(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def station_dock(
     device_id: str,
     product_id: str,
@@ -963,14 +967,14 @@ def station_dock(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_clean_info(device_id: str, product_id: str):
     """获取清洁组件信息（GET /remote/device/cleanInfo）。对应原 FAE get_clean_info。"""
     result = _remote_get("device/cleanInfo", device_id, product_id)
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def device_clean(
     device_id: str,
     product_id: str,
@@ -984,7 +988,7 @@ def device_clean(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_camera_image(
     device_id: str,
     product_id: str,
@@ -1080,14 +1084,14 @@ def get_camera_image(
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_point_cloud(device_id: str, product_id: str):
     """激光雷达点云（GET /remote/point_cloud）。对应原 FAE get_point_cloud。"""
     result = _remote_get("point_cloud", device_id, product_id)
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def start_factory_mode(
     device_id: str,
     product_id: str,
@@ -1102,7 +1106,7 @@ def start_factory_mode(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def stop_factory_mode(
     device_id: str,
     product_id: str,
@@ -1117,7 +1121,7 @@ def stop_factory_mode(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_factory_params(
     device_id: str,
     product_id: str,
@@ -1135,7 +1139,7 @@ def get_factory_params(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def set_factory_params(
     device_id: str,
     product_id: str,
@@ -1153,7 +1157,7 @@ def set_factory_params(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def reset_factory_params(
     device_id: str,
     product_id: str,
@@ -1171,7 +1175,7 @@ def reset_factory_params(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def factory_control(
     device_id: str,
     product_id: str,
@@ -1189,7 +1193,7 @@ def factory_control(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_pending_task(
     device_id: str,
     product_id: str,
@@ -1207,7 +1211,7 @@ def get_pending_task(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def resume_pending_task(
     device_id: str,
     product_id: str,
@@ -1225,7 +1229,7 @@ def resume_pending_task(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def plan_path(
     device_id: str,
     product_id: str,
@@ -1239,7 +1243,7 @@ def plan_path(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def list_schedules(
     device_id: str,
     product_id: str,
@@ -1253,7 +1257,7 @@ def list_schedules(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def create_schedule(
     device_id: str,
     product_id: str,
@@ -1267,7 +1271,7 @@ def create_schedule(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def update_schedule(
     device_id: str,
     product_id: str,
@@ -1281,7 +1285,7 @@ def update_schedule(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def delete_schedule(
     device_id: str,
     product_id: str,
@@ -1295,7 +1299,7 @@ def delete_schedule(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def execute_terminal(
     device_id: str,
     product_id: str,
@@ -1316,7 +1320,7 @@ def execute_terminal(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_device_setting(
     device_id: str,
     product_id: str,
@@ -1326,7 +1330,7 @@ def get_device_setting(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def set_device_setting(
     device_id: str,
     product_id: str,
@@ -1344,7 +1348,7 @@ def set_device_setting(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def list_consumables(
     device_id: str,
     product_id: str,
@@ -1358,7 +1362,7 @@ def list_consumables(
     return _ok_result(result, deviceId=str(device_id).strip(), productId=str(product_id).strip())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def remote_action(
     action: str,
     device_id: str,

@@ -25,6 +25,7 @@ from typing import Any, Optional, List, Dict, Union
 
 import requests
 from mcp.server.mcpserver import MCPServer, Image
+from mcp.types import ToolAnnotations
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -40,6 +41,8 @@ logging.basicConfig(
 logger = logging.getLogger("comfyui-mcp")
 
 mcp = MCPServer("ComfyUI Remote MCP Server")
+_READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+_SAFE_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 
 # ============================================================================
 # 配置常量
@@ -401,7 +404,7 @@ def _collect(prompt_id: str, out_dir: Optional[str], inline: bool, max_inline: i
 # MCP 工具
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def set_comfyui_server(url: str):
     """切换目标 ComfyUI 服务器地址（默认 http://192.168.31.34:8188）。
 
@@ -414,13 +417,13 @@ def set_comfyui_server(url: str):
     return {"base_url": STATE["base_url"]}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_comfyui_server():
     """获取当前配置的 ComfyUI 服务器地址。"""
     return {"base_url": STATE["base_url"]}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_server_status():
     """查询 ComfyUI 服务器状态：版本、系统内存、显卡与显存、队列长度。
 
@@ -455,7 +458,7 @@ def get_server_status():
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def list_models(folder: str = "checkpoints", keyword: str = ""):
     """列出远程 ComfyUI 磁盘上的模型文件。
 
@@ -480,7 +483,7 @@ def list_models(folder: str = "checkpoints", keyword: str = ""):
     return {"folder": folder, "count": len(names), "models": names}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def search_nodes(keyword: str = "", category: str = "", limit: int = 40):
     """搜索远程 ComfyUI 可用节点（含已安装的自定义节点）。
 
@@ -516,7 +519,7 @@ def search_nodes(keyword: str = "", category: str = "", limit: int = 40):
     return {"keyword": keyword, "count": len(found), "nodes": found, "total_nodes": len(info)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_node_info(class_name: str):
     """获取指定节点的完整输入/输出定义，用于构造工作流。
 
@@ -530,7 +533,7 @@ def get_node_info(class_name: str):
     return {"class_type": class_name, **spec}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def validate_workflow(workflow: Optional[dict] = None, workflow_file: Optional[str] = None):
     """在提交前校验工作流：节点类型是否存在、输入名是否合法、连线是否指向有效节点。
 
@@ -545,7 +548,7 @@ def validate_workflow(workflow: Optional[dict] = None, workflow_file: Optional[s
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def upload_image(file_path: str, subfolder: str = "", overwrite: bool = True):
     """上传本地图片到远程 ComfyUI 的 input 目录，供 LoadImage 等节点使用。
 
@@ -572,7 +575,7 @@ def upload_image(file_path: str, subfolder: str = "", overwrite: bool = True):
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def run_workflow(
     workflow: Optional[dict] = None,
     workflow_file: Optional[str] = None,
@@ -633,7 +636,7 @@ def _wait_for(prompt_id: str, timeout: float, interval: float = 1.5):
     return {"status": "timeout", "queue_state": state, "hint": f"仍在队列中({state})，可稍后用 get_job_status 查询"}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_job_status(prompt_id: str):
     """查询某个 prompt_id 的执行状态与错误信息。
 
@@ -647,7 +650,7 @@ def get_job_status(prompt_id: str):
     return status
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def wait_for_job(prompt_id: str, timeout: float = 600.0):
     """阻塞等待某个 prompt_id 执行结束。
 
@@ -658,7 +661,7 @@ def wait_for_job(prompt_id: str, timeout: float = 600.0):
     return {"prompt_id": prompt_id, **_wait_for(prompt_id, timeout)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_outputs(
     prompt_id: str,
     download_dir: str = "",
@@ -676,7 +679,7 @@ def get_outputs(
     return _collect(prompt_id, download_dir or None, include_images, max_inline_images)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_queue_status():
     """查看远程 ComfyUI 当前正在执行和排队中的任务。"""
     queue = _get_json("/queue")
@@ -692,21 +695,21 @@ def get_queue_status():
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def interrupt():
     """中断远程 ComfyUI 当前正在执行的任务（不会清空后续排队任务）。"""
     _request("POST", "/interrupt")
     return {"interrupted": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def clear_queue():
     """清空远程 ComfyUI 的等待队列。"""
     _request("POST", "/queue", json={"clear": True})
     return {"cleared": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def free_memory(unload_models: bool = False, free_cached_memory: bool = True):
     """让远程 ComfyUI 释放显存。
 
@@ -722,7 +725,7 @@ def free_memory(unload_models: bool = False, free_cached_memory: bool = True):
     return {"unload_models": unload_models, "free_memory": free_cached_memory}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def generate_image(
     prompt: str,
     negative_prompt: str = "",

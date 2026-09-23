@@ -5,13 +5,17 @@ import os
 import re
 import subprocess
 import weakref
-from typing import Any
+from typing import Any, Literal, cast
 
 from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
 logger = logging.getLogger("agent")
+
+# MCP 工具风险级别(注解映射 + risk_overrides 的结果域)
+McpRisk = Literal["read", "write", "destructive", "unknown"]
+MCP_RISK_LEVELS: tuple[str, ...] = ("read", "write", "destructive", "unknown")
 
 # MCP 连接配置（默认值；可在 config/mcp_servers.json 中按 server 覆盖）
 MCP_CONNECT_TIMEOUT = 30  # 连接超时（秒）
@@ -68,6 +72,34 @@ def _sanitize_exposed_name(name: str) -> str:
     return cleaned or "tool"
 
 
+def _annotation_flag(annotations: Any, snake: str, camel: str) -> bool | None:
+    """读取注解布尔字段(兼容 SDK v2 snake_case 对象/dict 与 camelCase 旧字段名)。"""
+    if annotations is None:
+        return None
+    if isinstance(annotations, dict):
+        value = annotations.get(snake, annotations.get(camel))
+    else:
+        value = getattr(annotations, snake, None)
+        if value is None:
+            value = getattr(annotations, camel, None)
+    return value if isinstance(value, bool) else None
+
+
+def classify_tool_risk(annotations: Any) -> str:
+    """把 MCP 工具注解(ToolAnnotations)映射为风险级别。
+
+    readOnlyHint is True → 'read'; destructiveHint is True → 'destructive';
+    有 annotations 但非只读(或 readOnlyHint=False) → 'write'; 无 annotations → 'unknown'。
+    """
+    if annotations is None:
+        return "unknown"
+    if _annotation_flag(annotations, "read_only_hint", "readOnlyHint") is True:
+        return "read"
+    if _annotation_flag(annotations, "destructive_hint", "destructiveHint") is True:
+        return "destructive"
+    return "write"
+
+
 def resolve_env_values(env: dict[str, Any]) -> dict[str, str]:
     """把配置中的 ${VAR} 占位符解析为进程环境变量。
 
@@ -100,6 +132,7 @@ class MCPServerConnection:
         self._close_requested: asyncio.Event | None = None
         self._server_params: StdioServerParameters | None = None
         self.tool_defs: list[dict[str, Any]] = []
+        self._tool_risks: dict[str, str] = {}
         self._connected = False
         self._reconnect_attempts = 0
         self._health_check_task: asyncio.Task | None = None
@@ -111,6 +144,29 @@ class MCPServerConnection:
         self.max_reconnect_attempts = self._config_int("max_reconnect_attempts", MCP_MAX_RECONNECT_ATTEMPTS, minimum=0)
         self.max_concurrency = self._config_int("max_concurrency", MCP_MAX_CONCURRENCY, minimum=1)
         self._semaphore = asyncio.Semaphore(self.max_concurrency)
+        # 工具级 risk_overrides(原始工具名匹配, 覆盖注解)
+        self._risk_overrides = self._config_risk_overrides()
+
+    def _config_risk_overrides(self) -> dict[str, str]:
+        """解析 risk_overrides(原始工具名 → read/write/destructive), 非法值忽略并告警。"""
+        raw = self.config.get("risk_overrides")
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            logger.warning(f"MCP [{self.name}] 配置 risk_overrides 非法(需为对象), 已忽略")
+            return {}
+        overrides: dict[str, str] = {}
+        for tool_name, risk in raw.items():
+            level = str(risk).strip().lower()
+            if level in ("read", "write", "destructive"):
+                overrides[str(tool_name)] = level
+            else:
+                logger.warning(f"MCP [{self.name}] risk_overrides[{tool_name}]={risk!r} 非法, 已忽略")
+        return overrides
+
+    def risk_of(self, raw_name: str) -> str:
+        """原始工具名 → 风险级别(注解 + risk_overrides 覆盖); 未知工具默认 unknown。"""
+        return self._tool_risks.get(str(raw_name), "unknown")
 
     def _config_number(self, key: str, default: float) -> float:
         value, ok = _parse_positive_number(self.config.get(key), default)
@@ -233,6 +289,12 @@ class MCPServerConnection:
                     }
                     for t in mcp_tools.tools
                 ]
+                # 工具级风险: 注解 → read/write/destructive/unknown, risk_overrides 按原始名覆盖
+                self._tool_risks = {
+                    str(t.name): self._risk_overrides.get(str(t.name))
+                    or classify_tool_risk(getattr(t, "annotations", None))
+                    for t in mcp_tools.tools
+                }
                 self._connected = True
                 self._reconnect_attempts = 0
                 self._clear_last_error()
@@ -387,6 +449,7 @@ class MCPManager:
         self._tool_to_server: dict[str, str] = {}
         self._exposed_to_server: dict[str, str] = {}
         self._exposed_to_raw: dict[str, str] = {}
+        self._exposed_to_risk: dict[str, str] = {}
         self._reserved_names: set[str] = set()
         self._config_data: list[dict[str, Any]] = []
         self._health_check_task: asyncio.Task | None = None
@@ -435,6 +498,7 @@ class MCPManager:
         self._tool_to_server = {}
         self._exposed_to_server = {}
         self._exposed_to_raw = {}
+        self._exposed_to_risk = {}
         used: set[str] = set(self._reserved_names)
 
         for server_name, server in self.servers.items():
@@ -445,6 +509,7 @@ class MCPManager:
                 self._tool_to_server[exposed] = server_name
                 self._exposed_to_server[exposed] = server_name
                 self._exposed_to_raw[exposed] = raw_name
+                self._exposed_to_risk[exposed] = server.risk_of(raw_name)
                 if exposed != raw_name:
                     logger.warning(
                         f"MCP [{server_name}] 工具重名: {raw_name} -> 暴露为 {exposed}（避免 LLM 工具名冲突）")
@@ -555,6 +620,24 @@ class MCPManager:
     def has_tool(self, name: str) -> bool:
         """检查是否有指定工具"""
         return name in self._tool_to_server
+
+    def tool_risk(self, exposed_name: str) -> McpRisk | None:
+        """暴露工具名 → 风险级别(read/write/destructive/unknown)。
+
+        映射随 _rebuild_tool_defs 重建；非 MCP 工具名返回 None(权限层据此区分)。
+        """
+        risk = self._exposed_to_risk.get(exposed_name)
+        if risk is None:
+            return None
+        return cast(McpRisk, risk if risk in MCP_RISK_LEVELS else "unknown")
+
+    def tool_server(self, exposed_name: str) -> str | None:
+        """暴露工具名 → server 名; 非 MCP 工具名返回 None(审计归属用)。"""
+        return self._exposed_to_server.get(exposed_name)
+
+    def tool_raw(self, exposed_name: str) -> str | None:
+        """暴露工具名 → 服务端原始工具名; 非 MCP 工具名返回 None(审计记录用)。"""
+        return self._exposed_to_raw.get(exposed_name)
 
     async def call_tool(self, name: str, args: dict) -> str:
         """调用MCP工具(入参为 LLM 暴露名, 按映射解析回 server 与原始工具名)"""

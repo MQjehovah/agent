@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import websockets
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -36,6 +37,9 @@ logging.basicConfig(
 logger = logging.getLogger("terminal-mcp")
 
 mcp = MCPServer("Terminal MCP Server")
+_READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+_SAFE_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 # ============================================================================
 # 配置常量
@@ -699,7 +703,7 @@ async def _receive_output(sn: str, timeout: float = 2.0) -> list:
 # MCP 工具函数
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 async def connect_terminal(sn: str, cols: int = 80, rows: int = 24, username: str = DEFAULT_USERNAME, password: str = DEFAULT_PASSWORD, base_url: str = None):
     """连接设备终端并自动登录
 
@@ -730,7 +734,7 @@ async def connect_terminal(sn: str, cols: int = 80, rows: int = 24, username: st
         return {"success": False, "sn": sn, "error": str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 async def disconnect_terminal(sn: str):
     """断开设备终端连接
 
@@ -746,7 +750,7 @@ async def disconnect_terminal(sn: str):
     return {"success": True, "sn": sn, "message": "终端已断开"}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 async def send_command(sn: str, command: str, wait_output: bool = True, timeout: float = 2.0, parse_output: bool = True):
     """发送命令到终端并解析响应
 
@@ -822,7 +826,7 @@ async def send_command(sn: str, command: str, wait_output: bool = True, timeout:
         return {"success": False, "error": str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 async def send_raw(sn: str, data: str):
     """发送原始数据到终端（不添加换行符）
 
@@ -841,7 +845,7 @@ async def send_raw(sn: str, data: str):
         return {"success": False, "error": str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 async def receive_output(sn: str, timeout: float = 2.0):
     """接收终端输出
 
@@ -860,7 +864,7 @@ async def receive_output(sn: str, timeout: float = 2.0):
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 async def resize_terminal(sn: str, cols: int, rows: int):
     """调整终端窗口大小
 
@@ -879,7 +883,7 @@ async def resize_terminal(sn: str, cols: int, rows: int):
     return {"success": True, "sn": sn, "cols": cols, "rows": rows}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 async def get_session_status(sn: str = None):
     """获取终端会话状态
 
@@ -916,7 +920,7 @@ async def get_session_status(sn: str = None):
     return {"sessions": all_sessions}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 async def clear_buffer(sn: str):
     """清空终端输出缓冲区
 
@@ -931,7 +935,7 @@ async def clear_buffer(sn: str):
     return {"success": False, "error": "会话不存在"}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 async def get_buffer(sn: str, lines: int = 100):
     """获取终端输出缓冲区内容
 
@@ -955,7 +959,7 @@ async def get_buffer(sn: str, lines: int = 100):
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 async def interactive_session(sn: str, commands: list, delay: float = 0.5, parse_outputs: bool = True):
     """交互式会话 - 发送多个命令并收集解析后的输出
 
@@ -1019,7 +1023,7 @@ async def interactive_session(sn: str, commands: list, delay: float = 0.5, parse
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 async def set_ws_base_url(base_url: str):
     """设置WebSocket基础URL
 
@@ -1033,7 +1037,7 @@ async def set_ws_base_url(base_url: str):
     return {"success": True, "base_url": WS_BASE_URL}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def strip_ansi(text: str):
     """移除文本中的ANSI转义序列
 
@@ -1052,7 +1056,7 @@ def strip_ansi(text: str):
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def parse_output(outputs: list, command: str = None):
     """解析终端输出列表
 
@@ -1070,7 +1074,7 @@ def parse_output(outputs: list, command: str = None):
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_delay: float = 1.0, timeout: float = 3.0):
     """执行命令并支持失败重试
 
@@ -1133,7 +1137,7 @@ async def execute_with_retry(sn: str, command: str, max_retries: int = 3, retry_
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 async def wait_for_prompt(sn: str, timeout: float = 5.0):
     """等待终端提示符出现
 

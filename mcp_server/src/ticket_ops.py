@@ -15,6 +15,7 @@ from typing import Any
 import cloud_common as cloud
 import requests
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -30,6 +31,9 @@ logging.basicConfig(
 logger = logging.getLogger("ticket-ops-mcp")
 
 mcp = MCPServer("Ticket Operations MCP Server")
+_READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+_SAFE_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 TICKET_DETAIL_PATH = os.getenv(
     "TICKET_DETAIL_PATH",
@@ -302,7 +306,7 @@ def _summarize(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def set_ticket_token(token: str):
     """手动设置 rosiwit-cloud API 的认证 token。
 
@@ -315,7 +319,7 @@ def set_ticket_token(token: str):
     logger.info("已手动设置工单 token")
     return {"success": True, "message": "token 已设置"}
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def list_ticket_statuses():
     """返回 BMS 工单 status 枚举说明。"""
     return {
@@ -323,7 +327,7 @@ def list_ticket_statuses():
         "statuses": [{"status": k, "name": v} for k, v in TICKET_STATUS.items()],
     }
 
-@mcp.tool()
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
 def change_ticket_status(ticket_id: str, status: int):
     """变更 BMS 工单状态。
 
@@ -380,7 +384,7 @@ def change_ticket_status(ticket_id: str, status: int):
         "error": None if ok else (result.get("returnMsg") or result.get("error")),
     }
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def list_ticket_comments(ticket_id: str, current: int = 1, size: int = 10):
     """分页查询 BMS 工单评论（写评后核对是否落库）。
 
@@ -463,7 +467,7 @@ def _find_existing_ai_comment(records: list[Any]) -> dict[str, Any] | None:
     return None
 
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def create_ticket_comment(ticket_id: str, content: str, parent_id: str = ""):
     """在 BMS 工单下发表评论（AI 分析结论/处理备注写回）。
 
@@ -626,7 +630,7 @@ def create_ticket_comment(ticket_id: str, content: str, parent_id: str = ""):
         out["error"] = msg or result.get("error") or "发表评论失败"
     return out
 
-@mcp.tool()
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def create_ticket_attachment(
     ticket_id: str,
     name: str,
@@ -684,7 +688,7 @@ def create_ticket_attachment(
         "error": None if ok else (result.get("returnMsg") or result.get("error")),
     }
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ANNOTATIONS)
 def get_ticket(ticket_id: str):
     """按工单 ID 获取 BMS 工单详情（含 faultList、状态、设备 SN 等）。
 
