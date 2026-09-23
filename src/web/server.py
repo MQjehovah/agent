@@ -3176,6 +3176,14 @@ class WebServer:
                     "summary": mcp_status["summary"],
                     "failed": [s["name"] for s in mcp_status["servers"] if s["enabled"] and not s["connected"]],
                 }
+                # 平台 MCP 轨(市场能力): 汇总块, 与本地 server 分开; 未启用时省略
+                platform_status = mcp_status.get("platform")
+                if platform_status:
+                    mcp["platform"] = {
+                        "summary": platform_status["summary"],
+                        "failed": [s["name"] for s in platform_status.get("servers", [])
+                                   if s.get("enabled", True) and not s["connected"]],
+                    }
             except Exception:
                 pass
             return {

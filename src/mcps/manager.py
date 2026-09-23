@@ -100,6 +100,28 @@ def classify_tool_risk(annotations: Any) -> str:
     return "write"
 
 
+def format_tool_result(result: Any) -> str:
+    """MCP 工具返回内容 → 文本(内容块拼接 / 结构化 JSON / 成败兜底)。
+
+    本地 stdio 与平台轨共用, 保证两条链路的输出文案一致。
+    """
+    parts = []
+    for item in getattr(result, 'content', None) or []:
+        text = getattr(item, 'text', None)
+        if text is not None:
+            parts.append(text)
+        elif isinstance(item, str):
+            parts.append(item)
+    if parts:
+        return "\n".join(parts)
+    structured = getattr(result, 'structured_content', None)
+    if structured is not None:
+        return json.dumps(structured, ensure_ascii=False, default=str)
+    if getattr(result, 'is_error', False):
+        return "执行失败"
+    return "执行成功"
+
+
 def resolve_env_values(env: dict[str, Any]) -> dict[str, str]:
     """把配置中的 ${VAR} 占位符解析为进程环境变量。
 
@@ -405,21 +427,7 @@ class MCPServerConnection:
                     self.session.call_tool(name, args),
                     timeout=self.timeout_seconds
                 )
-                parts = []
-                for item in getattr(result, 'content', None) or []:
-                    text = getattr(item, 'text', None)
-                    if text is not None:
-                        parts.append(text)
-                    elif isinstance(item, str):
-                        parts.append(item)
-                if parts:
-                    return "\n".join(parts)
-                structured = getattr(result, 'structured_content', None)
-                if structured is not None:
-                    return json.dumps(structured, ensure_ascii=False, default=str)
-                if getattr(result, 'is_error', False):
-                    return "执行失败"
-                return "执行成功"
+                return format_tool_result(result)
             except asyncio.TimeoutError:
                 message = f"工具调用超时: {name}"
                 logger.error(f"MCP [{self.name}] {message}")
@@ -439,6 +447,52 @@ class MCPServerConnection:
                 return f"执行失败: {e}"
 
 
+def _merge_platform_status(clients: list[Any]) -> dict[str, Any] | None:
+    """聚合各实例的平台 MCP 轨状态(同名能力合并, 优先已连接实例); 无平台轨返回 None。"""
+    if not clients:
+        return None
+    rows: dict[str, dict[str, Any]] = {}
+    base_url = ""
+    last_refresh = ""
+    last_error = ""
+    for client in clients:
+        try:
+            data = client.status()
+        except Exception as e:
+            logger.warning(f"聚合平台 MCP 状态失败: {e}")
+            continue
+        base_url = base_url or str(data.get("base_url") or "")
+        last_refresh = max(last_refresh, str(data.get("last_refresh") or ""))
+        last_error = last_error or str(data.get("last_error") or "")
+        for row in data.get("servers") or []:
+            name = str(row.get("name") or "")
+            if not name:
+                continue
+            prev = rows.get(name)
+            if prev is None:
+                rows[name] = dict(row)
+                continue
+            pick = row if (row.get("connected") and not prev.get("connected")) else prev
+            rows[name] = {
+                **pick,
+                "tools": max(int(prev.get("tools") or 0), int(row.get("tools") or 0)),
+                "last_error": pick.get("last_error") or prev.get("last_error") or row.get("last_error") or "",
+                "last_refresh": max(str(prev.get("last_refresh") or ""),
+                                    str(row.get("last_refresh") or "")),
+            }
+    servers = [rows[name] for name in sorted(rows)]
+    connected = sum(1 for row in servers if row.get("connected"))
+    return {
+        "enabled": True,
+        "base_url": base_url,
+        "last_refresh": last_refresh,
+        "last_error": last_error,
+        "servers": servers,
+        "summary": {"connected": connected, "failed": len(servers) - connected,
+                    "total": len(servers)},
+    }
+
+
 class MCPManager:
     """MCP服务器管理器"""
 
@@ -455,7 +509,20 @@ class MCPManager:
         self._health_check_task: asyncio.Task | None = None
         self._closing = False
         self._server_errors: dict[str, str] = {}
+        # 平台 MCP 轨(市场能力): 与本地 server 组合, 接口同构; None=未启用
+        self.platform: Any = None
         _MANAGER_REGISTRY.add(self)
+
+    def attach_platform(self, platform: Any) -> None:
+        """挂接平台 MCP 轨(市场能力), 工具/风险/分发与本地合并(本地优先)。"""
+        self.platform = platform
+        register = getattr(platform, "attach_manager", None)
+        if callable(register):
+            try:
+                register(self)
+            except Exception as e:
+                logger.warning(f"平台 MCP 轨挂接 manager 失败(忽略): {e}")
+        self._rebuild_tool_defs()
 
     def load_config(self) -> list[dict[str, Any]]:
         """加载MCP配置文件"""
@@ -518,6 +585,24 @@ class MCPManager:
                     "function": {**tool_def["function"], "name": exposed},
                 })
 
+        # 平台轨(市场 MCP): 暴露名自带 platform__ 前缀, 与本地/保留名冲突时本地优先(跳过)
+        platform = self.platform
+        if platform is not None:
+            try:
+                platform_defs = platform.tool_defs
+            except Exception as e:
+                platform_defs = []
+                logger.warning(f"读取平台 MCP 工具表失败(忽略): {e}")
+            for tool_def in platform_defs:
+                exposed = str(tool_def.get("function", {}).get("name") or "")
+                if not exposed:
+                    continue
+                if exposed in used:
+                    logger.warning(f"平台 MCP 工具 {exposed} 与本地/保留工具重名, 本地优先, 已跳过")
+                    continue
+                used.add(exposed)
+                self.tool_defs.append(tool_def)
+
     @staticmethod
     def _allocate_exposed_name(server_name: str, raw_name: str, used: set[str]) -> str:
         """为 raw 工具名分配唯一暴露名(首选原名, 冲突则 server 前缀, 再冲突加序号)。"""
@@ -563,7 +648,7 @@ class MCPManager:
         logger.info(f"✓ 共加载 {len(self.tool_defs)} 个MCP工具")
 
     async def close(self):
-        """关闭所有MCP连接"""
+        """关闭所有MCP连接(含平台 MCP 轨: 停刷新任务并断开能力会话)"""
         self._closing = True
         _MANAGER_REGISTRY.discard(self)
         if self._health_check_task:
@@ -572,6 +657,14 @@ class MCPManager:
 
         for server in list(reversed(self.servers.values())):
             await server.close()
+
+        platform = self.platform
+        self.platform = None
+        if platform is not None:
+            try:
+                await platform.close()
+            except Exception as e:
+                logger.warning(f"平台 MCP 轨关闭失败(忽略): {e}")
 
     def start_health_check(self):
         """启动健康检查任务"""
@@ -618,31 +711,44 @@ class MCPManager:
                     self._rebuild_tool_defs()
 
     def has_tool(self, name: str) -> bool:
-        """检查是否有指定工具"""
-        return name in self._tool_to_server
+        """检查是否有指定工具(本地 server 优先, 平台轨兜底)。"""
+        if name in self._tool_to_server:
+            return True
+        return bool(self.platform and self.platform.has_tool(name))
 
     def tool_risk(self, exposed_name: str) -> McpRisk | None:
         """暴露工具名 → 风险级别(read/write/destructive/unknown)。
 
-        映射随 _rebuild_tool_defs 重建；非 MCP 工具名返回 None(权限层据此区分)。
+        本地映射随 _rebuild_tool_defs 重建, 平台工具实时向平台轨查询;
+        非 MCP 工具名返回 None(权限层据此区分)。
         """
         risk = self._exposed_to_risk.get(exposed_name)
+        if risk is None and self.platform is not None:
+            risk = self.platform.tool_risk(exposed_name)
         if risk is None:
             return None
         return cast(McpRisk, risk if risk in MCP_RISK_LEVELS else "unknown")
 
     def tool_server(self, exposed_name: str) -> str | None:
-        """暴露工具名 → server 名; 非 MCP 工具名返回 None(审计归属用)。"""
-        return self._exposed_to_server.get(exposed_name)
+        """暴露工具名 → server 名(平台工具为 platform:{能力名}); 非 MCP 返回 None。"""
+        server = self._exposed_to_server.get(exposed_name)
+        if server is None and self.platform is not None:
+            server = self.platform.tool_server(exposed_name)
+        return server
 
     def tool_raw(self, exposed_name: str) -> str | None:
         """暴露工具名 → 服务端原始工具名; 非 MCP 工具名返回 None(审计记录用)。"""
-        return self._exposed_to_raw.get(exposed_name)
+        raw = self._exposed_to_raw.get(exposed_name)
+        if raw is None and self.platform is not None:
+            raw = self.platform.tool_raw(exposed_name)
+        return raw
 
     async def call_tool(self, name: str, args: dict) -> str:
-        """调用MCP工具(入参为 LLM 暴露名, 按映射解析回 server 与原始工具名)"""
+        """调用MCP工具(入参为 LLM 暴露名, 按映射解析回 server 与原始工具名; 本地优先)"""
         server_name = self._tool_to_server.get(name)
         if not server_name:
+            if self.platform is not None and self.platform.has_tool(name):
+                return await self.platform.call_tool(name, args)
             return f"工具 {name} 未找到"
 
         server = self.servers.get(server_name)
@@ -724,8 +830,14 @@ class MCPManager:
 
     @staticmethod
     def status_all() -> dict[str, Any]:
-        """聚合进程内全部实例(含 worker 池)的状态, 同名 server 合并(优先已连接实例)。"""
+        """聚合进程内全部实例(含 worker 池)的状态。
+
+        本地 server 同名合并(优先已连接实例), 行内标 ``source=local``;
+        平台 MCP 轨(市场能力)单独汇总到 ``platform`` 块, 每能力一行标 ``source=platform``
+        并附 version/last_refresh; 无平台轨时为 None。
+        """
         merged: dict[str, dict[str, Any]] = {}
+        platform_clients: list[Any] = []
         for mgr in list(_MANAGER_REGISTRY):
             try:
                 data = mgr.status()
@@ -746,7 +858,12 @@ class MCPManager:
                     "reconnects": max(prev["reconnects"], row["reconnects"]),
                     "last_error": pick["last_error"] or prev["last_error"] or row["last_error"],
                 }
+            platform = getattr(mgr, "platform", None)
+            if platform is not None:
+                platform_clients.append(platform)
         servers = [merged[name] for name in sorted(merged)]
+        for row in servers:
+            row.setdefault("source", "local")
         return {
             "servers": servers,
             "summary": {
@@ -754,6 +871,7 @@ class MCPManager:
                 "failed": sum(1 for s in servers if s["enabled"] and not s["connected"]),
                 "total": len(servers),
             },
+            "platform": _merge_platform_status(platform_clients),
         }
 
     async def connect_server(self, config: dict[str, Any]) -> bool:

@@ -399,6 +399,21 @@ MCPManager (mcps/manager.py)
 
 **文件**：`src/mcps/manager.py`
 
+平台轨（市场能力，可配可关）：
+
+```
+PlatformMCPClient (mcps/platform.py)
+├─ MARKET_BASE_URL + MARKET_SERVICE_TOKEN 齐备才启用
+├─ GET {MARKET_BASE_URL}/api/capabilities/sync 筛 type=mcp 且 distribution in (remote,both)
+├─ 每能力经 /api/mcp-gateway/relay/{name}/stream (Streamable HTTP) 连接并 list_tools
+├─ 暴露名 platform__{能力}__{工具}; 风险映射与本地一致; 本地重名时本地优先
+├─ 周期刷新 (MARKET_PLATFORM_REFRESH_SECONDS, 默认 300s); 单能力失败隔离, 下轮重试
+└─ MCPManager.attach_platform 组合: LLM 工具表 / 权限风险 / mcp_calls 审计 / 健康汇总
+```
+
+根 agent 与 worker 池用户 worker 挂接（子代理不重复建连）；`/healthz` 的 `mcp.platform` 块与
+`/api/admin/mcp` 的 `platform.servers`（每行 `source=platform`）展示各能力状态。
+
 ## 十四、权限系统
 
 ### 14.1 权限模式

@@ -202,6 +202,7 @@ class WebUserWorkerPool:
             config_dir=getattr(self.root, "config_dir", ""),
         )
         worker.persist_session = True  # 跨轮次保留会话历史（恢复/续聊）
+        worker.platform_mcp_enabled = True  # Web 用户 worker 同样接入平台 MCP 轨(市场连接器)
         worker.plugin_manager = getattr(self.root, "plugin_manager", None)
         if getattr(self.root, "name", ""):
             worker.name = self.root.name

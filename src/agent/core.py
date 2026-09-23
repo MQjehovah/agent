@@ -140,6 +140,9 @@ class Agent:
 
         self.tool_registry = None
         self.mcp = None
+        # 平台 MCP 轨(市场能力)标记: 顶层运行 agent(root)默认开放; 子代理关闭避免重复建连;
+        # worker 池的用户 worker 建好后显式置 True(Web 用户同样可用市场连接器)
+        self.platform_mcp_enabled = parent_agent is None
         # 子代理专属 MCP 配置（运行时传入，方案B；主代理始终为空）
         self._subagent_mcp_configs = list(mcp_servers) if mcp_servers else []
         self.skill_manager = None
@@ -503,18 +506,21 @@ class Agent:
                 f"Agent [{self.name}] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
     async def _load_mcp_servers(self):
+        from mcps.platform import PlatformMCPConfig
+        platform_config = PlatformMCPConfig.from_env()
+        use_platform = self.platform_mcp_enabled and platform_config.enabled
         if self.parent_agent:
             # 子 agent（方案B）：优先运行时传入的 mcp_servers，否则读自己 config_dir 的 mcp_servers.json
             self.mcp_configs = list(self._subagent_mcp_configs) or self._read_mcp_config_file()
-            if not self.mcp_configs:
+            if not self.mcp_configs and not use_platform:
                 return
-            await self._connect_mcp_servers(subagent=True)
+            await self._connect_mcp_servers(subagent=not use_platform, platform_config=platform_config)
             return
 
-        # 主 agent：读 config_dir/mcp_servers.json
+        # 主 agent：读 config_dir/mcp_servers.json + 平台 MCP 轨(市场能力, 可配可关)
         self.mcp_configs = self._read_mcp_config_file()
-        if self.mcp_configs:
-            await self._connect_mcp_servers(subagent=False)
+        if self.mcp_configs or use_platform:
+            await self._connect_mcp_servers(subagent=False, platform_config=platform_config)
 
     def _read_mcp_config_file(self) -> list:
         """读取 config_dir/mcp_servers.json（主子代理共用）"""
@@ -528,8 +534,8 @@ class Agent:
             logger.error(f"Failed to load mcp_servers.json: {e}")
             return []
 
-    async def _connect_mcp_servers(self, subagent: bool = False):
-        """连接 mcp_configs 中的 MCP servers"""
+    async def _connect_mcp_servers(self, subagent: bool = False, platform_config=None):
+        """连接 mcp_configs 中的 MCP servers; 主 agent 另挂接市场平台 MCP 轨。"""
         from mcps import MCPManager
         self.mcp = MCPManager("")
         # 内置/技能工具名先行登记, MCP 重名工具会被 manager 加 server 前缀(避免 LLM 400)
@@ -545,6 +551,15 @@ class Agent:
                 logger.debug(
                     f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
         self.mcp.start_health_check()
+
+        # 平台 MCP 轨(市场能力目录 sync + /relay 直连): 与本地合并(本地优先);
+        # 首轮 sync 在后台刷新任务内执行, 失败仅告警, 不阻断本地 MCP 与进程启动。
+        if not subagent and platform_config is not None and platform_config.enabled:
+            from mcps.platform import PlatformMCPClient
+            platform_client = PlatformMCPClient(platform_config)
+            self.mcp.attach_platform(platform_client)
+            platform_client.start()
+            logger.info(f"平台 MCP 轨已挂接: {platform_config.base_url}")
 
         connected = [c.get("name", "unnamed")
                      for c in self.mcp_configs if c.get("enabled", True)]
