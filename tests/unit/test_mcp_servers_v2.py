@@ -30,7 +30,7 @@ import env_guard  # noqa: E402
 from mcp import Client  # noqa: E402
 
 # 各 server 的工具数(v2 迁移后的 173 个工具需一个不少; remote_operation/ticket_ops
-# 为生产侧独有模块, 已回流仓库并同步迁移)
+# 为生产侧独有模块, 已回流仓库并同步迁移; W3 新增 mcp_time/mcp_fetch/mcp_filesystem)
 SERVER_TOOL_COUNTS = {
     "default": 2,
     "dingtalk": 15,
@@ -41,6 +41,9 @@ SERVER_TOOL_COUNTS = {
     "comfyui_remote": 17,
     "remote_operation": 36,
     "ticket_ops": 7,
+    "mcp_time": 3,
+    "mcp_fetch": 2,
+    "mcp_filesystem": 8,
 }
 
 REMOTE_TERMINAL_ASYNC_TOOLS = (

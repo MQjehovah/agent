@@ -76,5 +76,42 @@
             "DEVICE_API_PASSWORD": "${DEVICE_API_PASSWORD}"
         },
         "description": "BMS工单 CRUD（rosiwit-cloud /ticket/*）"
+    },
+    {
+        "name": "time",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/mcp_time.py"
+        ],
+        "env": {},
+        "description": "时区时间服务（纯离线）- 当前时间/时区换算/时区名查询"
+    },
+    {
+        "name": "fetch",
+        "enabled": true,
+        "command": "python",
+        "args": [
+            "mcp_server/src/mcp_fetch.py"
+        ],
+        "env": {
+            "MCP_FETCH_TIMEOUT": "20",
+            "MCP_FETCH_MAX_BYTES": "2097152",
+            "MCP_FETCH_ALLOW_HOSTS": ""
+        },
+        "description": "网页抓取服务（只读+出网）- URL 转纯文本/Markdown 与 JSON 获取；私有/环回/链路本地/保留地址一律拒绝，内网指定主机需加入 MCP_FETCH_ALLOW_HOSTS 逗号白名单"
+    },
+    {
+        "name": "filesystem",
+        "enabled": false,
+        "command": "python",
+        "args": [
+            "mcp_server/src/mcp_filesystem.py"
+        ],
+        "env": {
+            "FS_MCP_ROOTS": "",
+            "FS_MCP_ALLOW_WRITE": "false"
+        },
+        "description": "受限目录文件服务（默认禁用）- 目录/读取/检索/写入；启用需设置 FS_MCP_ROOTS 为允许的绝对路径(逗号分隔)并将 enabled 改为 true；写操作另需 FS_MCP_ALLOW_WRITE=true"
     }
 ]
