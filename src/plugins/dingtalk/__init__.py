@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -10,6 +11,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from plugins.base import BasePlugin
+from plugins.dingtalk.confirm import (
+    CONFIRM_UNAVAILABLE_REPLY,
+    DEFAULT_CARD_TEMPLATE_ID,
+    OUT_TRACK_PREFIX,
+    CardActionRegistry,
+    create_card_confirmer,
+    parse_card_action,
+    parse_out_track_id,
+)
 
 logger = logging.getLogger("plugin.dingtalk")
 logging.getLogger("dingtalk_stream").setLevel(logging.WARNING)
@@ -201,6 +211,19 @@ class DingTalkPlugin(BasePlugin):
         self._task: asyncio.Task | None = None
         self._token_cache: dict = {}
         self.enabled = self.config.enabled
+        # ── 工具确认回路(互动卡片, fail-closed) ──
+        # 待裁决登记: request_id → Future(首个点击生效, 超时/迟到回调安全)
+        self._card_actions = CardActionRegistry()
+        # conversation_id → confirmer: 派发器按当前 run 上下文查找, 并发 run 互不覆盖
+        self._confirmers: dict[str, Any] = {}
+        # 卡片回调 topic 是否注册成功; False 时写操作一律拒绝(渠道不可用)
+        self._card_callback_ready = False
+        # 本轮确认卡片发送失败(渠道不可用)的会话: 最终回复改用明确文案
+        self._confirm_unavailable: set[str] = set()
+        self._card_template_id = (
+            os.environ.get("DINGTALK_CONFIRM_CARD_TEMPLATE_ID", "").strip()
+            or DEFAULT_CARD_TEMPLATE_ID
+        )
 
     def start(self):
         if not self.config.enabled:
@@ -246,6 +269,19 @@ class DingTalkPlugin(BasePlugin):
             dingtalk_stream.ChatbotMessage.TOPIC,
             handler
         )
+
+        # 互动卡片动作回调(topic 由 SDK 常量给出: /v1.0/card/instances/callback)。
+        # 注册失败(旧版 SDK/主题不支持)时不抛错, 只标记不可用 → 写操作 fail-closed。
+        try:
+            card_topic = getattr(
+                dingtalk_stream, "Card_Callback_Router_Topic",
+                "/v1.0/card/instances/callback")
+            self._client.register_callback_handler(card_topic, CardActionHandler(self))
+            self._card_callback_ready = True
+            logger.info(f"钉钉卡片动作回调已注册: topic={card_topic}")
+        except Exception as e:
+            self._card_callback_ready = False
+            logger.warning(f"钉钉卡片回调 topic 注册失败, 写操作确认将一律拒绝: {e!r}")
 
         while self._running:
             try:
@@ -439,6 +475,212 @@ class DingTalkPlugin(BasePlugin):
             self._conv_locks[conv_id] = lock
         return lock
 
+    # ── 工具确认回路(互动卡片, fail-closed) ──
+
+    def _make_confirm_audit(self, session_id: str):
+        """审计回调: 结构化日志 + 记录「渠道不可用」(发送失败改最终回复文案)。"""
+
+        def _audit(tool: str, ok: bool, detail: str) -> None:
+            logger.info(f"tool_confirm ok={'true' if ok else 'false'} detail={detail} tool={tool}")
+            if detail == "send_failed":
+                self._confirm_unavailable.add(session_id)
+
+        return _audit
+
+    def _make_confirmer(self, local_user_id: str, session_id: str, user_name: str = ""):
+        """为一次钉钉 run 创建 on_confirm 回调(绑定触发人与会话上下文)。"""
+        context = f"渠道: 钉钉 / 会话: {session_id}" + (f" / 用户: {user_name}" if user_name else "")
+
+        async def _send(request_id: str, payload: dict) -> bool:
+            return await self._send_confirm_card(request_id, payload, local_user_id)
+
+        return create_card_confirmer(
+            send_card=_send,
+            wait_action=self._wait_card_action,
+            audit=self._make_confirm_audit(session_id),
+            context=context,
+        )
+
+    async def _send_confirm_card(self, request_id: str, payload: dict,
+                                 local_user_id: str) -> bool:
+        """发送确认卡片到触发人**私聊**(IM_ROBOT, 不发群); 任一步失败返回 False。"""
+        if not self._card_callback_ready:
+            logger.warning("卡片回调不可用, 拒绝需确认的写操作(fail-closed)")
+            return False
+        staff_id = self._get_dingtalk_staff_id(local_user_id)
+        if not staff_id:
+            logger.warning(f"触发人未绑定钉钉 staff id, 无法发确认卡片: {local_user_id}")
+            return False
+        token = await self._get_access_token()
+        if not token:
+            logger.warning("获取 access_token 失败, 无法发送确认卡片")
+            return False
+        out_track_id = f"{OUT_TRACK_PREFIX}{request_id}"
+        headers = {"x-acs-dingtalk-access-token": token, "Content-Type": "application/json"}
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                # 1) 创建卡片实例(STREAM 回调); 按通用 AI 卡片约定先置 flowStatus 渲染中
+                created = await client.post(
+                    "https://api.dingtalk.com/v1.0/card/instances",
+                    headers=headers,
+                    json={
+                        "cardTemplateId": self._card_template_id,
+                        "outTrackId": out_track_id,
+                        "cardData": {"cardParamMap": {"flowStatus": "1"}},
+                        "callbackType": "STREAM",
+                        "imGroupOpenSpaceModel": {"supportForward": False},
+                        "imRobotOpenSpaceModel": {"supportForward": False},
+                    },
+                    timeout=10,
+                )
+                if created.status_code != 200:
+                    logger.error(f"创建确认卡片失败: {created.status_code} {created.text[:200]}")
+                    return False
+                # 2) 投放到触发人单聊场域
+                delivered = await client.post(
+                    "https://api.dingtalk.com/v1.0/card/instances/deliver",
+                    headers=headers,
+                    json={
+                        "outTrackId": out_track_id,
+                        "openSpaceId": f"dtv1.card//IM_ROBOT.{staff_id}",
+                        "userIdType": 1,
+                        "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT"},
+                    },
+                    timeout=10,
+                )
+                if delivered.status_code != 200:
+                    logger.error(f"投放确认卡片失败: {delivered.status_code} {delivered.text[:200]}")
+                    return False
+                # 3) 写入正文与按钮(按 key 更新, 保留 flowStatus)
+                updated = await client.put(
+                    "https://api.dingtalk.com/v1.0/card/instances",
+                    headers=headers,
+                    json={
+                        "outTrackId": out_track_id,
+                        "cardData": {"cardParamMap": payload},
+                        "cardUpdateOptions": {"updateCardDataByKey": True},
+                    },
+                    timeout=10,
+                )
+                if updated.status_code != 200:
+                    logger.error(f"更新确认卡片失败: {updated.status_code} {updated.text[:200]}")
+                    return False
+            logger.info(f"确认卡片已发往触发人私聊: {local_user_id} request_id={request_id}")
+            return True
+        except Exception as e:
+            logger.error(f"发送确认卡片异常: {e!r}")
+            return False
+
+    async def _settle_confirm_card(self, request_id: str, approved: bool) -> None:
+        """裁决后更新卡片为已处理(去掉按钮); 尽力而为, 失败仅记日志。"""
+        token = await self._get_access_token()
+        if not token:
+            return
+        out_track_id = f"{OUT_TRACK_PREFIX}{request_id}"
+        layout = json.dumps({"order": ["msgTitle", "staticMsgContent"]}, ensure_ascii=False)
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                await client.put(
+                    "https://api.dingtalk.com/v1.0/card/instances",
+                    headers={"x-acs-dingtalk-access-token": token, "Content-Type": "application/json"},
+                    json={
+                        "outTrackId": out_track_id,
+                        "cardData": {"cardParamMap": {
+                            "msgTitle": "工具执行确认",
+                            "staticMsgContent": "✅ 已同意，工具继续执行。" if approved else "🚫 已拒绝。",
+                            "sys_full_json_obj": layout,
+                            "flowStatus": "3",
+                        }},
+                        "cardUpdateOptions": {"updateCardDataByKey": True},
+                    },
+                    timeout=10,
+                )
+        except Exception as e:
+            logger.debug(f"结算确认卡片失败(忽略): {e!r}")
+
+    async def _wait_card_action(self, request_id: str, timeout: float) -> "bool | None":
+        """等待按钮回调; 裁决后异步结算卡片(去掉按钮)。None=超时。"""
+        verdict = await self._card_actions.wait(request_id, timeout)
+        if verdict is not None:
+            asyncio.create_task(self._settle_confirm_card(request_id, verdict))
+        return verdict
+
+    def resolve_card_action(self, request_id: str, approved: bool) -> bool:
+        """回调入口: 首个裁决生效; 重复点击/未知 request 返回 False(幂等)。"""
+        return self._card_actions.resolve(request_id, approved)
+
+    def consume_confirm_unavailable(self, session_id: str) -> bool:
+        """取出并清除「渠道不可用」标记(发送失败时最终回复改用明确文案)。"""
+        if session_id in self._confirm_unavailable:
+            self._confirm_unavailable.discard(session_id)
+            return True
+        return False
+
+    def _build_confirm_dispatch(self, fallback):
+        """构造 on_confirm 派发器: 按当前 run 的 conversation_id 找 confirmer。
+
+        并发安全: 每个 run 在 ``_confirmers`` 登记自己的 confirmer, 派发时用
+        contextvars 里的当前 run 上下文查找, 不依赖安装/恢复顺序; 非钉钉 run
+        (或已注销)回退到安装时捕获的原回调(如 web 的 ask 回路), 均无则拒绝。
+        """
+
+        async def _dispatch(tool: str, args: dict) -> bool:
+            from agent.core import current_run
+            rc = current_run()
+            key = getattr(rc, "conversation_id", "") or ""
+            confirmer = self._confirmers.get(key)
+            if confirmer is None:
+                session = getattr(rc, "session", None)
+                sid = getattr(session, "session_id", "") if session is not None else ""
+                confirmer = self._confirmers.get(sid)
+            if confirmer is not None:
+                return await confirmer(tool, args)
+            if fallback is not None:
+                try:
+                    return await fallback(tool, args)
+                except Exception as e:
+                    logger.error(f"回退 on_confirm 异常: {e!r}")
+                    return False
+            return False
+
+        return _dispatch
+
+    @contextlib.asynccontextmanager
+    async def confirm_scope(self, agent, conversation_id: str, confirmer):
+        """钉钉 run 期间装配卡片确认回路; finally 恢复原权限模式/on_confirm。
+
+        - 权限模式: 仅当原模式为 AUTO 时临时降为 DEFAULT(写操作才触发确认),
+          最后一个活跃钉钉 run 结束时恢复;
+        - on_confirm: 安装按 run 上下文派发的回调(捕获原值作为回退), 仅当当前值
+          仍是我们安装的派发器时恢复, 不覆盖并发安装的其它渠道回调。
+        """
+        if agent is None or confirmer is None:
+            yield
+            return
+        self._confirmers[conversation_id] = confirmer
+        old_confirm = getattr(agent, "on_confirm", None)
+        dispatch = self._build_confirm_dispatch(old_confirm)
+        old_mode = None
+        try:
+            pc = getattr(agent, "_permission_config", None)
+            if pc is not None:
+                from security.permissions import PermissionMode
+                if pc.mode == PermissionMode.AUTO:
+                    old_mode = pc.mode
+                    pc.mode = PermissionMode.DEFAULT
+            agent.on_confirm = dispatch
+            yield
+        finally:
+            self._confirmers.pop(conversation_id, None)
+            if old_mode is not None and not self._confirmers:
+                with contextlib.suppress(Exception):
+                    agent._permission_config.mode = old_mode
+            if getattr(agent, "on_confirm", None) is dispatch:
+                with contextlib.suppress(Exception):
+                    agent.on_confirm = old_confirm
+
     def _get_storage(self):
         from storage.storage import get_storage
         return get_storage()
@@ -571,6 +813,67 @@ class DingTalkPlugin(BasePlugin):
         self._persist_scope_root(scope_kind, scope_key, session_id)
         logger.debug(f"创建新钉钉Session: {session_id} by {sender_nick} (group={is_group})")
         return fresh
+
+
+class CardActionHandler:
+    """钉钉互动卡片动作回调(Stream 模式)。
+
+    topic: ``dingtalk_stream.Card_Callback_Router_Topic``
+          = ``/v1.0/card/instances/callback``;
+    回调数据经 ``CardCallbackMessage.from_dict`` 解析: ``outTrackId`` 还原 request_id,
+    ``content.cardPrivateData`` 解析裁决(agree/reject)。首个裁决生效, 重复点击忽略。
+    """
+
+    def __init__(self, plugin: DingTalkPlugin):
+        self.plugin = plugin
+        self.logger = logging.getLogger("plugin.dingtalk.card_callback")
+
+    def pre_start(self):
+        return
+
+    async def raw_process(self, callback_message):
+        """按 SDK ``CallbackHandler`` 契约回 ACK(客户端只按 process/raw_process 鸭子调用)。"""
+        import dingtalk_stream
+
+        code, message = await self.process(callback_message)
+        ack_message = dingtalk_stream.AckMessage()
+        ack_message.code = code
+        ack_message.headers.message_id = callback_message.headers.message_id
+        ack_message.headers.content_type = "application/json"
+        ack_message.data = {"response": message}
+        return ack_message
+
+    async def process(self, callback):
+        import dingtalk_stream
+
+        try:
+            out_track_id = ""
+            user_id = ""
+            content = None
+            try:
+                message = dingtalk_stream.CardCallbackMessage.from_dict(callback.data)
+                out_track_id = message.card_instance_id or ""
+                user_id = message.user_id or ""
+                content = message.content
+            except Exception:
+                # SDK 解析失败时按原始回调字段兜底(SDK 会对 content 做 json.loads)
+                data = getattr(callback, "data", None) or {}
+                out_track_id = str(data.get("outTrackId", "") or "")
+                user_id = str(data.get("userId", "") or "")
+                content = data.get("content")
+            request_id = parse_out_track_id(out_track_id)
+            approved = parse_card_action(content)
+            self.logger.info(
+                f"收到卡片回调: request_id={request_id or '-'} user={user_id or '-'} "
+                f"action={approved}")
+            if request_id and approved is not None:
+                accepted = self.plugin.resolve_card_action(request_id, approved)
+                if not accepted:
+                    self.logger.info(f"重复/过期卡片点击已忽略: request_id={request_id}")
+            return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
+        except Exception as e:
+            self.logger.error(f"卡片回调处理失败: {e!r}")
+            return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
 
 
 class AgentChatbotHandler:
@@ -706,18 +1009,31 @@ class AgentChatbotHandler:
             else:
                 router = getattr(self.plugin.plugin_manager, "router", None)
                 if router:
-                    result = await router.route(
-                        content, channel="dingtalk",
+                    # 写操作确认回路: 本次 run 期间装配互动卡片审批(触发人私聊),
+                    # 超时/发送失败 fail-closed; 并发 run 以 conversation_id 隔离。
+                    agent = getattr(router, "agent", None)
+                    confirmer = self.plugin._make_confirmer(
+                        local_user_id=user_id,
                         session_id=session.session_id,
-                        user_id=user_id, user_name=user_name,
-                        role=role,
-                        # 群共享上下文信号: 记忆不注入个人私有, 群内串行/群间并发见 _conv_lock
-                        group_context=is_group,
-                        # 返回 AgentResult, 供下方按 sensitive_hit 改道敏感出口
-                        return_result=True,
+                        user_name=user_name,
                     )
+                    async with self.plugin.confirm_scope(
+                            agent, session.session_id, confirmer):
+                        result = await router.route(
+                            content, channel="dingtalk",
+                            session_id=session.session_id,
+                            user_id=user_id, user_name=user_name,
+                            role=role,
+                            # 群共享上下文信号: 记忆不注入个人私有, 群内串行/群间并发见 _conv_lock
+                            group_context=is_group,
+                            # 返回 AgentResult, 供下方按 sensitive_hit 改道敏感出口
+                            return_result=True,
+                        )
                     response = result.result if hasattr(result, "result") else str(result)
                     sensitive_hit = bool(getattr(result, "sensitive_hit", False))
+                    # 卡片发送/回调不可用: 拒绝并回复明确文案(替代 agent 的通用拒绝文本)
+                    if self.plugin.consume_confirm_unavailable(session.session_id):
+                        response = CONFIRM_UNAVAILABLE_REPLY
                 else:
                     # 兜底(router 缺失, 非线上路径): 仅能取文本, 无敏感标记可判定
                     response = await self.plugin.plugin_manager.execute(

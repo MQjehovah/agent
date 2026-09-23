@@ -28,6 +28,8 @@ logger = logging.getLogger("mcp.dingtalk")
 mcp = MCPServer("DingTalk MCP Server")
 _READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 _SAFE_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+# 破坏性写(不可逆): 审批同意/拒绝等会推动/终结他人流程的操作
+_WRITE_ANNOTATIONS = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 APP_KEY = os.getenv("DINGTALK_APP_KEY", "")
 APP_SECRET = os.getenv("DINGTALK_APP_SECRET", "")
@@ -64,6 +66,49 @@ def _check_config() -> str:
     if not APP_KEY or not APP_SECRET:
         return "错误: 未配置 DINGTALK_APP_KEY / DINGTALK_APP_SECRET，请在 MCP 环境变量中设置"
     return ""
+
+
+_API_BASE = "https://api.dingtalk.com"
+# 单次响应返回上限(超长截断为 truncated 标记 + 预览, 防止撑爆模型上下文)
+_MAX_RESPONSE_CHARS = 6000
+
+
+def _api(method: str, path: str, *, params: dict | None = None,
+         json_body: dict | None = None, timeout: int = 10) -> dict:
+    """调用钉钉新版 OpenAPI(v2 网关), 返回解析后的 JSON body。
+
+    统一附带 x-acs-dingtalk-access-token; 非 2xx 抛 RuntimeError, 由各工具统一
+    转成 {"success": False, "error": ...}。测试经 monkeypatch 替换本函数注入假响应。
+    """
+    token = _get_access_token()
+    headers = {"x-acs-dingtalk-access-token": token, "Content-Type": "application/json"}
+    resp = requests.request(
+        method, f"{_API_BASE}{path}", headers=headers,
+        params=params, json=json_body, timeout=timeout)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+    return resp.json() if resp.text else {}
+
+
+def _clip(value, limit: int = 300) -> str:
+    text = str(value or "")
+    return text[:limit] + "…" if len(text) > limit else text
+
+
+def _dump(obj: dict) -> str:
+    """序列化响应; 超长时返回 truncated 标记 + 预览(保持 JSON 可解析)。"""
+    text = json.dumps(obj, ensure_ascii=False)
+    if len(text) <= _MAX_RESPONSE_CHARS:
+        return text
+    return json.dumps({
+        "success": obj.get("success", True),
+        "truncated": True,
+        "preview": text[: _MAX_RESPONSE_CHARS - 200],
+    }, ensure_ascii=False)
+
+
+def _split_ids(value: str) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
@@ -743,6 +788,577 @@ def dingtalk_get_conversation(conversation_id: str):
     except Exception as e:
         logger.error(f"获取群会话信息异常: {e}")
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_approval_start(
+    process_code: str,
+    originator_user_id: str,
+    form_values: str = "[]",
+    dept_id: int = 0,
+    approvers: str = "",
+    cc_list: str = "",
+):
+    """发起审批实例(创建审批单)。
+
+    参数:
+    - process_code: 审批模板 processCode(审批后台模板唯一标识, 形如 PROC-xxxx)
+    - originator_user_id: 发起人 userId(必填)
+    - form_values: 表单值 JSON 字符串, 形如 [{"name":"报销金额","value":"100"}];
+        name 需与模板控件名一致
+    - dept_id: 发起人部门 ID(可选)
+    - approvers: 指定审批人 JSON 字符串, 形如
+        [{"approverUserId":"user1","actionType":"AND"}](可选)
+    - cc_list: 抄送人 userId 列表, 逗号分隔(可选)
+    """
+    logger.info(f"发起审批: process_code={process_code}, originator={originator_user_id}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(process_code or "").strip():
+        return _dump({"success": False, "error": "process_code 必填"})
+    if not str(originator_user_id or "").strip():
+        return _dump({"success": False, "error": "originator_user_id 必填"})
+
+    try:
+        values = json.loads(form_values) if isinstance(form_values, str) else form_values
+    except (json.JSONDecodeError, TypeError):
+        return _dump({"success": False, "error": "form_values 需为 JSON 数组字符串"})
+    if not isinstance(values, list) or any(
+            not isinstance(item, dict) or not item.get("name") for item in values):
+        return _dump({"success": False, "error": "form_values 需为 [{\"name\":...,\"value\":...}] JSON 数组"})
+
+    body: dict = {
+        "processCode": str(process_code).strip(),
+        "originatorUserId": str(originator_user_id).strip(),
+        "formComponentValues": values,
+    }
+    if dept_id:
+        body["deptId"] = int(dept_id)
+    if approvers:
+        try:
+            body["approvers"] = json.loads(approvers)
+        except (json.JSONDecodeError, TypeError):
+            return _dump({"success": False, "error": "approvers 需为 JSON 数组字符串"})
+    cc_ids = _split_ids(cc_list)
+    if cc_ids:
+        body["ccList"] = cc_ids
+
+    try:
+        result = _api("POST", "/v1.0/workflow/processInstances", json_body=body)
+        return _dump({"success": True, "process_instance_id": result.get("instanceId", "")})
+    except Exception as e:
+        logger.error(f"发起审批异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_approval_instance(process_instance_id: str):
+    """查询审批实例详情(标题/状态/结果/发起人/表单/任务节点)。
+
+    参数:
+    - process_instance_id: 审批实例 ID(发起审批或待办列表返回)
+    """
+    logger.info(f"查询审批实例: {process_instance_id}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(process_instance_id or "").strip():
+        return _dump({"success": False, "error": "process_instance_id 必填"})
+
+    try:
+        resp = _api("GET", "/v1.0/workflow/processInstances",
+                    params={"processInstanceId": str(process_instance_id).strip()})
+        data = resp.get("result") if isinstance(resp.get("result"), dict) else resp
+        tasks = []
+        for task in data.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            tasks.append({
+                "task_id": task.get("taskId"),
+                "activity_id": task.get("activityId"),
+                "status": task.get("status"),
+                "result": task.get("result"),
+            })
+        forms = []
+        for form in data.get("formComponentValues") or []:
+            if not isinstance(form, dict):
+                continue
+            forms.append({"name": form.get("name"), "value": _clip(form.get("value"), 500)})
+        return _dump({"success": True, "instance": {
+            "process_instance_id": process_instance_id,
+            "title": data.get("title"),
+            "status": data.get("status"),
+            "result": data.get("result"),
+            "originator_user_id": data.get("originatorUserId"),
+            "originator_dept_name": data.get("originatorDeptName"),
+            "create_time": data.get("createTime"),
+            "finish_time": data.get("finishTime"),
+            "tasks": tasks,
+            "form_values": forms,
+        }})
+    except Exception as e:
+        logger.error(f"查询审批实例异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_approval_tasks(
+    user_id: str,
+    status: int = 0,
+    max_results: int = 20,
+    next_token: int = 0,
+):
+    """查询某用户的审批待办/已办任务列表。
+
+    参数:
+    - user_id: 用户 userId(必填)
+    - status: 任务状态, 0=待办(默认), 1=已办
+    - max_results: 单页条数(1~100, 默认 20)
+    - next_token: 分页游标, 首页传 0
+    """
+    logger.info(f"查询审批任务: user={user_id}, status={status}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(user_id or "").strip():
+        return _dump({"success": False, "error": "user_id 必填"})
+
+    if isinstance(status, bool) or status not in (0, 1):
+        return _dump({"success": False, "error": "status 仅支持 0(待办)/1(已办)"})
+    size = max(1, min(int(max_results or 20), 100))
+    token = int(next_token or 0)
+
+    try:
+        resp = _api("GET", "/v1.0/workflow/workRecords/todoTasks",
+                    params={"userId": str(user_id).strip(), "status": status,
+                            "maxResults": size, "nextToken": token})
+        data = resp.get("result") if isinstance(resp.get("result"), dict) else resp
+        tasks = []
+        for item in data.get("list") or []:
+            if not isinstance(item, dict):
+                continue
+            forms = []
+            for form in item.get("forms") or []:
+                if not isinstance(form, dict):
+                    continue
+                forms.append({"title": form.get("title"), "content": _clip(form.get("content"), 300)})
+            tasks.append({
+                "task_id": item.get("taskId"),
+                "instance_id": item.get("instanceId"),
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "forms": forms,
+            })
+        return _dump({"success": True, "tasks": tasks,
+                      "next_token": data.get("nextToken", 0)})
+    except Exception as e:
+        logger.error(f"查询审批任务异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+def dingtalk_approval_action(
+    task_id: int,
+    result: str,
+    remark: str = "",
+    process_instance_id: str = "",
+    actioner_user_id: str = "",
+):
+    """同意或拒绝审批任务(不可逆, 会推动/终结他人审批流程)。
+
+    参数:
+    - task_id: 审批任务 ID(taskId, 来自实例详情或待办列表)
+    - result: 操作结果, agree=同意 / refuse=拒绝
+    - remark: 审批意见(可选)
+    - process_instance_id: 审批实例 ID(OpenAPI 必填, 建议随 task 一并传入)
+    - actioner_user_id: 操作人 userId(服务端代操作时必填; 缺省由钉钉按应用身份处理)
+    """
+    logger.info(f"审批操作: task_id={task_id}, result={result}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if task_id is None or isinstance(task_id, bool):
+        return _dump({"success": False, "error": "task_id 必填且为整数"})
+    action = str(result or "").strip().lower()
+    action_aliases = {"agree": "agree", "同意": "agree", "refuse": "refuse", "reject": "refuse", "拒绝": "refuse"}
+    if action not in action_aliases:
+        return _dump({"success": False, "error": "result 仅支持 agree(同意)/refuse(拒绝)"})
+
+    body: dict = {"taskId": int(task_id), "result": action_aliases[action]}
+    if remark:
+        body["remark"] = str(remark)
+    if process_instance_id:
+        body["processInstanceId"] = str(process_instance_id).strip()
+    if actioner_user_id:
+        body["actionerUserId"] = str(actioner_user_id).strip()
+
+    try:
+        resp = _api("POST", "/v1.0/workflow/processInstances/execute", json_body=body)
+        ok = bool(resp.get("success", True)) and resp.get("result", True) is not False
+        if not ok:
+            return _dump({"success": False, "error": resp.get("message", "审批操作未成功")})
+        return _dump({"success": True, "message": "审批操作已提交",
+                      "task_id": int(task_id), "result": action_aliases[action]})
+    except Exception as e:
+        logger.error(f"审批操作异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_todo_create(
+    union_id: str,
+    subject: str,
+    executor_ids: str,
+    creator_id: str = "",
+    description: str = "",
+    due_time_ms: int = 0,
+    priority: int = 0,
+    detail_url: str = "",
+    source_id: str = "",
+):
+    """创建待办任务。
+
+    参数:
+    - union_id: 待办归属用户 unionId(必填, 钉钉待办接口以用户维度鉴权)
+    - subject: 待办标题(必填)
+    - executor_ids: 执行人 userId 列表, 逗号分隔(必填)
+    - creator_id: 创建人 unionId(可选; 缺省为 union_id 对应用户)
+    - description: 待办描述(可选)
+    - due_time_ms: 截止时间毫秒时间戳(可选, 0=不设置)
+    - priority: 优先级数值(可选, 0=不设置)
+    - detail_url: 详情跳转链接(可选)
+    - source_id: 业务来源 ID(可选; 同 source_id 幂等, 便于重复创建去重)
+    """
+    logger.info(f"创建待办: union_id={union_id}, subject={subject}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(union_id or "").strip():
+        return _dump({"success": False, "error": "union_id 必填"})
+    if not str(subject or "").strip():
+        return _dump({"success": False, "error": "subject 必填"})
+    executors = _split_ids(executor_ids)
+    if not executors:
+        return _dump({"success": False, "error": "executor_ids 必填(逗号分隔 userId)"})
+
+    body: dict = {"subject": str(subject).strip(), "executorIds": executors}
+    if creator_id:
+        body["creatorId"] = str(creator_id).strip()
+    if description:
+        body["description"] = str(description)
+    if due_time_ms:
+        body["dueTime"] = int(due_time_ms)
+    if priority:
+        body["priority"] = int(priority)
+    if detail_url:
+        body["detailUrl"] = {"pcUrl": str(detail_url), "appUrl": str(detail_url)}
+    if source_id:
+        body["sourceId"] = str(source_id)
+
+    try:
+        result = _api("POST", f"/v1.0/todo/users/{union_id}/tasks", json_body=body)
+        return _dump({"success": True, "task_id": result.get("id", "")})
+    except Exception as e:
+        logger.error(f"创建待办异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_todo_update(
+    union_id: str,
+    task_id: str,
+    done: bool | None = None,
+    subject: str = "",
+    description: str = "",
+    due_time_ms: int = 0,
+    executor_ids: str = "",
+):
+    """更新待办任务(状态/描述/标题/截止时间/执行人)。
+
+    参数:
+    - union_id: 待办归属用户 unionId(必填)
+    - task_id: 待办任务 ID(必填)
+    - done: 是否完成 true=完成 false=恢复未完成(可选)
+    - subject: 新标题(可选)
+    - description: 新描述(可选)
+    - due_time_ms: 新截止时间毫秒时间戳(可选, 0=不变)
+    - executor_ids: 新执行人 userId 列表, 逗号分隔(可选)
+    """
+    logger.info(f"更新待办: union_id={union_id}, task_id={task_id}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(union_id or "").strip():
+        return _dump({"success": False, "error": "union_id 必填"})
+    if not str(task_id or "").strip():
+        return _dump({"success": False, "error": "task_id 必填"})
+
+    body: dict = {}
+    if done is not None:
+        body["done"] = bool(done)
+    if subject:
+        body["subject"] = str(subject)
+    if description:
+        body["description"] = str(description)
+    if due_time_ms:
+        body["dueTime"] = int(due_time_ms)
+    executors = _split_ids(executor_ids)
+    if executors:
+        body["executorIds"] = executors
+    if not body:
+        return _dump({"success": False, "error": "至少提供一项待更新字段(done/subject/description/due_time_ms/executor_ids)"})
+
+    try:
+        result = _api("PUT", f"/v1.0/todo/users/{union_id}/tasks/{task_id}", json_body=body)
+        ok = result.get("result", True) is not False
+        return _dump({"success": bool(ok), "task_id": str(task_id),
+                      "error": "" if ok else "更新未成功"})
+    except Exception as e:
+        logger.error(f"更新待办异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_todo_list(
+    union_id: str,
+    is_done: bool | None = None,
+    next_token: str = "",
+):
+    """查询某用户的待办任务列表(按完成状态过滤, 游标分页)。
+
+    参数:
+    - union_id: 待办归属用户 unionId(必填)
+    - is_done: 完成状态过滤 true=已完成 / false=未完成(可选, 缺省不过滤)
+    - next_token: 分页游标(上次返回的 next_token, 首页留空)
+    """
+    logger.info(f"查询待办列表: union_id={union_id}, is_done={is_done}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(union_id or "").strip():
+        return _dump({"success": False, "error": "union_id 必填"})
+
+    body: dict = {}
+    if is_done is not None:
+        body["isDone"] = bool(is_done)
+    if next_token:
+        body["nextToken"] = str(next_token)
+
+    try:
+        result = _api("POST", f"/v1.0/todo/users/{union_id}/tasks/list", json_body=body)
+        todos = []
+        for card in result.get("todoCards") or []:
+            if not isinstance(card, dict):
+                continue
+            todos.append({
+                "task_id": card.get("taskId"),
+                "subject": card.get("subject"),
+                "is_done": card.get("isDone"),
+                "todo_status": card.get("todoStatus"),
+                "priority": card.get("priority"),
+                "due_time": card.get("dueTime"),
+                "creator_id": card.get("creatorId"),
+                "created_time": card.get("createdTime"),
+                "modified_time": card.get("modifiedTime"),
+            })
+        return _dump({"success": True, "todos": todos,
+                      "next_token": result.get("nextToken", ""),
+                      "total_count": result.get("totalCount")})
+    except Exception as e:
+        logger.error(f"查询待办列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_calendar_create_event(
+    user_id: str,
+    summary: str,
+    start_time: str,
+    end_time: str,
+    calendar_id: str = "primary",
+    description: str = "",
+    location: str = "",
+    attendees: str = "",
+    is_all_day: bool = False,
+    time_zone: str = "Asia/Shanghai",
+):
+    """创建日程(会议)。
+
+    参数:
+    - user_id: 日程归属用户 unionId(必填)
+    - summary: 日程标题(必填)
+    - start_time: 开始时间, ISO8601 形如 2026-09-24T10:00:00+08:00;
+        全天日程传日期 2026-09-24(必填)
+    - end_time: 结束时间, 格式同 start_time(必填)
+    - calendar_id: 日历 ID, 主日历为 primary(默认)
+    - description: 日程描述(可选)
+    - location: 地点/会议室名称(可选)
+    - attendees: 参与人 userId 列表, 逗号分隔(可选)
+    - is_all_day: 是否全天日程(默认否)
+    - time_zone: 时区(默认 Asia/Shanghai)
+    """
+    logger.info(f"创建日程: user={user_id}, summary={summary}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(user_id or "").strip():
+        return _dump({"success": False, "error": "user_id 必填"})
+    if not str(summary or "").strip():
+        return _dump({"success": False, "error": "summary 必填"})
+    if not str(start_time or "").strip() or not str(end_time or "").strip():
+        return _dump({"success": False, "error": "start_time/end_time 必填"})
+
+    def _moment(value: str) -> dict:
+        value = str(value).strip()
+        if is_all_day:
+            return {"date": value[:10], "timeZone": time_zone}
+        return {"dateTime": value, "timeZone": time_zone}
+
+    body: dict = {"summary": str(summary).strip(),
+                  "start": _moment(start_time), "end": _moment(end_time),
+                  "isAllDay": bool(is_all_day)}
+    if description:
+        body["description"] = str(description)
+    if location:
+        body["location"] = {"displayName": str(location)}
+    attendee_ids = _split_ids(attendees)
+    if attendee_ids:
+        body["attendees"] = [{"id": uid} for uid in attendee_ids]
+
+    try:
+        result = _api("POST", f"/v1.0/calendar/users/{user_id}/calendars/{calendar_id}/events",
+                      json_body=body)
+        return _dump({"success": True, "event_id": result.get("id", "")})
+    except Exception as e:
+        logger.error(f"创建日程异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_calendar_list_events(
+    user_id: str,
+    calendar_id: str = "primary",
+    time_min: str = "",
+    time_max: str = "",
+    max_results: int = 20,
+    next_token: str = "",
+):
+    """查询日程列表(时间范围内)。
+
+    参数:
+    - user_id: 日程归属用户 unionId(必填)
+    - calendar_id: 日历 ID, 主日历为 primary(默认)
+    - time_min: 起始时间(UTC, yyyy-MM-ddTHH:mmZ, 可选)
+    - time_max: 结束时间(UTC, yyyy-MM-ddTHH:mmZ, 可选)
+    - max_results: 单页条数(1~100, 默认 20)
+    - next_token: 分页游标(可选)
+    """
+    logger.info(f"查询日程列表: user={user_id}, calendar={calendar_id}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(user_id or "").strip():
+        return _dump({"success": False, "error": "user_id 必填"})
+
+    params: dict = {"maxResults": max(1, min(int(max_results or 20), 100))}
+    if time_min:
+        params["timeMin"] = str(time_min)
+    if time_max:
+        params["timeMax"] = str(time_max)
+    if next_token:
+        params["nextToken"] = str(next_token)
+
+    try:
+        result = _api("GET", f"/v1.0/calendar/users/{user_id}/calendars/{calendar_id}/events",
+                      params=params)
+        events = []
+        for event in result.get("events") or []:
+            if not isinstance(event, dict):
+                continue
+            events.append({
+                "event_id": event.get("id"),
+                "summary": event.get("summary"),
+                "status": event.get("status"),
+                "start": event.get("start"),
+                "end": event.get("end"),
+                "location": event.get("location"),
+            })
+        return _dump({"success": True, "events": events,
+                      "next_token": result.get("nextToken", "")})
+    except Exception as e:
+        logger.error(f"查询日程列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_calendar_freebusy(
+    user_id: str,
+    user_ids: str,
+    start_time: str,
+    end_time: str,
+):
+    """查询用户忙闲(会议时间段)。
+
+    参数:
+    - user_id: 操作者 unionId(必填)
+    - user_ids: 被查询用户 unionId 列表, 逗号分隔(必填)
+    - start_time: 起始时间(UTC, yyyy-MM-ddTHH:mmZ, 必填)
+    - end_time: 结束时间(UTC, yyyy-MM-ddTHH:mmZ, 必填)
+    """
+    logger.info(f"查询忙闲: user={user_id}, targets={user_ids}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(user_id or "").strip():
+        return _dump({"success": False, "error": "user_id 必填"})
+    targets = _split_ids(user_ids)
+    if not targets:
+        return _dump({"success": False, "error": "user_ids 必填(逗号分隔 unionId)"})
+    if not str(start_time or "").strip() or not str(end_time or "").strip():
+        return _dump({"success": False, "error": "start_time/end_time 必填"})
+
+    try:
+        result = _api("POST", f"/v1.0/calendar/users/{user_id}/querySchedule",
+                      json_body={"userIds": targets,
+                                 "startTime": str(start_time).strip(),
+                                 "endTime": str(end_time).strip()})
+        schedule = []
+        for info in result.get("scheduleInformation") or []:
+            if not isinstance(info, dict):
+                continue
+            items = []
+            for item in info.get("scheduleItems") or []:
+                if not isinstance(item, dict):
+                    continue
+                items.append({"start": item.get("start"), "end": item.get("end"),
+                              "status": item.get("status")})
+            schedule.append({"user_id": info.get("userId"), "error": info.get("error"),
+                             "items": items})
+        return _dump({"success": True, "schedule": schedule})
+    except Exception as e:
+        logger.error(f"查询忙闲异常: {e}")
+        return _dump({"success": False, "error": str(e)})
 
 
 if __name__ == "__main__":

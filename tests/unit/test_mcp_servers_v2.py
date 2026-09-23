@@ -34,7 +34,8 @@ from mcp import Client  # noqa: E402
 # W3b 新增 mcp_git/mcp_postgres)
 SERVER_TOOL_COUNTS = {
     "default": 2,
-    "dingtalk": 15,
+    # 15(消息/通讯录/卡片) + 10(审批/待办/日程, 2026-09 办公 API 扩展)
+    "dingtalk": 25,
     "mysql_query": 3,
     "remote_terminal": 15,
     "rosiwit_cloud_remote": 71,
