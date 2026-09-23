@@ -69,7 +69,7 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **Learning**: `src/learning/learner.py` — self-learning module that triggers pattern extraction and skill creation
 - **Storage**: `src/storage/storage.py` — unified SQLite with connection pool; single `config/data.db`; singleton via `init_storage(workspace, config_dir)`. 表: `messages`(含 `user_id/channel/conversation_id` 审计列)、`eventbus_events`、`autonomous_goals`、`kanban_tasks`、`scheduled_tasks`、`rbac_roles`(含 `permissions/data_scope`)/`rbac_users`/`rbac_user_identities`/`rbac_departments`、`memories/memory_proposals`、`web_tokens`、`usage_records`(含 `duration_ms/cache_*`, 聚合 `summarize_usage/usage_totals`)、`session_meta`、`webhook_tasks`(webhook 任务持久化+重启续跑)。启动自动做幂等 `ALTER` 迁移
 - **Plugins**: `src/plugins/` — `BasePlugin` ABC; plugins loaded from `src/plugins/` dir, provide extra tools to agents
-- **MCP servers**: `src/mcps/manager.py` — launches external MCP tool servers defined in `config/mcp_servers.json`
+- **MCP servers**: `src/mcps/manager.py` — launches external MCP tool servers defined in `config/mcp_servers.json`; 每 server 可选治理字段(缺省保持旧行为): `timeout_seconds`(工具调用超时, 默认60; remote_terminal 生产配 300)、`connect_timeout_seconds`(默认30)、`max_reconnect_attempts`(默认3)、`max_concurrency`(默认4, 信号量排队); 状态经 `MCPManager.status_all()` 聚合(各实例状态/失败清单/重连次数), `/healthz` 带 `mcp` 字段(不鉴权), `GET /api/admin/mcp` 返回完整状态(需 `admin.monitor`)
 - **Commands**: `src/cmd_handler.py` — `/` commands in interactive mode (e.g. `/help`, `/agents`)
 
 ## Directory Layout

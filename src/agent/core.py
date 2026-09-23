@@ -526,7 +526,7 @@ class Agent:
                 try:
                     await self.mcp.connect_server(config)
                 except Exception as e:
-                    logger.warning(f"MCP server [{config.get('name', 'unnamed')}] 连接失败: {e}")
+                    logger.warning(f"MCP [{config.get('name', 'unnamed')}] 连接失败: {e}")
                     continue
             else:
                 logger.debug(

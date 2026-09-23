@@ -3037,6 +3037,13 @@ class WebServer:
 
         # ===== Wave D: 健康检查 / 指标（供 LB 与监控抓取，不鉴权、内网使用）=====
 
+        @self._app.get("/api/admin/mcp")
+        async def admin_mcp(request: Request):
+            """MCP 运行状态(需 admin.monitor 权限): 每 server 状态/失败清单/超时并发配置。"""
+            await _require_perm(request, "admin.monitor")
+            from mcps import MCPManager
+            return MCPManager.status_all()
+
         @self._app.get("/healthz")
         async def healthz():
             db_ok = False
@@ -3049,6 +3056,16 @@ class WebServer:
             except Exception:
                 db_ok = False
             pool = self._pool.stats() if (self._pool is not None and self._pool.enabled) else None
+            mcp: dict[str, Any] = {"summary": {"connected": 0, "failed": 0, "total": 0}, "failed": []}
+            try:
+                from mcps import MCPManager
+                mcp_status = MCPManager.status_all()
+                mcp = {
+                    "summary": mcp_status["summary"],
+                    "failed": [s["name"] for s in mcp_status["servers"] if s["enabled"] and not s["connected"]],
+                }
+            except Exception:
+                pass
             return {
                 "status": "ok" if db_ok else "degraded",
                 "now": datetime.now().isoformat(),
@@ -3056,6 +3073,7 @@ class WebServer:
                 if self._started_at else 0,
                 "db": db_ok,
                 "pool": pool,
+                "mcp": mcp,
             }
 
         @self._app.get("/metrics")

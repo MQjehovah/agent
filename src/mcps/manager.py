@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import subprocess
+import weakref
 from typing import Any
 
 from mcp import ClientSession, MCPError, StdioServerParameters
@@ -12,14 +13,51 @@ from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
 logger = logging.getLogger("agent")
 
-# MCP 连接配置
+# MCP 连接配置（默认值；可在 config/mcp_servers.json 中按 server 覆盖）
 MCP_CONNECT_TIMEOUT = 30  # 连接超时（秒）
+MCP_TOOL_TIMEOUT = 60  # 工具调用超时（秒）
 MCP_RECONNECT_DELAY = 5  # 重连延迟（秒）
 MCP_MAX_RECONNECT_ATTEMPTS = 3  # 最大重连次数
+MCP_MAX_CONCURRENCY = 4  # 每 server 工具调用最大并发
 MCP_HEALTH_CHECK_INTERVAL = 60  # 健康检查间隔（秒）
+MCP_LAST_ERROR_MAX_LEN = 200  # last_error 摘要最大字符数
+
+# 实例注册表：聚合 root agent / worker 池等全部 MCPManager 的运行状态。
+# 弱引用 + close() 注销，避免测试与生命周期泄漏。
+_MANAGER_REGISTRY: "weakref.WeakSet[MCPManager]" = weakref.WeakSet()
 
 # 配置 env 中的 ${VAR} 占位符(真实凭证不入版本库,经进程环境注入子进程)
 _PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _parse_positive_number(raw: Any, default: float) -> tuple[float, bool]:
+    """解析 >0 的数值配置（bool 视为非法）；返回 (值, 是否合法)。"""
+    if raw is None:
+        return default, True
+    if isinstance(raw, bool):
+        return default, False
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default, False
+    if value <= 0:
+        return default, False
+    return value, True
+
+
+def _parse_int_at_least(raw: Any, default: int, minimum: int) -> tuple[int, bool]:
+    """解析 >= minimum 的整数配置（bool 视为非法）；返回 (值, 是否合法)。"""
+    if raw is None:
+        return default, True
+    if isinstance(raw, bool):
+        return default, False
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default, False
+    if value < minimum:
+        return default, False
+    return value, True
 
 
 def resolve_env_values(env: dict[str, Any]) -> dict[str, str]:
@@ -57,18 +95,65 @@ class MCPServerConnection:
         self._connected = False
         self._reconnect_attempts = 0
         self._health_check_task: asyncio.Task | None = None
+        self._last_error = ""
+
+        # 每 server 可配（非法值回退默认并告警）
+        self.timeout_seconds = self._config_number("timeout_seconds", MCP_TOOL_TIMEOUT)
+        self.connect_timeout_seconds = self._config_number("connect_timeout_seconds", MCP_CONNECT_TIMEOUT)
+        self.max_reconnect_attempts = self._config_int("max_reconnect_attempts", MCP_MAX_RECONNECT_ATTEMPTS, minimum=0)
+        self.max_concurrency = self._config_int("max_concurrency", MCP_MAX_CONCURRENCY, minimum=1)
+        self._semaphore = asyncio.Semaphore(self.max_concurrency)
+
+    def _config_number(self, key: str, default: float) -> float:
+        value, ok = _parse_positive_number(self.config.get(key), default)
+        if not ok:
+            logger.warning(f"MCP [{self.name}] 配置 {key}={self.config.get(key)!r} 非法, 回退默认 {default}")
+        return value
+
+    def _config_int(self, key: str, default: int, *, minimum: int) -> int:
+        value, ok = _parse_int_at_least(self.config.get(key), default, minimum)
+        if not ok:
+            logger.warning(f"MCP [{self.name}] 配置 {key}={self.config.get(key)!r} 非法, 回退默认 {default}")
+        return value
 
     @property
     def is_connected(self) -> bool:
         return self._connected and self.session is not None
 
-    async def connect(self, timeout: int = MCP_CONNECT_TIMEOUT) -> bool:
+    @property
+    def connected(self) -> bool:
+        """对外状态别名（is_connected）。"""
+        return self.is_connected
+
+    @property
+    def reconnect_attempts(self) -> int:
+        return self._reconnect_attempts
+
+    @property
+    def tool_count(self) -> int:
+        return len(self.tool_defs)
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    def _set_last_error(self, message: str) -> None:
+        self._last_error = (message or "")[:MCP_LAST_ERROR_MAX_LEN]
+
+    def _clear_last_error(self) -> None:
+        self._last_error = ""
+
+    async def connect(self, timeout: float | None = None) -> bool:
         """连接MCP服务器
 
         连接(stdio 子进程 + ClientSession)在专属连接任务内建立并保持, __aexit__ 也在
         同一任务内执行: anyio 的 cancel scope 要求进出同任务(跨任务退出会 RuntimeError),
         而连接任务不接收调用方取消, 关闭时的在飞回调(stdio 子进程收尾)不会被取消打断。
+
+        timeout 缺省时使用配置的 connect_timeout_seconds(默认 30s)。
         """
+        if timeout is None:
+            timeout = self.connect_timeout_seconds
         if self._conn_task is not None and not self._conn_task.done():
             await self.close()
 
@@ -99,7 +184,7 @@ class MCPServerConnection:
             await self.close()
             raise
 
-    async def _session_main(self, timeout: int) -> None:
+    async def _session_main(self, timeout: float) -> None:
         """专属连接任务: 在自身任务内进出 AsyncExitStack, 停放直到 close() 请求收尾。"""
         from contextlib import AsyncExitStack
 
@@ -123,6 +208,7 @@ class MCPServerConnection:
                     raise
                 except Exception as e:
                     logger.error(f"✗ MCP [{self.name}] 连接失败: {e}")
+                    self._set_last_error(f"连接失败: {str(e) or type(e).__name__}")
                     if ready is not None and not ready.done():
                         ready.set_result(False)
                     return
@@ -141,6 +227,7 @@ class MCPServerConnection:
                 ]
                 self._connected = True
                 self._reconnect_attempts = 0
+                self._clear_last_error()
                 if ready is not None and not ready.done():
                     ready.set_result(True)
 
@@ -186,12 +273,12 @@ class MCPServerConnection:
 
     async def reconnect(self) -> bool:
         """重连MCP服务器"""
-        if self._reconnect_attempts >= MCP_MAX_RECONNECT_ATTEMPTS:
-            logger.error(f"✗ MCP [{self.name}] 已达最大重连次数")
+        if self._reconnect_attempts >= self.max_reconnect_attempts:
+            logger.error(f"✗ MCP [{self.name}] 已达最大重连次数({self.max_reconnect_attempts})")
             return False
 
         self._reconnect_attempts += 1
-        logger.info(f"MCP [{self.name}] 尝试重连 ({self._reconnect_attempts}/{MCP_MAX_RECONNECT_ATTEMPTS})...")
+        logger.info(f"MCP [{self.name}] 尝试重连 ({self._reconnect_attempts}/{self.max_reconnect_attempts})...")
 
         await self.close()
         await asyncio.sleep(MCP_RECONNECT_DELAY)
@@ -215,9 +302,11 @@ class MCPServerConnection:
                 self.session.list_tools(),
                 timeout=10
             )
+            self._clear_last_error()
             return True
         except Exception as e:
             logger.warning(f"MCP [{self.name}] 健康检查失败: {e}")
+            self._set_last_error(f"健康检查失败: {str(e) or type(e).__name__}")
             self._connected = False
             return False
 
@@ -232,43 +321,52 @@ class MCPServerConnection:
         logger.debug(f"MCP [{self.name}] 连接已关闭")
 
     async def call_tool(self, name: str, args: dict) -> str:
-        """调用工具"""
+        """调用工具
+
+        受 max_concurrency 信号量约束（超限排队而非报错），超时用 timeout_seconds
+        （默认 60s，可按 server 配置覆盖）。
+        """
         if not self.session or not self._connected:
             return "MCP未连接"
 
-        try:
-            result = await asyncio.wait_for(
-                self.session.call_tool(name, args),
-                timeout=60
-            )
-            parts = []
-            for item in getattr(result, 'content', None) or []:
-                text = getattr(item, 'text', None)
-                if text is not None:
-                    parts.append(text)
-                elif isinstance(item, str):
-                    parts.append(item)
-            if parts:
-                return "\n".join(parts)
-            structured = getattr(result, 'structured_content', None)
-            if structured is not None:
-                return json.dumps(structured, ensure_ascii=False, default=str)
-            if getattr(result, 'is_error', False):
-                return "执行失败"
-            return "执行成功"
-        except asyncio.TimeoutError:
-            logger.error(f"MCP [{self.name}] 工具调用超时: {name}")
-            return "执行失败: 工具调用超时"
-        except MCPError as e:
-            logger.error(f"MCP [{self.name}] 工具调用失败: {name}, MCPError({e.code}): {e}")
-            if e.code in (CONNECTION_CLOSED, REQUEST_TIMEOUT):
-                self._connected = False
-            return f"执行失败: {e}"
-        except Exception as e:
-            logger.error(f"MCP [{self.name}] 工具调用失败: {name}, {type(e).__name__}: {e}")
-            if isinstance(e, (ConnectionError, OSError, BrokenPipeError)):
-                self._connected = False
-            return f"执行失败: {e}"
+        async with self._semaphore:
+            try:
+                result = await asyncio.wait_for(
+                    self.session.call_tool(name, args),
+                    timeout=self.timeout_seconds
+                )
+                parts = []
+                for item in getattr(result, 'content', None) or []:
+                    text = getattr(item, 'text', None)
+                    if text is not None:
+                        parts.append(text)
+                    elif isinstance(item, str):
+                        parts.append(item)
+                if parts:
+                    return "\n".join(parts)
+                structured = getattr(result, 'structured_content', None)
+                if structured is not None:
+                    return json.dumps(structured, ensure_ascii=False, default=str)
+                if getattr(result, 'is_error', False):
+                    return "执行失败"
+                return "执行成功"
+            except asyncio.TimeoutError:
+                message = f"工具调用超时: {name}"
+                logger.error(f"MCP [{self.name}] {message}")
+                self._set_last_error(message)
+                return "执行失败: 工具调用超时"
+            except MCPError as e:
+                logger.error(f"MCP [{self.name}] 工具调用失败: {name}, MCPError({e.code}): {e}")
+                self._set_last_error(f"工具调用失败: {name}, MCPError({e.code}): {e}")
+                if e.code in (CONNECTION_CLOSED, REQUEST_TIMEOUT):
+                    self._connected = False
+                return f"执行失败: {e}"
+            except Exception as e:
+                logger.error(f"MCP [{self.name}] 工具调用失败: {name}, {type(e).__name__}: {e}")
+                self._set_last_error(f"工具调用失败: {name}, {type(e).__name__}: {e}")
+                if isinstance(e, (ConnectionError, OSError, BrokenPipeError)):
+                    self._connected = False
+                return f"执行失败: {e}"
 
 
 class MCPManager:
@@ -282,6 +380,8 @@ class MCPManager:
         self._config_data: list[dict[str, Any]] = []
         self._health_check_task: asyncio.Task | None = None
         self._closing = False
+        self._server_errors: dict[str, str] = {}
+        _MANAGER_REGISTRY.add(self)
 
     def load_config(self) -> list[dict[str, Any]]:
         """加载MCP配置文件"""
@@ -303,6 +403,15 @@ class MCPManager:
             if config.get("name") == name:
                 return config
         return None
+
+    def _remember_config(self, config: dict[str, Any]) -> None:
+        """登记 server 配置(动态 connect_server 路径也纳入 status 聚合)。"""
+        name = config.get("name", "unnamed")
+        for i, existing in enumerate(self._config_data):
+            if existing.get("name") == name:
+                self._config_data[i] = config
+                return
+        self._config_data.append(config)
 
     def _refresh_tool_defs(self) -> None:
         """刷新工具定义列表"""
@@ -326,16 +435,21 @@ class MCPManager:
             success = await server.connect()
             if success:
                 self.servers[name] = server
+                self._server_errors.pop(name, None)
                 self.tool_defs.extend(server.tool_defs)
                 for tool_def in server.tool_defs:
                     tool_name = tool_def["function"]["name"]
                     self._tool_to_server[tool_name] = name
+            else:
+                # 故障隔离: 单 server 失败不阻塞其它, 记入失败清单
+                self._server_errors[name] = server.last_error or "连接失败"
 
         logger.info(f"✓ 共加载 {len(self.tool_defs)} 个MCP工具")
 
     async def close(self):
         """关闭所有MCP连接"""
         self._closing = True
+        _MANAGER_REGISTRY.discard(self)
         if self._health_check_task:
             self._health_check_task.cancel()
             self._health_check_task = None
@@ -419,6 +533,91 @@ class MCPManager:
             for name, s in self.servers.items()
         ]
 
+    def status(self) -> dict[str, Any]:
+        """本实例各 server 状态与汇总(供 /healthz 与 /api/admin/mcp)。
+
+        覆盖已配置但连接失败的 server(故障隔离清单), 状态含:
+        name/enabled/connected/tools/last_error/reconnects/timeout_seconds/max_concurrency。
+        """
+        configs: dict[str, dict[str, Any]] = {}
+        for config in self._config_data:
+            configs.setdefault(config.get("name", "unnamed"), config)
+        for name, server in self.servers.items():
+            configs.setdefault(name, server.config)
+
+        servers: list[dict[str, Any]] = []
+        connected_count = 0
+        failed_count = 0
+        for name in sorted(configs):
+            config = configs[name]
+            conn = self.servers.get(name)
+            connected = bool(conn and conn.is_connected)
+            enabled = bool(config.get("enabled", True))
+            if conn is not None:
+                tools, reconnects, error = conn.tool_count, conn.reconnect_attempts, conn.last_error
+            else:
+                tools, reconnects, error = 0, 0, ""
+            if not connected:
+                error = error or self._server_errors.get(name, "")
+            if enabled and not connected and not error:
+                error = "未连接"
+            if connected:
+                connected_count += 1
+            elif enabled:
+                failed_count += 1
+            timeout_seconds = conn.timeout_seconds if conn is not None else _parse_positive_number(
+                config.get("timeout_seconds"), MCP_TOOL_TIMEOUT)[0]
+            max_concurrency = conn.max_concurrency if conn is not None else _parse_int_at_least(
+                config.get("max_concurrency"), MCP_MAX_CONCURRENCY, 1)[0]
+            servers.append({
+                "name": name,
+                "enabled": enabled,
+                "connected": connected,
+                "tools": tools,
+                "last_error": error,
+                "reconnects": reconnects,
+                "timeout_seconds": timeout_seconds,
+                "max_concurrency": max_concurrency,
+            })
+        return {
+            "servers": servers,
+            "summary": {"connected": connected_count, "failed": failed_count, "total": len(servers)},
+        }
+
+    @staticmethod
+    def status_all() -> dict[str, Any]:
+        """聚合进程内全部实例(含 worker 池)的状态, 同名 server 合并(优先已连接实例)。"""
+        merged: dict[str, dict[str, Any]] = {}
+        for mgr in list(_MANAGER_REGISTRY):
+            try:
+                data = mgr.status()
+            except Exception as e:
+                logger.warning(f"聚合 MCP 状态失败: {e}")
+                continue
+            for row in data["servers"]:
+                name = row["name"]
+                prev = merged.get(name)
+                if prev is None:
+                    merged[name] = dict(row)
+                    continue
+                pick = row if (row["connected"] and not prev["connected"]) else prev
+                merged[name] = {
+                    **pick,
+                    "enabled": prev["enabled"] or row["enabled"],
+                    "tools": max(prev["tools"], row["tools"]),
+                    "reconnects": max(prev["reconnects"], row["reconnects"]),
+                    "last_error": pick["last_error"] or prev["last_error"] or row["last_error"],
+                }
+        servers = [merged[name] for name in sorted(merged)]
+        return {
+            "servers": servers,
+            "summary": {
+                "connected": sum(1 for s in servers if s["connected"]),
+                "failed": sum(1 for s in servers if s["enabled"] and not s["connected"]),
+                "total": len(servers),
+            },
+        }
+
     async def connect_server(self, config: dict[str, Any]) -> bool:
         """动态连接MCP服务器
 
@@ -432,16 +631,19 @@ class MCPManager:
         if name in self.servers:
             await self.disconnect_server(name)
 
+        self._remember_config(config)
         base_dir = os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.abspath(__file__))))
         server = MCPServerConnection(name, config, base_dir)
         success = await server.connect()
         if success:
             self.servers[name] = server
+            self._server_errors.pop(name, None)
             self._refresh_tool_defs()
             logger.debug(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
             return True
         else:
+            self._server_errors[name] = server.last_error or "连接失败"
             logger.warning(f"✗ MCP服务 [{name}] 动态连接失败")
             return False
 
@@ -460,6 +662,7 @@ class MCPManager:
 
         server = self.servers.pop(name)
         await server.close()
+        self._server_errors.pop(name, None)
         self._refresh_tool_defs()
         logger.info(f"✓ MCP服务 [{name}] 已断开连接")
         return True

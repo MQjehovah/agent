@@ -62,7 +62,8 @@
         "env": {
             "WS_BASE_URL": "wss://dev.xzrobot.com:10000"
         },
-        "description": "WebSocket终端交互服务 - 通过WebSocket连接设备终端并执行命令"
+        "timeout_seconds": 300,
+        "description": "WebSocket终端交互服务 - 通过WebSocket连接设备终端并执行命令（交互命令较慢, 工具调用超时放宽到 300s）"
     },
     {
         "name": "rosiwit_cloud_ticket",
