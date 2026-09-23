@@ -3,13 +3,15 @@
 线上问题背景: 在线会话 ask_user 提问后回答未生效, 恰好 180s 以空文案失败。
 本文件锁定加固后的语义:
 - bridge 正常回答/超时/取消均有日志, 取消必须向上传播(re-raise)且清理 pending;
-- answer 端点: 缺参/过期 404、越权 403、成功 set_result、重复回答分支;
-- 对外返回码不变: 成功 200、过期 404、越权 403。
+- deliver_ask_answer 跨事件循环线程安全投递回答(唤醒目标循环);
+- answer 端点: 缺参/过期 404、越权 403、成功投递、投递失败(重复/循环关闭) 410;
+- 对外返回码: 成功 200、过期/缺失 404、越权 403、不可投递 410。
 """
 import asyncio
 import logging
 import os
 import sys
+import threading
 import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
@@ -17,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 
-from web.server import WebServer, create_jwt  # noqa: E402
+from web.server import WebServer, create_jwt, deliver_ask_answer  # noqa: E402
 
 LOGGER_NAME = "agent.web"
 
@@ -39,6 +41,53 @@ async def _post_answer(w: WebServer, payload: dict, token: str = ""):
 
 def _has_log(caplog, text: str) -> bool:
     return any(text in rec.getMessage() for rec in caplog.records)
+
+
+# ---------------- deliver_ask_answer 跨事件循环投递 ----------------
+
+
+def test_deliver_ask_answer_across_event_loops():
+    """核心用例: 主线程投递 → 另一线程独立事件循环中等待的 future 被唤醒。"""
+    box: dict = {}
+    started = threading.Event()
+
+    def worker():
+        async def wait_future():
+            fut = asyncio.get_running_loop().create_future()
+            box["future"] = fut
+            started.set()
+            return await fut
+
+        box["answer"] = asyncio.run(wait_future())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    try:
+        assert started.wait(5), "worker 事件循环未就绪"
+        assert deliver_ask_answer(box["future"], "答案") is True
+        t.join(5)
+        assert not t.is_alive(), "future 未被唤醒(跨循环投递失败)"
+        assert box["answer"] == "答案"
+    finally:
+        t.join(1)
+
+
+def test_deliver_ask_answer_false_cases():
+    """None / 已完成 / 所属循环已关闭 → False(调用方按已过期处理)。"""
+    assert deliver_ask_answer(None, "x") is False
+
+    loop = asyncio.new_event_loop()
+    try:
+        done_fut = loop.create_future()
+        done_fut.set_result("already")
+        assert deliver_ask_answer(done_fut, "x") is False
+    finally:
+        loop.close()
+
+    dead_loop = asyncio.new_event_loop()
+    pending = dead_loop.create_future()
+    dead_loop.close()
+    assert deliver_ask_answer(pending, "x") is False
 
 
 # ---------------- bridge（真实 _make_ask_bridge） ----------------
@@ -100,6 +149,22 @@ async def test_ask_bridge_cancel_re_raises_and_logs(monkeypatch, caplog):
     assert _has_log(caplog, "被取消")
 
 
+async def test_ask_bridge_resumes_via_deliver_helper(monkeypatch):
+    """进程内端到端: bridge 挂起 → deliver_ask_answer 投递 → 返回用户答案。"""
+    monkeypatch.setenv("AGENT_WEB_ASK_TIMEOUT", "5")
+    w = WebServer()
+    q: asyncio.Queue = asyncio.Queue()
+    bridge = w._make_ask_bridge(q, "web:7")
+
+    task = asyncio.create_task(bridge("要继续吗?", ["是", "否"], "否"))
+    await asyncio.sleep(0.01)
+    ask_id = next(iter(w._pending_asks))
+    assert deliver_ask_answer(w._pending_asks[ask_id]["future"], "是") is True
+
+    assert await task == "是"
+    assert w._pending_asks == {}
+
+
 # ---------------- /api/chat/answer ----------------
 
 
@@ -113,11 +178,13 @@ async def test_answer_endpoint_sets_result_and_logs(monkeypatch, caplog):
         r = await _post_answer(w, {"ask_id": ask_id, "answer": "允许"}, tok)
 
     assert r.status_code == 200 and r.json()["success"] is True
+    await asyncio.sleep(0)  # call_soon_threadsafe 投递在下一轮循环生效
     assert fut.done() and fut.result() == "允许"
     assert _has_log(caplog, f"answer {ask_id[:8]} by uid=7")
 
 
-async def test_answer_endpoint_duplicate_logged(monkeypatch, caplog):
+async def test_answer_endpoint_duplicate_returns_410(monkeypatch, caplog):
+    """重复回答: future 已完成 → 投递失败 410, 原答案不被覆盖。"""
     monkeypatch.setenv("WEBUI_DISABLE_AUTH", "0")
     w = WebServer()
     ask_id, fut = _register_pending(w, tag="web:7")
@@ -125,12 +192,32 @@ async def test_answer_endpoint_duplicate_logged(monkeypatch, caplog):
 
     first = await _post_answer(w, {"ask_id": ask_id, "answer": "允许"}, tok)
     assert first.status_code == 200
+    await asyncio.sleep(0)
     with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
         second = await _post_answer(w, {"ask_id": ask_id, "answer": "拒绝"}, tok)
 
-    assert second.status_code == 200 and second.json()["success"] is True
+    assert second.status_code == 410
+    assert second.json()["error"] == "该问题已过期或不存在"
     assert fut.result() == "允许"
+    assert _has_log(caplog, "投递失败")
     assert _has_log(caplog, "重复回答")
+
+
+async def test_answer_endpoint_closed_loop_future_410(monkeypatch, caplog):
+    """future 所属事件循环已关闭(worker 退出) → 投递失败 410 + warning。"""
+    monkeypatch.setenv("WEBUI_DISABLE_AUTH", "1")
+    w = WebServer()
+    dead_loop = asyncio.new_event_loop()
+    dead_fut = dead_loop.create_future()
+    dead_loop.close()
+    ask_id = uuid.uuid4().hex
+    w._pending_asks[ask_id] = {"future": dead_fut, "tag": "web:1", "question": "q"}
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+        r = await _post_answer(w, {"ask_id": ask_id, "answer": "x"})
+
+    assert r.status_code == 410
+    assert _has_log(caplog, "投递失败")
 
 
 async def test_answer_endpoint_expired_or_missing_404(monkeypatch, caplog):
@@ -171,4 +258,5 @@ async def test_answer_endpoint_admin_can_answer_others(monkeypatch):
     r = await _post_answer(w, {"ask_id": ask_id, "answer": "允许"}, tok)
 
     assert r.status_code == 200
+    await asyncio.sleep(0)
     assert fut.done() and fut.result() == "允许"

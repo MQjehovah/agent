@@ -19,7 +19,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 import pytest  # noqa: E402
 
 from agent.executor import execute_tool_safe  # noqa: E402
-from tools import BuiltinTool, ToolRegistry  # noqa: E402
+from tools import (  # noqa: E402
+    DEFAULT_TOOL_TIMEOUT,
+    BuiltinTool,
+    ToolRegistry,
+    resolve_tool_timeout,
+)
 
 EXEC_LOGGER = "agent.agent"
 
@@ -97,6 +102,37 @@ def _make_agent(tool_side_effect):
     agent.skill_manager = None
     agent.subagent_manager = None
     return agent
+
+
+# ---------------- 工具硬超时: ask_user 豁免 ----------------
+
+
+def test_registry_default_timeout_is_180():
+    assert ToolRegistry()._tool_timeout == DEFAULT_TOOL_TIMEOUT == 180.0
+
+
+def test_resolve_tool_timeout_other_tools_keep_default():
+    assert resolve_tool_timeout("shell") == 180.0
+    assert resolve_tool_timeout("file", default=30.0) == 30.0
+
+
+def test_resolve_tool_timeout_ask_user_override(monkeypatch):
+    """ask_user 生效超时 = max(600 兜底, AGENT_WEB_ASK_TIMEOUT(300) + 60 余量)。"""
+    monkeypatch.delenv("AGENT_WEB_ASK_TIMEOUT", raising=False)
+    assert resolve_tool_timeout("ask_user") == 600.0
+
+    monkeypatch.setenv("AGENT_WEB_ASK_TIMEOUT", "300")
+    assert resolve_tool_timeout("ask_user") == 600.0
+
+
+def test_resolve_tool_timeout_ask_user_follows_longer_wait(monkeypatch):
+    monkeypatch.setenv("AGENT_WEB_ASK_TIMEOUT", "900")
+    assert resolve_tool_timeout("ask_user") == 960.0
+
+
+def test_resolve_tool_timeout_bad_env_falls_back(monkeypatch):
+    monkeypatch.setenv("AGENT_WEB_ASK_TIMEOUT", "abc")
+    assert resolve_tool_timeout("ask_user") == 600.0
 
 
 # ---------------- ToolRegistry.execute: 空文案回退 / 取消传播 ----------------

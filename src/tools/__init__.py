@@ -17,6 +17,30 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     thread_name_prefix="tool-exec",
 )
 
+# 工具硬超时(秒): 默认 180s, 防止工具死循环/挂起卡住 worker。
+DEFAULT_TOOL_TIMEOUT = 180.0
+# 按工具的硬超时覆盖: ask_user 的等待时长由 Web 追问桥的 AGENT_WEB_ASK_TIMEOUT
+# (默认 300s)决定; 若仍受 180s 硬超时约束, 工具会先于 bridge 超时被取消, 用户
+# 已选择的回答无法回传(线上 ask 卡死/空错误)。故 ask_user 豁免为更长值:
+# max(600s 兜底, AGENT_WEB_ASK_TIMEOUT + 60s 余量), 保证 bridge 自身先超时回落
+# 默认值, 工具侧硬超时只做兜底。其它工具保持默认 180s。
+_TOOL_TIMEOUT_OVERRIDES = {"ask_user": 600.0}
+_ASK_TIMEOUT_MARGIN = 60.0
+
+
+def resolve_tool_timeout(name: str, default: float = DEFAULT_TOOL_TIMEOUT) -> float:
+    """解析工具生效硬超时(秒): 默认 180s; ask_user 按覆盖规则豁免为更长值。"""
+    timeout = _TOOL_TIMEOUT_OVERRIDES.get(name)
+    if timeout is None:
+        return default
+    if name == "ask_user":
+        try:
+            ask_wait = float(os.environ.get("AGENT_WEB_ASK_TIMEOUT", "300") or "300")
+        except ValueError:
+            ask_wait = 300.0
+        timeout = max(timeout, ask_wait + _ASK_TIMEOUT_MARGIN)
+    return timeout
+
 
 @dataclass
 class ToolDefinition:
@@ -104,8 +128,8 @@ class ToolRegistry:
         self._tools: dict[str, BuiltinTool] = {}
         self._workspace: str = ""
         self._temp_dir: str = ""
-        # 工具超时（秒）：防止工具死循环/挂起卡住 worker
-        self._tool_timeout: float = 180.0
+        # 工具超时（秒）：防止工具死循环/挂起卡住 worker；ask_user 走按工具豁免
+        self._tool_timeout: float = DEFAULT_TOOL_TIMEOUT
 
     @property
     def workspace(self) -> str:
@@ -200,7 +224,7 @@ class ToolRegistry:
             _TOOL_EXECUTOR,
             lambda: ctx.run(_run_sync),
         )
-        return await asyncio.wait_for(future, timeout=self._tool_timeout)
+        return await asyncio.wait_for(future, timeout=resolve_tool_timeout(name, self._tool_timeout))
 
     def list_tools(self) -> list[str]:
         return list(self._tools.keys())

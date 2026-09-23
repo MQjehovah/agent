@@ -109,6 +109,34 @@ def _verify_cred(cred: str) -> bool:
         return False
 
 
+def deliver_ask_answer(fut, value) -> bool:
+    """跨事件循环安全地完成 future: 用 loop.call_soon_threadsafe 唤醒目标循环。
+
+    ask_user 经工具线程池在独立事件循环里创建 future 并等待(见 tools.ask_user /
+    tools.ToolRegistry._execute_in_worker)，而 /api/chat/answer 运行在主事件循环；
+    直接 fut.set_result() 只把回调排进目标循环的 ready 队列、不唤醒其 selector，
+    回答会一直不被处理直到工具超时(线上 ask 卡死)。call_soon_threadsafe 会写入
+    self-pipe 唤醒目标循环，保证回答及时投递。
+    返回 False 表示 future 不存在/已完成/所属循环已关闭，调用方按“已过期”处理。
+    """
+    if fut is None or fut.done():
+        return False
+    loop = fut.get_loop()
+    if loop.is_closed():
+        return False
+
+    def _set_if_pending():
+        # 调度与执行之间存在竞态(bridge 可能刚好超时取消 future), 执行侧再查一次
+        if not fut.done():
+            fut.set_result(value)
+
+    try:
+        loop.call_soon_threadsafe(_set_if_pending)
+        return True
+    except RuntimeError:
+        return False
+
+
 class _BodyLimitMiddleware:
     """纯 ASGI 请求体上限(2MB)。替代 BaseHTTPMiddleware, 规避并发 cancel-scope 崩溃。"""
 
@@ -1682,11 +1710,20 @@ class WebServer:
                     f"answer {ask_id[:8]} 越权回答被拒: uid={uid} owner={info.get('tag', '')}")
                 return JSONResponse({"error": "无权回答该问题"}, status_code=403)
             fut = info.get("future")
-            if fut is not None and not fut.done():
-                fut.set_result("" if answer is None else str(answer))
-                logger.info(f"answer {ask_id[:8]} by uid={uid}")
-            else:
-                logger.warning(f"answer {ask_id[:8]} 重复回答(该问题已完成) uid={uid}")
+            answer_value = "" if answer is None else str(answer)
+            # 本端点与 bridge 同在主事件循环; 投递经 call_soon_threadsafe 异步生效,
+            # 用 info 标记保证同一 ask 只受理一次(否则快速重复提交会双投递)。
+            if info.get("delivering"):
+                logger.warning(f"answer {ask_id[:8]} 投递失败: 重复回答(已受理) uid={uid}")
+                return JSONResponse({"error": "该问题已过期或不存在"}, status_code=410)
+            info["delivering"] = True
+            if not deliver_ask_answer(fut, answer_value):
+                info.pop("delivering", None)
+                state = ("重复回答(该问题已完成)" if (fut is not None and fut.done())
+                         else "future 不可用(所属循环已关闭)")
+                logger.warning(f"answer {ask_id[:8]} 投递失败: {state} uid={uid}")
+                return JSONResponse({"error": "该问题已过期或不存在"}, status_code=410)
+            logger.info(f"answer {ask_id[:8]} by uid={uid}")
             return {"success": True}
 
         @self._app.get("/api/tasks")
