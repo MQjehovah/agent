@@ -200,12 +200,16 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
             logger.debug(f"[工具压缩] {name}: {original_len} -> {len(result)} chars")
 
         return result
+    except asyncio.CancelledError:
+        logger.warning(f"工具调用被取消: {name}")
+        raise
     except Exception as e:
-        logger.error(f"工具 {name} 执行失败: {e}")
+        err_text = str(e) or type(e).__name__
+        logger.error(f"工具 {name} 执行失败: {err_text}")
         cb = _get_user_circuit_breaker(agent)
         if cb and name != "ask_user":
             cb.on_failure()
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+        return json.dumps({"success": False, "error": err_text}, ensure_ascii=False)
 
 
 async def execute_tool(agent, name: str, args: dict) -> str:
@@ -263,7 +267,7 @@ async def execute_tool(agent, name: str, args: dict) -> str:
 
         return f"工具 {name} 不存在"
     except Exception as e:
-        return f"工具执行错误: {e}"
+        return f"工具执行错误: {str(e) or type(e).__name__}"
 
 
 async def execute_subagent(agent, args: dict) -> str:

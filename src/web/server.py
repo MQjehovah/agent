@@ -626,6 +626,41 @@ class WebServer:
     def _owner_name_for(uid: str, name: str = "") -> str:
         return name or uid
 
+    def _make_ask_bridge(self, q: asyncio.Queue, owner_tag: str):
+        """构造 SSE 双向追问桥: agent 调 ask_user 时暂停并等前端回答。
+
+        正常回答/超时/取消三条路径都有日志; 取消必须向上传播(re-raise), 不能
+        吞掉 CancelledError, 否则前端断开/任务取消时 run 无法及时收尾。
+        """
+        _timeout = float(os.environ.get("AGENT_WEB_ASK_TIMEOUT", "300") or "300")
+
+        async def bridge(question: str, options: list, default: str):
+            ask_id = uuid.uuid4().hex
+            fut = asyncio.get_event_loop().create_future()
+            self._pending_asks[ask_id] = {
+                "future": fut, "tag": owner_tag,
+                "question": str(question)[:200],
+            }
+            try:
+                await q.put(("sse", ("ask", {
+                    "ask_id": ask_id, "question": question,
+                    "options": list(options or []), "default": default or "",
+                })))
+                try:
+                    answer = await asyncio.wait_for(fut, timeout=_timeout)
+                    logger.info(f"ask {ask_id[:8]} 已收到回答: {str(answer)[:40]!r}")
+                    return answer
+                except asyncio.TimeoutError:
+                    logger.warning(f"ask {ask_id[:8]} 等待回答超时，使用默认值")
+                    return default or ""
+                except asyncio.CancelledError:
+                    logger.warning(f"ask {ask_id[:8]} 被取消(前端断开或任务取消)")
+                    raise
+            finally:
+                self._pending_asks.pop(ask_id, None)
+
+        return bridge
+
     def _record_owner(self, session_id: str, tag: str, name: str = ""):
         with self._session_lock:
             if self._session_owners.get(session_id) is None:
@@ -1504,34 +1539,9 @@ class WebServer:
                     )
 
                 # SSE 双向追问：agent 调 ask_user 时暂停并等前端回答
-                def make_ask_bridge():
-                    _timeout = float(os.environ.get("AGENT_WEB_ASK_TIMEOUT", "300") or "300")
-
-                    async def bridge(question: str, options: list, default: str):
-                        ask_id = uuid.uuid4().hex
-                        fut = asyncio.get_event_loop().create_future()
-                        self._pending_asks[ask_id] = {
-                            "future": fut, "tag": web_user_id,
-                            "question": str(question)[:200],
-                        }
-                        try:
-                            await q.put(("sse", ("ask", {
-                                "ask_id": ask_id, "question": question,
-                                "options": list(options or []), "default": default or "",
-                            })))
-                            try:
-                                return await asyncio.wait_for(fut, timeout=_timeout)
-                            except asyncio.TimeoutError:
-                                logger.warning(f"ask {ask_id[:8]} 等待回答超时，使用默认值")
-                                return default or ""
-                        finally:
-                            self._pending_asks.pop(ask_id, None)
-
-                    return bridge
-
                 async def run_agent():
                     from tools.ask_user import reset_ask_bridge, set_ask_bridge
-                    _ask = make_ask_bridge()
+                    _ask = self._make_ask_bridge(q, web_user_id)
                     _bt = set_ask_bridge(_ask)
                     _old_mode = None
                     _old_confirm = None
@@ -1636,6 +1646,7 @@ class WebServer:
                             break
                 finally:
                     if agent_task is not None and not agent_task.done():
+                        logger.info(f"[sse] 前端断开, 取消运行任务 session={session_id}")
                         agent_task.cancel()
                     chat_session.stop_stream()
                     self._pool_run_finished(rel_tag, session_id)
@@ -1657,15 +1668,25 @@ class WebServer:
             data = await request.json()
             ask_id = (data.get("ask_id") or "").strip()
             answer = data.get("answer")
+            uid = u.get("uid")
+            if not ask_id:
+                logger.warning(f"answer 缺少 ask_id (uid={uid})")
+                return JSONResponse({"error": "该问题已过期或不存在"}, status_code=404)
             info = self._pending_asks.get(ask_id)
             if not info:
+                logger.warning(f"answer {ask_id[:8]} 已过期或不存在 (uid={uid})")
                 return JSONResponse({"error": "该问题已过期或不存在"}, status_code=404)
-            tag = WebServer._owner_tag(str(u.get("uid")))
+            tag = WebServer._owner_tag(str(uid))
             if u.get("role") != "admin" and not WebServer._same_owner(info.get("tag", ""), tag):
+                logger.warning(
+                    f"answer {ask_id[:8]} 越权回答被拒: uid={uid} owner={info.get('tag', '')}")
                 return JSONResponse({"error": "无权回答该问题"}, status_code=403)
             fut = info.get("future")
             if fut is not None and not fut.done():
                 fut.set_result("" if answer is None else str(answer))
+                logger.info(f"answer {ask_id[:8]} by uid={uid}")
+            else:
+                logger.warning(f"answer {ask_id[:8]} 重复回答(该问题已完成) uid={uid}")
             return {"success": True}
 
         @self._app.get("/api/tasks")

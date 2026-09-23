@@ -163,8 +163,9 @@ class ToolRegistry:
             logger.error(f"工具 '{name}' 参数错误: {e}")
             return f"错误: 工具 '{name}' 参数错误 - {e}"
         except Exception as e:
-            logger.error(f"工具 '{name}' 执行失败: {e}")
-            return f"错误: 工具 '{name}' 执行失败 - {e}"
+            err_text = str(e) or type(e).__name__
+            logger.error(f"工具 '{name}' 执行失败: {err_text}")
+            return f"错误: 工具 '{name}' 执行失败 - {err_text}"
 
     async def _execute_in_worker(self, tool: BuiltinTool, name: str, args: dict) -> str:
         """在线程池中执行工具，避免同步阻塞卡死事件循环。
