@@ -33,7 +33,7 @@ def _parse_timezone(name: str) -> tuple[ZoneInfo | None, str | None]:
         return ZoneInfo(str(name or "").strip()), None
     except (ZoneInfoNotFoundError, ValueError, TypeError, OSError):
         return None, (
-            f"非法时区: {name!r}。请使用 IANA 时区名(如 Asia/Shanghai), 可用 list_timezones 按关键词查询"
+            f"非法时区: {name!r}。请使用 IANA 时区名(如 Asia/Shanghai), 可用 time_list_timezones 按关键词查询"
         )
 
 
@@ -70,7 +70,7 @@ def _describe_moment(moment: datetime.datetime) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
-def get_current_time(timezone: str = DEFAULT_TIMEZONE) -> dict:
+def time_now(timezone: str = DEFAULT_TIMEZONE) -> dict:
     """获取指定时区的当前时间(纯离线, 不触网)。
 
     参数:
@@ -96,7 +96,7 @@ def get_current_time(timezone: str = DEFAULT_TIMEZONE) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
-def convert_time(value: str, from_timezone: str, to_timezone: str) -> dict:
+def time_convert(value: str, from_timezone: str, to_timezone: str) -> dict:
     """把 ISO8601 时间从 from_timezone 换算到 to_timezone(纯离线)。
 
     参数:
@@ -150,7 +150,7 @@ def convert_time(value: str, from_timezone: str, to_timezone: str) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
-def list_timezones(keyword: str = "") -> dict:
+def time_list_timezones(keyword: str = "") -> dict:
     """按关键词列出 IANA 时区名(纯离线, 最多 50 条)。
 
     参数:

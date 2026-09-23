@@ -46,7 +46,7 @@ def _payload(result):
 
 def test_time_current_fields():
     module = _load("mcp_time")
-    payload = module.get_current_time()
+    payload = module.time_now()
     assert payload["iso"] and payload["date"] and payload["time"]
     assert payload["weekday"].startswith("星期")
     assert payload["timezone"] == "Asia/Shanghai"
@@ -55,12 +55,12 @@ def test_time_current_fields():
 
 def test_time_convert_cross_timezone_with_dst():
     module = _load("mcp_time")
-    winter = module.convert_time("2026-01-15T12:00:00", "Asia/Shanghai", "America/New_York")
+    winter = module.time_convert("2026-01-15T12:00:00", "Asia/Shanghai", "America/New_York")
     assert winter["iso"].startswith("2026-01-14T23:00:00-05:00")
     assert winter["utc_offset"] == "UTC-05:00"
     assert "慢 13 小时" in winter["note"]
 
-    summer = module.convert_time("2026-07-15T12:00:00", "Asia/Shanghai", "America/New_York")
+    summer = module.time_convert("2026-07-15T12:00:00", "Asia/Shanghai", "America/New_York")
     assert summer["iso"].startswith("2026-07-15T00:00:00-04:00")
     assert summer["utc_offset"] == "UTC-04:00"
     assert "慢 12 小时" in summer["note"]
@@ -68,27 +68,27 @@ def test_time_convert_cross_timezone_with_dst():
 
 def test_time_convert_accepts_explicit_offset():
     module = _load("mcp_time")
-    payload = module.convert_time("2026-01-15T12:00:00+08:00", "Asia/Shanghai", "America/New_York")
+    payload = module.time_convert("2026-01-15T12:00:00+08:00", "Asia/Shanghai", "America/New_York")
     assert payload["input_has_timezone"] is True
     assert payload["iso"].startswith("2026-01-14T23:00:00-05:00")
 
 
 def test_time_invalid_timezone_returns_readable_error():
     module = _load("mcp_time")
-    payload = module.get_current_time("Mars/Olympus")
+    payload = module.time_now("Mars/Olympus")
     assert "非法时区" in payload["error"]
-    payload = module.convert_time("2026-01-15T12:00:00", "Not/ATimezone", "UTC")
+    payload = module.time_convert("2026-01-15T12:00:00", "Not/ATimezone", "UTC")
     assert "非法时区" in payload["error"]
-    payload = module.convert_time("not-a-time", "UTC", "UTC")
+    payload = module.time_convert("not-a-time", "UTC", "UTC")
     assert "无法解析时间" in payload["error"]
 
 
 def test_time_list_timezones_filter_and_limit():
     module = _load("mcp_time")
-    payload = module.list_timezones("Shanghai")
+    payload = module.time_list_timezones("Shanghai")
     assert "Asia/Shanghai" in payload["timezones"]
     assert payload["returned"] <= 50
-    all_tz = module.list_timezones("")
+    all_tz = module.time_list_timezones("")
     assert all_tz["matched"] > 50
     assert all_tz["returned"] == 50
 
@@ -97,8 +97,8 @@ async def test_time_server_in_process_client():
     module = _load("mcp_time")
     async with Client(module.mcp, raise_exceptions=True) as client:
         tools = await client.list_tools()
-        assert sorted(tool.name for tool in tools.tools) == ["convert_time", "get_current_time", "list_timezones"]
-        result = await client.call_tool("get_current_time", {"timezone": "UTC"})
+        assert sorted(tool.name for tool in tools.tools) == ["time_convert", "time_list_timezones", "time_now"]
+        result = await client.call_tool("time_now", {"timezone": "UTC"})
     payload = _payload(result)
     assert payload["timezone"] == "UTC"
     assert payload["utc_offset"] == "UTC+00:00"

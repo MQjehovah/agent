@@ -21,6 +21,8 @@ MCP_MAX_RECONNECT_ATTEMPTS = 3  # 最大重连次数
 MCP_MAX_CONCURRENCY = 4  # 每 server 工具调用最大并发
 MCP_HEALTH_CHECK_INTERVAL = 60  # 健康检查间隔（秒）
 MCP_LAST_ERROR_MAX_LEN = 200  # last_error 摘要最大字符数
+MCP_MAX_EXPOSED_NAME_LEN = 64  # LLM 暴露工具名最大长度
+MCP_EXPOSED_NAME_INVALID_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
 # 实例注册表：聚合 root agent / worker 池等全部 MCPManager 的运行状态。
 # 弱引用 + close() 注销，避免测试与生命周期泄漏。
@@ -58,6 +60,12 @@ def _parse_int_at_least(raw: Any, default: int, minimum: int) -> tuple[int, bool
     if value < minimum:
         return default, False
     return value, True
+
+
+def _sanitize_exposed_name(name: str) -> str:
+    """把工具名清洗到 ^[a-zA-Z0-9_-]{1,64}$（非法字符替换为 _）。"""
+    cleaned = MCP_EXPOSED_NAME_INVALID_RE.sub("_", str(name or ""))[:MCP_MAX_EXPOSED_NAME_LEN]
+    return cleaned or "tool"
 
 
 def resolve_env_values(env: dict[str, Any]) -> dict[str, str]:
@@ -377,6 +385,9 @@ class MCPManager:
         self.servers: dict[str, MCPServerConnection] = {}
         self.tool_defs: list[dict[str, Any]] = []
         self._tool_to_server: dict[str, str] = {}
+        self._exposed_to_server: dict[str, str] = {}
+        self._exposed_to_raw: dict[str, str] = {}
+        self._reserved_names: set[str] = set()
         self._config_data: list[dict[str, Any]] = []
         self._health_check_task: asyncio.Task | None = None
         self._closing = False
@@ -413,15 +424,58 @@ class MCPManager:
                 return
         self._config_data.append(config)
 
-    def _refresh_tool_defs(self) -> None:
-        """刷新工具定义列表"""
+    def _rebuild_tool_defs(self) -> None:
+        """重建暴露给 LLM 的工具列表, 对重名工具加 server 前缀去重。
+
+        规则: 第一个出现的名字保持原名; 后续重名(跨 server 或与内置/已注册名冲突)改为
+        `<server>__<raw>`, sanitize 到 ^[a-zA-Z0-9_-]{1,64}$, 仍冲突则追加 _2/_3...
+        映射(_exposed_to_server/_exposed_to_raw/_tool_to_server)整体重建, 不残留。
+        """
         self.tool_defs = []
         self._tool_to_server = {}
-        for name, server in self.servers.items():
-            self.tool_defs.extend(server.tool_defs)
+        self._exposed_to_server = {}
+        self._exposed_to_raw = {}
+        used: set[str] = set(self._reserved_names)
+
+        for server_name, server in self.servers.items():
             for tool_def in server.tool_defs:
-                tool_name = tool_def["function"]["name"]
-                self._tool_to_server[tool_name] = name
+                raw_name = str(tool_def.get("function", {}).get("name") or "")
+                exposed = self._allocate_exposed_name(server_name, raw_name, used)
+                used.add(exposed)
+                self._tool_to_server[exposed] = server_name
+                self._exposed_to_server[exposed] = server_name
+                self._exposed_to_raw[exposed] = raw_name
+                if exposed != raw_name:
+                    logger.warning(
+                        f"MCP [{server_name}] 工具重名: {raw_name} -> 暴露为 {exposed}（避免 LLM 工具名冲突）")
+                self.tool_defs.append({
+                    **tool_def,
+                    "function": {**tool_def["function"], "name": exposed},
+                })
+
+    @staticmethod
+    def _allocate_exposed_name(server_name: str, raw_name: str, used: set[str]) -> str:
+        """为 raw 工具名分配唯一暴露名(首选原名, 冲突则 server 前缀, 再冲突加序号)。"""
+        base = _sanitize_exposed_name(raw_name)
+        if base not in used:
+            return base
+        prefixed = _sanitize_exposed_name(f"{server_name}__{raw_name}")
+        if prefixed not in used:
+            return prefixed
+        index = 2
+        while True:
+            suffix = f"_{index}"
+            candidate = prefixed[: MCP_MAX_EXPOSED_NAME_LEN - len(suffix)] + suffix
+            if candidate not in used:
+                return candidate
+            index += 1
+
+    def set_reserved_names(self, names: set[str] | list[str] | None) -> None:
+        """登记非 MCP(内置/技能/插件)工具名; 变更时重建暴露名映射以避开冲突。"""
+        new_names = {str(n) for n in (names or ()) if n}
+        if new_names != self._reserved_names:
+            self._reserved_names = new_names
+            self._rebuild_tool_defs()
 
     async def connect(self):
         """连接所有MCP服务器"""
@@ -436,14 +490,11 @@ class MCPManager:
             if success:
                 self.servers[name] = server
                 self._server_errors.pop(name, None)
-                self.tool_defs.extend(server.tool_defs)
-                for tool_def in server.tool_defs:
-                    tool_name = tool_def["function"]["name"]
-                    self._tool_to_server[tool_name] = name
             else:
                 # 故障隔离: 单 server 失败不阻塞其它, 记入失败清单
                 self._server_errors[name] = server.last_error or "连接失败"
 
+        self._rebuild_tool_defs()
         logger.info(f"✓ 共加载 {len(self.tool_defs)} 个MCP工具")
 
     async def close(self):
@@ -499,14 +550,14 @@ class MCPManager:
                 if not await server.reconnect():
                     logger.error(f"MCP [{name}] 重连失败")
                 else:
-                    self._refresh_tool_defs()
+                    self._rebuild_tool_defs()
 
     def has_tool(self, name: str) -> bool:
         """检查是否有指定工具"""
         return name in self._tool_to_server
 
     async def call_tool(self, name: str, args: dict) -> str:
-        """调用MCP工具"""
+        """调用MCP工具(入参为 LLM 暴露名, 按映射解析回 server 与原始工具名)"""
         server_name = self._tool_to_server.get(name)
         if not server_name:
             return f"工具 {name} 未找到"
@@ -520,7 +571,8 @@ class MCPManager:
             if not await server.reconnect():
                 return f"MCP [{server_name}] 重连失败，无法调用工具 {name}"
 
-        return await server.call_tool(name, args)
+        raw_name = self._exposed_to_raw.get(name, name)
+        return await server.call_tool(raw_name, args)
 
     def list_servers(self) -> list[dict[str, Any]]:
         """列出所有MCP服务器"""
@@ -639,7 +691,7 @@ class MCPManager:
         if success:
             self.servers[name] = server
             self._server_errors.pop(name, None)
-            self._refresh_tool_defs()
+            self._rebuild_tool_defs()
             logger.debug(f"✓ MCP服务 [{name}] 已动态连接，加载 {len(server.tool_defs)} 个工具")
             return True
         else:
@@ -663,7 +715,7 @@ class MCPManager:
         server = self.servers.pop(name)
         await server.close()
         self._server_errors.pop(name, None)
-        self._refresh_tool_defs()
+        self._rebuild_tool_defs()
         logger.info(f"✓ MCP服务 [{name}] 已断开连接")
         return True
 

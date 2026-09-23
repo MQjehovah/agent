@@ -19,20 +19,19 @@ from fastapi.testclient import TestClient
 import mcps.manager as manager
 
 
-def _install_fake_stdio(monkeypatch, fail_args_containing: str | None = None):
-    """fake stdio + session: args 命中标记则连接抛错, 否则返回含 1 个工具的 session。"""
-    tool = SimpleNamespace(name="echo", description="回声", input_schema={"type": "object"})
-    session = SimpleNamespace(
-        initialize=AsyncMock(),
-        list_tools=AsyncMock(return_value=SimpleNamespace(tools=[tool])),
-    )
+def _install_fake_stdio(monkeypatch, fail_args_containing: str | None = None,
+                        tool_names: dict[str, list[str]] | None = None):
+    """fake stdio + session: args 命中标记则连接抛错, 否则按 args 文件名返回工具列表。"""
 
     class FakeSessionCtx:
         def __init__(self, read_stream, write_stream):
-            pass
+            self._tools = getattr(read_stream, "tools", [])
 
         async def __aenter__(self):
-            return session
+            return SimpleNamespace(
+                initialize=AsyncMock(),
+                list_tools=AsyncMock(return_value=SimpleNamespace(tools=self._tools)),
+            )
 
         async def __aexit__(self, *exc_info):
             return False
@@ -41,7 +40,10 @@ def _install_fake_stdio(monkeypatch, fail_args_containing: str | None = None):
     async def fake_stdio_client(server, errlog=None):
         if fail_args_containing and any(fail_args_containing in a for a in server.args):
             raise RuntimeError("子进程启动失败")
-        yield (object(), object())
+        marker = os.path.basename(server.args[-1]) if server.args else ""
+        names = (tool_names or {}).get(marker, ["echo"])
+        tools = [SimpleNamespace(name=n, description=f"工具 {n}", input_schema={"type": "object"}) for n in names]
+        yield (SimpleNamespace(tools=tools), object())
 
     monkeypatch.setattr(manager, "stdio_client", fake_stdio_client)
     monkeypatch.setattr(manager, "ClientSession", FakeSessionCtx)
@@ -171,6 +173,75 @@ async def test_connect_server_failure_appears_in_status(tmp_path, monkeypatch):
         assert data["summary"]["failed"] == 1
     finally:
         await mgr.close()
+
+
+# ===== 2b. 重名工具去重与分发 =====
+
+def _recording_session(server_name: str, calls: list):
+    async def call_tool(raw_name, args):
+        calls.append((server_name, raw_name, args))
+        return SimpleNamespace(content=[SimpleNamespace(text=f"{server_name}:{raw_name}")])
+    return SimpleNamespace(call_tool=call_tool)
+
+
+async def test_duplicate_tool_names_get_server_prefix_and_dispatch(tmp_path, monkeypatch):
+    _install_fake_stdio(monkeypatch, tool_names={
+        "w2_dup_a.py": ["get_current_time", "only_a"],
+        "w2_dup_b.py": ["get_current_time", "only_b"],
+    })
+    cfg = _write_config(tmp_path, [
+        {"name": "w2_dup_a", "enabled": True, "command": "python", "args": ["w2_dup_a.py"]},
+        {"name": "w2_dup_b", "enabled": True, "command": "python", "args": ["w2_dup_b.py"]},
+    ])
+    mgr = manager.MCPManager(cfg)
+    await mgr.connect()
+    try:
+        names = [d["function"]["name"] for d in mgr.tool_defs]
+        assert len(names) == len(set(names)) == 4
+        assert "get_current_time" in names  # 首个出现保持原名
+        assert "w2_dup_b__get_current_time" in names  # 后续重名加 server 前缀
+        assert {"only_a", "only_b"} <= set(names)
+
+        calls = []
+        for server_name, conn in mgr.servers.items():
+            conn.session = _recording_session(server_name, calls)
+
+        # call_tool(暴露名) 分发到正确 server 与原始工具名
+        assert await mgr.call_tool("w2_dup_b__get_current_time", {"timezone": "UTC"}) == "w2_dup_b:get_current_time"
+        assert calls[-1] == ("w2_dup_b", "get_current_time", {"timezone": "UTC"})
+        assert await mgr.call_tool("get_current_time", {}) == "w2_dup_a:get_current_time"
+        assert calls[-1] == ("w2_dup_a", "get_current_time", {})
+
+        # 断开后映射重建, 不残留
+        await mgr.disconnect_server("w2_dup_b")
+        assert [d["function"]["name"] for d in mgr.tool_defs] == ["get_current_time", "only_a"]
+        assert await mgr.call_tool("w2_dup_b__get_current_time", {}) == "工具 w2_dup_b__get_current_time 未找到"
+    finally:
+        await mgr.close()
+
+
+async def test_mcp_tool_conflicting_with_reserved_builtin_name_gets_prefixed(tmp_path, monkeypatch):
+    _install_fake_stdio(monkeypatch, tool_names={"w2_res.py": ["read_file", "time_now"]})
+    cfg = _write_config(tmp_path, [
+        {"name": "w2_res", "enabled": True, "command": "python", "args": ["w2_res.py"]},
+    ])
+    mgr = manager.MCPManager(cfg)
+    mgr.set_reserved_names({"read_file", "edit"})  # 模拟 agent 内置工具名
+    await mgr.connect()
+    try:
+        names = [d["function"]["name"] for d in mgr.tool_defs]
+        assert "w2_res__read_file" in names and "read_file" not in names
+        assert "time_now" in names  # 不冲突的保持原名
+    finally:
+        await mgr.close()
+
+
+def test_exposed_name_sanitized_capped_and_numbered():
+    assert manager._sanitize_exposed_name("a.b/c") == "a_b_c"
+    assert manager._sanitize_exposed_name("") == "tool"
+    assert len(manager._sanitize_exposed_name("x" * 100)) == manager.MCP_MAX_EXPOSED_NAME_LEN
+    used = {"dup", "srv__dup"}
+    assert manager.MCPManager._allocate_exposed_name("srv", "dup", used) == "srv__dup_2"
 
 
 async def test_last_error_truncated_to_limit():

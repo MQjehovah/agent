@@ -521,6 +521,8 @@ class Agent:
         """连接 mcp_configs 中的 MCP servers"""
         from mcps import MCPManager
         self.mcp = MCPManager("")
+        # 内置/技能工具名先行登记, MCP 重名工具会被 manager 加 server 前缀(避免 LLM 400)
+        self.mcp.set_reserved_names(self._non_mcp_tool_names())
         for config in self.mcp_configs:
             if config.get("enabled", True):
                 try:
@@ -538,6 +540,31 @@ class Agent:
         role = "子 Agent" if subagent else "Agent"
         logger.info(
             f"{role} [{self.name}] 已连接 {len(connected)} MCP servers: {connected}")
+
+    def _non_mcp_tool_names(self) -> set[str]:
+        """当前非 MCP 工具名(内置/技能/插件), 供 MCP 暴露名去重避开 LLM 工具名冲突。"""
+        names: set[str] = set()
+        try:
+            if self.tool_registry:
+                for t in self.tool_registry.get_tool_definitions():
+                    name = t.get("function", {}).get("name")
+                    if name and name not in self.tool_denylist:
+                        names.add(name)
+            if self.skill_manager:
+                for t in self.skill_manager.get_tool_definitions():
+                    name = t.get("function", {}).get("name")
+                    if name:
+                        names.add(name)
+            if self.plugin_manager:
+                for plugin in self.plugin_manager.plugins.values():
+                    if plugin.enabled:
+                        for t in plugin.get_tool_defs():
+                            name = t.get("function", {}).get("name")
+                            if name and name not in self.tool_denylist:
+                                names.add(name)
+        except Exception as e:
+            logger.debug(f"收集非 MCP 工具名失败(忽略): {e}")
+        return names
 
     def _init_subagents(self):
         agents_dir = os.path.join(self.config_dir, "agents")
@@ -809,6 +836,8 @@ class Agent:
                     tools.append(t)
 
         if self.mcp:
+            # 插件较 MCP 后加载: 每次组装时刷新保留名, 保证与内置/技能/插件重名的 MCP 工具带前缀
+            self.mcp.set_reserved_names(self._non_mcp_tool_names())
             tools.extend(self.mcp.tool_defs)
 
         if self.skill_manager:
