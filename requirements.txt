@@ -18,3 +18,4 @@ PyJWT>=2.8.0
 starlette>=0.40,<0.47
 anyio>=4.9,<5
 fastapi>=0.110,<0.141
+psycopg[binary]>=3.1
