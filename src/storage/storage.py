@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager, suppress
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from queue import Queue
 from typing import Any, Optional
@@ -1337,6 +1337,20 @@ class Storage:
         with self._get_connection() as conn:
             rows = conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
+
+    def prune_mcp_calls(self, keep_days: int = 30) -> int:
+        """删除超过 keep_days 天的 MCP 调用审计, 返回删除行数(幂等)。
+
+        keep_days<=0 视为不清理直接返回 0; ts 为 ISO 时间字符串, 按字典序比较
+        即可(与落库格式一致)。供启动时调用一次做容量收敛。
+        """
+        if keep_days <= 0:
+            return 0
+        cutoff = (datetime.now() - timedelta(days=keep_days)).isoformat()
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM mcp_calls WHERE ts < ?", (cutoff,))
+            conn.commit()
+            return max(0, cur.rowcount)
 
     # ---------------- 会话元状态（P4c：压缩摘要持久化与重建）----------------
 

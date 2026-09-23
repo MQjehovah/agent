@@ -653,6 +653,9 @@ class MCPManager:
             logger.warning(f"MCP [{server_name}] 未连接，尝试重连")
             if not await server.reconnect():
                 return f"MCP [{server_name}] 重连失败，无法调用工具 {name}"
+            # 重连会重新 list_tools: server 侧工具可能增删/改名, 必须重建暴露映射,
+            # 否则后续调用与 LLM 工具表使用的是重连前的旧映射(悬空/漏工具)。
+            self._rebuild_tool_defs()
 
         raw_name = self._exposed_to_raw.get(name, name)
         return await server.call_tool(raw_name, args)

@@ -240,6 +240,13 @@ class Agent:
             self.storage = self.parent_agent.storage
         else:
             self.storage = init_storage(self.workspace, config_dir=self.config_dir)
+            # MCP 调用审计保留策略: 启动时清理一次过期记录(幂等, 失败仅告警)
+            try:
+                removed = self.storage.prune_mcp_calls(keep_days=30)
+                if removed:
+                    logger.info(f"MCP 调用审计保留 30 天: 已清理 {removed} 条历史记录")
+            except Exception as e:
+                logger.warning(f"MCP 调用审计清理失败(忽略): {e}")
 
         from security.rbac import RBACManager
         self.rbac = RBACManager(self.storage)

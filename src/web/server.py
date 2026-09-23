@@ -654,13 +654,46 @@ class WebServer:
     def _owner_name_for(uid: str, name: str = "") -> str:
         return name or uid
 
+    def _ask_timeout_seconds(self) -> float:
+        """解析 AGENT_WEB_ASK_TIMEOUT(秒); 非法/非正回退 300 并告警。"""
+        raw = os.environ.get("AGENT_WEB_ASK_TIMEOUT", "300") or "300"
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value <= 0:
+            logger.warning(f"AGENT_WEB_ASK_TIMEOUT={raw!r} 非法, 回退 300s")
+            return 300.0
+        return value
+
     def _make_ask_bridge(self, q: asyncio.Queue, owner_tag: str):
         """构造 SSE 双向追问桥: agent 调 ask_user 时暂停并等前端回答。
 
-        正常回答/超时/取消三条路径都有日志; 取消必须向上传播(re-raise), 不能
-        吞掉 CancelledError, 否则前端断开/任务取消时 run 无法及时收尾。
+        q 属于构造 bridge 的事件循环(main loop), 而 bridge 实际可能在工具线程池
+        的独立事件循环里被调用(见 tools.ToolRegistry._execute_in_worker): 跨循环
+        直接 await q.put 只会 append、不唤醒 q 所属循环的 selector, 提问会被 SSE
+        读取侧的 15s q.get 兜底拖住才到前端。故投递统一走所属循环的
+        call_soon_threadsafe(q.put_nowait, ...)(同循环调用同样安全且立即唤醒
+        selector); 所属循环已关闭/调度失败时记 warning 并回退 await q.put,
+        保证不丢消息。正常回答/超时/取消三条路径都有日志; 取消必须向上传播
+        (re-raise), 不能吞掉 CancelledError。
         """
-        _timeout = float(os.environ.get("AGENT_WEB_ASK_TIMEOUT", "300") or "300")
+        _timeout = self._ask_timeout_seconds()
+        try:
+            owner_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            owner_loop = None  # 非事件循环上下文构造(理论不存在): 回退直接入队
+
+        def _schedule_ask(item) -> bool:
+            """把 ask 事件调度回 q 所属事件循环; 不可调度返回 False。"""
+            if owner_loop is None or owner_loop.is_closed():
+                return False
+            try:
+                owner_loop.call_soon_threadsafe(q.put_nowait, item)
+                return True
+            except RuntimeError as e:
+                logger.warning(f"ask 事件跨循环投递失败({e}), 回退直接入队")
+                return False
 
         async def bridge(question: str, options: list, default: str):
             ask_id = uuid.uuid4().hex
@@ -670,10 +703,12 @@ class WebServer:
                 "question": str(question)[:200],
             }
             try:
-                await q.put(("sse", ("ask", {
+                item = ("sse", ("ask", {
                     "ask_id": ask_id, "question": question,
                     "options": list(options or []), "default": default or "",
-                })))
+                }))
+                if not _schedule_ask(item):
+                    await q.put(item)
                 try:
                     answer = await asyncio.wait_for(fut, timeout=_timeout)
                     logger.info(f"ask {ask_id[:8]} 已收到回答: {str(answer)[:40]!r}")
@@ -3105,14 +3140,20 @@ class WebServer:
         @self._app.get("/api/admin/mcp/calls")
         async def admin_mcp_calls(limit: int = Query(100), server: str = Query(""),
                                   tool: str = Query(""), request: Request = None):
-            """MCP 调用审计(需 admin.monitor 权限): 倒序返回调用记录, limit 夹紧 ≤1000。"""
-            await _require_perm(request, "admin.monitor")
+            """MCP 调用审计(需 admin.monitor 权限): 倒序返回调用记录, limit 夹紧 ≤1000。
+
+            数据范围: admin/all 全站; department 范围仅返回本部门成员的记录
+            (mcp_calls.user_id 为 {channel}:{uid} 归属 tag, 经 _filter_tags_by_dept
+            与 sessions/usage 端点同口径解析过滤; 无归属的系统调用不返回)。
+            """
+            actor = await _require_perm(request, "admin.monitor")
             from storage.storage import get_storage
             storage = get_storage()
             if storage is None:
                 return JSONResponse({"error": "storage unavailable"}, status_code=503)
             calls = storage.query_mcp_calls(
                 limit=limit, server=server or None, tool=tool or None)
+            calls = _filter_tags_by_dept(actor, calls, "user_id")
             return {"calls": calls, "count": len(calls)}
 
         @self._app.get("/healthz")

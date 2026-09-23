@@ -239,9 +239,9 @@ async def execute_tool(agent, name: str, args: dict) -> str:
             return await agent.skill_manager.execute_tool(name, args)
 
         if agent.mcp and agent.mcp.has_tool(name):
-            # MCP 工具: 调用前后测耗时并落审计(成功/失败都记); 审计失败不影响调用
-            if agent.mcp.tool_risk(name) is None:
-                return await agent.mcp.call_tool(name, args)
+            # MCP 工具: 调用前后测耗时并落审计(成功/失败都记); 审计失败不影响调用。
+            # has_tool 与 tool_risk 同源于 _rebuild_tool_defs 的映射表, has_tool 为真
+            # 时风险必非 None(至少 unknown), 不存在"有工具但无风险"的回退分支。
             started = time.monotonic()
             try:
                 result = await agent.mcp.call_tool(name, args)

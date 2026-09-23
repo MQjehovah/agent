@@ -165,6 +165,60 @@ async def test_ask_bridge_resumes_via_deliver_helper(monkeypatch):
     assert w._pending_asks == {}
 
 
+async def test_ask_bridge_across_thread_loop_wakes_main_queue(monkeypatch):
+    """跨线程事件循环: bridge 在 worker 线程循环调用, 主循环 q.get() 立即可得。
+
+    回归线上问题: bridge 里 await q.put 不唤醒 q 所属主循环的 selector,
+    问题会被 SSE 读取侧的 15s 超时兜底拖住。本用例不依赖任何超时兜底:
+    1s 内必须取到 ask 事件(asyncio.wait_for 直接失败), 否则判定回归。
+    """
+    monkeypatch.setenv("AGENT_WEB_ASK_TIMEOUT", "1")
+    w = WebServer()
+    q: asyncio.Queue = asyncio.Queue()
+    bridge = w._make_ask_bridge(q, "web:7")
+    started = threading.Event()
+    box: dict = {}
+
+    def worker():
+        async def run_bridge():
+            started.set()
+            return await bridge("要继续吗?", ["是"], "否")
+
+        box["answer"] = asyncio.run(run_bridge())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    try:
+        assert started.wait(5), "worker 线程未启动"
+        event_type, content = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert event_type == "sse" and content[0] == "ask"
+        ask_id = content[1]["ask_id"]
+        assert w._pending_asks[ask_id]["tag"] == "web:7"
+        assert deliver_ask_answer(w._pending_asks[ask_id]["future"], "是") is True
+        t.join(5)
+        assert not t.is_alive(), "worker 线程未收到回答"
+        assert box["answer"] == "是"
+    finally:
+        t.join(1)
+
+
+async def test_ask_bridge_invalid_timeout_falls_back(monkeypatch, caplog):
+    """AGENT_WEB_ASK_TIMEOUT 非法值 → 回退 300s 并告警, 不影响 bridge 主流程。"""
+    monkeypatch.setenv("AGENT_WEB_ASK_TIMEOUT", "abc")
+    w = WebServer()
+    q: asyncio.Queue = asyncio.Queue()
+    bridge = w._make_ask_bridge(q, "web:7")
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+        task = asyncio.create_task(bridge("要继续吗?", [], "否"))
+        await asyncio.sleep(0.01)
+        ask_id = next(iter(w._pending_asks))
+        w._pending_asks[ask_id]["future"].set_result("是")
+        assert await task == "是"
+
+    assert _has_log(caplog, "AGENT_WEB_ASK_TIMEOUT")
+
+
 # ---------------- /api/chat/answer ----------------
 
 

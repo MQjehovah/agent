@@ -188,3 +188,34 @@ async def test_cleanup_keeps_waiting_through_repeated_cancellations():
 
     assert events == ["closing", "closed"]
     assert conn._conn_task is None
+
+
+async def test_call_tool_reconnect_rebuilds_exposed_tools(monkeypatch):
+    """懒重连成功后必须重建暴露映射: server 侧工具可能已增删/改名。"""
+    mgr = manager.MCPManager(config_path=None)
+    conn = manager.MCPServerConnection("demo", {})
+    conn._connected = False
+    conn.tool_defs = [{
+        "type": "function",
+        "function": {"name": "old_tool", "description": "", "parameters": {}},
+    }]
+    mgr.servers["demo"] = conn
+    mgr._rebuild_tool_defs()
+    assert mgr.has_tool("old_tool")
+
+    async def fake_reconnect():
+        conn.tool_defs = [{
+            "type": "function",
+            "function": {"name": "new_tool", "description": "", "parameters": {}},
+        }]
+        conn._connected = True
+        conn.session = SimpleNamespace(
+            call_tool=AsyncMock(return_value=SimpleNamespace(
+                content=[SimpleNamespace(text="ok")], structured_content=None, is_error=False)))
+        return True
+
+    monkeypatch.setattr(conn, "reconnect", fake_reconnect)
+
+    assert await mgr.call_tool("old_tool", {}) == "ok"
+    assert [d["function"]["name"] for d in mgr.tool_defs] == ["new_tool"]
+    assert mgr.has_tool("new_tool") and not mgr.has_tool("old_tool")

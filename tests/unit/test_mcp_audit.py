@@ -74,6 +74,21 @@ def test_query_mcp_calls_limit_clamped(tmp_path):
         s.close()
 
 
+def test_prune_mcp_calls_removes_old_rows(tmp_path):
+    """保留策略: 超过 keep_days 的审计删除, 幂等; 非法 keep_days 不清理。"""
+    s = Storage(str(tmp_path))
+    try:
+        s.record_mcp_call(server="s", tool="old", ts="2020-01-01T00:00:00")
+        s.record_mcp_call(server="s", tool="new")
+        assert s.prune_mcp_calls(keep_days=30) == 1
+        assert [r["tool"] for r in s.query_mcp_calls()] == ["new"]
+        assert s.prune_mcp_calls(keep_days=30) == 0
+        assert s.prune_mcp_calls(keep_days=0) == 0
+        assert s.prune_mcp_calls(keep_days=-1) == 0
+    finally:
+        s.close()
+
+
 # ===== 2. executor 写入点 =====
 
 class _FakeMCP:
@@ -159,11 +174,17 @@ async def test_execute_tool_records_raised_exception():
     assert rec["ok"] is False and rec["error"] == "boom" and rec["result_chars"] == 0
 
 
-async def test_execute_tool_skips_audit_for_non_mcp_risk():
+async def test_execute_tool_skips_audit_for_non_mcp_tool():
+    """非 MCP 工具(has_tool=False)不写审计; 真 MCP 工具 has_tool 为真时风险必非 None。"""
     from agent.executor import execute_tool
 
-    agent = _fake_tool_agent(_FakeMCP(risk=None))
-    await execute_tool(agent, "raw_plain", {})
+    class _NonMCP:
+        def has_tool(self, name):
+            return False
+
+    agent = _fake_tool_agent(_NonMCP())
+    out = await execute_tool(agent, "raw_plain", {})
+    assert "不存在" in out
     assert agent.storage.calls == []
 
 
@@ -245,6 +266,55 @@ def test_admin_mcp_calls_requires_monitor_permission(tmp_path, monkeypatch):
         client = TestClient(WebServer()._app)
         h = {"Authorization": f"Bearer {create_jwt({'id': 7, 'name': '用户', 'role': 'default'})}"}
         assert client.get("/api/admin/mcp/calls", headers=h).status_code == 403
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
+
+
+# ===== 4. 数据范围过滤(department 范围仅本部门成员) =====
+
+def _seed_dept_scope_users(st):
+    """建 设备部/售后部 与 deptmon 角色(admin.monitor + data_scope=department)。"""
+    from security.rbac import RBACManager
+
+    rbac = RBACManager(st)
+    rbac.create_department("设备部")
+    rbac.create_department("售后部")
+    rbac.create_role("deptmon", permissions=["admin.monitor"], data_scope="department")
+    mgr = rbac.create_user(name="mgr", department="设备部", role="deptmon", display_name="设备主管")
+    a1 = rbac.create_user(name="a1", department="设备部", display_name="设备甲")
+    b1 = rbac.create_user(name="b1", department="售后部", display_name="售后乙")
+    return mgr, a1, b1
+
+
+def test_admin_mcp_calls_department_scope_filters(tmp_path, monkeypatch):
+    """department 范围管理员只看到本部门成员记录; admin 全站(含系统调用)。"""
+    monkeypatch.setenv("WEBUI_DISABLE_AUTH", "0")
+    import storage.storage as storage_mod
+    from storage.storage import Storage as RealStorage
+    from web.server import WebServer, create_jwt
+
+    prev = storage_mod._storage_instance
+    s = RealStorage(str(tmp_path))
+    storage_mod._storage_instance = s
+    try:
+        mgr, a1, b1 = _seed_dept_scope_users(s)
+        s.record_mcp_call(server="srv", tool="t", user_id=f"web:{a1}", ok=True)
+        s.record_mcp_call(server="srv", tool="t", user_id=f"web:{b1}", ok=True)
+        s.record_mcp_call(server="srv", tool="t", user_id=f"web:{mgr}", ok=True)
+        s.record_mcp_call(server="srv", tool="t", user_id="", ok=True)  # 系统调用(无归属)
+
+        client = TestClient(WebServer()._app)
+        h = {"Authorization": f"Bearer {create_jwt({'id': mgr, 'name': 'mgr', 'role': 'deptmon'})}"}
+        body = client.get("/api/admin/mcp/calls", headers=h).json()
+        assert body["count"] == 2
+        assert {c["user_id"] for c in body["calls"]} == {f"web:{a1}", f"web:{mgr}"}
+
+        admin = {"Authorization": f"Bearer {create_jwt({'id': 1, 'name': 'admin', 'role': 'admin'})}"}
+        body = client.get("/api/admin/mcp/calls", headers=admin).json()
+        assert body["count"] == 4
+        assert {c["user_id"] for c in body["calls"]} == {
+            f"web:{a1}", f"web:{b1}", f"web:{mgr}", ""}
     finally:
         s.close()
         storage_mod._storage_instance = prev
