@@ -35,6 +35,63 @@ RATE_LIMIT_COOLDOWN = 60.0
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300"))
 LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "30"))
 
+PLACEHOLDER_REASONING = "."
+
+
+def uses_thinking(model: str) -> bool:
+    """模型是否走 thinking 网关（deepseek/glm）"""
+    return any(k in (model or "").lower() for k in ("deepseek", "glm"))
+
+
+def is_reasoning_content_error(exc: Exception) -> bool:
+    """上游 thinking 网关对 reasoning_content/thinking.reasoning 的 400 报错"""
+    text = str(exc).lower()
+    return "reasoning_content" in text or "thinking.reasoning" in text
+
+
+def prepare_api_messages(messages: list, fill_reasoning: bool = False) -> list:
+    """构造发给 thinking 网关的消息：去掉空 reasoning，必要时给 assistant 补占位。"""
+    out = []
+    for raw in messages or []:
+        if isinstance(raw, dict):
+            src = raw
+        else:
+            src = {
+                "role": getattr(raw, "role", None),
+                "content": getattr(raw, "content", None),
+                "tool_calls": getattr(raw, "tool_calls", None),
+                "tool_call_id": getattr(raw, "tool_call_id", None),
+                "name": getattr(raw, "name", None),
+                "reasoning_content": getattr(raw, "reasoning_content", None),
+            }
+        item: dict[str, Any] = {"role": src.get("role")}
+        if src.get("content") is not None:
+            item["content"] = src.get("content")
+        elif item.get("role") in ("assistant", "tool", "user"):
+            item["content"] = src.get("content") or ""
+        for key in ("tool_calls", "tool_call_id", "name"):
+            val = src.get(key)
+            if val:
+                item[key] = val
+        rc = src.get("reasoning_content")
+        if isinstance(rc, str) and rc.strip():
+            item["reasoning_content"] = rc
+        elif fill_reasoning and item.get("role") == "assistant":
+            item["reasoning_content"] = PLACEHOLDER_REASONING
+        out.append(item)
+    return out
+
+
+def thinking_variants(model: str, messages: list) -> list[tuple[list, bool]]:
+    """thinking 400 回退：原样回传 → 补齐占位 → 关闭 thinking。"""
+    prepared = prepare_api_messages(messages, fill_reasoning=False)
+    thinking = uses_thinking(model)
+    variants = [(prepared, thinking)]
+    if thinking:
+        variants.append((prepare_api_messages(messages, fill_reasoning=True), True))
+        variants.append((prepared, False))
+    return variants
+
 
 class LLMClient:
     def __init__(self, endpoints: list = None, timeout: float = 300,
@@ -245,68 +302,78 @@ class LLMClient:
                 )
 
             for attempt in range(retries_per_ep):
-                cached_messages = self._add_prompt_cache(messages, model)
-                params = {
-                    "model": model,
-                    "messages": cached_messages,
-                    "stream": stream,
-                }
-                if tools:
-                    params["tools"] = tools
-                if any(k in (model or "").lower() for k in ("deepseek", "glm")):
-                    if self._reasoning_effort:
-                        params["reasoning_effort"] = self._reasoning_effort
-                    params["extra_body"] = {"thinking": {"type": "enabled"}}
+                variants = thinking_variants(model, messages)
+                for v_idx, (variant_msgs, think_on) in enumerate(variants):
+                    cached_messages = self._add_prompt_cache(variant_msgs, model)
+                    params = {
+                        "model": model,
+                        "messages": cached_messages,
+                        "stream": stream,
+                    }
+                    if tools:
+                        params["tools"] = tools
+                    if think_on:
+                        effort = getattr(self, "_reasoning_effort", None)
+                        if effort:
+                            params["reasoning_effort"] = effort
+                        params["extra_body"] = {"thinking": {"type": "enabled"}}
 
-                self._log_request(params)
+                    self._log_request(params)
 
-                try:
-                    response = await client.chat.completions.create(**params)
+                    try:
+                        response = await client.chat.completions.create(**params)
 
-                    if not stream:
-                        self._log_response(response)
-                        if hasattr(response, 'usage') and response.usage:
-                            self.usage_tracker.track(model, {
-                                "prompt_tokens": response.usage.prompt_tokens,
-                                "completion_tokens": response.usage.completion_tokens,
-                                "prompt_cache_hit_tokens": getattr(response.usage, "prompt_cache_hit_tokens", None),
-                                "prompt_cache_miss_tokens": getattr(response.usage, "prompt_cache_miss_tokens", None),
-                            }, start=call_start)
-                        if self.enable_cache and use_cache:
-                            cache = get_cache()
-                            cache.set(messages, tools, model, response)
+                        if not stream:
+                            self._log_response(response)
+                            if hasattr(response, 'usage') and response.usage:
+                                self.usage_tracker.track(model, {
+                                    "prompt_tokens": response.usage.prompt_tokens,
+                                    "completion_tokens": response.usage.completion_tokens,
+                                    "prompt_cache_hit_tokens": getattr(response.usage, "prompt_cache_hit_tokens", None),
+                                    "prompt_cache_miss_tokens": getattr(response.usage, "prompt_cache_miss_tokens", None),
+                                }, start=call_start)
+                            if self.enable_cache and use_cache:
+                                cache = get_cache()
+                                cache.set(messages, tools, model, response)
 
-                    return response
+                        return response
 
-                except Exception as e:
-                    last_exception = e
-                    retry_type = type(e).__name__
-                    ctx = f"端点#{ep_idx + 1}({model}) 尝试 {attempt + 1}/{retries_per_ep}"
-
-                    if isinstance(e, APITimeoutError):
-                        api_logger.warning(f"API超时 {ctx}: {retry_type}")
-                    elif isinstance(e, (APIConnectionError, RateLimitError)):
-                        api_logger.warning(f"API调用失败 {ctx}: {retry_type}: {e}")
-                    else:
-                        api_logger.error(f"API调用失败 {ctx}: {retry_type}: {e}")
-
-                    if not self._should_retry(e):
-                        if self._is_multi and ep_idx < len(self._endpoints) - 1:
-                            api_logger.warning(f"端点 #{ep_idx + 1} 不可重试，切换下一个")
-                            break
-                        api_logger.error(f"不可重试的错误，放弃: {type(e).__name__}")
-                        raise e
-
-                    if attempt < retries_per_ep - 1:
-                        delay = self._calculate_retry_delay(attempt, e)
-                        api_logger.info(f"将在 {delay:.1f} 秒后重试 (同端点)")
-                        await asyncio.sleep(delay)
-                    else:
-                        if self._is_multi and ep_idx < len(self._endpoints) - 1:
+                    except Exception as e:
+                        last_exception = e
+                        if is_reasoning_content_error(e) and v_idx < len(variants) - 1:
                             api_logger.warning(
-                                f"端点 #{ep_idx + 1} 重试耗尽 ({retries_per_ep}次)，切换下一个")
+                                f"thinking 参数错误，回退策略 {v_idx + 1}/{len(variants) - 1}: {e}"
+                            )
+                            continue
+
+                        retry_type = type(e).__name__
+                        ctx = f"端点#{ep_idx + 1}({model}) 尝试 {attempt + 1}/{retries_per_ep}"
+
+                        if isinstance(e, APITimeoutError):
+                            api_logger.warning(f"API超时 {ctx}: {retry_type}")
+                        elif isinstance(e, (APIConnectionError, RateLimitError)):
+                            api_logger.warning(f"API调用失败 {ctx}: {retry_type}: {e}")
                         else:
-                            api_logger.error("所有端点均已尝试，放弃")
+                            api_logger.error(f"API调用失败 {ctx}: {retry_type}: {e}")
+
+                        if not self._should_retry(e):
+                            if self._is_multi and ep_idx < len(self._endpoints) - 1:
+                                api_logger.warning(f"端点 #{ep_idx + 1} 不可重试，切换下一个")
+                                break
+                            api_logger.error(f"不可重试的错误，放弃: {type(e).__name__}")
+                            raise e
+
+                        if attempt < retries_per_ep - 1:
+                            delay = self._calculate_retry_delay(attempt, e)
+                            api_logger.info(f"将在 {delay:.1f} 秒后重试 (同端点)")
+                            await asyncio.sleep(delay)
+                        else:
+                            if self._is_multi and ep_idx < len(self._endpoints) - 1:
+                                api_logger.warning(
+                                    f"端点 #{ep_idx + 1} 重试耗尽 ({retries_per_ep}次)，切换下一个")
+                            else:
+                                api_logger.error("所有端点均已尝试，放弃")
+                        break
 
         raise last_exception or Exception("All LLM endpoints failed")
 
@@ -365,31 +432,44 @@ class LLMClient:
                     f"({ep['base_url']} 模型={ep['model']})"
                 )
 
-            params = {
-                "messages": messages,
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            }
-            if tools:
-                params["tools"] = tools
-            if any(k in (ep["model"] or "").lower() for k in ("deepseek", "glm")):
-                if self._reasoning_effort:
-                    params["reasoning_effort"] = self._reasoning_effort
-                params["extra_body"] = {"thinking": {"type": "enabled"}}
+            variants = thinking_variants(ep["model"], messages)
+            stream = None
+            first_chunk = None
+            for v_idx, (variant_msgs, think_on) in enumerate(variants):
+                params = {
+                    "messages": self._add_prompt_cache(variant_msgs, ep["model"]),
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                }
+                if tools:
+                    params["tools"] = tools
+                if think_on:
+                    effort = getattr(self, "_reasoning_effort", None)
+                    if effort:
+                        params["reasoning_effort"] = effort
+                    params["extra_body"] = {"thinking": {"type": "enabled"}}
 
-            self._log_request({**params, "model": ep["model"]})
-            # 本次流式调用的起始时间（局部变量，并发隔离）
-            stream_start = time.monotonic()
+                self._log_request({**params, "model": ep["model"]})
+                # 本次流式调用的起始时间（局部变量，并发隔离）
+                stream_start = time.monotonic()
 
-            try:
-                stream, first_chunk = await self._create_stream(
-                    params, ep, ep_idx, retries_per_ep
-                )
-            except Exception as e:
-                last_exception = e
-                if self._is_multi and ep_idx < len(self._endpoints) - 1:
-                    continue
-                raise
+                try:
+                    stream, first_chunk = await self._create_stream(
+                        params, ep, ep_idx, retries_per_ep
+                    )
+                    break
+                except Exception as e:
+                    last_exception = e
+                    if is_reasoning_content_error(e) and v_idx < len(variants) - 1:
+                        api_logger.warning("流式 thinking 400，回退下一策略: %s", e)
+                        continue
+                    if self._is_multi and ep_idx < len(self._endpoints) - 1:
+                        stream = None
+                        break
+                    raise
+
+            if stream is None:
+                continue
 
             total_tokens = 0
             prompt_tokens = 0

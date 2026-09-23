@@ -1,9 +1,13 @@
 """LLM 多端点 failover 测试"""
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from openai import APITimeoutError
+
 from llm import LLMClient
 
 
@@ -35,6 +39,7 @@ async def test_failover_on_timeout():
     """第一端点超时 → 自动切换第二端点"""
     c = LLMClient.__new__(LLMClient)
     c.enable_cache = False
+    c._semaphore = None
     c.usage_tracker = MagicMock()
     c.usage_tracker.start_timer = MagicMock()
     c.usage_tracker.track = MagicMock()
@@ -62,6 +67,50 @@ async def test_failover_on_timeout():
     resp = await c.chat([{"role": "user", "content": "hi"}])
     assert resp.choices[0].message.content == "hello from ep2"
     mock2.chat.completions.create.assert_called_once()
+
+
+def test_thinking_variants_order():
+    """thinking 回退顺序：原样回传 → 补占位 → 关闭 thinking"""
+    from llm.client import thinking_variants
+    msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": ""}]
+    variants = thinking_variants("deepseek-chat", msgs)
+    assert len(variants) == 3
+    assert variants[0][1] is True and "reasoning_content" not in variants[0][0][1]
+    assert variants[1][0][1]["reasoning_content"] == "."
+    assert variants[2][1] is False
+    assert len(thinking_variants("gpt-4", msgs)) == 1
+
+
+@pytest.mark.asyncio
+async def test_thinking_400_fallback():
+    """reasoning_content 400 → 补齐 assistant 占位后重试成功"""
+    c = LLMClient.__new__(LLMClient)
+    c.enable_cache = False
+    c._semaphore = None
+    c._reasoning_effort = "high"
+    c.usage_tracker = MagicMock()
+    mock = MagicMock()
+    err = Exception("Error code: 400 - reasoning_content is required")
+    fake_resp = MagicMock()
+    fake_resp.choices = [MagicMock()]
+    fake_resp.choices[0].message.content = "ok"
+    fake_resp.choices[0].message.tool_calls = None
+    fake_resp.usage = MagicMock()
+    mock.chat.completions.create = AsyncMock(side_effect=[err, fake_resp])
+    c._endpoints = [
+        {"client": mock, "model": "deepseek-chat", "base_url": "https://x.com", "api_key": "sk"},
+    ]
+    c._is_multi = False
+    c.model = "deepseek-chat"
+    c._primary_client = mock
+
+    resp = await c.chat([{"role": "user", "content": "hi"},
+                         {"role": "assistant", "content": ""}])
+    assert resp.choices[0].message.content == "ok"
+    calls = mock.chat.completions.create.call_args_list
+    assert len(calls) == 2
+    assert "reasoning_content" not in calls[0].kwargs["messages"][1]
+    assert calls[1].kwargs["messages"][1]["reasoning_content"] == "."
 
 
 def test_no_endpoints():
