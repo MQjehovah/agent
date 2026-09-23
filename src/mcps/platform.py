@@ -11,14 +11,16 @@
   name 支持 ``name@version`` 钉版本; gateway 为 null 时同样可按名路由。
 
 可用性: ``MARKET_BASE_URL`` 与 ``MARKET_SERVICE_TOKEN`` 齐备才启用; sync 失败仅告警并
-保留既有连接; 单个能力连接/调用失败互不影响; 令牌不落日志与状态。
+保留既有连接; 单个能力连接/调用失败互不影响(连接分小批推进, 失败项快速退避重试);
+last_error 经 ``unwrap_error`` 解包异常组后展示根因; 令牌不落日志与状态。
 """
 import asyncio
 import logging
 import os
 import re
+import time
 import weakref
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,7 +30,6 @@ from urllib.parse import quote
 import httpx
 
 from .manager import (
-    MCP_LAST_ERROR_MAX_LEN,
     MCP_MAX_CONCURRENCY,
     MCP_RISK_LEVELS,
     _parse_positive_number,
@@ -46,6 +47,54 @@ MARKET_EXPOSED_PREFIX = "platform__"
 MARKET_DISTRIBUTIONS = ("remote", "both")
 # 网关 split_cap_ref 仅把 X.Y.Z 当版本; 其它"版本"按整名处理, 故钉版本前先校验
 MARKET_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+# 连接压力控制: 启动时逐小批连接(批内并发 ≤2), 批间短暂停, 避免瞬时并发拉起上游进程
+MARKET_CONNECT_BATCH_SIZE = 2
+MARKET_CONNECT_BATCH_INTERVAL = 0.3
+# 失败能力快速重试: 首次 30s, 之后指数翻倍, 封顶刷新周期(30→60→120→…)
+MARKET_RETRY_BACKOFF_BASE = 30.0
+# last_error 文案: 解包后异常消息保留 300 字, 整体上限再留前缀与类型名余量
+MARKET_ERROR_MESSAGE_MAX_CHARS = 300
+MARKET_LAST_ERROR_MAX_LEN = 400
+
+
+def unwrap_error(exc: BaseException) -> BaseException:
+    """递归解包异常组: 逐层取第一个子异常, 返回最内层普通异常。
+
+    anyio/TaskGroup 会把真实失败包进 ``ExceptionGroup``(生产上导致 last_error
+    只显示 "unhandled errors in a TaskGroup"), 解包后文案才能定位到根因。
+    通过 ``exceptions`` 属性访问(兼容鸭子类型异常组); 空组/带环/非组异常均原样返回。
+    """
+    seen: set[int] = set()
+    current = exc
+    while isinstance(current, BaseException) and id(current) not in seen:
+        children = getattr(current, "exceptions", None)
+        if not isinstance(children, (tuple, list)) or not children:
+            break
+        seen.add(id(current))
+        first = children[0]
+        if not isinstance(first, BaseException):
+            break
+        current = first
+    return current
+
+
+def format_market_error(prefix: str, exc: BaseException) -> str:
+    """异常(组) → last_error 文案 ``前缀: 类型: 消息前 300 字``。"""
+    root = unwrap_error(exc)
+    message = str(root)
+    if len(message) > MARKET_ERROR_MESSAGE_MAX_CHARS:
+        message = message[:MARKET_ERROR_MESSAGE_MAX_CHARS]
+    return f"{prefix}: {type(root).__name__}: {message}"[:MARKET_LAST_ERROR_MAX_LEN]
+
+
+def next_backoff(current: float, cap: float) -> float:
+    """快速重试退避: 未开始(≤0)取 30s, 其后翻倍, 封顶 cap(刷新周期)。"""
+    if cap <= 0:
+        return 0.0
+    if current <= 0:
+        return min(MARKET_RETRY_BACKOFF_BASE, cap)
+    return min(current * 2.0, cap)
 
 
 @dataclass(frozen=True)
@@ -169,13 +218,15 @@ class _CapabilityState:
         self.connected = False
         self.last_error = ""
         self.last_refresh = ""
+        self.backoff = 0.0  # 快速重试退避秒数(0=无待重试); 成功即清零
+        self.retry_at = 0.0  # 下次快速重试时刻(注入时钟的读数)
         self._conn_task: asyncio.Task | None = None
         self._ready: asyncio.Future | None = None
         self._close_requested: asyncio.Event | None = None
         self.semaphore = asyncio.Semaphore(MCP_MAX_CONCURRENCY)
 
     def set_last_error(self, message: str) -> None:
-        self.last_error = (message or "")[:MCP_LAST_ERROR_MAX_LEN]
+        self.last_error = (message or "")[:MARKET_LAST_ERROR_MAX_LEN]
 
     def clear_last_error(self) -> None:
         self.last_error = ""
@@ -186,10 +237,14 @@ class PlatformMCPClient:
 
     def __init__(self, config: PlatformMCPConfig, *,
                  transport: httpx.AsyncBaseTransport | None = None,
-                 session_opener: Callable[[str, dict[str, str]], AbstractAsyncContextManager[Any]] | None = None):
+                 session_opener: Callable[[str, dict[str, str]], AbstractAsyncContextManager[Any]] | None = None,
+                 now: Callable[[], float] | None = None,
+                 sleeper: Callable[[float], Awaitable[None]] | None = None):
         self.config = config
         self._transport = transport
         self._session_opener = session_opener or default_session_opener
+        self._now = now or time.monotonic
+        self._sleep = sleeper or asyncio.sleep
         self._caps: dict[str, _CapabilityState] = {}
         self._exposed_to_cap: dict[str, str] = {}
         self._exposed_to_raw: dict[str, str] = {}
@@ -199,6 +254,8 @@ class PlatformMCPClient:
         self.last_refresh = ""
         self._sync_client: httpx.AsyncClient | None = None
         self._refresh_task: asyncio.Task | None = None
+        self._retry_task: asyncio.Task | None = None
+        self._retry_wake = asyncio.Event()
         self._refresh_lock = asyncio.Lock()
         self._managers: weakref.WeakSet[Any] = weakref.WeakSet()
         self._closing = False
@@ -244,6 +301,16 @@ class PlatformMCPClient:
                 pass
             except Exception as e:
                 logger.debug(f"平台 MCP 刷新任务收尾异常(可忽略): {e}")
+        retry = self._retry_task
+        self._retry_task = None
+        if retry is not None and not retry.done():
+            retry.cancel()
+            try:
+                await retry
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"平台 MCP 重试任务收尾异常(可忽略): {e}")
         for name in list(self._caps):
             await self._close_capability(name)
         self.tool_defs = []
@@ -268,22 +335,29 @@ class PlatformMCPClient:
             try:
                 caps = await self._fetch_sync()
             except Exception as e:
-                self.last_error = f"目录同步失败: {type(e).__name__}: {e}"[:MCP_LAST_ERROR_MAX_LEN]
+                self.last_error = format_market_error("目录同步失败", e)
                 logger.warning(f"平台 MCP {self.last_error}(保留既有连接)")
                 return False
             self.last_error = ""
             current = {c["name"]: c for c in caps}
             for name in [n for n in list(self._caps) if n not in current]:
                 await self._close_capability(name)
-            results = await asyncio.gather(
-                *(self._ensure_capability(item) for item in current.values()),
-                return_exceptions=True,
-            )
-            for result in results:
-                if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
-                    logger.warning(f"平台 MCP 能力处理异常(忽略): {result}")
+            items = list(current.values())
+            for start in range(0, len(items), MARKET_CONNECT_BATCH_SIZE):
+                batch = items[start:start + MARKET_CONNECT_BATCH_SIZE]
+                results = await asyncio.gather(
+                    *(self._ensure_capability(item) for item in batch),
+                    return_exceptions=True,
+                )
+                for result in results:
+                    if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+                        logger.warning(f"平台 MCP 能力处理异常(忽略): {result}")
+                if start + MARKET_CONNECT_BATCH_SIZE < len(items):
+                    await self._sleep(MARKET_CONNECT_BATCH_INTERVAL)
             self._rebuild_tools()
             self.last_refresh = datetime.now().isoformat()
+            self._ensure_retry_task()
+            self._retry_wake.set()
             return True
 
     async def _fetch_sync(self) -> list[dict[str, Any]]:
@@ -299,7 +373,7 @@ class PlatformMCPClient:
         return parse_sync_capabilities(response.json())
 
     async def _ensure_capability(self, item: dict[str, Any]) -> None:
-        """确保能力已连接; 版本变化重建连接; 失败保留状态等下轮刷新重试。"""
+        """确保能力已连接; 版本变化重建连接; 失败保留状态并交给快速重试队列。"""
         name = item["name"]
         version = item.get("version", "")
         cap = self._caps.get(name)
@@ -317,16 +391,72 @@ class PlatformMCPClient:
             return
         await self._connect_capability(cap)
 
-    async def _connect_capability(self, cap: _CapabilityState) -> None:
+    async def _connect_capability(self, cap: _CapabilityState) -> bool:
+        """建连并登记退避: 成功清退避计数, 失败按 30s→…→刷新周期 排下次快速重试。"""
         cap._close_requested = asyncio.Event()
         cap._ready = asyncio.get_running_loop().create_future()
         cap._conn_task = asyncio.create_task(self._capability_main(cap))
         try:
-            await cap._ready
+            connected = bool(await cap._ready)
         except asyncio.CancelledError:
             if cap._close_requested is not None:
                 cap._close_requested.set()
             raise
+        if connected:
+            cap.backoff = 0.0
+            cap.retry_at = 0.0
+        else:
+            backoff = next_backoff(cap.backoff, self.config.refresh_seconds)
+            cap.backoff = backoff
+            cap.retry_at = self._now() + backoff if backoff > 0 else 0.0
+        return connected
+
+    def _ensure_retry_task(self) -> None:
+        """确保快速重试任务在跑(单实例; 无待重试时任务挂起等唤醒)。"""
+        if self._closing:
+            return
+        task = self._retry_task
+        if task is not None and not task.done():
+            return
+        try:
+            self._retry_task = asyncio.get_running_loop().create_task(self._retry_loop())
+        except RuntimeError:
+            logger.warning("平台 MCP 快速重试任务启动失败: 需在事件循环内调用")
+
+    async def _retry_loop(self) -> None:
+        """快速重试循环: 失败能力按退避到期重连(只重试失败项), 成功项不再入队。"""
+        while not self._closing:
+            pending = [cap for cap in self._caps.values()
+                       if not cap.connected and cap.retry_at > 0]
+            if not pending:
+                self._retry_wake.clear()
+                await self._retry_wake.wait()
+                continue
+            delay = min(cap.retry_at for cap in pending) - self._now()
+            if delay > 0:
+                await self._sleep(delay)
+                if self._closing:
+                    break
+            now = self._now()
+            due = [cap for cap in self._caps.values()
+                   if not cap.connected and 0 < cap.retry_at <= now]
+            changed = False
+            busy = False
+            for cap in due:
+                if self._closing:
+                    break
+                if cap._conn_task is not None and not cap._conn_task.done():
+                    busy = True  # 刷新正在连它: 稍后再看, 避免空转
+                    continue
+                await self._connect_capability(cap)
+                changed = True
+            if changed:
+                self._rebuild_tools()
+                logger.info("平台 MCP 快速重试完成: "
+                            + ", ".join(f"{c.name}={'已连接' if c.connected else '仍失败'}"
+                                        for c in due))
+            elif busy:
+                await self._sleep(MARKET_CONNECT_BATCH_INTERVAL)
 
     async def _capability_main(self, cap: _CapabilityState) -> None:
         """专属连接任务: 在自身任务内进出 AsyncExitStack 并停放, 直到 close 请求收尾。
@@ -348,7 +478,7 @@ class PlatformMCPClient:
                         ready.set_result(False)
                     raise
                 except Exception as e:
-                    message = f"连接失败: {type(e).__name__}: {e}"[:MCP_LAST_ERROR_MAX_LEN]
+                    message = format_market_error("连接失败", e)
                     logger.warning(f"平台 MCP [{cap.name}] {message}")
                     cap.set_last_error(message)
                     cap.last_refresh = datetime.now().isoformat()
@@ -495,7 +625,7 @@ class PlatformMCPClient:
                 cap.set_last_error(message)
                 return "执行失败: 工具调用超时"
             except Exception as e:
-                message = f"工具调用失败: {raw_name}, {type(e).__name__}: {e}"
+                message = format_market_error(f"工具调用失败: {raw_name}", e)
                 logger.error(f"平台 MCP [{server}] {message}")
                 cap.set_last_error(message)
                 if isinstance(e, (ConnectionError, OSError, BrokenPipeError)):

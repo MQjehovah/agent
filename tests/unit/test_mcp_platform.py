@@ -9,6 +9,7 @@
 不真连市场与公网。
 """
 import asyncio
+import builtins
 import os
 import re
 import sys
@@ -111,6 +112,68 @@ def test_relay_stream_url_builds_default_and_uses_gateway_payload():
     assert platform.relay_stream_url("http://m", "a/b") == "http://m/api/mcp-gateway/relay/a%2Fb/stream"
 
 
+# ===== 3b. 异常解包 / 错误文案 / 退避(纯函数) =====
+
+class _FakeGroup(BaseException):
+    """鸭子类型异常组(仅暴露 exceptions 属性, 不依赖 3.11+ ExceptionGroup)。"""
+
+    def __init__(self, *children):
+        super().__init__(f"{len(children)} sub-exceptions")
+        self.exceptions = list(children)
+
+
+def test_unwrap_error_single_exception_passthrough():
+    err = ValueError("boom")
+    assert platform.unwrap_error(err) is err
+
+
+def test_unwrap_error_nested_and_deep_groups():
+    inner = KeyError("real cause")
+    nested = _FakeGroup(_FakeGroup(inner, RuntimeError("other")), ValueError("sibling"))
+    assert platform.unwrap_error(nested) is inner
+    deep = inner
+    for _ in range(5):
+        deep = _FakeGroup(deep)
+    assert platform.unwrap_error(deep) is inner
+
+
+def test_unwrap_error_empty_group_and_non_exception_child():
+    empty = _FakeGroup()
+    assert platform.unwrap_error(empty) is empty
+    broken = _FakeGroup("not-an-exception")
+    assert platform.unwrap_error(broken) is broken
+
+
+def test_unwrap_error_real_exception_group():
+    group_cls = getattr(builtins, "ExceptionGroup", None)  # 3.11+ 才有, 旧解释器跳过
+    if group_cls is None:
+        pytest.skip("ExceptionGroup 需 Python 3.11+")
+    root = TimeoutError("real timeout")
+    group = group_cls("tg", [group_cls("inner", [root])])
+    assert platform.unwrap_error(group) is root
+
+
+def test_format_market_error_unwraps_and_truncates_message():
+    group = _FakeGroup(_FakeGroup(RuntimeError("real cause")), ValueError("other"))
+    assert platform.format_market_error("连接失败", group) == "连接失败: RuntimeError: real cause"
+
+    text = platform.format_market_error("工具调用失败: t", RuntimeError("x" * 500))
+    assert text.startswith("工具调用失败: t: RuntimeError: " + "x" * 10)
+    assert len(text) <= platform.MARKET_LAST_ERROR_MAX_LEN
+
+
+def test_next_backoff_sequence_capped_by_refresh_period():
+    seq, current = [], 0.0
+    for _ in range(6):
+        current = platform.next_backoff(current, 300.0)
+        seq.append(current)
+    assert seq == [30.0, 60.0, 120.0, 240.0, 300.0, 300.0]
+
+    assert platform.next_backoff(0, 10.0) == 10.0  # 刷新周期小于基准时直接封顶
+    assert platform.next_backoff(10.0, 10.0) == 10.0
+    assert platform.next_backoff(0, 0) == 0.0
+
+
 # ===== 4. PlatformMCPClient 集成(stub HTTP + 假 session) =====
 
 def _cap(name, version="1.0.0", distribution="remote", gateway=None):
@@ -158,13 +221,21 @@ class _SyncStub:
         return httpx.MockTransport(handler)
 
 
-def _session_opener(sessions, entered, exited, failing=frozenset()):
+def _session_opener(sessions, entered, exited, failing=frozenset(), *,
+                    attempts=None, active=None):
     @asynccontextmanager
     async def opener(url, headers):
         # URL 形如 .../relay/{name}[@version]/stream; 版本钉定不影响能力名索引
         name = url.split("/relay/", 1)[1].rsplit("/", 1)[0].split("@", 1)[0]
+        if attempts is not None:
+            attempts.append(name)
         if name in failing:
             raise RuntimeError("connect refused")
+        if active is not None:
+            active[0] += 1
+            active[1] = max(active[1], active[0])
+            await asyncio.sleep(0)  # 让同批连接进入后可观测并发
+            active[0] -= 1
         entered.append((name, headers))
         try:
             yield sessions[name]
@@ -173,15 +244,58 @@ def _session_opener(sessions, entered, exited, failing=frozenset()):
     return opener
 
 
-def _make_client(caps, sessions, entered, exited, failing=frozenset(), timeout=60.0):
+def _make_client(caps, sessions, entered, exited, failing=frozenset(), timeout=60.0, *,
+                 refresh_seconds=300.0, now=None, sleeper=None, attempts=None, active=None):
     stub = _SyncStub(caps)
     client = platform.PlatformMCPClient(
         platform.PlatformMCPConfig(base_url="http://market.test", service_token="svc-token",
-                                   refresh_seconds=300, timeout=timeout),
+                                   refresh_seconds=refresh_seconds, timeout=timeout),
         transport=stub.transport(),
-        session_opener=_session_opener(sessions, entered, exited, failing),
+        session_opener=_session_opener(sessions, entered, exited, failing,
+                                       attempts=attempts, active=active),
+        now=now,
+        sleeper=sleeper,
     )
     return client, stub
+
+
+class _FakeClock:
+    """可推进假时钟: 测试不真实 sleep, 只推进时钟让退避到期。"""
+
+    def __init__(self, start: float = 1000.0):
+        self.now = start
+        self.sleeps: list[float] = []
+        self._waiters: list[tuple[float, asyncio.Future]] = []
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        delay = max(0.0, float(delay))
+        self.sleeps.append(delay)
+        if delay <= 0:
+            await asyncio.sleep(0)
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self._waiters.append((self.now + delay, fut))
+        await fut
+
+    def advance(self, delta: float) -> None:
+        self.now += float(delta)
+        keep = []
+        for deadline, fut in self._waiters:
+            if deadline <= self.now:
+                if not fut.done():
+                    fut.set_result(None)
+            else:
+                keep.append((deadline, fut))
+        self._waiters = keep
+
+
+async def _drain(rounds: int = 40) -> None:
+    """让挂起任务跑起来(不推进假时钟, 不真实等待)。"""
+    for _ in range(rounds):
+        await asyncio.sleep(0)
 
 
 async def test_refresh_connects_registers_tools_and_routes_call():
@@ -254,6 +368,128 @@ async def test_refresh_isolates_single_capability_failure():
         assert client.has_tool("platform__cap-bad__t2")
         assert client.status()["summary"] == {"connected": 2, "failed": 0, "total": 2}
     finally:
+        await client.close()
+
+
+async def test_connect_runs_in_batches_of_two_and_isolates_failure():
+    calls = []
+    names = [f"cap-{i}" for i in range(5)]
+    sessions = {n: _FakeSession([_tool("t", read_only=True)], calls) for n in names}
+    entered, exited, attempts, active = [], [], [], [0, 0]
+    clock = _FakeClock()
+    client, _ = _make_client([_cap(n) for n in names], sessions, entered, exited,
+                             failing={"cap-2"}, now=clock.time, sleeper=clock.sleep,
+                             attempts=attempts, active=active)
+    try:
+        task = asyncio.create_task(client.refresh_once())
+        await _drain()
+        assert attempts == names[:2]  # 小批量: 首波只拉起 2 个
+        assert clock.sleeps == [0.3]  # 批间隔
+        clock.advance(0.3)
+        await _drain()
+        assert attempts == names[:4]  # cap-2 失败不阻塞同批/后续批
+        clock.advance(0.3)
+        await _drain()
+        assert await task is True
+        assert attempts == names  # 失败项也尝试过
+        assert active[1] <= platform.MARKET_CONNECT_BATCH_SIZE  # 批内并发 ≤2
+        assert [n for n, _ in entered] == ["cap-0", "cap-1", "cap-3", "cap-4"]
+        assert client.status()["summary"] == {"connected": 4, "failed": 1, "total": 5}
+        rows = {r["name"]: r for r in client.status()["servers"]}
+        assert "connect refused" in rows["cap-2"]["last_error"]
+    finally:
+        await client.close()
+
+
+async def test_fast_retry_retries_only_failed_capability_and_clears_backoff():
+    calls = []
+    sessions = {"cap-bad": _FakeSession([_tool("u", read_only=True)], calls),
+                "cap-ok": _FakeSession([_tool("t", read_only=True)], calls)}
+    entered, exited, attempts = [], [], []
+    failing = {"cap-bad"}
+    clock = _FakeClock()
+    client, _ = _make_client([_cap("cap-bad"), _cap("cap-ok")], sessions, entered, exited,
+                             failing=failing, now=clock.time, sleeper=clock.sleep,
+                             attempts=attempts)
+    try:
+        assert await client.refresh_once() is True
+        rows = {r["name"]: r for r in client.status()["servers"]}
+        assert rows["cap-ok"]["connected"] is True and rows["cap-bad"]["connected"] is False
+        assert attempts == ["cap-bad", "cap-ok"]
+        await _drain()
+        assert clock.sleeps == [30.0]  # 首次失败后 30s 快速重试
+        assert not client.has_tool("platform__cap-bad__u")
+
+        failing.discard("cap-bad")
+        clock.advance(30)  # 假时钟推进到退避到期
+        await _drain()
+        assert attempts == ["cap-bad", "cap-ok", "cap-bad"]  # 只重试失败项
+        assert client.has_tool("platform__cap-bad__u")
+        cap = client._caps["cap-bad"]
+        assert cap.backoff == 0 and cap.retry_at == 0  # 成功清退避计数
+        clock.advance(600)
+        await _drain()
+        assert clock.sleeps == [30.0]  # 成功后不再排重试
+    finally:
+        await client.close()
+
+
+async def test_fast_retry_backoff_escalates_and_caps_at_refresh_period():
+    calls = []
+    sessions = {"cap-bad": _FakeSession([_tool("u")], calls)}
+    entered, exited, attempts = [], [], []
+    clock = _FakeClock()
+    client, _ = _make_client([_cap("cap-bad")], sessions, entered, exited,
+                             failing={"cap-bad"}, refresh_seconds=150.0,
+                             now=clock.time, sleeper=clock.sleep, attempts=attempts)
+    try:
+        assert await client.refresh_once() is True
+        assert client._caps["cap-bad"].backoff == 30.0
+        await _drain()  # 等重试任务登记首次 30s 退避
+        for expected in (60.0, 120.0, 150.0, 150.0):  # 30→60→120→150(封顶)→150
+            clock.advance(clock.sleeps[-1])
+            await _drain()
+            assert client._caps["cap-bad"].backoff == expected
+        assert clock.sleeps == [30.0, 60.0, 120.0, 150.0, 150.0]
+        assert attempts == ["cap-bad"] * 5  # 每次到期都重试(仍失败)
+    finally:
+        await client.close()
+
+
+async def test_fast_retry_waits_when_refresh_connect_in_flight():
+    calls = []
+    sessions = {"cap-bad": _FakeSession([_tool("u")], calls)}
+    entered, exited, attempts = [], [], []
+    failing = {"cap-bad"}
+    clock = _FakeClock()
+    hang_stop = asyncio.Event()
+    hang = None
+
+    async def _hang():
+        await hang_stop.wait()
+
+    client, _ = _make_client([_cap("cap-bad")], sessions, entered, exited,
+                             failing=failing, now=clock.time, sleeper=clock.sleep,
+                             attempts=attempts)
+    try:
+        assert await client.refresh_once() is True
+        await _drain()
+        assert clock.sleeps == [30.0]
+
+        cap = client._caps["cap-bad"]
+        hang = asyncio.create_task(_hang())
+        cap._conn_task = hang  # 模拟刷新路径正在为它建连(未完成)
+        clock.advance(30)
+        await _drain()
+        assert clock.sleeps == [30.0, platform.MARKET_CONNECT_BATCH_INTERVAL]  # 有界等待, 不空转
+        assert attempts == ["cap-bad"]  # 不重复发起连接
+    finally:
+        cap = client._caps.get("cap-bad")
+        if cap is not None:
+            cap._conn_task = None
+        hang_stop.set()
+        if hang is not None:
+            await hang
         await client.close()
 
 
