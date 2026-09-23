@@ -8,6 +8,8 @@ from mcp.types import ToolAnnotations
 from rich.console import Console
 from rich.logging import RichHandler
 
+# 无密钥依赖: 不使用 env_guard(该守卫用于 PG_MCP_DSN/DB_PASSWORD 等密钥类 server)
+
 console = Console(stderr=True)
 
 logging.basicConfig(
@@ -192,6 +194,9 @@ def _resolve_repo(repo: str) -> tuple[Path, bool]:
 
     相对路径基于第一个 root 解析; resolve() 后做前缀校验, 符号链接逃逸会被拒绝。
     必须为仓库根目录(非子目录): 防止 roots 内子目录指向 roots 之外的 .git 而越权修改。
+    另校验 git rev-parse --absolute-git-dir 落在 roots 内: roots 内目录伪造 .git 文本文件
+    (gitdir: <roots 外>/.git) 会被拒绝; worktree/submodule 的 gitdir 通常位于 roots 内,
+    兼容放行, 故 roots 应指向仓库根目录(含 .git/worktrees|modules 的上层)。
     非 git 仓库或裸仓库以下工作区工具会被拒绝, 裸仓库仅支持 log/show/branches。
     """
     roots = _roots()
@@ -227,6 +232,17 @@ def _resolve_repo(repo: str) -> tuple[Path, bool]:
         raise GitError(f"仓库根目录解析失败: {expected!r} ({exc})") from exc
     if actual_root != resolved:
         raise GitError(f"repo 必须是仓库根目录: {resolved} 不是 {actual_root}(请传仓库根路径)")
+
+    gitdir_probe = _run_git(resolved, ["rev-parse", "--absolute-git-dir"])
+    git_dir_text = _decode(gitdir_probe.stdout).strip()
+    if gitdir_probe.returncode != 0 or not git_dir_text:
+        raise GitError(f"无法解析仓库 gitdir: {repo!r} ({_summarize_stderr(gitdir_probe.stderr)})")
+    try:
+        git_dir = Path(git_dir_text).resolve()
+    except OSError as exc:
+        raise GitError(f"仓库 gitdir 解析失败: {git_dir_text!r} ({exc})") from exc
+    if not any(_is_within(git_dir, root) for root in roots):
+        raise GitError(f"仓库 gitdir 越界: {git_dir} 不在允许的仓库目录内(疑似 .git 文件重定向)")
     return resolved, is_bare
 
 

@@ -13,6 +13,8 @@ from mcp.types import ToolAnnotations
 from rich.console import Console
 from rich.logging import RichHandler
 
+# 无密钥依赖: 不使用 env_guard(该守卫用于 PG_MCP_DSN/DB_PASSWORD 等密钥类 server)
+
 console = Console(stderr=True)
 
 logging.basicConfig(
@@ -43,6 +45,9 @@ _TEXT_CONTENT_TYPES = {
 
 _SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "canvas", "iframe"}
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+
+# 运营商级 NAT(CGNAT) 段: 并非全球可路由公网, 显式拒绝(部分 Python 版本 is_private 不含它)
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
 class FetchError(Exception):
@@ -78,7 +83,7 @@ def _normalize_host(host: str) -> str:
 
 
 def _check_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> tuple[bool, str]:
-    """拒绝私有/环回/链路本地/保留/组播/未指定地址(含 IPv4 映射与 6to4 形式)。"""
+    """拒绝私有/环回/链路本地/保留/组播/未指定地址(含 IPv4 映射与 6to4 形式)与 CGNAT。"""
     candidates = [ip]
     mapped = getattr(ip, "ipv4_mapped", None)
     sixtofour = getattr(ip, "sixtofour", None)
@@ -87,6 +92,8 @@ def _check_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> tuple[bool, 
     if sixtofour is not None:
         candidates.append(sixtofour)
     for item in candidates:
+        if isinstance(item, ipaddress.IPv4Address) and item in _CGNAT_NETWORK:
+            return False, f"禁止访问运营商级 NAT(CGNAT) 地址: {ip}"
         if (
             item.is_private
             or item.is_loopback
@@ -132,7 +139,12 @@ def is_safe_url(url: str, allow_hosts: set[str] | list[str] | tuple[str, ...] | 
 
 
 def _ensure_public_host(url: str, allow_hosts: set[str] | None = None) -> None:
-    """域名解析后逐个校验 IP, 拒绝解析到内网的域名(DNS rebinding 兜底)。"""
+    """域名解析后逐个校验 IP, 拒绝解析到内网的域名(DNS rebinding 兜底)。
+
+    说明: 此处的解析复检只能**缓解**、不能完全防止 DNS rebinding —— 校验与随后
+    httpx 实际连接之间存在 TOCTOU 时间窗, 且 httpx 会自行再次解析域名。企业部署
+    建议用 MCP_FETCH_ALLOW_HOSTS 固化可信主机, 或经出网代理/防火墙限制可达网段。
+    """
     host = _normalize_host(urllib.parse.urlsplit(url).hostname or "")
     if host in {_normalize_host(item) for item in (allow_hosts or set())}:
         return
@@ -353,14 +365,17 @@ def fetch_url(url: str, max_chars: int = DEFAULT_MAX_CHARS, raw: bool = False) -
     """抓取网页并转为纯文本/Markdown 风格文本(只读, 会出网)。
 
     参数:
-    - url: http/https 地址; 私有/环回/链路本地/保留地址一律拒绝(可通过环境变量
-      MCP_FETCH_ALLOW_HOSTS 配置逗号白名单显式放行内网指定主机)
+    - url: http/https 地址; 私有/环回/链路本地/保留/运营商级 NAT(100.64.0.0/10) 地址
+      一律拒绝(可通过环境变量 MCP_FETCH_ALLOW_HOSTS 配置逗号白名单显式放行内网指定主机)
     - max_chars: 返回文本的最大字符数(默认 40000, 上限 200000)
     - raw: true 返回原始文本(不转 Markdown), 仍受 max_chars 与下载上限约束
 
     返回 url(最终地址)/status/content_type/title(HTML 有标题时)/text/truncated。
     下载上限由 MCP_FETCH_MAX_BYTES 控制(默认 2MB), 超时由 MCP_FETCH_TIMEOUT 控制
-    (默认 20s), 重定向最多 5 跳; 非文本 content-type 或失败时返回 {"error": "..."}。
+    (默认 20s), 重定向最多 5 跳(逐跳复用 SSRF 校验); 非文本 content-type 或失败时
+    返回 {"error": "..."}。
+    说明: 本服务不解析/不强制 robots.txt(不代替授权判断), 请仅抓取已获授权的页面;
+    企业部署建议用 MCP_FETCH_ALLOW_HOSTS 限定可访问主机。
     """
     logger.info(f"抓取 URL: {url} (raw={raw}, max_chars={max_chars})")
     allow_hosts = _allow_hosts()
@@ -414,7 +429,8 @@ def fetch_json(url: str) -> dict:
     """抓取 JSON 接口并返回解析后的结构化数据(只读, 会出网, 限 200KB)。
 
     参数:
-    - url: http/https 地址, 与 fetch_url 相同的 SSRF 防护(仅白名单可放行内网主机)
+    - url: http/https 地址, 与 fetch_url 相同的 SSRF 防护(私有/环回/保留/CGNAT 拒绝,
+      仅 MCP_FETCH_ALLOW_HOSTS 白名单可放行内网主机; 重定向逐跳校验)
 
     返回 url(最终地址)/status/data(解析后的 JSON)。
     响应超过 200KB、内容类型非文本或 JSON 非法时返回 {"error": "..."}。

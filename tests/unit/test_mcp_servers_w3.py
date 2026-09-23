@@ -6,12 +6,14 @@
 - filesystem: tmp_path 作受限目录, 覆盖读写 roundtrip/../越界/符号链接逃逸/
   未配置 roots/写开关/max_bytes 截断/search 命中; 符号链接在无权限环境自动跳过。
 """
+import gzip
 import importlib
 import json
 import os
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -118,6 +120,9 @@ async def test_time_server_in_process_client():
     "http://localhost/",
     "http://localhost:8000/x",
     "http://foo.localhost/",
+    "http://100.64.0.0/",
+    "http://100.64.0.1/",
+    "http://100.127.255.255/",
     "ftp://example.com/file",
     "file:///etc/passwd",
     "",
@@ -134,6 +139,8 @@ def test_fetch_is_safe_url_allows_public_and_whitelist():
     assert module.is_safe_url("https://example.com/a?b=1")[0] is True
     assert module.is_safe_url("http://93.184.216.34/")[0] is True
     assert module.is_safe_url("http://172.32.0.1/")[0] is True  # 172.16/12 之外
+    assert module.is_safe_url("http://100.63.255.255/")[0] is True  # 100.64/10 之外
+    assert module.is_safe_url("http://100.128.0.1/")[0] is True  # 100.64/10 之外
     assert module.is_safe_url("http://192.168.1.10:8080/", {"192.168.1.10"})[0] is True
     assert module.is_safe_url("http://localhost/", ["localhost"])[0] is True
 
@@ -166,6 +173,84 @@ def test_fetch_truncate_text():
     assert text == "abc" and truncated is False
 
 
+def _mock_fetch_transport(monkeypatch, handler):
+    """把 mcp_fetch 内新建的 httpx.Client 换成 MockTransport 客户端(测试不出网)。"""
+    module = _load("mcp_fetch")
+    real_client = module.httpx.Client
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = module.httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(module.httpx, "Client", client_factory)
+    return module
+
+
+def test_fetch_follows_public_redirect_and_reports_final_url(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if str(request.url) == "http://93.184.216.34/start":
+            return httpx.Response(302, headers={"location": "http://93.184.216.34/final"})
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=b"<h1>OK</h1>")
+
+    module = _mock_fetch_transport(monkeypatch, handler)
+    payload = module.fetch_url("http://93.184.216.34/start")
+    assert payload["url"] == "http://93.184.216.34/final"
+    assert "OK" in payload["text"]
+    assert seen == ["http://93.184.216.34/start", "http://93.184.216.34/final"]
+
+
+def test_fetch_redirect_to_private_host_blocked_before_request(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"location": "http://127.0.0.1:9/secret"})
+
+    module = _mock_fetch_transport(monkeypatch, handler)
+    payload = module.fetch_url("http://93.184.216.34/start")
+    assert "127.0.0.1" in payload["error"]
+    assert seen == ["http://93.184.216.34/start"]  # 重定向目标未被请求
+
+
+def test_fetch_gzip_large_response_truncated(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain", "content-encoding": "gzip"},
+            content=gzip.compress(b"a" * 5000),
+        )
+
+    module = _mock_fetch_transport(monkeypatch, handler)
+    monkeypatch.setenv("MCP_FETCH_MAX_BYTES", "1000")
+    payload = module.fetch_url("http://93.184.216.34/big.txt", max_chars=100000)
+    assert payload["truncated"] is True
+    assert payload["text"] == "a" * 1000
+
+
+def test_fetch_large_json_rejected(monkeypatch):
+    body = b'{"data":"' + b"a" * 300_000 + b'"}'
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+
+    module = _mock_fetch_transport(monkeypatch, handler)
+    payload = module.fetch_json("http://93.184.216.34/big.json")
+    assert payload["error"]
+    assert "200KB" in payload["error"]
+
+
+def test_fetch_non_text_content_type_rejected(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "application/octet-stream"}, content=b"\x00\x01")
+
+    module = _mock_fetch_transport(monkeypatch, handler)
+    payload = module.fetch_url("http://93.184.216.34/blob.bin")
+    assert "不支持的内容类型" in payload["error"]
+
+
 async def test_fetch_rejects_private_host_fast_without_network():
     module = _load("mcp_fetch")
     async with Client(module.mcp, raise_exceptions=True) as client:
@@ -188,6 +273,8 @@ def fs_env(tmp_path, monkeypatch):
     monkeypatch.setenv("FS_MCP_ROOTS", str(root))
     monkeypatch.setenv("FS_MCP_ALLOW_WRITE", "true")
     monkeypatch.delenv("FS_MCP_MAX_READ_BYTES", raising=False)
+    monkeypatch.delenv("FS_MCP_MAX_WRITE_BYTES", raising=False)
+    monkeypatch.delenv("FS_MCP_ALLOW_SUFFIXES", raising=False)
     return _load("mcp_filesystem"), root
 
 
@@ -324,6 +411,76 @@ def test_filesystem_refuses_root_delete_and_move(fs_env):
     module, _ = fs_env
     assert "拒绝删除受限目录根" in module.fs_delete(".", recursive=True)["error"]
     assert "拒绝移动受限目录根" in module.fs_move(".", "moved")["error"]
+
+
+def test_filesystem_delete_and_move_do_not_follow_symlink(fs_env, tmp_path):
+    """删除/移动 symlink 必须只作用于链接本身, 目标目录与其内容保持不动。"""
+    module, root = fs_env
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("secret", encoding="utf-8")
+    link = root / "link"
+    try:
+        os.symlink(outside, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前环境不支持创建符号链接")
+
+    payload = module.fs_delete("link")
+    assert payload["success"] is True and payload["kind"] == "symlink"
+    assert not link.is_symlink()
+    assert secret.read_text(encoding="utf-8") == "secret"
+
+    os.symlink(outside, link, target_is_directory=True)
+    payload = module.fs_move("link", "moved_link")
+    assert payload["success"] is True
+    assert not link.is_symlink()
+    assert (root / "moved_link").is_symlink()
+    assert secret.read_text(encoding="utf-8") == "secret"
+    assert outside.is_dir()
+
+
+def test_filesystem_write_bytes_limit(fs_env, monkeypatch):
+    module, root = fs_env
+    monkeypatch.setenv("FS_MCP_MAX_WRITE_BYTES", "5")
+
+    assert module.fs_write_text("a.txt", "12345")["success"] is True
+    payload = module.fs_write_text("b.txt", "123456")
+    assert "超过上限" in payload["error"]
+    assert not (root / "b.txt").exists()
+
+
+def test_filesystem_write_suffix_whitelist(fs_env, monkeypatch):
+    module, root = fs_env
+    monkeypatch.setenv("FS_MCP_ALLOW_SUFFIXES", "md,.txt")
+
+    assert module.fs_write_text("a.md", "x")["success"] is True
+    assert module.fs_write_text("a.txt", "x")["success"] is True
+    payload = module.fs_write_text("b.log", "x")
+    assert "后缀未允许" in payload["error"]
+    assert not (root / "b.log").exists()
+
+    (root / "c.log").write_text("x", encoding="utf-8")
+    payload = module.fs_move("c.log", "d.log")
+    assert "后缀未允许" in payload["error"]
+    assert module.fs_move("c.log", "d.md")["success"] is True
+
+
+def test_filesystem_write_defaults_no_limit_and_all_suffixes(fs_env):
+    module, _ = fs_env
+    assert module._max_write_bytes() == 1024 * 1024
+    assert module._allowed_suffixes() == set()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 保留名/ADS 校验仅 win32 生效")
+def test_filesystem_rejects_windows_device_names_and_ads(fs_env):
+    module, _ = fs_env
+    for name in ("NUL", "con.txt", "COM1", "LPT9", "data.txt:secret"):
+        payload = module.fs_write_text(name, "x")
+        assert "error" in payload, name
+        assert "Windows" in payload["error"], name
+    assert "Windows" in module.fs_stat("NUL")["error"]
+    assert "Windows" in module.fs_mkdir("aux")["error"]
 
 
 def test_filesystem_depth_listing(fs_env):

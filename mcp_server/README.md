@@ -6,6 +6,19 @@
 > 注意 v2 起同步 handler 运行在 anyio worker 线程——涉及事件循环（如 `remote_terminal` 的 websocket）
 > 或共享可变状态的工具必须写成 `async def` 或加锁；协议字段为 snake_case（`input_schema/is_error/...`）。
 
+## W3 内置工具 server 一览（注册于 `config/mcp_servers.json`）
+
+| server | 文件 | 用途 | 默认启用 | 关键 env |
+|--------|------|------|----------|----------|
+| `time` | `src/mcp_time.py` | 时区时间（纯离线） | true | — |
+| `fetch` | `src/mcp_fetch.py` | 网页抓取（只读出网；私有/保留/CGNAT 拒绝；不强制 robots.txt） | true | `MCP_FETCH_TIMEOUT`、`MCP_FETCH_MAX_BYTES`、`MCP_FETCH_ALLOW_HOSTS` |
+| `filesystem` | `src/mcp_filesystem.py` | 受限目录读写（symlink 不跟随；删除/移动只作用于链接本身） | false | `FS_MCP_ROOTS`（必配）、`FS_MCP_ALLOW_WRITE`、`FS_MCP_MAX_WRITE_BYTES`、`FS_MCP_ALLOW_SUFFIXES` |
+| `git` | `src/mcp_git.py` | 仓库白名单读写（gitdir 必须落在 roots 内） | false | `GIT_MCP_ROOTS`（必配）、`GIT_MCP_ALLOW_WRITE`、`GIT_MCP_TIMEOUT`、`GIT_MCP_MAX_OUTPUT_CHARS` |
+| `postgres` | `src/mcp_postgres.py` | PostgreSQL 只读查询（单语句+只读事务+行数/超时上限） | false | `PG_MCP_DSN`（必配，占位符走 env_guard）、`PG_MCP_STATEMENT_TIMEOUT_MS`、`PG_MCP_MAX_ROWS` |
+
+默认禁用的 server 需显式改 `enabled: true` 并配置白名单/连接串；`filesystem`/`git` 写操作
+另需 `FS_MCP_ALLOW_WRITE=true` / `GIT_MCP_ALLOW_WRITE=true`，风险由操作人承担。
+
 ## 安装
 
 ```bash

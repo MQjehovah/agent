@@ -7,6 +7,8 @@ from mcp.types import ToolAnnotations
 from rich.console import Console
 from rich.logging import RichHandler
 
+# 无密钥依赖: 不使用 env_guard(该守卫用于 PG_MCP_DSN/DB_PASSWORD 等密钥类 server)
+
 console = Console(stderr=True)
 
 logging.basicConfig(

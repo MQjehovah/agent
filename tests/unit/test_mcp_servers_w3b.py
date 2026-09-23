@@ -2,13 +2,15 @@
 
 - git: 本机 git CLI + tmp_path 真仓库(init/config/commit); 覆盖只读工具输出、
   白名单越界/非仓库/子目录/未配置拒绝、写开关默认关闭、选项注入与路径逃逸拒绝、
-  输出截断、空提交信息与 git 非零退出映射、裸仓库只读例外; 测试内 git 命令同样 shell=False;
+  输出截断、空提交信息与 git 非零退出映射、裸仓库只读例外、.git 文件重定向 gitdir 越界拒绝;
+  测试内 git 命令同样 shell=False;
 - postgres: 不真连 DB; 覆盖 is_read_only_sql 注入式绕过(多语句/数据修改型 CTE/
   注释与字符串掩码/未闭合)、clamp_limit 与行数上限、DSN 缺失文案、连接失败错误映射、
   假连接注入下的 pg_query 列/行/截断行为与连接级只读参数。
 """
 import importlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -265,6 +267,45 @@ def test_git_bare_repo_allows_reads_and_rejects_worktree_ops(git_env, tmp_path, 
     assert module.git_branch_create(str(bare), "from-bare")["ok"] is True
 
 
+def test_git_rejects_gitdir_redirect_escape(git_env, tmp_path, monkeypatch):
+    """roots 内目录伪造 .git 文本文件指向 roots 外仓库时, 所有工具必须拒绝。"""
+    module, roots, repo = git_env
+    outside = tmp_path / "outside_repo"
+    outside.mkdir()
+    _git(outside, "init")
+
+    evil = roots / "evil"
+    evil.mkdir()
+    _git(evil, "init")
+    shutil.rmtree(evil / ".git")
+    (evil / ".git").write_text(f"gitdir: {(outside / '.git').as_posix()}\n", encoding="utf-8")
+
+    # 前置确认漏洞形态真实存在: evil 被 git 视为工作区, 但 gitdir 指向 roots 外
+    git_dir = Path(_git(evil, "rev-parse", "--absolute-git-dir").strip()).resolve()
+    assert git_dir == (outside / ".git").resolve()
+    assert Path(_git(evil, "rev-parse", "--show-toplevel").strip()).resolve() == evil.resolve()
+
+    monkeypatch.setenv("GIT_MCP_ALLOW_WRITE", "true")
+    calls = {
+        "git_status": (str(evil),),
+        "git_log": (str(evil),),
+        "git_diff": (str(evil),),
+        "git_show": (str(evil),),
+        "git_blame": (str(evil), "notes.txt"),
+        "git_branches": (str(evil),),
+        "git_add": (str(evil),),
+        "git_commit": (str(evil), "msg"),
+        "git_checkout": (str(evil), "main"),
+        "git_branch_create": (str(evil), "dev"),
+        "git_branch_delete": (str(evil), "dev"),
+    }
+    for name, args in calls.items():
+        payload = getattr(module, name)(*args)
+        assert payload["ok"] is False, name
+        assert "gitdir 越界" in payload["error"], name
+    assert not (outside / ".git" / "refs" / "heads" / "dev").exists()
+
+
 async def test_git_server_in_process_client(git_env):
     module, roots, repo = git_env
     async with Client(module.mcp, raise_exceptions=True) as client:
@@ -471,6 +512,47 @@ def test_postgres_pg_query_clamps_rows_with_fake_connection(monkeypatch):
     assert payload["limit"] == 2
     assert cursor.executed[0] == ("SELECT id, name FROM t", None)
     assert conn.exited is True
+
+
+def test_postgres_dsn_goes_through_env_guard(monkeypatch):
+    module = _load("mcp_postgres")
+    monkeypatch.setenv("PG_MCP_DSN", "postgresql://u:p@127.0.0.1:1/db")
+    calls = []
+
+    def fake_require_secret(name, value, *args, **kwargs):
+        calls.append((name, value))
+        return value
+
+    monkeypatch.setattr(module.env_guard, "require_secret", fake_require_secret)
+    monkeypatch.setattr(module, "_connect", lambda dsn: _FakeConnection(_FakeCursor(["x"], [[1]])))
+    payload = module.pg_query("SELECT 1")
+    assert payload["ok"] is True
+    assert calls and calls[0][0] == "PG_MCP_DSN"
+
+
+def test_postgres_production_weak_dsn_falls_back_to_unconfigured(monkeypatch):
+    module = _load("mcp_postgres")
+    monkeypatch.setenv("PG_MCP_DSN", "123456")
+    monkeypatch.setenv("APP_ENV", "production")
+
+    def boom(dsn):
+        raise AssertionError("生产弱 DSN 不应连接数据库")
+
+    monkeypatch.setattr(module, "_connect", boom)
+    payload = module.pg_query("SELECT 1")
+    assert payload["ok"] is False and "未配置连接串" in payload["error"]
+
+
+def test_postgres_dsn_guard_error_maps_to_unconfigured(monkeypatch):
+    module = _load("mcp_postgres")
+    monkeypatch.setenv("PG_MCP_DSN", "postgresql://u:p@127.0.0.1:1/db")
+
+    def boom(name, value, *args, **kwargs):
+        raise RuntimeError("生产拒绝")
+
+    monkeypatch.setattr(module.env_guard, "require_secret", boom)
+    payload = module.pg_list_tables()
+    assert payload["ok"] is False and "未配置连接串" in payload["error"]
 
 
 async def test_postgres_server_in_process_client(monkeypatch):

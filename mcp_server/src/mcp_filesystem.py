@@ -3,12 +3,15 @@ import fnmatch
 import logging
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from rich.console import Console
 from rich.logging import RichHandler
+
+# 无密钥依赖: 不使用 env_guard(该守卫用于 PG_MCP_DSN/DB_PASSWORD 等密钥类 server)
 
 console = Console(stderr=True)
 
@@ -24,11 +27,17 @@ logger = logging.getLogger("mcp.filesystem")
 mcp = MCPServer("Rosiwit MCP Server")
 
 DEFAULT_MAX_READ_BYTES = 512 * 1024
+DEFAULT_MAX_WRITE_BYTES = 1024 * 1024
 MAX_LIST_DEPTH = 5
 MAX_LIST_ENTRIES = 500
 MAX_SEARCH_RESULTS = 200
 SEARCH_MAX_FILE_BYTES = 128 * 1024
 SEARCH_MAX_TOTAL_BYTES = 2 * 1024 * 1024
+
+# Windows 保留设备名: 这些名字(含带扩展名形式, 如 NUL.txt)会映射到设备而非普通文件
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul", *(f"com{index}" for index in range(1, 10)), *(f"lpt{index}" for index in range(1, 10))}
+)
 
 TEXT_SUFFIXES = frozenset({
     ".txt", ".md", ".rst", ".log", ".csv", ".tsv", ".json", ".jsonl", ".ndjson",
@@ -86,6 +95,48 @@ def _max_read_bytes() -> int:
     return _env_int("FS_MCP_MAX_READ_BYTES", DEFAULT_MAX_READ_BYTES)
 
 
+def _max_write_bytes() -> int:
+    """单次写入字节上限, 环境变量 FS_MCP_MAX_WRITE_BYTES, 默认 1MB。"""
+    return _env_int("FS_MCP_MAX_WRITE_BYTES", DEFAULT_MAX_WRITE_BYTES)
+
+
+def _allowed_suffixes() -> set[str]:
+    """写操作后缀白名单, 来自 FS_MCP_ALLOW_SUFFIXES(逗号分隔, 如 ".md,txt"); 空=全允许。"""
+    suffixes: set[str] = set()
+    for part in os.getenv("FS_MCP_ALLOW_SUFFIXES", "").split(","):
+        part = part.strip().lower()
+        if not part:
+            continue
+        suffixes.add(part if part.startswith(".") else f".{part}")
+    return suffixes
+
+
+def _check_write_suffix(target: Path) -> None:
+    """写工具后缀校验: 白名单为空时不限制; 否则目标后缀必须命中(无后缀视为不允许)。"""
+    allowed = _allowed_suffixes()
+    if allowed and target.suffix.lower() not in allowed:
+        raise FsError(
+            f"写操作后缀未允许: {target.suffix or '(无后缀)'}; 仅允许 {', '.join(sorted(allowed))}"
+            "(环境变量 FS_MCP_ALLOW_SUFFIXES)"
+        )
+
+
+def _check_windows_name(path: Path) -> None:
+    """Windows 上拒绝保留设备名(NUL/CON/PRN/AUX/COM1-9/LPT1-9)与含 ':' 的名称(ADS)。
+
+    仅 win32 生效; ':' 检查跳过盘符(WindowsPath.drive), 避免误伤绝对路径。
+    """
+    if sys.platform != "win32":
+        return
+    for part in path.parts:
+        if part == path.anchor or part == path.drive:
+            continue
+        if ":" in part:
+            raise FsError(f"非法路径: Windows 不允许含 ':' 的名称(数据流/ADS): {part!r}")
+        if part.split(".")[0].strip().lower() in _WINDOWS_DEVICE_NAMES:
+            raise FsError(f"非法路径: Windows 保留设备名: {part!r}")
+
+
 def resolve_in_roots(path: str, roots: list[Path] | None = None) -> Path:
     """把 path 规范化并解析符号链接后, 校验其位于受限目录内。
 
@@ -99,6 +150,7 @@ def resolve_in_roots(path: str, roots: list[Path] | None = None) -> Path:
     candidate = Path(raw)
     if not candidate.is_absolute():
         candidate = roots[0] / candidate
+    _check_windows_name(candidate)
     try:
         resolved = candidate.resolve()
     except OSError as exc:
@@ -110,6 +162,34 @@ def resolve_in_roots(path: str, roots: list[Path] | None = None) -> Path:
         except ValueError:
             continue
     raise FsError(f"路径越界: {path!r} 不在允许的受限目录内")
+
+
+def resolve_no_follow(path: str) -> Path:
+    """解析路径但**不跟随最终组件**的符号链接(父目录仍解析并校验在 roots 内)。
+
+    用于 delete/move: 对 symlink 操作链接本身, 绝不作用于其指向的目标。
+    受限目录根本身原样返回(由调用方显式拒绝); 最终组件为 '.'/'..'/空时报错。
+    """
+    roots = _roots()
+    if not roots:
+        raise FsError(ROOTS_NOT_CONFIGURED)
+    raw = str(path or "").strip() or "."
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = roots[0] / candidate
+    _check_windows_name(candidate)
+    try:
+        resolved_candidate = candidate.resolve()
+    except OSError as exc:
+        raise FsError(f"路径解析失败: {path!r} ({exc})") from exc
+    for root in roots:
+        if resolved_candidate == root:
+            return root
+    name = candidate.name
+    if name in ("", ".", ".."):
+        raise FsError(f"非法路径(不允许以 {name!r} 结尾): {path!r}")
+    parent = resolve_in_roots(str(candidate.parent))
+    return parent / name
 
 
 def _require_write() -> None:
@@ -302,6 +382,7 @@ def _fs_write_text(path: str, content: str, create_dirs: bool) -> dict:
     target = resolve_in_roots(path)
     if target.exists() and target.is_dir():
         raise FsError(f"目标是目录, 不能写入: {path!r}")
+    _check_write_suffix(target)
     parent = target.parent
     if not parent.exists():
         if create_dirs:
@@ -309,6 +390,9 @@ def _fs_write_text(path: str, content: str, create_dirs: bool) -> dict:
         else:
             raise FsError(f"父目录不存在: {parent}; 可传 create_dirs=true 自动创建")
     data = str(content if content is not None else "").encode("utf-8")
+    limit = _max_write_bytes()
+    if len(data) > limit:
+        raise FsError(f"写入内容超过上限: {len(data)} bytes > FS_MCP_MAX_WRITE_BYTES({limit})")
     target.write_bytes(data)
     return {"success": True, "path": str(target), "bytes": len(data)}
 
@@ -326,14 +410,16 @@ def _fs_mkdir(path: str) -> dict:
 
 def _fs_move(src: str, dst: str) -> dict:
     _require_write()
-    source = resolve_in_roots(src)
-    destination = resolve_in_roots(dst)
+    # 不跟随最终组件的符号链接: 移动的是链接本身, 绝不移动其指向的目标
+    source = resolve_no_follow(src)
+    destination = resolve_no_follow(dst)
     if source in _roots():
         raise FsError("拒绝移动受限目录根")
     if not source.exists() and not source.is_symlink():
         raise FsError(f"源路径不存在: {src!r}")
     if destination.exists() or destination.is_symlink():
         raise FsError(f"目标已存在: {dst!r}")
+    _check_write_suffix(destination)
     if not destination.parent.exists():
         raise FsError(f"目标父目录不存在: {destination.parent}")
     shutil.move(str(source), str(destination))
@@ -342,7 +428,8 @@ def _fs_move(src: str, dst: str) -> dict:
 
 def _fs_delete(path: str, recursive: bool) -> dict:
     _require_write()
-    target = resolve_in_roots(path)
+    # 不跟随最终组件的符号链接: 删除链接本身; 指向目录的链接也按链接处理(recursive 不作用于目标)
+    target = resolve_no_follow(path)
     if target in _roots():
         raise FsError("拒绝删除受限目录根")
     if not target.exists() and not target.is_symlink():
@@ -353,8 +440,8 @@ def _fs_delete(path: str, recursive: bool) -> dict:
         shutil.rmtree(target)
         kind = "dir"
     else:
+        kind = "symlink" if target.is_symlink() else "file"
         target.unlink()
-        kind = "file"
     return {"success": True, "path": str(target), "kind": kind}
 
 
@@ -445,7 +532,9 @@ def fs_write_text(path: str, content: str, create_dirs: bool = False) -> dict:
     - content: 文本内容(UTF-8 写入, 覆盖同名文件)
     - create_dirs: 父目录不存在时是否自动创建, 默认 false
 
-    返回 success/path/bytes; 未开启写、越界或写失败时返回 {"error": "..."}。
+    另有上限: 内容不超过 FS_MCP_MAX_WRITE_BYTES(默认 1MB); 配置 FS_MCP_ALLOW_SUFFIXES
+    (逗号分隔, 如 ".md,.txt")后仅允许写入白名单后缀。
+    返回 success/path/bytes; 未开启写、越界、超限或写失败时返回 {"error": "..."}。
     """
     logger.info(f"fs_write_text: {path} ({len(str(content or ''))} chars)")
     try:
@@ -476,6 +565,8 @@ def fs_move(src: str, dst: str) -> dict:
     """移动/重命名文件或目录(写操作, 默认关闭; 需 FS_MCP_ALLOW_WRITE=true)。
 
     src 与 dst 都必须位于受限目录内, 目标已存在时拒绝覆盖。
+    symlink 只移动链接本身, 不会移动/影响其指向的目标; 配置 FS_MCP_ALLOW_SUFFIXES 时
+    校验目标后缀白名单。
     """
     logger.info(f"fs_move: {src} -> {dst}")
     try:
@@ -491,6 +582,7 @@ def fs_delete(path: str, recursive: bool = False) -> dict:
     """删除文件或目录(写操作, 默认关闭; 需 FS_MCP_ALLOW_WRITE=true)。
 
     目录必须显式传 recursive=true; 受限目录根本身拒绝删除。
+    symlink 只删除链接本身(recursive 不会作用于链接指向的目标目录), 目标保持不动。
     """
     logger.info(f"fs_delete: {path} recursive={recursive}")
     try:

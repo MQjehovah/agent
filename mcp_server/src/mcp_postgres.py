@@ -3,6 +3,7 @@ import os
 import re
 from typing import Any
 
+import env_guard
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from rich.console import Console
@@ -62,9 +63,18 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 
 def _dsn() -> str:
-    """连接串 PG_MCP_DSN; 缺失或仍是未解析占位符 ${PG_MCP_DSN} 时视为未配置。"""
+    """连接串 PG_MCP_DSN; 缺失/占位符/生产弱值均视为未配置(工具层可读文案)。
+
+    DSN 含口令, 走 env_guard.require_secret 的分级语义: 生产弱值/默认值抛错(此处捕获为
+    「未配置连接串」, 不崩溃), 开发仅告警放行。
+    """
     value = os.getenv(DSN_ENV, "").strip()
     if not value or value == DSN_PLACEHOLDER:
+        return ""
+    try:
+        env_guard.require_secret(DSN_ENV, value)
+    except RuntimeError as exc:
+        logger.error(f"PG_MCP_DSN 校验失败: {exc}")
         return ""
     return value
 

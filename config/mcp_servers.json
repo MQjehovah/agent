@@ -99,7 +99,7 @@
             "MCP_FETCH_MAX_BYTES": "2097152",
             "MCP_FETCH_ALLOW_HOSTS": ""
         },
-        "description": "网页抓取服务（只读+出网）- URL 转纯文本/Markdown 与 JSON 获取；私有/环回/链路本地/保留地址一律拒绝，内网指定主机需加入 MCP_FETCH_ALLOW_HOSTS 逗号白名单"
+        "description": "网页抓取服务（只读+出网）- URL 转纯文本/Markdown 与 JSON 获取；私有/环回/链路本地/保留/CGNAT(100.64.0.0/10) 地址一律拒绝，内网指定主机需加入 MCP_FETCH_ALLOW_HOSTS 逗号白名单；不强制 robots.txt，企业部署建议用白名单限定目标"
     },
     {
         "name": "filesystem",
@@ -110,9 +110,11 @@
         ],
         "env": {
             "FS_MCP_ROOTS": "",
-            "FS_MCP_ALLOW_WRITE": "false"
+            "FS_MCP_ALLOW_WRITE": "false",
+            "FS_MCP_MAX_WRITE_BYTES": "1048576",
+            "FS_MCP_ALLOW_SUFFIXES": ""
         },
-        "description": "受限目录文件服务（默认禁用）- 目录/读取/检索/写入；启用需设置 FS_MCP_ROOTS 为允许的绝对路径(逗号分隔)并将 enabled 改为 true；写操作另需 FS_MCP_ALLOW_WRITE=true"
+        "description": "受限目录文件服务（默认禁用）- 目录/读取/检索/写入；启用需设置 FS_MCP_ROOTS 为允许的绝对路径(逗号分隔)并将 enabled 改为 true；写操作另需 FS_MCP_ALLOW_WRITE=true，可用 FS_MCP_MAX_WRITE_BYTES(默认1MB)与 FS_MCP_ALLOW_SUFFIXES(空=全允许)限制写入；删除/移动符号链接只作用于链接本身"
     },
     {
         "name": "git",
