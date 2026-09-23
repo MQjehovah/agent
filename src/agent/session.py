@@ -13,6 +13,66 @@ from config import Config
 
 logger = logging.getLogger("agent.session")
 
+# 悬空 tool_calls 的合成工具结果文案（工具未执行或结果已丢失时补位）
+TOOL_RESULT_LOST = "（该工具未执行或结果已丢失）"
+
+
+def sanitize_tool_message_pairs(messages: list[dict]) -> tuple[list[dict], int]:
+    """修复 LLM 请求消息中的悬空 tool_calls / 孤儿 tool 消息（纯函数，无副作用）。
+
+    规则：
+    - 对每个 assistant(tool_calls) 消息，向后扫描紧跟的连续 tool 消息，收集已响应的
+      tool_call_id；缺失的按 tool_calls 顺序在该组末尾补合成 tool 消息
+      （content=TOOL_RESULT_LOST）；
+    - 丢弃孤儿 tool 消息：tool_call_id 无对应 assistant.tool_calls，或未紧跟其
+      tool_calls 之后（位置错乱同样无法通过 LLM 校验）；
+    - 其余消息原样保留。
+
+    返回 (新消息列表, 修复计数)；修复计数 = 补合成数 + 丢弃孤儿数。
+    无任何修复时返回原列表对象（便于调用方用 `is` 判断是否需要回写）。
+    """
+    if not messages:
+        return messages, 0
+
+    result: list[dict] = []
+    fixed = 0
+    i = 0
+    n = len(messages)
+    while i < n:
+        msg = messages[i]
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            tc_ids = [tc.get("id", "") for tc in msg["tool_calls"] if tc.get("id")]
+            j = i + 1
+            while j < n and messages[j].get("role") == "tool":
+                j += 1
+            group = messages[i + 1:j]
+            responded = {m.get("tool_call_id", "") for m in group if m.get("tool_call_id")}
+            result.append(msg)
+            for m in group:
+                tid = m.get("tool_call_id", "")
+                if tid and tid in tc_ids:
+                    result.append(m)
+                else:
+                    # 组内 tool 消息的 id 不属于本 assistant（或缺失）→ 孤儿
+                    fixed += 1
+            for tid in tc_ids:
+                if tid not in responded:
+                    result.append({"role": "tool", "tool_call_id": tid, "content": TOOL_RESULT_LOST})
+                    fixed += 1
+            i = j
+            continue
+        if msg.get("role") == "tool":
+            # 不在任何 assistant(tool_calls) 紧跟块内 → 孤儿（丢弃）
+            fixed += 1
+            i += 1
+            continue
+        result.append(msg)
+        i += 1
+
+    if fixed == 0:
+        return messages, 0
+    return result, fixed
+
 
 @dataclass
 class AgentSession:
@@ -105,14 +165,14 @@ class AgentSessionManager:
 
         包含：消息完整 JSON 结构 + 工具定义。
         """
-        BYTES_PER_TOKEN = 3.5
+        bytes_per_token = 3.5
 
         payload_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
 
         if tool_defs:
             payload_bytes += len(json.dumps(tool_defs, ensure_ascii=False).encode("utf-8"))
 
-        return max(1, int(payload_bytes / BYTES_PER_TOKEN))
+        return max(1, int(payload_bytes / bytes_per_token))
 
     @staticmethod
     def tool_collapse(messages: list) -> list:
@@ -142,22 +202,22 @@ class AgentSessionManager:
 
         result = list(messages)  # 浅拷贝
         modified = False
-        _COMPRESS_TAG = "[旧结果已压缩"
+        _compress_tag = "[旧结果已压缩"
         # 这些工具的结果需要跨轮次保留，不压缩
-        _KEEP_TOOLS = {"skill", "execute_skill", "ask_user"}
+        _keep_tools = {"skill", "execute_skill", "ask_user"}
         for idx in old_tool_indices:
             msg = result[idx]
             content = msg.get("content", "")
             tool_name = msg.get("name", "unknown")
             # 技能/交互结果不压缩（需要跨轮次参考）
-            if tool_name in _KEEP_TOOLS:
+            if tool_name in _keep_tools:
                 continue
             if isinstance(content, str) and len(content) > AgentSessionManager.TOOL_RESULT_COLLAPSE_CHARS:
                 # 跳过已压缩的，避免嵌套压缩
-                if content.startswith(_COMPRESS_TAG):
+                if content.startswith(_compress_tag):
                     continue
                 truncated = (
-                    f"{_COMPRESS_TAG} | 工具: {tool_name} | "
+                    f"{_compress_tag} | 工具: {tool_name} | "
                     f"原始 {len(content)} 字符]\n"
                     f"{content[:AgentSessionManager.TOOL_RESULT_COLLAPSE_CHARS]}..."
                 )

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from agent.session import sanitize_tool_message_pairs
 from agent.subagent import SubagentManager
 from learning import Learner
 from prompt import PromptBuilder
@@ -1022,6 +1023,11 @@ class Agent:
                 if m.get("reasoning_content"):
                     item["reasoning_content"] = m["reasoning_content"]
                 session.messages.append(item)
+            # 请求侧清洗：历史可能含被中断轮的悬空 tool_calls（取消时部分 tool 未落库），
+            # 直接送 LLM 会 400 —— 恢复时即补合成/丢弃孤儿，保证上下文可安全使用。
+            session.messages, _fixed = sanitize_tool_message_pairs(session.messages)
+            if _fixed:
+                logger.warning(f"[sanitize] 修复悬空 tool_calls {_fixed} 处 session={session_id}")
             logger.info(f"从 DB 恢复会话 {session_id[:24]} 共 {len(rows)} 条消息")
             return len(rows)
         except Exception as e:

@@ -9,8 +9,64 @@ import logging
 
 from agent.core import AgentResult
 from agent.executor import execute_tool_safe
+from agent.session import sanitize_tool_message_pairs
 
 logger = logging.getLogger("agent.agent")
+
+
+def _sanitize_llm_messages(messages: list, session=None) -> list:
+    """请求侧最后防线：送 LLM 前清洗悬空 tool_calls / 孤儿 tool 消息（否则 400）。
+
+    loop 的 LLM 请求统一走 think/think_stream，在此清洗可一次覆盖 react/reflective
+    两条循环；若 messages 正是 session.messages 本体（非 retry 副本），同步回写，
+    使内存上下文一并恢复干净。
+    """
+    sanitized, fixed = sanitize_tool_message_pairs(messages)
+    if not fixed:
+        return messages
+    sid = getattr(session, "session_id", "") if session is not None else ""
+    logger.warning(f"[sanitize] 修复悬空 tool_calls {fixed} 处 session={sid}")
+    if session is not None and getattr(session, "messages", None) is messages:
+        session.messages = sanitized
+    return sanitized
+
+
+class _ToolResultWriter:
+    """Tool 结果消息写手：记录已落库的 tool_call，取消时补全未落库项。
+
+    工具执行中途被取消（前端断开 / worker 回收）或落库失败时，assistant(tool_calls)
+    已先落库而部分 tool 结果缺失，会让历史悬空、后续请求 LLM 400。
+    fill_interrupted() 为本轮所有未落库 tool_calls 补写合成结果（带 name/tool_call_id），
+    保证 assistant 的每个 tool_call 闭合；补写失败只 warning，不掩盖取消/原始异常。
+    """
+
+    INTERRUPTED_TEXT = "（执行被中断，无结果）"
+
+    def __init__(self, session, tool_calls: list):
+        self.session = session
+        self.tool_calls = tool_calls
+        self._done: set[str] = set()
+
+    @staticmethod
+    def _key(index: int, tc: dict) -> str:
+        return tc.get("id", "") or f"__idx_{index}"
+
+    def add(self, index: int, tc: dict, content: str) -> None:
+        try:
+            self.session.add_message(
+                "tool", content,
+                name=tc.get("function", {}).get("name", ""),
+                tool_call_id=tc.get("id", ""),
+            )
+            self._done.add(self._key(index, tc))
+        except Exception as e:  # 落库失败不阻断主流程，finally 还会再兜底一次
+            logger.warning(f"工具结果落库失败(忽略): {e}")
+
+    def fill_interrupted(self) -> None:
+        for index, tc in enumerate(self.tool_calls):
+            if self._key(index, tc) in self._done:
+                continue
+            self.add(index, tc, self.INTERRUPTED_TEXT)
 
 
 def _should_stream(session) -> bool:
@@ -29,8 +85,9 @@ def _should_stream(session) -> bool:
     return channel in ("web", "cli")
 
 
-async def think(agent, messages) -> dict:
+async def think(agent, messages, session=None) -> dict:
     """调用 LLM 思考（非流式）"""
+    messages = _sanitize_llm_messages(messages, session)
     try:
         response = await agent.client.chat(
             messages,
@@ -92,8 +149,9 @@ async def think(agent, messages) -> dict:
         return {"message": {"content": f"思考出错: {e}"}}
 
 
-async def think_stream(agent, messages) -> dict:
+async def think_stream(agent, messages, session=None) -> dict:
     """流式思考模式"""
+    messages = _sanitize_llm_messages(messages, session)
     content = ""
     reasoning_content = ""
     tool_calls_accumulator = {}
@@ -137,9 +195,31 @@ async def think_stream(agent, messages) -> dict:
 
 
 async def execute_tool_calls_parallel(agent, tool_calls: list, session):
-    """并行执行工具调用（react 模式）"""
-    if len(tool_calls) <= 1:
-        for tc in tool_calls:
+    """并行执行工具调用（react 模式）。
+
+    保证本轮 assistant(tool_calls) 闭合：正常路径逐条写 tool 结果；被取消
+    （前端断开/worker 回收）时 finally 为所有未落库 tool_calls 补写合成结果。
+    """
+    writer = _ToolResultWriter(session, tool_calls)
+    try:
+        if len(tool_calls) <= 1:
+            for index, tc in enumerate(tool_calls):
+                func_name = tc.get("function", {}).get("name", "")
+                func_args = tc.get("function", {}).get("arguments", {})
+                if isinstance(func_args, str):
+                    try:
+                        func_args = json.loads(func_args)
+                    except (json.JSONDecodeError, ValueError):
+                        func_args = {}
+                try:
+                    result = await execute_tool_safe(agent, func_name, func_args)
+                    writer.add(index, tc, str(result))
+                except Exception as e:
+                    logger.error(f"工具执行异常: {e}")
+                    writer.add(index, tc, f"工具执行异常: {e}")
+            return
+
+        async def _run_one(tc):
             func_name = tc.get("function", {}).get("name", "")
             func_args = tc.get("function", {}).get("arguments", {})
             if isinstance(func_args, str):
@@ -147,53 +227,58 @@ async def execute_tool_calls_parallel(agent, tool_calls: list, session):
                     func_args = json.loads(func_args)
                 except (json.JSONDecodeError, ValueError):
                     func_args = {}
-            try:
-                result = await execute_tool_safe(agent, func_name, func_args)
-                session.add_message("tool", str(result), name=func_name, tool_call_id=tc.get("id", ""))
-            except Exception as e:
-                logger.error(f"工具执行异常: {e}")
-                session.add_message("tool", f"工具执行异常: {e}", name=func_name, tool_call_id=tc.get("id", ""))
-        return
+            return tc, await execute_tool_safe(agent, func_name, func_args)
 
-    async def _run_one(tc):
-        func_name = tc.get("function", {}).get("name", "")
-        func_args = tc.get("function", {}).get("arguments", {})
-        if isinstance(func_args, str):
-            try:
-                func_args = json.loads(func_args)
-            except (json.JSONDecodeError, ValueError):
-                func_args = {}
-        return tc, await execute_tool_safe(agent, func_name, func_args)
-
-    tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
-    try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for i, item in enumerate(results):
-            tc = tool_calls[i]
-            func_name = tc.get("function", {}).get("name", "")
-            tc_id = tc.get("id", "")
-            if isinstance(item, asyncio.CancelledError):
-                logger.warning("工具执行被取消")
-                session.add_message("tool", "工具执行被取消", name=func_name, tool_call_id=tc_id)
-            elif isinstance(item, Exception):
-                logger.error(f"工具执行异常: {item}")
-                session.add_message("tool", f"工具执行异常: {item}", name=func_name, tool_call_id=tc_id)
-            else:
-                _, result = item
-                session.add_message("tool", str(result), name=func_name, tool_call_id=tc_id)
-    except asyncio.CancelledError:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+        tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, item in enumerate(results):
+                tc = tool_calls[i]
+                if isinstance(item, asyncio.CancelledError):
+                    logger.warning("工具执行被取消")
+                    writer.add(i, tc, "工具执行被取消")
+                elif isinstance(item, Exception):
+                    logger.error(f"工具执行异常: {item}")
+                    writer.add(i, tc, f"工具执行异常: {item}")
+                else:
+                    _, result = item
+                    writer.add(i, tc, str(result))
+        except asyncio.CancelledError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+    finally:
+        # 取消路径继续抛出前，先把本轮缺失的 tool 结果补齐落库（补写失败只 warning）
+        writer.fill_interrupted()
 
 
 async def execute_tool_calls_parallel_reflective(agent, tool_calls: list, session) -> bool:
-    """v2: 并行执行工具（返回是否有错误）"""
+    """v2: 并行执行工具（返回是否有错误）；取消时同样补全未落库 tool 结果。"""
+    writer = _ToolResultWriter(session, tool_calls)
     had_errors = False
-    if len(tool_calls) <= 1:
-        for tc in tool_calls:
+    try:
+        if len(tool_calls) <= 1:
+            for index, tc in enumerate(tool_calls):
+                func_name = tc.get("function", {}).get("name", "")
+                func_args = tc.get("function", {}).get("arguments", {})
+                if isinstance(func_args, str):
+                    try:
+                        func_args = json.loads(func_args)
+                    except (json.JSONDecodeError, ValueError):
+                        func_args = {}
+                try:
+                    result = await execute_tool_safe(agent, func_name, func_args)
+                    writer.add(index, tc, str(result))
+                    had_errors = had_errors or ("工具执行异常" in str(result) or "ERROR" in str(result)[:10])
+                except Exception as e:
+                    logger.error(f"工具执行异常: {e}")
+                    writer.add(index, tc, f"工具执行异常: {e}")
+                    had_errors = True
+            return had_errors
+
+        async def _run_one(tc):
             func_name = tc.get("function", {}).get("name", "")
             func_args = tc.get("function", {}).get("arguments", {})
             if isinstance(func_args, str):
@@ -201,53 +286,34 @@ async def execute_tool_calls_parallel_reflective(agent, tool_calls: list, sessio
                     func_args = json.loads(func_args)
                 except (json.JSONDecodeError, ValueError):
                     func_args = {}
-            try:
-                result = await execute_tool_safe(agent, func_name, func_args)
-                session.add_message("tool", str(result), name=func_name, tool_call_id=tc.get("id", ""))
-                had_errors = had_errors or ("工具执行异常" in str(result) or "ERROR" in str(result)[:10])
-            except Exception as e:
-                logger.error(f"工具执行异常: {e}")
-                session.add_message("tool", f"工具执行异常: {e}", name=func_name, tool_call_id=tc.get("id", ""))
-                had_errors = True
+            return tc, await execute_tool_safe(agent, func_name, func_args)
+
+        tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, item in enumerate(results):
+                tc = tool_calls[i]
+                if isinstance(item, asyncio.CancelledError):
+                    logger.warning("工具执行被取消")
+                    writer.add(i, tc, "工具执行被取消")
+                    had_errors = True
+                elif isinstance(item, Exception):
+                    logger.error(f"工具执行异常: {item}")
+                    writer.add(i, tc, f"工具执行异常: {item}")
+                    had_errors = True
+                else:
+                    _, result = item
+                    writer.add(i, tc, str(result))
+                    had_errors = had_errors or ("工具执行异常" in str(result) or "ERROR" in str(result)[:10])
+        except asyncio.CancelledError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         return had_errors
-
-    async def _run_one(tc):
-        func_name = tc.get("function", {}).get("name", "")
-        func_args = tc.get("function", {}).get("arguments", {})
-        if isinstance(func_args, str):
-            try:
-                func_args = json.loads(func_args)
-            except (json.JSONDecodeError, ValueError):
-                func_args = {}
-        return tc, await execute_tool_safe(agent, func_name, func_args)
-
-    tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
-    had_errors = False
-    try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for i, item in enumerate(results):
-            tc = tool_calls[i]
-            func_name = tc.get("function", {}).get("name", "")
-            tc_id = tc.get("id", "")
-            if isinstance(item, asyncio.CancelledError):
-                logger.warning("工具执行被取消")
-                session.add_message("tool", "工具执行被取消", name=func_name, tool_call_id=tc_id)
-                had_errors = True
-            elif isinstance(item, Exception):
-                logger.error(f"工具执行异常: {item}")
-                session.add_message("tool", f"工具执行异常: {item}", name=func_name, tool_call_id=tc_id)
-                had_errors = True
-            else:
-                _, result = item
-                session.add_message("tool", str(result), name=func_name, tool_call_id=tc_id)
-                had_errors = had_errors or ("工具执行异常" in str(result) or "ERROR" in str(result)[:10])
-    except asyncio.CancelledError:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
-    return had_errors
+    finally:
+        writer.fill_interrupted()
 
 
 # ── React 循环 ─────────────────────────────────────
@@ -295,7 +361,6 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
     if user_name:
         ctx.user_name = user_name
 
-    
     try:
         i = 0
         while i < agent.max_iterations:
@@ -311,7 +376,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                 agent.tracer.start_span("agent.think")
                 usage_summary = agent.client.usage_tracker.get_summary()
                 logger.info(
-                    f"[{agent.name}] [{session.session_id if session else ""}] 开始思考 | "
+                    f"[{agent.name}] [{session.session_id if session else ''}] 开始思考 | "
                     f"轮次 {i + 1}/{agent.max_iterations} | "
                     f"上下文 {ctx_tokens:,}token | "
                     f"累计 {usage_summary['total_calls']}次 "
@@ -354,9 +419,9 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                 # 流式返回：web/cli 渠道流式（逐 token 推送 SSE/TUI），
                 # 钉钉等渠道一次返回，省流式解析开销。
                 if _should_stream(session):
-                    response = await think_stream(agent, think_messages)
+                    response = await think_stream(agent, think_messages, session)
                 else:
-                    response = await think(agent, think_messages)
+                    response = await think(agent, think_messages, session)
                 agent.tracer.end_span()
 
                 msg = response.get("message", {})
@@ -508,9 +573,11 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
         i = 0
         while i < agent.max_iterations:
             if agent._shutdown_event and agent._shutdown_event.is_set():
-                ctx.status = "cancelled"; break
+                ctx.status = "cancelled"
+                break
             if agent._cancel_flag and agent._cancel_flag.is_set():
-                ctx.status = "cancelled"; break
+                ctx.status = "cancelled"
+                break
 
             try:
                 ctx_tokens = agent.tracer.get_context_stats().get("final", 0)
@@ -575,9 +642,9 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
 
                 # 流式返回：web/cli 渠道流式，钉钉等一次返回
                 if _should_stream(session):
-                    response = await think_stream(agent, think_messages)
+                    response = await think_stream(agent, think_messages, session)
                 else:
-                    response = await think(agent, think_messages)
+                    response = await think(agent, think_messages, session)
                 agent.tracer.end_span()
 
                 msg = response.get("message", {})
@@ -593,7 +660,7 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
 
                 if msg.get("tool_calls"):
                     try:
-                        had_errors = await execute_tool_calls_parallel_reflective(agent, msg["tool_calls"], session)
+                        await execute_tool_calls_parallel_reflective(agent, msg["tool_calls"], session)
                     except BaseException:
                         while session.messages and session.messages[-1].get("role") == "tool":
                             session.messages.pop()
@@ -652,8 +719,8 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
 
 async def team_run_impl(agent, task: str, session_id: str, user_id: str, user_name: str) -> AgentResult:
     """团队执行入口"""
-    from team.orchestrator import TeamOrchestrator
     from agent.core import current_run
+    from team.orchestrator import TeamOrchestrator
 
     team_config = agent._team_config
     team_members = agent._team_members
