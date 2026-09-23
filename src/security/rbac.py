@@ -82,9 +82,19 @@ class RBACManager:
             raise UserNotProvisionedError(platform, platform_uid)
         return info
 
-    def check_tool(self, role: str, tool_name: str) -> bool:
+    def check_tool(self, role: str, tool_name: str, is_write: bool = False) -> bool:
+        """角色是否可用该工具。
+
+        allowed_tools 支持三类条目:
+        - ``*``: 通配放行;
+        - ``{tool}``: 放行该工具(读写均可, 兼容旧语义);
+        - ``{tool}:read``: 只读限定, 仅当 is_write=False 时放行。
+        默认 is_write=False 向后兼容既有调用方。
+        """
         allowed = self._get_allowed(role, "allowed_tools")
-        return "*" in allowed or tool_name in allowed
+        if "*" in allowed or tool_name in allowed:
+            return True
+        return (not is_write) and f"{tool_name}:read" in allowed
 
     def check_agent(self, role: str, agent_name: str) -> bool:
         allowed = self._get_allowed(role, "allowed_agents")

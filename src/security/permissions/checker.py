@@ -7,6 +7,16 @@ from .rules import PermissionConfig
 
 logger = logging.getLogger("agent.permissions")
 
+# 只读判定: file 操作集合(classify_access 使用; 与 check() 既有分支互不影响)
+FILE_READ_OPERATIONS = ("read", "exists", "list", "preview")
+
+# 纯读取类 shell 命令前缀(DEFAULT 分支与 classify_access 共用, 避免复制漂移)
+READ_SHELL_PREFIXES = (
+    "cat ", "head ", "tail ", "ls ", "find ",
+    "grep ", "which ", "echo ", "type ", "pwd",
+    "dir ", "more ", "less ", "stat ", "wc ",
+)
+
 
 class PermissionCheckResult:
     def __init__(self, allowed: bool, reason: str = ""):
@@ -34,6 +44,28 @@ class PermissionChecker:
         except Exception:
             return None
         return risk if risk in ("read", "write", "destructive", "unknown") else None
+
+    def classify_access(self, tool_name: str, arguments: dict) -> str:
+        """把一次工具调用归类为 "read" / "write"(供 RBAC 只读限定条目使用)。
+
+        保守原则: 无法确认只读的一律视为写操作。MCP 工具按既有风险注解解析,
+        ``unknown``(含无注解) 也按 write 处理, 防止无注解写工具借只读条目放行。
+        本方法只做归类, 不改动 check() 的既有行为。
+        """
+        arguments = arguments or {}
+        if tool_name == "file":
+            op = str(arguments.get("operation", "") or "").lower()
+            return "read" if op in FILE_READ_OPERATIONS else "write"
+        if tool_name == "shell":
+            command = str(arguments.get("command", "") or "").strip()
+            for prefix in READ_SHELL_PREFIXES:
+                if command.startswith(prefix):
+                    return "read"
+            return "write"
+        mcp_risk = self._mcp_risk(tool_name)
+        if mcp_risk is not None:
+            return "read" if mcp_risk == "read" else "write"
+        return "write" if tool_name in self.config.write_tools else "read"
 
     def check(self, tool_name: str, arguments: dict) -> PermissionCheckResult:
         """检查工具调用是否被允许"""
@@ -135,10 +167,7 @@ class PermissionChecker:
             elif tool_name == "shell":
                 command = arguments.get("command", "").strip()
                 # 纯读取类命令直接放行
-                read_prefixes = ("cat ", "head ", "tail ", "ls ", "find ",
-                                 "grep ", "which ", "echo ", "type ", "pwd",
-                                 "dir ", "more ", "less ", "stat ", "wc ")
-                for prefix in read_prefixes:
+                for prefix in READ_SHELL_PREFIXES:
                     if command.startswith(prefix):
                         return PermissionCheckResult(allowed=True)
             return PermissionCheckResult(

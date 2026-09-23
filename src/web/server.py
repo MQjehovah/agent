@@ -1383,9 +1383,9 @@ class WebServer:
             if not self.agent:
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
             try:
-                auth = await _get_auth(request)
+                auth = await _get_authz(request)
             except Exception:
-                auth = {"uid": "anon", "name": "匿名用户"}
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
             data = await request.json()
             if not data or not data.get("message"):
                 return JSONResponse({"error": "Missing message"}, status_code=400)
@@ -1456,9 +1456,9 @@ class WebServer:
             if not self.agent:
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
             try:
-                auth = await _get_auth(request)
+                auth = await _get_authz(request)
             except Exception:
-                auth = {"uid": "anon", "name": "匿名用户"}
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
             data = await request.json()
             if not data or not data.get("message"):
                 return JSONResponse({"error": "Missing message"}, status_code=400)

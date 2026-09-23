@@ -127,9 +127,14 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
         return json.dumps({"success": False, "error": perm_result.reason}, ensure_ascii=False)
 
     role = _current_run().session.role if _current_run().session else ""
-    if agent.rbac and role and not agent.rbac.check_tool(role, name):
-        logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}]")
-        return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
+    if agent.rbac and role:
+        try:
+            is_write = agent.permission.classify_access(name, args) == "write"
+        except Exception:
+            is_write = True  # 分类异常保守视为写操作, 只读限定条目不放行
+        if not agent.rbac.check_tool(role, name, is_write=is_write):
+            logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}]")
+            return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
 
     if perm_result.reason == "需要用户确认" and agent.on_confirm:
         try:
