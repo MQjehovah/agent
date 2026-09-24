@@ -16,7 +16,7 @@ import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.core import Agent
@@ -161,9 +161,11 @@ class AgentPool:
         """快捷方法：acquire → run → release 一步完成"""
         agent = await self.acquire(role, team_name, client, parent_agent, max_iterations)
         try:
-            from agent.core import AgentResult
+            from agent.core import current_run
+            # 成员 run 透传父 run 真实身份; run 之外为空(不注入假身份)
+            rc = current_run()
             result = await agent.run(task, session_id=session_id,
-                                      user_id="cli:admin", user_name="管理员")
+                                      user_id=rc.user_id, user_name=rc.user_name)
             return result.result if hasattr(result, 'result') else str(result)
         finally:
             await self.release(agent)
@@ -197,13 +199,15 @@ class AgentPool:
                     max_iterations=item.get("max_iterations", 0),
                 )
                 try:
-                    from agent.core import AgentResult
+                    from agent.core import current_run
+                    # 成员 run 透传父 run 真实身份; run 之外为空(不注入假身份)
+                    rc = current_run()
                     sid = item.get("session_id", "")
                     result = await agent.run(
                         item["task"],
                         session_id=sid,
-                        user_id="cli:admin",
-                        user_name="管理员",
+                        user_id=rc.user_id,
+                        user_name=rc.user_name,
                     )
                     text = result.result if hasattr(result, 'result') else str(result)
                     return (role, text)
@@ -274,10 +278,10 @@ class AgentPool:
         """清理所有 Agent"""
         async with self._lock:
             all_agents = []
-            for role, lst in list(self._idle.items()):
+            for _role, lst in list(self._idle.items()):
                 all_agents.extend(lst)
             self._idle.clear()
-            for role, lst in list(self._busy.items()):
+            for _role, lst in list(self._busy.items()):
                 all_agents.extend(lst)
             self._busy.clear()
         for pooled in all_agents:

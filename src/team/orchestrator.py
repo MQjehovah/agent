@@ -616,9 +616,13 @@ class TeamOrchestrator:
             _ask_token = set_ask_user_mode("auto")
             sub_sid = f"{self.parent_session_id}:{role}" if self.parent_session_id else f"team:{self.run_id}:{role}"
             try:
+                from agent.core import current_run
+                # 成员 run 透传父 run 的真实用户身份(team_run_impl 已写入 ctx);
+                # 禁止注入 cli:admin 假身份, 否则成员画像/审计混入"管理员"
+                rc = current_run()
                 r = await asyncio.wait_for(
                     agent.run(task_body, session_id=sub_sid,
-                              user_id="cli:admin", user_name="管理员"),
+                              user_id=rc.user_id, user_name=rc.user_name),
                     timeout=600,
                 )
             finally:
