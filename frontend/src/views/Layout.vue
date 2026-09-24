@@ -6,7 +6,8 @@ import { useTheme } from '../theme'
   import logoUrl from '../assets/logo.svg'
 import {
   Monitor, ChatDotRound, Timer, Coin,
-  Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton
+  Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
+  Shop, Connection, Files
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -29,6 +30,8 @@ interface NavItem {
 const personalItems: NavItem[] = [
   { path: '/dashboard', title: '工作台', icon: Monitor },
   { path: '/chat', title: '对话', icon: ChatDotRound },
+  { path: '/market', title: '能力市场', icon: Shop },
+  { path: '/connectors', title: '我的连接器', icon: Connection },
   { path: '/scheduler', title: '定时任务', icon: Timer },
   { path: '/memories', title: '记忆管理', icon: Coin },
   { path: '/settings', title: '设置', icon: Setting }
@@ -37,6 +40,7 @@ const personalItems: NavItem[] = [
 // —— 一级：运维与管理（按细粒度权限展示）——
 const allOpsItems: NavItem[] = [
   { path: '/monitor', title: '运行监控', icon: Odometer, perm: 'admin.monitor' },
+  { path: '/admin/local-mcp', title: '本地安装', icon: Files, perm: 'admin.mcp_local' },
   { path: '/admin', title: '用户与权限', icon: User,
     perm: 'admin.users' }
 ]
@@ -48,8 +52,13 @@ const opsItems = computed(() => {
 })
 const showOps = computed(() => opsItems.value.length > 0)
 
+const allNavPaths = computed(() => [...personalItems, ...opsItems.value].map((i) => i.path))
+
 function itemActive(item: NavItem): boolean {
-  return route.path.startsWith(item.path)
+  // 取最长前缀匹配: 避免 /admin/local-mcp 同时点亮 /admin
+  const matched = allNavPaths.value.filter((p) => route.path === p || route.path.startsWith(p + '/'))
+  if (!matched.length) return false
+  return matched.reduce((a, b) => (b.length > a.length ? b : a)) === item.path
 }
 
 function go(item: NavItem) {

@@ -126,10 +126,10 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
     /* 非 JSON 按原文 */
   }
   if (!res.ok) {
-    const msg =
-      data && typeof data === 'object' && 'error' in (data as Record<string, unknown>)
-        ? String((data as Record<string, unknown>).error)
-        : `请求失败(HTTP ${res.status})`
+    const obj = data && typeof data === 'object' ? (data as Record<string, unknown>) : null
+    const msg = obj
+      ? String(obj.error ?? obj.detail ?? `请求失败(HTTP ${res.status})`)
+      : `请求失败(HTTP ${res.status})`
     throw new ApiError(res.status, msg)
   }
   return data as T
