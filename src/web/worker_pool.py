@@ -9,6 +9,9 @@
 - 同一用户多会话由该用户 worker 顺序/并发承担；不同用户之间实例互不可见
 - worker.parent_agent = root：继承 root 的 storage/LLM 客户端/插件管理器，
   但不继承上下文；persist_session=True 使 worker 保留会话历史跨轮次
+- 平台轨按用户身份（MARKET_ACT_AS=1 且平台轨启用）：
+  worker.platform_act_as = 市场用户名（= rbac 工号），平台 MCP 连接以该用户视角
+  （sync 只回其可见能力，relay 按其门禁/限流/密钥注入）；解析失败回退服务令牌并告警
 
 容量与回收：
 - max_workers = env AGENT_WEB_POOL_SIZE（0 表示不启用，退化为 root 单实例）
@@ -203,11 +206,24 @@ class WebUserWorkerPool:
         )
         worker.persist_session = True  # 跨轮次保留会话历史（恢复/续聊）
         worker.platform_mcp_enabled = True  # Web 用户 worker 同样接入平台 MCP 轨(市场连接器)
+        # 平台轨按用户身份(MARKET_ACT_AS=1 且平台轨启用): 每 worker 恒定 act-as 该用户
+        # (须在 initialize 之前写入, 平台连接在其中建立); 未启用时为服务令牌全量视角
+        worker.platform_act_as = self._resolve_platform_act_as(tag)
         worker.plugin_manager = getattr(self.root, "plugin_manager", None)
         if getattr(self.root, "name", ""):
             worker.name = self.root.name
         await worker.initialize()
         return worker
+
+    def _resolve_platform_act_as(self, tag: str) -> str:
+        """解析该用户 worker 的平台 act-as 用户名; 开关/平台轨未开或解析失败返回空串。"""
+        from web.security import market_act_as_enabled, resolve_market_act_as
+        if not market_act_as_enabled():
+            return ""
+        from mcps.platform import PlatformMCPConfig
+        if not PlatformMCPConfig.from_env().enabled:
+            return ""
+        return resolve_market_act_as(tag)
 
     def _evict_one_idle_locked(self):
         """容量不足时回收最久未使用的空闲 worker；无空闲则返回 False。"""

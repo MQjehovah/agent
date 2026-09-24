@@ -245,11 +245,13 @@ def _session_opener(sessions, entered, exited, failing=frozenset(), *,
 
 
 def _make_client(caps, sessions, entered, exited, failing=frozenset(), timeout=60.0, *,
-                 refresh_seconds=300.0, now=None, sleeper=None, attempts=None, active=None):
+                 refresh_seconds=300.0, now=None, sleeper=None, attempts=None, active=None,
+                 act_as=""):
     stub = _SyncStub(caps)
     client = platform.PlatformMCPClient(
         platform.PlatformMCPConfig(base_url="http://market.test", service_token="svc-token",
                                    refresh_seconds=refresh_seconds, timeout=timeout),
+        act_as=act_as,
         transport=stub.transport(),
         session_opener=_session_opener(sessions, entered, exited, failing,
                                        attempts=attempts, active=active),
@@ -296,6 +298,39 @@ async def _drain(rounds: int = 40) -> None:
     """让挂起任务跑起来(不推进假时钟, 不真实等待)。"""
     for _ in range(rounds):
         await asyncio.sleep(0)
+
+
+def test_auth_headers_without_act_as_has_only_bearer():
+    cfg = platform.PlatformMCPConfig(base_url="http://m", service_token="tok")
+    client = platform.PlatformMCPClient(cfg)
+    assert client._auth_headers() == {"Authorization": "Bearer tok"}
+
+
+def test_auth_headers_with_act_as_appends_header():
+    """act_as 非空时每个请求追加 X-Act-As-Sub(市场侧服务令牌代表用户视角)。"""
+    cfg = platform.PlatformMCPConfig(base_url="http://m", service_token="tok")
+    client = platform.PlatformMCPClient(cfg, act_as=" 202202100024 ")
+    assert client._auth_headers() == {
+        "Authorization": "Bearer tok", "X-Act-As-Sub": "202202100024"}
+    # 空白 act_as 等同未设置(不追加空头)
+    blank = platform.PlatformMCPClient(cfg, act_as="   ")
+    assert blank._auth_headers() == {"Authorization": "Bearer tok"}
+
+
+async def test_act_as_header_flows_to_sync_and_relay_session():
+    """act-as 头同时作用于目录 sync 与 relay 建会话(同一 _auth_headers)。"""
+    calls = []
+    sessions = {"cap-a": _FakeSession([_tool("t", read_only=True)], calls)}
+    entered, exited = [], []
+    client, stub = _make_client([_cap("cap-a")], sessions, entered, exited,
+                                act_as="202202100024")
+    try:
+        assert await client.refresh_once() is True
+        assert stub.requests[0].headers["x-act-as-sub"] == "202202100024"
+        assert entered[0][1]["X-Act-As-Sub"] == "202202100024"
+        assert entered[0][1]["Authorization"] == "Bearer svc-token"
+    finally:
+        await client.close()
 
 
 async def test_refresh_connects_registers_tools_and_routes_call():
@@ -812,6 +847,56 @@ async def test_load_mcp_servers_local_configs_still_connect(monkeypatch):
     await subagent._load_mcp_servers()
     assert len(calls) == 1 and calls[0][0] is True
     assert calls[0][1].enabled is False  # 子代理不启用平台轨
+
+
+async def test_connect_mcp_servers_passes_platform_act_as(monkeypatch):
+    """Agent._connect_mcp_servers 把实例级 platform_act_as 透传给 PlatformMCPClient。"""
+    import mcps as mcps_pkg
+
+    captured = {}
+
+    class _FakePlatformClient:
+        def __init__(self, config, *, act_as=""):
+            captured["config_enabled"] = config.enabled
+            captured["act_as"] = act_as
+
+        def start(self):
+            captured["started"] = True
+
+    class _FakeMCPManager:
+        def __init__(self, *args, **kwargs):
+            self.platform = None
+
+        def set_reserved_names(self, names):
+            captured["reserved"] = set(names)
+
+        def attach_platform(self, client):
+            self.platform = client
+
+        def start_health_check(self):
+            captured["health"] = True
+
+    monkeypatch.setattr(mcps_pkg, "MCPManager", _FakeMCPManager)
+    monkeypatch.setattr(platform, "PlatformMCPClient", _FakePlatformClient)
+
+    from agent.core import Agent
+
+    agent = Agent.__new__(Agent)
+    agent.mcp_configs = []
+    agent.platform_act_as = "202202100024"
+    agent.name = "test"
+    agent.tool_registry = None
+    agent.skill_manager = None
+    agent.plugin_manager = None
+    agent.tool_denylist = set()
+
+    await agent._connect_mcp_servers(
+        subagent=False,
+        platform_config=platform.PlatformMCPConfig(base_url="http://m", service_token="t"),
+    )
+    assert captured["act_as"] == "202202100024"
+    assert captured["config_enabled"] is True
+    assert captured["started"] is True and captured["health"] is True
 
 
 # ===== 8. /healthz 平台汇总 =====

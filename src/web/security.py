@@ -11,11 +11,55 @@
 
 import logging
 import os
+from collections.abc import Mapping
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("agent.web.security")
+
+# 平台轨按用户身份开关 MARKET_ACT_AS: 1/true/yes(大小写不敏感)开启, 缺省/其它关闭
+_MARKET_ACT_AS_TRUE = frozenset({"1", "true", "yes"})
+
+
+def market_act_as_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """MARKET_ACT_AS 开关: 仅 1/true/yes 为开(缺省关)。"""
+    source = os.environ if env is None else env
+    return str(source.get("MARKET_ACT_AS") or "").strip().lower() in _MARKET_ACT_AS_TRUE
+
+
+def resolve_market_act_as(owner: str) -> str:
+    """归属 tag/uid → market 用户名(= rbac 工号); 解析失败返回空串并打 WARNING。
+
+    - ``web:{uid}`` 的数字 uid(rbac_users.id) → 查表取 name(= 工号/SSO sub);
+    - 非数字(本身已是工号) → 原样使用;
+    - 查不到/存储不可用 → 空串(调用方回退服务令牌全量视角, 日志须可见)。
+    """
+    raw = str(owner or "").strip()
+    if not raw:
+        return ""
+    uid = raw.split(":", 1)[1] if ":" in raw else raw
+    if not uid:
+        return ""
+    if not uid.isdigit():
+        return uid  # 已是工号(SSO sub), 直接作为 market 用户名
+    try:
+        from storage.storage import get_storage  # noqa: PLC0415 — 避免循环导入/启动期依赖
+        storage = get_storage()
+        if not storage:
+            logger.warning(f"MARKET_ACT_AS: 存储不可用, 无法解析 uid={uid} 的市场用户名(回退服务令牌)")
+            return ""
+        with storage.get_connection() as conn:
+            row = conn.execute("SELECT name FROM rbac_users WHERE id = ?", (int(uid),)).fetchone()
+        name = str(row["name"]).strip() if row else ""
+        if not name:
+            logger.warning(f"MARKET_ACT_AS: 未找到 uid={uid} 对应的市场用户名"
+                           "(该 worker 回退服务令牌视角)")
+            return ""
+        return name
+    except Exception as e:
+        logger.warning(f"MARKET_ACT_AS: 解析 uid={uid} 的市场用户名失败(回退服务令牌视角): {e}")
+        return ""
 
 
 def _decode_bearer(request: Request):

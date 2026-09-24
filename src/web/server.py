@@ -265,6 +265,25 @@ def _sso_bind_dingtalk(storage, uid: int, claims: dict):
         logger.warning(f"[sso] 自动绑定钉钉失败(uid={uid}, dingtalk={dt}): {e}")
 
 
+def _sso_sync_department(storage, uid: int, row, claims: dict):
+    """SSO 为部门权威源: claims.dept 非空且与当前不同则回写(与 market 侧登录同语义)。
+
+    空/缺 dept 一律保留管理员手工填写的值; 返回回写后的 rbac_users 行(无变化原样返回)。
+    """
+    dept = sso_auth.sso_user_department(claims)
+    if not dept or (row["department"] or "") == dept:
+        return row
+    with storage.get_connection() as conn:
+        conn.execute(
+            "UPDATE rbac_users SET department=?, updated_at=datetime('now') WHERE id=?",
+            (dept, uid),
+        )
+        conn.commit()
+        return conn.execute(
+            f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE id = ?", (uid,)
+        ).fetchone()
+
+
 def _sso_lookup_user(sub: str) -> dict | None:
     """按 SSO sub(工号) 查 rbac_users(name=sub), 返回 auth 形状; 不存在/禁用返回 None。"""
     from storage.storage import get_storage
@@ -289,6 +308,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
     2. 未命中 → 按 name=claims.name(老账号中文名) 找历史账号 → 把老账号 name
        改成 sub(工号)+ 补 display_name(保留 role/dept/status/钉钉绑定/历史) 后返回;
     3. 都未命中 → 新建 name=sub / display_name=claims.name 用户。
+    命中已有账号时以 SSO 为部门权威源: claims.dept 非空且不同则回写(空值保留手工值)。
     老账号(命中但)被禁用一律抛 403；登录成功且 claims 含 dingtalk 时自动绑钉钉。
     """
     from security.rbac import RBACManager
@@ -320,6 +340,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
             )
             conn.commit()
             merged = _refresh(conn, uid)
+        merged = _sso_sync_department(storage, uid, merged, claims)
         _sso_bind_dingtalk(storage, uid, claims)
         return _sso_user_payload(merged)
 
@@ -350,6 +371,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
                     )
                 conn.commit()
                 email_row = _refresh(conn, uid)
+            email_row = _sso_sync_department(storage, uid, email_row, claims)
             _sso_bind_dingtalk(storage, uid, claims)
             return _sso_user_payload(email_row)
 
@@ -375,6 +397,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
                 )
                 conn.commit()
                 row = _refresh(conn, uid)
+        row = _sso_sync_department(storage, uid, row, claims)
         _sso_bind_dingtalk(storage, uid, claims)
         return _sso_user_payload(row)
 
@@ -562,6 +585,19 @@ class WebServer:
                 self._pool = None
         else:
             self._pool = None
+        if self._pool is None:
+            self._warn_act_as_requires_pool()
+
+    def _warn_act_as_requires_pool(self):
+        """MARKET_ACT_AS 开启但未启用 worker 池: 日志提示按用户身份不可用(root 服务令牌全量)。"""
+        try:
+            from mcps.platform import PlatformMCPConfig
+            from web.security import market_act_as_enabled
+            if market_act_as_enabled() and PlatformMCPConfig.from_env().enabled:
+                logger.warning("平台轨按用户模式需要 worker 池（AGENT_WEB_POOL_SIZE>0）; "
+                               "当前 root agent 保持服务令牌全量视角")
+        except Exception as e:
+            logger.debug(f"MARKET_ACT_AS 启动检查跳过: {e}")
 
     async def _agent_for_web(self, auth: dict):
         """返回 (执行 agent, 释放tag)；池启用时按用户分配独立 worker。饱和抛 PoolBusyError。"""

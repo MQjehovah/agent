@@ -162,6 +162,47 @@ def test_ensure_existing_sub_fills_display_name(store):
     assert u2["id"] == uid
 
 
+# ---- _sso_ensure_user: 部门以 SSO 为权威源回写 ----
+
+def test_ensure_writes_back_changed_department(store):
+    """登录 dept 与当前不同 → 回写; 二次登录取新值(与 market 侧 G1 同语义)。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="202202100024", department="老部门", role="default")
+    u = _sso_ensure_user("202202100024", dict(CLAIMS))  # dept=研发部
+    assert u["id"] == uid and u["department"] == "研发部"
+    assert _user_row(store, uid)["department"] == "研发部"
+
+    u2 = _sso_ensure_user("202202100024", dict(CLAIMS, dept="研发二部"))
+    assert u2["department"] == "研发二部"
+    assert _user_row(store, uid)["department"] == "研发二部"
+
+
+def test_ensure_empty_department_keeps_manual_value(store):
+    """claims 缺/空 dept → 保留管理员手工填写的部门(不覆盖为空)。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="202202100024", department="手工部门", role="default")
+    without = {k: v for k, v in CLAIMS.items() if k != "dept"}
+    assert _sso_ensure_user("202202100024", without)["department"] == "手工部门"
+    assert _sso_ensure_user("202202100024", dict(CLAIMS, dept="   "))["department"] == "手工部门"
+    assert _user_row(store, uid)["department"] == "手工部门"
+
+
+def test_ensure_first_login_writes_stripped_department(store):
+    """首登建号: department 取 claims.dept 去首尾空白后的值。"""
+    u = _sso_ensure_user("202202100024", dict(CLAIMS, dept=" 研发一部 "))
+    assert u["department"] == "研发一部"
+    assert _user_row(store, u["id"])["department"] == "研发一部"
+
+
+def test_ensure_merge_writes_back_department(store):
+    """老账号(中文名)合并后同样以 SSO 部门为权威源回写。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="季明清", department="老部门", role="admin")
+    u = _sso_ensure_user("202202100024", dict(CLAIMS))
+    assert u["id"] == uid and u["department"] == "研发部"
+    assert _user_row(store, uid)["department"] == "研发部"
+
+
 # ---- _sso_ensure_user: 老账号合并 ----
 
 def test_ensure_merges_old_zh_name_account(store):

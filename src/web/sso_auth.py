@@ -266,8 +266,8 @@ def validate_state(state: str) -> bool:
 
 # ---- claims 提取 ----
 def sso_user_department(claims: dict) -> str:
-    """从 claims 取部门(dept/department)。"""
-    return str(claims.get("dept") or claims.get("department") or "")
+    """从 claims 取部门(dept/department); 去首尾空白, 空值返回空串。"""
+    return str(claims.get("dept") or claims.get("department") or "").strip()
 
 
 def sso_user_role(claims: dict) -> str:

@@ -149,6 +149,9 @@ class Agent:
         # 平台 MCP 轨(市场能力)标记: 顶层运行 agent(root)默认开放; 子代理关闭避免重复建连;
         # worker 池的用户 worker 建好后显式置 True(Web 用户同样可用市场连接器)
         self.platform_mcp_enabled = parent_agent is None
+        # 平台轨代表用户身份(市场用户名=工号, 运行时注入): 默认空=服务令牌全量视角;
+        # worker 池按 MARKET_ACT_AS 在 initialize 前设置(每 worker 恒定 act-as 该用户)
+        self.platform_act_as = ""
         # 子代理专属 MCP 配置（运行时传入，方案B；主代理始终为空）
         self._subagent_mcp_configs = list(mcp_servers) if mcp_servers else []
         self.skill_manager = None
@@ -570,7 +573,7 @@ class Agent:
         # 首轮 sync 在后台刷新任务内执行, 失败仅告警, 不阻断本地 MCP 与进程启动。
         if not subagent and platform_config is not None and platform_config.enabled:
             from mcps.platform import PlatformMCPClient
-            platform_client = PlatformMCPClient(platform_config)
+            platform_client = PlatformMCPClient(platform_config, act_as=self.platform_act_as)
             self.mcp.attach_platform(platform_client)
             platform_client.start()
             logger.info(f"平台 MCP 轨已挂接: {platform_config.base_url}")

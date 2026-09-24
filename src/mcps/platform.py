@@ -9,6 +9,8 @@
   仅接 ``type=="mcp"`` 且 ``distribution in (remote,both)`` 的能力(local 网关会 403);
 - 能力级网关: ``/api/mcp-gateway/relay/{name}/stream`` (Streamable HTTP, 同 Bearer),
   name 支持 ``name@version`` 钉版本; gateway 为 null 时同样可按名路由。
+- 代表用户: 构造参数 ``act_as``(市场用户名=工号) 非空时, sync 与 relay 请求额外带
+  ``X-Act-As-Sub``(仅服务令牌身份生效; worker 池按 MARKET_ACT_AS 逐 worker 注入)。
 
 可用性: ``MARKET_BASE_URL`` 与 ``MARKET_SERVICE_TOKEN`` 齐备才启用; sync 失败仅告警并
 保留既有连接; 单个能力连接/调用失败互不影响(连接分小批推进, 失败项快速退避重试);
@@ -235,12 +237,15 @@ class _CapabilityState:
 class PlatformMCPClient:
     """平台 MCP 能力集合(接口与 MCPManager 对齐, 供其组合; 单实例=单 Agent 轨)。"""
 
-    def __init__(self, config: PlatformMCPConfig, *,
+    def __init__(self, config: PlatformMCPConfig, *, act_as: str = "",
                  transport: httpx.AsyncBaseTransport | None = None,
                  session_opener: Callable[[str, dict[str, str]], AbstractAsyncContextManager[Any]] | None = None,
                  now: Callable[[], float] | None = None,
                  sleeper: Callable[[float], Awaitable[None]] | None = None):
         self.config = config
+        # 运行时代表用户身份(市场用户名=工号): 非空时所有请求带 X-Act-As-Sub;
+        # 不进 from_env(同一份 env 下每个 worker 身份不同, 只能实例级注入)
+        self._act_as = str(act_as or "").strip()
         self._transport = transport
         self._session_opener = session_opener or default_session_opener
         self._now = now or time.monotonic
@@ -270,8 +275,10 @@ class PlatformMCPClient:
             return
         try:
             self._refresh_task = asyncio.get_running_loop().create_task(self._refresh_loop())
+            scope = f", act-as={self._act_as}" if self._act_as else ""
             logger.info(
-                f"平台 MCP 轨已启动: {self.config.base_url}(每 {self.config.refresh_seconds:g}s 刷新)")
+                f"平台 MCP 轨已启动: {self.config.base_url}"
+                f"(每 {self.config.refresh_seconds:g}s 刷新{scope})")
         except RuntimeError:
             logger.warning("平台 MCP 轨启动失败: start() 需在事件循环内调用")
 
@@ -535,7 +542,11 @@ class PlatformMCPClient:
         cap.connected = False
 
     def _auth_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.config.service_token}"}
+        headers = {"Authorization": f"Bearer {self.config.service_token}"}
+        if self._act_as:
+            # 市场侧仅对服务令牌生效: sync/relay 按目标用户过滤与门禁
+            headers["X-Act-As-Sub"] = self._act_as
+        return headers
 
     # ---------- 工具表 / 映射 / 调用(与 MCPManager 同接口) ----------
 
