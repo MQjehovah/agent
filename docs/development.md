@@ -408,6 +408,7 @@ PlatformMCPClient (mcps/platform.py)
 ├─ 每能力经 /api/mcp-gateway/relay/{name}/stream (Streamable HTTP) 连接并 list_tools
 ├─ 暴露名 platform__{能力}__{工具}; 风险映射与本地一致; 本地重名时本地优先
 ├─ 周期刷新 (MARKET_PLATFORM_REFRESH_SECONDS, 默认 300s); 单能力失败隔离, 下轮重试
+├─ 按用户身份(MARKET_ACT_AS=1 且 worker 池启用): 每 worker 带 X-Act-As-Sub 请求(sync 只回其可见能力, relay 按其门禁/限流/密钥注入; 解析失败回退服务令牌)
 └─ MCPManager.attach_platform 组合: LLM 工具表 / 权限风险 / mcp_calls 审计 / 健康汇总
 ```
 

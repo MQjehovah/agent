@@ -19,6 +19,52 @@
 默认禁用的 server 需显式改 `enabled: true` 并配置白名单/连接串；`filesystem`/`git` 写操作
 另需 `FS_MCP_ALLOW_WRITE=true` / `GIT_MCP_ALLOW_WRITE=true`，风险由操作人承担。
 
+## DevOps 工具 server（自研，默认未挂载）
+
+| server | 文件 | 用途 | 关键 env |
+|--------|------|------|----------|
+| `gitlab` | `src/gitlab.py` | 内网 GitLab REST v4 读写（MR/issue/分支/提交/文件/流水线/作业日志；MR 支持两步评审） | `GITLAB_URL`（默认 `http://gitlab.xzrobot.com`）、`GITLAB_TOKEN`（PAT）或 `GITLAB_USERNAME`+`GITLAB_PASSWORD`（LDAP 会话登录，可回退 `IT_SYSTEM_PASSWORD`） |
+| `gerrit` | `src/gerrit.py` | Gerrit REST 读写（查询/详情/文件/diff/patchset 对比/评论/投票/合入） | `GERRIT_URL`（默认 `http://gerrit.xzrobot.com`）、`GERRIT_USERNAME`+`GERRIT_HTTP_PASSWORD`（Settings→HTTP Credentials；缺省=匿名只读）、`GERRIT_MCP_EXCLUDE_PATTERNS` |
+| `jira` | `src/jira.py` | Jira Server/DC REST v2 读写（JQL 搜索/issue/评论/流转/指派） | `JIRA_URL`（默认 `http://jira.xzrobot.com`）、`JIRA_TOKEN`（PAT，Bearer）或 `JIRA_USERNAME`+`JIRA_PASSWORD`（Basic，可回退 `IT_SYSTEM_PASSWORD`） |
+
+三个 server 完全自包含、零共享模块；工具均带风险注解（查询 `readOnly`、创建/更新为写、
+合入/取消/删除/评审投票为 `destructive`），由 `PermissionChecker` 按权限模式处理。
+本次**未注册进任何 `mcp_servers.json`**；需要启用时按下例挂到 `config/mcp_servers.json`
+（或 `config/agents/IT运维/mcp_servers.json`），凭证建议放 `.env`（`${VAR}` 占位符由
+`src/mcps/manager.py` 解析，子进程继承）：
+
+```json
+[
+  {
+    "name": "gitlab",
+    "enabled": true,
+    "command": "python",
+    "args": ["mcp_server/src/gitlab.py"],
+    "env": { "GITLAB_URL": "http://gitlab.xzrobot.com", "GITLAB_USERNAME": "s_software", "GITLAB_PASSWORD": "${IT_SYSTEM_PASSWORD}" },
+    "description": "内网 GitLab 读写（MR/issue/流水线）"
+  },
+  {
+    "name": "gerrit",
+    "enabled": true,
+    "command": "python",
+    "args": ["mcp_server/src/gerrit.py"],
+    "env": { "GERRIT_URL": "http://gerrit.xzrobot.com", "GERRIT_USERNAME": "s_software", "GERRIT_HTTP_PASSWORD": "${GERRIT_HTTP_PASSWORD}" },
+    "description": "Gerrit 代码评审读写（查询/diff/投票/合入）"
+  },
+  {
+    "name": "jira",
+    "enabled": true,
+    "command": "python",
+    "args": ["mcp_server/src/jira.py"],
+    "env": { "JIRA_URL": "http://jira.xzrobot.com", "JIRA_USERNAME": "s_software", "JIRA_PASSWORD": "${IT_SYSTEM_PASSWORD}" },
+    "description": "Jira Server/DC 读写（JQL/issue/流转）"
+  }
+]
+```
+
+超时/输出上限：`GITLAB_MCP_TIMEOUT`/`GERRIT_MCP_TIMEOUT`/`JIRA_MCP_TIMEOUT`（默认 30s）、
+`*_MCP_MAX_OUTPUT_CHARS`（默认 40000）。测试：`tests/unit/test_mcp_servers_devops.py`。
+
 ## 安装
 
 ```bash
