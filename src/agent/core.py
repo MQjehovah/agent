@@ -1036,6 +1036,78 @@ class Agent:
             ctx.system_dynamic = f"{tail}\n\n{section}" if tail else section
         ctx.system_prompt = ctx.system_static + ctx.system_dynamic
 
+    @staticmethod
+    def _uid_from_tag(user_id: str) -> str:
+        """从归属 tag({channel}:{uid}) 解析数字 uid; 非数字/缺失返回空串。"""
+        raw = str(user_id or "").strip()
+        uid = raw.split(":", 1)[1] if ":" in raw else raw
+        return uid if uid.isdigit() else ""
+
+    @staticmethod
+    def _flat_text(value: str) -> str:
+        """展平空白/换行: 画像字段单行展示, 防止换行注入 dynamic 段。"""
+        return " ".join(str(value or "").split())
+
+    def _resolve_employee_name(self, user_id: str) -> tuple[str, str]:
+        """按 user_id 数字 uid 查 rbac_users → (工号=name, display_name); 失败静默空。"""
+        uid = self._uid_from_tag(user_id)
+        if not uid:
+            return "", ""
+        try:
+            rbac = getattr(self, "rbac", None)
+            user = rbac.get_user(int(uid)) if rbac else None
+            if not user:
+                return "", ""
+            return str(user.get("name") or ""), str(user.get("display_name") or "")
+        except Exception as e:
+            logger.debug(f"用户画像: 解析 uid={uid} 的 rbac 用户失败(忽略): {e}")
+            return "", ""
+
+    def _apply_user_profile(self, ctx: RunContext) -> None:
+        """把「当前用户」画像追加到本 run 的 system prompt dynamic 段最前。
+
+        - 仅非群聊注入（沿用「群内不注入触发人私有信息」既有约定，防串隐私）；
+        - user_name/user_department/user_role 全空不注入（不产生空段）；
+        - 工号/显示名可由 user_id 数字 uid 查 rbac 补齐（查不到静默跳过，不影响运行）；
+        - static 前缀与既有 dynamic 内容不动（与渐进披露提示共存，prompt cache 不受影响）。
+        """
+        if ctx is None or getattr(ctx, "group_context", False):
+            return
+        name = self._flat_text(ctx.user_name)
+        department = self._flat_text(ctx.user_department)
+        role = self._flat_text(ctx.user_role)
+        if not (name or department or role):
+            return
+
+        employee_id, display_name = self._resolve_employee_name(ctx.user_id)
+        name = name or self._flat_text(display_name)
+        employee_id = self._flat_text(employee_id)
+
+        clauses: list[str] = []
+        if name:
+            head = f"当前用户：{name}"
+            if employee_id:
+                head += f"（工号 {employee_id}）"
+            clauses.append(head)
+        elif employee_id:
+            clauses.append(f"当前用户工号：{employee_id}")
+        if department:
+            clauses.append(f"部门：{department}")
+        if role:
+            clauses.append(f"角色：{role}")
+        if not clauses:
+            return
+
+        line = ("；".join(clauses)
+                + "。回答“我/我的”相关问题时以该用户为准；"
+                "不要向该用户询问他自己已提供的信息。")
+        section = f"## 当前用户\n\n{line}"
+        base_static = ctx.system_static or self.system_static or ""
+        base_dynamic = ctx.system_dynamic or self.system_dynamic or ""
+        ctx.system_static = base_static
+        ctx.system_dynamic = f"{section}\n\n{base_dynamic}" if base_dynamic else section
+        ctx.system_prompt = ctx.system_static + ctx.system_dynamic
+
     async def run(
         self, task: str, session_id: str = None, user_id: str = "",
         user_name: str = "", run_id: str = "", role: str = "",
@@ -1083,6 +1155,10 @@ class Agent:
 
         # 渐进披露: 按本对话激活集刷新系统提示中的工具搜索说明(非渐进模式无操作)
         self._apply_progressive_hint(ctx)
+
+        # 当前用户画像: 追加 dynamic 段最前(群聊/无身份不注入; 与上面的工具搜索段共存;
+        # 子代理 run 继承父级字段后同样各自注入)
+        self._apply_user_profile(ctx)
 
         # 建立流式事件作用域：仅顶层 run 建立；嵌套子代理 run 继承父级作用域，
         # 使整条调用树共享同一 run_id（配合 HookManager 的 run_id 过滤，杜绝并发串流）。
