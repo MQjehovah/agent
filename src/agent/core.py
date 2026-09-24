@@ -1036,52 +1036,27 @@ class Agent:
             ctx.system_dynamic = f"{tail}\n\n{section}" if tail else section
         ctx.system_prompt = ctx.system_static + ctx.system_dynamic
 
-    @staticmethod
-    def _uid_from_tag(user_id: str) -> str:
-        """从归属 tag({channel}:{uid}) 解析数字 uid; 非数字/缺失返回空串。"""
-        raw = str(user_id or "").strip()
-        uid = raw.split(":", 1)[1] if ":" in raw else raw
-        return uid if uid.isdigit() else ""
-
-    @staticmethod
-    def _flat_text(value: str) -> str:
-        """展平空白/换行: 画像字段单行展示, 防止换行注入 dynamic 段。"""
-        return " ".join(str(value or "").split())
-
-    def _resolve_employee_name(self, user_id: str) -> tuple[str, str]:
-        """按 user_id 数字 uid 查 rbac_users → (工号=name, display_name); 失败静默空。"""
-        uid = self._uid_from_tag(user_id)
-        if not uid:
-            return "", ""
-        try:
-            rbac = getattr(self, "rbac", None)
-            user = rbac.get_user(int(uid)) if rbac else None
-            if not user:
-                return "", ""
-            return str(user.get("name") or ""), str(user.get("display_name") or "")
-        except Exception as e:
-            logger.debug(f"用户画像: 解析 uid={uid} 的 rbac 用户失败(忽略): {e}")
-            return "", ""
-
     def _apply_user_profile(self, ctx: RunContext) -> None:
         """把「当前用户」画像追加到本 run 的 system prompt dynamic 段最前。
 
         - 仅非群聊注入（沿用「群内不注入触发人私有信息」既有约定，防串隐私）；
-        - user_name/user_department/user_role 全空不注入（不产生空段）；
-        - 工号/显示名可由 user_id 数字 uid 查 rbac 补齐（查不到静默跳过，不影响运行）；
+        - user_name/user_department/user_role 全空不注入（不产生空段；仅凭可解析 uid
+          不足以判定「当前用户」，工号/显示名仅作已有身份的补齐）；
+        - 工号/显示名/部门可由 user_id 数字 uid 查 rbac 补齐（查不到静默跳过，不影响运行）；
         - static 前缀与既有 dynamic 内容不动（与渐进披露提示共存，prompt cache 不受影响）。
         """
         if ctx is None or getattr(ctx, "group_context", False):
             return
-        name = self._flat_text(ctx.user_name)
-        department = self._flat_text(ctx.user_department)
-        role = self._flat_text(ctx.user_role)
-        if not (name or department or role):
-            return
+        from agent.user_profile import flat_text, resolve_user_profile
 
-        employee_id, display_name = self._resolve_employee_name(ctx.user_id)
-        name = name or self._flat_text(display_name)
-        employee_id = self._flat_text(employee_id)
+        if not (flat_text(ctx.user_name) or flat_text(ctx.user_department)
+                or flat_text(ctx.user_role)):
+            return
+        profile = resolve_user_profile(ctx, rbac=getattr(self, "rbac", None))
+        name = profile["name"]
+        department = profile["department"]
+        role = profile["user_role"]  # 身份只看显式 user_role, 不用权限 role 哨兵
+        employee_id = profile["employee_id"]
 
         clauses: list[str] = []
         if name:

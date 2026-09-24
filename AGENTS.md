@@ -58,7 +58,7 @@ CI runs: `ruff check src/ tests/` → `pytest tests/ -v --cov=src` → Docker bu
 - **Agent core**: `src/agent.py` — `Agent` class, tool-call loop with `max_iterations=100`
 - **LLM client**: `src/llm.py` — `LLMClient` wrapping `AsyncOpenAI`, handles retry/streaming/usage tracking
 - **Prompt builder**: `src/prompt.py` — `PromptBuilder` assembles system prompt in static + dynamic sections (static section is cacheable)
-- **当前用户画像**: `Agent._apply_user_profile()`(`agent/core.py`) — 每次 run 开始时在 dynamic 段最前注入「当前用户」（姓名/工号/部门/角色，字段缺失省略），使 AI 能回答"我是谁/我属于哪个部门"；工号与显示名由 `user_id` tag 的数字 uid 查 `rbac_users` 补齐（查不到静默跳过）；`group_context=True`（钉钉群共享根等）不注入，沿用「群内不注入触发人私有信息」约定；与渐进披露提示共存、static 前缀与 prompt cache 不受影响；子代理继承父级字段后各自注入
+- **当前用户画像**: `Agent._apply_user_profile()`(`agent/core.py`) — 每次 run 开始时在 dynamic 段最前注入「当前用户」（姓名/工号/部门/角色，字段缺失省略），使 AI 能回答"我是谁/我属于哪个部门"；工号与显示名由 `user_id` tag 的数字 uid 查 `rbac_users` 补齐（查不到静默跳过）；`group_context=True`（钉钉群共享根等）不注入，沿用「群内不注入触发人私有信息」约定；与渐进披露提示共存、static 前缀与 prompt cache 不受影响；子代理继承父级字段后各自注入。解析逻辑公共件 `agent/user_profile.py`，另配只读内置工具 `whoami`（`src/tools/whoami.py`，核心工具恒注入、不进渐进检索）显式返回同一画像（群聊下仍返回触发人身份，仅身份字段）。团队/连接池成员 run 透传父 run 真实 `user_id`/`user_name`（不注入 cli:admin 假身份）
 - **Session management**: `src/agent/session.py` — `AgentSession` dataclass, message history with TTL-based expiry
 - **会话续聊恢复**: `Agent._restore_db_session_history()` — 进程重启 / worker 回收后首次承接旧会话时从 `messages` 表按序回填上下文(不重复落盘)
 - **RunDispatcher**: `src/agent/runner.py` — 把 `Agent.run()` 的 团队/reflective/ReAct 三路选择收敛为单一分发入口(`agent/core.py` 不再堆叠形态 if/else)
