@@ -52,11 +52,22 @@ def _patch_main_api_503(monkeypatch, module):
     monkeypatch.setattr(module, "_api", fake_api)
 
 
-def _patch_legacy(monkeypatch, module, response):
+def _patch_legacy(monkeypatch, module, listbyuserid=None, listids=None):
+    """假 requests.post: 按 URL 分派两段式回退; 返回调用记录。
+
+    listbyuserid: FakeResponse | Exception
+    listids: FakeResponse | Exception | callable(payload) -> FakeResponse | Exception
+    """
     calls = []
 
     def fake_post(url, json=None, timeout=10):
         calls.append({"url": url, "json": json})
+        if "/process/listbyuserid" in url:
+            response = listbyuserid
+        elif callable(listids):
+            response = listids(json)
+        else:
+            response = listids
         if isinstance(response, Exception):
             raise response
         return response
@@ -67,6 +78,12 @@ def _patch_legacy(monkeypatch, module, response):
 def _patch_config(monkeypatch, module):
     monkeypatch.setattr(module, "APP_KEY", "test-key")
     monkeypatch.setattr(module, "APP_SECRET", "test-secret")
+
+
+def _legacy_prepare(monkeypatch, module):
+    _patch_config(monkeypatch, module)
+    _patch_main_api_503(monkeypatch, module)
+    monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
 
 
 # ===== 1. _api 503 重试 =====
@@ -109,14 +126,40 @@ def test_api_non_503_does_not_retry(monkeypatch):
     assert sleeps == []
 
 
-# ===== 2. 审批待办旧版回退 =====
+# ===== 2. 审批待办旧版两段式回退 =====
 
-def test_approval_tasks_fallback_permission_error(monkeypatch):
+def test_approval_tasks_fallback_two_stage_success(monkeypatch):
     module = _load()
-    _patch_config(monkeypatch, module)
-    _patch_main_api_503(monkeypatch, module)
-    monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
-    legacy_calls = _patch_legacy(monkeypatch, module, FakeResponse(200, {
+    _legacy_prepare(monkeypatch, module)
+    calls = _patch_legacy(
+        monkeypatch, module,
+        listbyuserid=FakeResponse(200, {"errcode": 0, "result": {"process_list": [
+            {"process_code": "PC-1", "name": "请假"},
+            {"process_code": "PC-2", "name": "报销"},
+        ]}}),
+        listids=lambda payload: FakeResponse(200, {"errcode": 0, "result": {"list": (
+            ["PI-1", "PI-2"] if payload["process_code"] == "PC-1" else ["PI-3"])}}),
+    )
+
+    payload = json.loads(module.dingtalk_approval_tasks("user1"))
+    assert payload["success"] is True
+    assert payload["source"] == "legacy"
+    assert payload["instance_ids"] == ["PI-1", "PI-2", "PI-3"]
+    assert payload["process_count"] == 2
+    assert payload["failed_processes"] == 0
+    assert "dingtalk_approval_instance" in payload["note"]
+    assert len(calls) == 3
+    assert calls[0]["url"].startswith("https://oapi.dingtalk.com/topapi/process/listbyuserid")
+    assert "access_token=tok" in calls[0]["url"]
+    assert calls[0]["json"] == {"userid": "user1", "offset": 0, "size": 100}
+    assert [c["json"]["process_code"] for c in calls[1:]] == ["PC-1", "PC-2"]
+    assert all(c["json"]["status_list"] == "RUNNING" for c in calls[1:])
+
+
+def test_approval_tasks_fallback_listbyuserid_permission_error(monkeypatch):
+    module = _load()
+    _legacy_prepare(monkeypatch, module)
+    calls = _patch_legacy(monkeypatch, module, listbyuserid=FakeResponse(200, {
         "errcode": 88,
         "errmsg": "dingtalk oapi error",
         "sub_code": "60011",
@@ -129,69 +172,70 @@ def test_approval_tasks_fallback_permission_error(monkeypatch):
     assert "qyapi_aflow" in payload["error"]
     assert "权限管理" in payload["error"]
     assert "https://open-dev.dingtalk.com/appscope/apply?content=qyapi_aflow" in payload["error"]
-    assert legacy_calls[0]["url"].startswith(
-        "https://oapi.dingtalk.com/topapi/processinstance/listids")
-    assert "access_token=tok" in legacy_calls[0]["url"]
-    assert legacy_calls[0]["json"] == {"userid": "user1", "status_list": "RUNNING"}
+    assert len(calls) == 1  # 列模板即缺权限, 不再逐模板查实例
 
 
-def test_approval_tasks_fallback_success(monkeypatch):
+def test_approval_tasks_fallback_single_template_failure_not_blocking(monkeypatch):
     module = _load()
-    _patch_config(monkeypatch, module)
-    _patch_main_api_503(monkeypatch, module)
-    monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
-    _patch_legacy(monkeypatch, module, FakeResponse(200, {
-        "errcode": 0, "result": {"list": ["PI-1", "PI-2"]},
-    }))
+    _legacy_prepare(monkeypatch, module)
+    _patch_legacy(
+        monkeypatch, module,
+        listbyuserid=FakeResponse(200, {"errcode": 0, "result": {"process_list": [
+            {"process_code": "PC-1"}, {"process_code": "PC-2"}]}}),
+        listids=lambda payload: FakeResponse(200, (
+            {"errcode": 500, "errmsg": "boom"}
+            if payload["process_code"] == "PC-1"
+            else {"errcode": 0, "result": {"list": ["PI-9"]}})),
+    )
 
     payload = json.loads(module.dingtalk_approval_tasks("user1"))
     assert payload["success"] is True
-    assert payload["source"] == "legacy"
-    assert payload["instance_ids"] == ["PI-1", "PI-2"]
-    assert "dingtalk_approval_instance" in payload["note"]
+    assert payload["instance_ids"] == ["PI-9"]
+    assert payload["process_count"] == 2
+    assert payload["failed_processes"] == 1
+
+
+def test_approval_tasks_fallback_status_done_uses_completed(monkeypatch):
+    """status=1 已办回退: status_list=COMPLETED, 且容忍 result.list 键。"""
+    module = _load()
+    _legacy_prepare(monkeypatch, module)
+    calls = _patch_legacy(
+        monkeypatch, module,
+        listbyuserid=FakeResponse(200, {"errcode": 0, "result": {"list": [
+            {"process_code": "PC-1"}]}}),
+        listids=FakeResponse(200, {"errcode": 0, "result": {"list": ["PI-1"]}}),
+    )
+
+    payload = json.loads(module.dingtalk_approval_tasks("user1", status=1))
+    assert payload["success"] is True
+    assert payload["instance_ids"] == ["PI-1"]
+    assert calls[1]["json"]["status_list"] == "COMPLETED"
 
 
 def test_approval_tasks_fallback_failure_keeps_both_errors(monkeypatch):
     module = _load()
-    _patch_config(monkeypatch, module)
-    _patch_main_api_503(monkeypatch, module)
-    monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
-    _patch_legacy(monkeypatch, module, FakeResponse(200, {
+    _legacy_prepare(monkeypatch, module)
+    _patch_legacy(monkeypatch, module, listbyuserid=FakeResponse(200, {
         "errcode": 500, "errmsg": "system error",
     }))
 
     payload = json.loads(module.dingtalk_approval_tasks("user1"))
     assert payload["success"] is False
     assert "HTTP 503" in payload["error"]
-    assert "旧版审批接口失败" in payload["error"]
+    assert "旧版审批回退失败(列模板)" in payload["error"]
     assert "errcode=500" in payload["error"]
 
 
 def test_approval_tasks_fallback_request_exception_keeps_both_errors(monkeypatch):
     module = _load()
-    _patch_config(monkeypatch, module)
-    _patch_main_api_503(monkeypatch, module)
-    monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
-    _patch_legacy(monkeypatch, module, RuntimeError("connection reset"))
+    _legacy_prepare(monkeypatch, module)
+    _patch_legacy(monkeypatch, module, listbyuserid=RuntimeError("connection reset"))
 
     payload = json.loads(module.dingtalk_approval_tasks("user1"))
     assert payload["success"] is False
     assert "HTTP 503" in payload["error"]
+    assert "旧版审批回退失败(列模板)" in payload["error"]
     assert "connection reset" in payload["error"]
-
-
-def test_approval_tasks_status_done_503_no_fallback(monkeypatch):
-    module = _load()
-    _patch_config(monkeypatch, module)
-    _patch_main_api_503(monkeypatch, module)
-    monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
-    legacy_calls = _patch_legacy(monkeypatch, module, FakeResponse(200, {"errcode": 0}))
-
-    payload = json.loads(module.dingtalk_approval_tasks("user1", status=1))
-    assert payload["success"] is False
-    assert "HTTP 503" in payload["error"]
-    assert "暂不支持回退" in payload["note"]
-    assert legacy_calls == []
 
 
 def test_approval_tasks_non_503_does_not_fallback(monkeypatch):
@@ -201,7 +245,7 @@ def test_approval_tasks_non_503_does_not_fallback(monkeypatch):
     def fake_api(method, path, **kwargs):
         raise RuntimeError("HTTP 403: code=Forbidden.AccessDenied message=无权限")
     monkeypatch.setattr(module, "_api", fake_api)
-    legacy_calls = _patch_legacy(monkeypatch, module, FakeResponse(200, {"errcode": 0}))
+    legacy_calls = _patch_legacy(monkeypatch, module, listbyuserid=FakeResponse(200, {"errcode": 0}))
 
     payload = json.loads(module.dingtalk_approval_tasks("user1"))
     assert payload["success"] is False

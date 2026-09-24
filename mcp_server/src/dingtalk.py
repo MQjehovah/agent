@@ -1065,10 +1065,16 @@ def dingtalk_approval_instance(process_instance_id: str):
         return _dump({"success": False, "error": str(e)})
 
 
-# 旧版 OAPI 审批接口回退: v1.0 对「应用缺权限」统一回 503, 而旧版 listids 会明确
+# 旧版 OAPI 审批接口回退: v1.0 对「应用缺权限」统一回 503, 而旧版接口会明确
 # 返回 errcode 88/sub_code 60011 + 缺失 scope + 申请链接, 便于给出可执行指引。
+# 旧版按 process_code 查询, 故先 listbyuserid 列出用户可发起的审批模板, 再逐模板
+# 查实例 ID(两段式; 单模板失败跳过)。
 _LEGACY_SCOPE_RE = re.compile(r"scope[=:\s]+([A-Za-z][A-Za-z0-9_.-]*)", re.IGNORECASE)
 _LEGACY_APPLY_URL_RE = re.compile(r"https://open-dev\.dingtalk\.com/appscope/apply[^\s\"']*")
+_LEGACY_TEMPLATE_LIMIT = 50
+_LEGACY_STATUS_LIST = {0: "RUNNING", 1: "COMPLETED"}
+_LEGACY_APPROVAL_NOTE = ("旧版接口仅返回审批实例ID；详情请用 "
+                         "dingtalk_approval_instance(process_instance_id=...)")
 
 
 def _permission_apply_hint(body: dict) -> str:
@@ -1084,37 +1090,86 @@ def _permission_apply_hint(body: dict) -> str:
     return hint
 
 
-def _legacy_approval_listids(user_id: str) -> dict:
-    """旧版 OAPI 待办审批实例 ID 回退(POST topapi/processinstance/listids, RUNNING)。
-
-    返回 {success: True, instance_ids} 或 {success: False, permission_error?, error}。
-    """
+def _legacy_oapi_post(path: str, payload: dict) -> tuple[dict, str]:
+    """旧版 OAPI POST(带 token); 返回 (body, error): error 为空表示拿到 dict body。"""
     try:
         token = _get_access_token()
-        url = f"https://oapi.dingtalk.com/topapi/processinstance/listids?access_token={token}"
-        resp = requests.post(url, json={"userid": user_id, "status_list": "RUNNING"}, timeout=10)
+        url = f"https://oapi.dingtalk.com{path}?access_token={token}"
+        resp = requests.post(url, json=payload, timeout=10)
         body = resp.json() if resp.text else {}
     except Exception as e:
-        return {"success": False, "error": f"旧版审批接口请求失败: {e}"}
+        return {}, f"请求异常: {e}"
     if not isinstance(body, dict):
-        return {"success": False, "error": f"旧版审批接口响应异常: {str(body)[:200]}"}
+        return {}, f"响应异常: {str(body)[:200]}"
+    return body, ""
+
+
+def _legacy_result_list(body: dict) -> list:
+    """容忍旧版 result 为 dict(list 键) / list 两种形态, 取实例 ID 列表。"""
+    result = body.get("result")
+    if isinstance(result, dict):
+        value = result.get("list")
+    elif isinstance(result, list):
+        value = result
+    else:
+        value = None
+    return list(value) if isinstance(value, list) else []
+
+
+def _legacy_approval_listids(user_id: str, status: int = 0) -> dict:
+    """旧版 OAPI 两段式回退: 列模板(listbyuserid) → 逐模板查实例 ID(listids)。
+
+    仅主 v1.0 接口缺权限回 503 时使用; status 0→RUNNING(待办) / 1→COMPLETED(已办)。
+    返回 {success, source, instance_ids, process_count, failed_processes, note}
+    或 {success: False, permission_error?, error}。
+    """
+    body, err = _legacy_oapi_post(
+        "/topapi/process/listbyuserid",
+        {"userid": user_id, "offset": 0, "size": 100})
+    if err:
+        return {"success": False, "error": f"旧版审批回退失败(列模板): {err}"}
     errcode = body.get("errcode")
-    if errcode == 0:
-        result = body.get("result") or {}
-        if isinstance(result, dict):
-            ids = result.get("list")
-        elif isinstance(result, list):
-            ids = result
-        else:
-            ids = None
-        return {"success": True, "instance_ids": list(ids or [])}
     sub_code = str(body.get("sub_code") or "")
     if str(errcode) in ("88", "60011") or sub_code == "60011":
         return {"success": False, "permission_error": True,
                 "error": _permission_apply_hint(body)}
-    detail = (f"errcode={errcode} errmsg={body.get('errmsg') or ''} "
-              f"sub_code={sub_code} sub_msg={_clip(body.get('sub_msg'), 200)}")
-    return {"success": False, "error": f"旧版审批接口失败: {detail.strip()}"}
+    if errcode != 0:
+        detail = (f"errcode={errcode} errmsg={body.get('errmsg') or ''} "
+                  f"sub_code={sub_code} sub_msg={_clip(body.get('sub_msg'), 200)}")
+        return {"success": False, "error": f"旧版审批回退失败(列模板): {detail.strip()}"}
+
+    result = body.get("result") if isinstance(body.get("result"), dict) else {}
+    raw_processes = result.get("process_list") or result.get("list") or []
+    processes = [item for item in raw_processes if isinstance(item, dict)] \
+        if isinstance(raw_processes, list) else []
+    attempted = processes[:_LEGACY_TEMPLATE_LIMIT]
+    status_list = _LEGACY_STATUS_LIST.get(status, "RUNNING")
+
+    instance_ids: list[str] = []
+    failed = 0
+    for item in attempted:
+        process_code = str(item.get("process_code") or item.get("processCode") or "").strip()
+        if not process_code:
+            failed += 1
+            continue
+        list_body, list_err = _legacy_oapi_post(
+            "/topapi/processinstance/listids",
+            {"process_code": process_code, "userid": user_id, "status_list": status_list})
+        if list_err or list_body.get("errcode") != 0:
+            failed += 1
+            logger.warning(f"旧版审批 listids 模板失败: {process_code}: "
+                           f"{list_err or _clip(list_body.get('errmsg'), 120)}")
+            continue
+        instance_ids.extend(str(item_id) for item_id in _legacy_result_list(list_body))
+
+    return {
+        "success": True,
+        "source": "legacy",
+        "instance_ids": instance_ids,
+        "process_count": len(attempted),
+        "failed_processes": failed,
+        "note": _LEGACY_APPROVAL_NOTE,
+    }
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
@@ -1174,25 +1229,22 @@ def dingtalk_approval_tasks(
         logger.error(f"查询审批任务异常: {e}")
         if "503" not in error_text:
             return _dump({"success": False, "error": error_text})
-        # v1.0 对「应用缺权限」也可能统一回 503: 待办走旧版 listids 回退;
-        # 已办(status=1)旧版无等价能力(仅 RUNNING), 直接说明不支持回退
-        if status == 1:
-            return _dump({"success": False, "error": error_text,
-                          "note": "已办查询暂不支持回退（旧版接口仅支持待办 status=RUNNING）"})
-        legacy = _legacy_approval_listids(str(user_id).strip())
+        # v1.0 对「应用缺权限」也可能统一回 503: 待办/已办均走旧版两段式回退
+        legacy = _legacy_approval_listids(str(user_id).strip(), status)
         if legacy.get("success"):
             return _dump({
                 "success": True,
-                "source": "legacy",
+                "source": legacy.get("source", "legacy"),
                 "instance_ids": legacy.get("instance_ids", []),
-                "note": "旧版接口仅返回审批实例ID；详情请用 "
-                        "dingtalk_approval_instance(process_instance_id=...)",
+                "process_count": legacy.get("process_count", 0),
+                "failed_processes": legacy.get("failed_processes", 0),
+                "note": legacy.get("note", _LEGACY_APPROVAL_NOTE),
             })
         if legacy.get("permission_error"):
             return _dump({"success": False, "error": legacy.get("error", "权限不足")})
         logger.error(f"旧版审批回退也失败: {legacy.get('error')}")
         return _dump({"success": False,
-                      "error": f"{error_text}；旧版接口回退失败: {legacy.get('error', '未知错误')}"})
+                      "error": f"{error_text}；{legacy.get('error', '旧版审批回退失败')}"})
 
 
 @mcp.tool(annotations=_WRITE_ANNOTATIONS)
