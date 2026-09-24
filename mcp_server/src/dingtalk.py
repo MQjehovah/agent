@@ -1075,6 +1075,10 @@ _LEGACY_TEMPLATE_LIMIT = 50
 _LEGACY_STATUS_LIST = {0: "RUNNING", 1: "COMPLETED"}
 _LEGACY_APPROVAL_NOTE = ("旧版接口仅返回审批实例ID；详情请用 "
                          "dingtalk_approval_instance(process_instance_id=...)")
+# listids 必须带 start_time/end_time(毫秒, 缺省报 errcode=40); 取近 90 天
+_LEGACY_LISTIDS_WINDOW_DAYS = 90
+# 判定「缺权限」的文本兜底: errcode 88 / sub_code 60011(避免匹配到 188/88001 等)
+_LEGACY_PERMISSION_RE = re.compile(r"(?<!\d)(88|60011)(?!\d)")
 
 
 def _permission_apply_hint(body: dict) -> str:
@@ -1116,11 +1120,21 @@ def _legacy_result_list(body: dict) -> list:
     return list(value) if isinstance(value, list) else []
 
 
+def _is_permission_failure(text: str, body: dict) -> bool:
+    """旧版错误是否缺权限: errcode/sub_code 结构优先, 兜底 first_error 文本 88/60011。"""
+    errcode = str(body.get("errcode") or "")
+    sub_code = str(body.get("sub_code") or "")
+    if errcode in ("88", "60011") or sub_code == "60011":
+        return True
+    return bool(_LEGACY_PERMISSION_RE.search(text))
+
+
 def _legacy_approval_listids(user_id: str, status: int = 0) -> dict:
     """旧版 OAPI 两段式回退: 列模板(listbyuserid) → 逐模板查实例 ID(listids)。
 
     仅主 v1.0 接口缺权限回 503 时使用; status 0→RUNNING(待办) / 1→COMPLETED(已办)。
-    返回 {success, source, instance_ids, process_count, failed_processes, note}
+    listids 必带 start_time/end_time(近 90 天毫秒时间戳, 否则 errcode=40)。
+    返回 {success, source, instance_ids, process_count, failed_processes, first_error?, note}
     或 {success: False, permission_error?, error}。
     """
     body, err = _legacy_oapi_post(
@@ -1144,25 +1158,45 @@ def _legacy_approval_listids(user_id: str, status: int = 0) -> dict:
         if isinstance(raw_processes, list) else []
     attempted = processes[:_LEGACY_TEMPLATE_LIMIT]
     status_list = _LEGACY_STATUS_LIST.get(status, "RUNNING")
+    now_ms = int(time.time() * 1000)
+    start_ms = int((time.time() - _LEGACY_LISTIDS_WINDOW_DAYS * 86400) * 1000)
 
     instance_ids: list[str] = []
     failed = 0
+    first_error = ""
+    first_failure: dict = {}
     for item in attempted:
         process_code = str(item.get("process_code") or item.get("processCode") or "").strip()
         if not process_code:
             failed += 1
+            if not first_error:
+                first_error = "process=? 缺少 process_code"
             continue
         list_body, list_err = _legacy_oapi_post(
             "/topapi/processinstance/listids",
-            {"process_code": process_code, "userid": user_id, "status_list": status_list})
+            {"process_code": process_code, "userid": user_id, "status_list": status_list,
+             "start_time": start_ms, "end_time": now_ms})
         if list_err or list_body.get("errcode") != 0:
             failed += 1
+            detail = list_err or (
+                f"errcode={list_body.get('errcode')} errmsg={list_body.get('errmsg') or ''} "
+                f"sub_code={list_body.get('sub_code') or ''} "
+                f"sub_msg={_clip(list_body.get('sub_msg'), 200)}")
+            if not first_error:
+                first_error = f"process={process_code} {detail}"
+                first_failure = list_body if not list_err else {}
             logger.warning(f"旧版审批 listids 模板失败: {process_code}: "
                            f"{list_err or _clip(list_body.get('errmsg'), 120)}")
             continue
         instance_ids.extend(str(item_id) for item_id in _legacy_result_list(list_body))
 
-    return {
+    # 全部模板失败且首错即缺权限: 直接给可执行权限文案(优先于泛化失败信息)
+    if attempted and failed == len(attempted) and first_failure \
+            and _is_permission_failure(first_error, first_failure):
+        return {"success": False, "permission_error": True,
+                "error": _permission_apply_hint(first_failure)}
+
+    result_out = {
         "success": True,
         "source": "legacy",
         "instance_ids": instance_ids,
@@ -1170,6 +1204,9 @@ def _legacy_approval_listids(user_id: str, status: int = 0) -> dict:
         "failed_processes": failed,
         "note": _LEGACY_APPROVAL_NOTE,
     }
+    if first_error:
+        result_out["first_error"] = first_error
+    return result_out
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
@@ -1232,14 +1269,17 @@ def dingtalk_approval_tasks(
         # v1.0 对「应用缺权限」也可能统一回 503: 待办/已办均走旧版两段式回退
         legacy = _legacy_approval_listids(str(user_id).strip(), status)
         if legacy.get("success"):
-            return _dump({
+            out = {
                 "success": True,
                 "source": legacy.get("source", "legacy"),
                 "instance_ids": legacy.get("instance_ids", []),
                 "process_count": legacy.get("process_count", 0),
                 "failed_processes": legacy.get("failed_processes", 0),
                 "note": legacy.get("note", _LEGACY_APPROVAL_NOTE),
-            })
+            }
+            if legacy.get("first_error"):
+                out["first_error"] = legacy["first_error"]
+            return _dump(out)
         if legacy.get("permission_error"):
             return _dump({"success": False, "error": legacy.get("error", "权限不足")})
         logger.error(f"旧版审批回退也失败: {legacy.get('error')}")

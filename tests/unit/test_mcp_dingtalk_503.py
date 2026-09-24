@@ -154,6 +154,10 @@ def test_approval_tasks_fallback_two_stage_success(monkeypatch):
     assert calls[0]["json"] == {"userid": "user1", "offset": 0, "size": 100}
     assert [c["json"]["process_code"] for c in calls[1:]] == ["PC-1", "PC-2"]
     assert all(c["json"]["status_list"] == "RUNNING" for c in calls[1:])
+    for call in calls[1:]:  # listids 必带 start_time/end_time(近 90 天)
+        assert isinstance(call["json"]["start_time"], int)
+        assert isinstance(call["json"]["end_time"], int)
+        assert call["json"]["start_time"] < call["json"]["end_time"]
 
 
 def test_approval_tasks_fallback_listbyuserid_permission_error(monkeypatch):
@@ -178,7 +182,7 @@ def test_approval_tasks_fallback_listbyuserid_permission_error(monkeypatch):
 def test_approval_tasks_fallback_single_template_failure_not_blocking(monkeypatch):
     module = _load()
     _legacy_prepare(monkeypatch, module)
-    _patch_legacy(
+    calls = _patch_legacy(
         monkeypatch, module,
         listbyuserid=FakeResponse(200, {"errcode": 0, "result": {"process_list": [
             {"process_code": "PC-1"}, {"process_code": "PC-2"}]}}),
@@ -193,6 +197,51 @@ def test_approval_tasks_fallback_single_template_failure_not_blocking(monkeypatc
     assert payload["instance_ids"] == ["PI-9"]
     assert payload["process_count"] == 2
     assert payload["failed_processes"] == 1
+    assert "process=PC-1" in payload["first_error"]
+    assert "errcode=500" in payload["first_error"]
+    assert all(call["json"]["start_time"] < call["json"]["end_time"] for call in calls[1:])
+
+
+def test_approval_tasks_fallback_all_failed_exposes_first_error(monkeypatch):
+    """全部模板失败(非权限): 聚合结果仍透出首个错误供排障。"""
+    module = _load()
+    _legacy_prepare(monkeypatch, module)
+    _patch_legacy(
+        monkeypatch, module,
+        listbyuserid=FakeResponse(200, {"errcode": 0, "result": {"process_list": [
+            {"process_code": "PC-1"}, {"process_code": "PC-2"}]}}),
+        listids=FakeResponse(200, {"errcode": 500, "errmsg": "boom", "sub_code": "9000"}),
+    )
+
+    payload = json.loads(module.dingtalk_approval_tasks("user1"))
+    assert payload["success"] is True          # 泛化全失败保持聚合语义(非权限)
+    assert payload["instance_ids"] == []
+    assert payload["process_count"] == 2
+    assert payload["failed_processes"] == 2
+    assert "process=PC-1" in payload["first_error"]
+    assert "errcode=500" in payload["first_error"]
+
+
+def test_approval_tasks_fallback_all_failed_permission_hint(monkeypatch):
+    """全部模板失败且首错为缺权限(88/60011): 直接返回可执行权限文案。"""
+    module = _load()
+    _legacy_prepare(monkeypatch, module)
+    _patch_legacy(
+        monkeypatch, module,
+        listbyuserid=FakeResponse(200, {"errcode": 0, "result": {"process_list": [
+            {"process_code": "PC-1"}]}}),
+        listids=FakeResponse(200, {
+            "errcode": 88, "errmsg": "dingtalk oapi error", "sub_code": "60011",
+            "sub_msg": ("no permission to use this api, scope=qyapi_aflow "
+                        "https://open-dev.dingtalk.com/appscope/apply?content=qyapi_aflow"),
+        }),
+    )
+
+    payload = json.loads(module.dingtalk_approval_tasks("user1"))
+    assert payload["success"] is False
+    assert "qyapi_aflow" in payload["error"]
+    assert "权限管理" in payload["error"]
+    assert "https://open-dev.dingtalk.com/appscope/apply?content=qyapi_aflow" in payload["error"]
 
 
 def test_approval_tasks_fallback_status_done_uses_completed(monkeypatch):
