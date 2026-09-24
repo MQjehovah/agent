@@ -59,9 +59,12 @@ class _FakeWorker:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.platform_act_as = None
+        self.act_as_at_init = None
         self.initialized = False
 
     async def initialize(self):
+        # 捕获初始化时刻的 platform_act_as: 证明写入发生在 initialize(建平台连接)之前
+        self.act_as_at_init = self.platform_act_as
         self.initialized = True
 
 
@@ -90,9 +93,18 @@ def test_market_act_as_enabled_truthy(value):
     assert market_act_as_enabled({"MARKET_ACT_AS": value}) is True
 
 
-@pytest.mark.parametrize("value", ["", "0", "no", "off", "2", "  "])
-def test_market_act_as_enabled_falsy(value):
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "  "])
+def test_market_act_as_enabled_recognized_false(value):
     assert market_act_as_enabled({"MARKET_ACT_AS": value}) is False
+
+
+@pytest.mark.parametrize("value", ["off", "2", "enabled", "yes1"])
+def test_market_act_as_enabled_illegal_value_warns_and_off(value, caplog):
+    """非空但未识别 → WARNING(对齐既有 env 非法值回退风格), 仍按关处理。"""
+    with caplog.at_level(logging.WARNING, logger="agent.web.security"):
+        assert market_act_as_enabled({"MARKET_ACT_AS": value}) is False
+    assert any("非法" in r.getMessage() and value in r.getMessage()
+               for r in caplog.records if r.levelno == logging.WARNING)
 
 
 def test_market_act_as_enabled_missing_is_off():
@@ -112,6 +124,24 @@ def test_resolve_act_as_non_numeric_is_workid_passthrough(store):
     """非数字(SSO sub/工号兜底形态) → 原样使用, 不查库。"""
     assert resolve_market_act_as("web:s_software") == "s_software"
     assert resolve_market_act_as(" s_software ") == "s_software"
+
+
+def test_resolve_act_as_non_numeric_does_not_touch_storage(monkeypatch):
+    """非数字分支直传, 不触碰 storage(get_storage 被调用即测试失败)。"""
+    import storage.storage as storage_mod
+
+    def _boom():
+        raise AssertionError("非数字 uid 不应查 storage")
+
+    monkeypatch.setattr(storage_mod, "get_storage", _boom)
+    assert resolve_market_act_as("web:s_software") == "s_software"
+
+
+def test_resolve_act_as_service_sentinel_silent(store, caplog):
+    """uid=0(X-Service-Token 服务身份)必然查不到: 静默返回空串, 不打 WARNING。"""
+    with caplog.at_level(logging.WARNING, logger="agent.web.security"):
+        assert resolve_market_act_as("web:0") == ""
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 def test_resolve_act_as_unknown_uid_warns_and_returns_empty(store, caplog):
@@ -143,7 +173,8 @@ def test_create_worker_sets_act_as_when_switch_and_platform_on(
 
     assert worker.platform_act_as == WORKID
     assert worker.platform_mcp_enabled is True
-    assert worker.initialized is True  # act-as 在 initialize(建平台连接)前写入
+    assert worker.initialized is True
+    assert worker.act_as_at_init == WORKID  # 时序: initialize(建平台连接)时已写入
 
 
 def test_create_worker_act_as_empty_when_switch_off(store, monkeypatch, tmp_path, fake_agent):
@@ -152,6 +183,7 @@ def test_create_worker_act_as_empty_when_switch_off(store, monkeypatch, tmp_path
     uid = _make_user(store)
     worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
     assert worker.platform_act_as == ""
+    assert worker.act_as_at_init == ""
 
 
 def test_create_worker_act_as_empty_when_platform_disabled(store, monkeypatch, tmp_path, fake_agent):

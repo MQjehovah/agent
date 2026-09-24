@@ -18,22 +18,36 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("agent.web.security")
 
-# 平台轨按用户身份开关 MARKET_ACT_AS: 1/true/yes(大小写不敏感)开启, 缺省/其它关闭
+# 平台轨按用户身份开关 MARKET_ACT_AS: 1/true/yes 开, 0/false/no 关(大小写不敏感);
+# 缺省/空白按关(静默); 其它非空值告警后按关(对齐既有 env 非法值回退风格)
 _MARKET_ACT_AS_TRUE = frozenset({"1", "true", "yes"})
+_MARKET_ACT_AS_FALSE = frozenset({"0", "false", "no"})
 
 
 def market_act_as_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """MARKET_ACT_AS 开关: 仅 1/true/yes 为开(缺省关)。"""
+    """MARKET_ACT_AS 开关: 仅 1/true/yes 为开; 0/false/no 与缺省为关; 非法非空值告警后关。"""
     source = os.environ if env is None else env
-    return str(source.get("MARKET_ACT_AS") or "").strip().lower() in _MARKET_ACT_AS_TRUE
+    value = source.get("MARKET_ACT_AS")
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return False
+    if raw in _MARKET_ACT_AS_TRUE:
+        return True
+    if raw not in _MARKET_ACT_AS_FALSE:
+        logger.warning(f"MARKET_ACT_AS={value!r} 非法, 按关闭处理(仅 1/true/yes 开启)")
+    return False
 
 
 def resolve_market_act_as(owner: str) -> str:
-    """归属 tag/uid → market 用户名(= rbac 工号); 解析失败返回空串并打 WARNING。
+    """归属 tag/uid → market 用户名(= rbac 工号); 解析失败返回空串(回退见下)。
 
-    - ``web:{uid}`` 的数字 uid(rbac_users.id) → 查表取 name(= 工号/SSO sub);
-    - 非数字(本身已是工号) → 原样使用;
-    - 查不到/存储不可用 → 空串(调用方回退服务令牌全量视角, 日志须可见)。
+    - ``web:{uid}``: ``"0"``(X-Service-Token 服务身份)无对应市场用户, 静默返回空串;
+      数字 uid(rbac_users.id) → 查表取 name(= 工号/SSO sub), 查不到/存储不可用 →
+      空串 + WARNING(该 worker 回退服务令牌全量视角, 日志须可见);
+    - 非数字(本身已是工号/SSO sub) → 原样使用, 不查库。
+
+    回退有意非对称: 数字 uid 解析失败=回退服务令牌全量视角(功能可用但粒度变粗);
+    非数字直传若 market 侧不存在则 403/空工具集(fail-closed, 不放宽权限)。
     """
     raw = str(owner or "").strip()
     if not raw:
@@ -41,6 +55,8 @@ def resolve_market_act_as(owner: str) -> str:
     uid = raw.split(":", 1)[1] if ":" in raw else raw
     if not uid:
         return ""
+    if uid == "0":
+        return ""  # 服务身份哨兵: 必然查不到, 静默不解析(不打 WARNING)
     if not uid.isdigit():
         return uid  # 已是工号(SSO sub), 直接作为 market 用户名
     try:
