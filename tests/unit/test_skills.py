@@ -100,8 +100,8 @@ def test_department_restricted_visible_only_to_matching_department(tmp_path):
         assert "it-skill" in _desc(mgr)
     with _as_user("研发部", "default"):
         assert "it-skill" not in _desc(mgr)
-    with _as_user("", "admin"):
-        assert "it-skill" not in _desc(mgr)  # 用户部门为空不命中(即使 admin)
+    with _as_user("", "default"):
+        assert "it-skill" not in _desc(mgr)  # 用户部门为空不命中(非 admin fail-closed)
 
 
 async def test_department_restricted_execution_denied_for_other_or_empty_dept(tmp_path):
@@ -159,32 +159,77 @@ def test_role_requires_explicit_channel_role_fail_closed(tmp_path):
 # ===== 4. 两维 AND / 单维不限制另一维 =====
 
 @pytest.mark.parametrize("dept,role,expected", [
-    ("信息部", "admin", True),
-    ("信息部", "default", False),   # 角色未命中
-    ("研发部", "admin", False),     # 部门未命中
-    ("", "admin", False),           # 部门为空不命中
+    ("信息部", "editor", True),
+    ("信息部", "viewer", False),    # 角色未命中
+    ("研发部", "editor", False),    # 部门未命中
+    ("", "editor", False),          # 部门为空不命中
     ("信息部", "", False),          # 角色为空不命中
 ])
 def test_both_dimensions_require_and(tmp_path, dept, role, expected):
     d = _skills_dir(tmp_path)
-    _add_skill(d, "both", "departments: [信息部]\nroles: [admin]\n")
+    _add_skill(d, "both", "departments: [信息部]\nroles: [editor]\n")
     mgr = SkillManager(d)
-    assert mgr.skills["both"].is_available_to(dept, role) is expected
+    assert mgr.skills["both"].is_available_to(department=dept, role=role) is expected
 
 
 def test_single_dimension_does_not_restrict_the_other(tmp_path):
     d = _skills_dir(tmp_path)
     _add_skill(d, "dept-only", "departments: [信息部]\n")
-    _add_skill(d, "role-only", "roles: [admin]\n")
+    _add_skill(d, "role-only", "roles: [editor]\n")
     mgr = SkillManager(d)
     dept_only = mgr.skills["dept-only"]
-    assert dept_only.is_available_to("信息部", "default")
-    assert dept_only.is_available_to("信息部", "")       # roles 维度不限
-    assert not dept_only.is_available_to("研发部", "admin")
+    assert dept_only.is_available_to(department="信息部", role="viewer")
+    assert dept_only.is_available_to(department="信息部", role="")     # roles 维度不限
+    assert not dept_only.is_available_to(department="研发部", role="viewer")
     role_only = mgr.skills["role-only"]
-    assert role_only.is_available_to("", "admin")        # departments 维度不限
-    assert role_only.is_available_to("研发部", "admin")
-    assert not role_only.is_available_to("研发部", "default")
+    assert role_only.is_available_to(department="", role="editor")     # departments 维度不限
+    assert role_only.is_available_to(department="研发部", role="editor")
+    assert not role_only.is_available_to(department="研发部", role="viewer")
+
+
+# ===== 4b. admin 直通(与市场 access.py 一致) =====
+
+def test_admin_bypasses_department_and_role_restrictions(tmp_path):
+    d = _skills_dir(tmp_path)
+    _add_skill(d, "admin-skill", "departments: [信息部]\nroles: [editor]\n")
+    mgr = SkillManager(d)
+    s = mgr.skills["admin-skill"]
+    assert s.is_available_to(department="", role="admin")            # 空部门 + admin 直通
+    assert s.is_available_to(department="研发部", role="admin")
+    assert not s.is_available_to(department="信息部", role="viewer")  # 非 admin 行为不变
+
+
+async def test_admin_executes_restricted_skill_with_empty_department(tmp_path):
+    d = _skills_dir(tmp_path)
+    _add_skill(d, "admin-skill", "departments: [信息部]\nroles: [editor]\n")
+    mgr = SkillManager(d)
+    with _as_user("", "admin"):
+        out = await mgr.execute_tool("skill", {"name": "admin-skill"})
+    assert "已激活技能: admin-skill" in out
+
+
+# ===== 4c. disabled 技能点名调用同样拒绝 =====
+
+async def test_disabled_skill_direct_call_denied(tmp_path):
+    d = _skills_dir(tmp_path)
+    _add_skill(d, "off-skill", "enabled: false\n")
+    mgr = SkillManager(d)
+    with _as_user("", "admin"):  # 即使 admin 直通, disabled 也不可执行
+        out = await mgr.execute_tool("skill", {"name": "off-skill"})
+    data = json.loads(out)
+    assert "error" in data
+    assert "off-skill" not in data["error"]
+    assert "off-skill" not in mgr._active_skills
+
+
+# ===== 4d. 用户值归一化(与市场 access.py 一致) =====
+
+def test_user_value_whitespace_normalized(tmp_path):
+    d = _skills_dir(tmp_path)
+    _add_skill(d, "it-skill", "departments: [信息部]\n")
+    s = SkillManager(d).skills["it-skill"]
+    assert s.is_available_to(department=" 信息部 ", role="default")
+    assert not s.is_available_to(department=" ", role="default")
 
 
 # ===== 5. frontmatter 解析容错(明确语义并锁定) =====
@@ -195,14 +240,14 @@ def test_empty_list_means_unrestricted(tmp_path):
     s = SkillManager(d).skills["empty-deps"]
     assert s.departments == [] and s.roles == []
     assert s.access_invalid is False
-    assert s.is_available_to("", "default")
+    assert s.is_available_to(department="", role="default")
 
 
 def test_null_means_unrestricted(tmp_path):
     d = _skills_dir(tmp_path)
     _add_skill(d, "null-deps", "departments: null\nroles:\n")
     s = SkillManager(d).skills["null-deps"]
-    assert s.is_available_to("", "default")
+    assert s.is_available_to(department="", role="default")
 
 
 def test_non_list_type_fail_closed_with_warning(tmp_path, caplog):
@@ -212,9 +257,9 @@ def test_non_list_type_fail_closed_with_warning(tmp_path, caplog):
         mgr = SkillManager(d)
     s = mgr.skills["bad-roles"]
     assert s.access_invalid is True
-    assert s.is_available_to("", "admin") is False        # fail-closed: 即使 admin 也不可见
+    assert s.is_available_to(department="", role="default") is False   # 非 admin fail-closed
     assert any("fail-closed" in r.getMessage() for r in caplog.records)
-    with _as_user("", "admin"):
+    with _as_user("", "default"):
         assert "bad-roles" not in _desc(mgr)
 
 
@@ -223,7 +268,7 @@ def test_all_invalid_items_fail_closed(tmp_path):
     _add_skill(d, "bad-items", "departments: [123, '']\n")
     s = SkillManager(d).skills["bad-items"]
     assert s.access_invalid is True
-    assert s.is_available_to("信息部", "admin") is False
+    assert s.is_available_to(department="信息部", role="default") is False
 
 
 def test_mixed_valid_and_invalid_items_keep_valid_ones(tmp_path):
@@ -232,8 +277,8 @@ def test_mixed_valid_and_invalid_items_keep_valid_ones(tmp_path):
     s = SkillManager(d).skills["mixed"]
     assert s.departments == ["信息部"]
     assert s.access_invalid is False
-    assert s.is_available_to("信息部", "default")
-    assert not s.is_available_to("123", "default")        # 非字符串项被忽略, 不构成限制
+    assert s.is_available_to(department="信息部", role="default")
+    assert not s.is_available_to(department="123", role="default")  # 非字符串项被忽略, 不构成限制
 
 
 # ===== 6. 清单过滤 / run 之外 / 全量目录保留 =====
@@ -284,13 +329,37 @@ async def test_agent_run_sets_and_inherits_user_identity(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner, "dispatch", fake_dispatch)
     agent = Agent(workspace=str(tmp_path), client=MagicMock())
-    # 渠道显式传 role(权限值)时同时作为技能过滤角色; 子代理/嵌套 run 继承部门与角色
-    await agent.run("outer", user_department="信息部", role="admin")
+    # 渠道显式传 user_role(技能身份)/role(权限); 子代理/嵌套 run 继承部门与角色
+    await agent.run("outer", user_department="信息部", user_role="admin", role="admin")
     assert seen["outer"] == ("信息部", "admin")
     assert seen["inner"] == ("信息部", "admin")
-    # 未显式传角色: user_role 保持空(role 回落 default 哨兵), 不参与技能过滤
-    await agent.run("no-identity")
+    # 未显式传 user_role: 即使 role 为权限哨兵 default, 技能身份保持空(fail-closed)
+    await agent.run("no-identity", role="default")
     assert seen["no-identity"] == ("", "")
+
+
+async def test_agent_run_role_not_used_for_skill_identity(tmp_path, monkeypatch):
+    """role 仅权限语义(无身份回落 default 哨兵): roles:[default] 技能不可见(不变量锁定)。"""
+    from agent import runner
+
+    d = _skills_dir(tmp_path)
+    _add_skill(d, "default-role", "roles: [default]\n")
+    mgr = SkillManager(d)
+    seen = {}
+
+    async def fake_dispatch(agent, task, session_id, user_id, user_name, inherited):
+        rc = current_run()
+        seen["role"] = rc.role
+        seen["user_role"] = rc.user_role
+        seen["visible"] = mgr.list_visible_skills()
+        return SimpleNamespace(result="ok")
+
+    monkeypatch.setattr(runner, "dispatch", fake_dispatch)
+    agent = Agent(workspace=str(tmp_path), client=MagicMock())
+    await agent.run("t", role="default", user_role="")
+    assert seen["role"] == "default"            # 权限语义保留哨兵
+    assert seen["user_role"] == ""              # 技能身份无 role 回退
+    assert "default-role" not in seen["visible"]
 
 
 async def test_router_passes_user_department_and_role(tmp_path):

@@ -25,14 +25,17 @@ class Skill:
     # 可见性限制(frontmatter 可选): 空列表=该维度不限; 两维度都非空须同时命中(AND)
     departments: list[str] = field(default_factory=list)
     roles: list[str] = field(default_factory=list)
-    # 限制字段类型非法(见 _parse_access_list): fail-closed, 该技能对所有用户不可见
+    # 限制字段类型非法(见 _parse_access_list): fail-closed, 非 admin 用户不可见
     access_invalid: bool = False
 
     def is_available_to(self, department: str = "", role: str = "") -> bool:
         """技能对给定用户是否可用(部门/角色维度, 与市场 services/access.py 同语义)。
 
-        fail-closed: 维度非空时用户值缺失或未命中即不可用; 缺省(空)维度不限制。
+        - admin 直通: role == "admin" 时忽略全部限制(与市场 admin 早退一致);
+        - fail-closed: 维度非空时用户值缺失或未命中即不可用; 缺省(空)维度不限制。
         """
+        if role == "admin":
+            return True
         if self.access_invalid:
             return False
         return (self._dimension_allows(self.departments, department)
@@ -42,7 +45,8 @@ class Skill:
     def _dimension_allows(required: list[str], actual: str) -> bool:
         if not required:
             return True
-        return bool(actual) and actual in required
+        value = (actual or "").strip()  # 与市场 access.py 一致: 归一化用户值
+        return bool(value) and value in required
 
     def get_info(self) -> dict[str, Any]:
         return {
@@ -296,14 +300,11 @@ class SkillManager:
         """
         department, role = self._current_user_access()
         return [s for s in self.skills.values()
-                if s.enabled and s.is_available_to(department, role)]
+                if s.enabled and s.is_available_to(department=department, role=role)]
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """skill 工具定义; <available_skills> 按当前 run 用户动态过滤。"""
         return self._build_skill_tool_defs(self.visible_skills())
-
-    def get_skill_names(self) -> list[str]:
-        return [s.name for s in self.skills.values() if s.enabled]
 
     async def execute_tool(self, tool_name: str, args: dict[str, Any]) -> str:
         if tool_name in ("skill", "execute_skill"):
@@ -319,10 +320,11 @@ class SkillManager:
             available = self.list_visible_skills()
             return json.dumps({"error": f"Skill not found: {skill_name}", "available_skills": available}, ensure_ascii=False)
 
-        # 执行前二次校验(防绕过 <available_skills> 清单直接点名调用): 无权技能一律拒绝。
-        # 对外文案不回显技能名(避免确认受限技能存在性); 技能名仅记服务端告警日志。
-        if not skill.is_available_to(*self._current_user_access()):
-            logger.warning(f"拒绝执行无权访问的技能: {skill_name}")
+        # 执行前二次校验(防绕过 <available_skills> 清单直接点名调用): disabled 或无权
+        # 技能一律拒绝。对外文案不回显技能名(避免确认受限技能存在性); 名称仅记服务端日志。
+        department, role = self._current_user_access()
+        if not skill.enabled or not skill.is_available_to(department=department, role=role):
+            logger.warning(f"拒绝执行不可用/无权访问的技能: {skill_name} (enabled={skill.enabled})")
             return json.dumps({
                 "error": "该技能当前不可用或无权访问",
                 "available_skills": self.list_visible_skills(),
@@ -355,7 +357,7 @@ class SkillManager:
         return result
 
     def list_skills(self) -> list[str]:
-        """全量已启用技能名(目录快照: 团队技能合并/日志/自动路由等非 LLM 场景)。"""
+        """全量已启用技能名(目录快照: 团队技能合并/日志等非 LLM 场景)。"""
         return [skill.name for skill in self.skills.values() if skill.enabled]
 
     def list_visible_skills(self) -> list[str]:
@@ -377,7 +379,11 @@ class SkillManager:
         return "\n\n".join(lines)
 
     def get_skills_prompt(self) -> str:
-        """可用技能清单文本(按当前 run 用户可见性过滤, 不列受限技能)。"""
+        """可用技能清单文本(按当前 run 用户可见性过滤, 不列受限技能)。
+
+        注: 目前仅测试引用(保留公开 API); 线上提示清单由 subagent/main 的
+        技能指引 + skill 工具描述承担。
+        """
         visible = self.visible_skills()
         if not visible:
             return ""

@@ -639,6 +639,8 @@ async def _main_with_args(args):
                         user_id=user_id or "scheduler:admin",
                         user_name=user_name or "定时任务",
                         role=role or "",
+                        # 技能可见性身份与权限 role 同源(创建者已解析到的 rbac 角色)
+                        user_role=role or "",
                     )
                 scheduler_plugin._agent_executor = _schedule_to_router
                 if not scheduler_plugin._started:

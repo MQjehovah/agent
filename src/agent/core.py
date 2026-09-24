@@ -55,10 +55,11 @@ class RunContext:
 
     user_id: str = ""
     user_name: str = ""
+    # 权限判定用角色(会话/工具权限等): 无渠道身份时回落 "default" 哨兵, 仅权限语义;
+    # 技能可见性身份只看 user_role。
     role: str = "default"
-    # 渠道显式提供的 rbac 角色名(web/钉钉/定时等): 供技能 roles 过滤; 空=渠道未提供
-    # (fail-closed, 受限技能不可见)。注意 role 是权限判定值, 无身份时回落 "default"
-    # 哨兵, 不用于技能过滤。
+    # 渠道显式提供的 rbac 角色名(web/钉钉/定时等): 技能可见性唯一角色身份;
+    # 空=渠道未提供(fail-closed, 受限技能不可见)。
     user_role: str = ""
     # RBAC 部门名(SSO 登录回写 rbac_users.department); 空=未知。技能等按部门过滤时
     # fail-closed: 受限资源对空部门不可见; 非 web 渠道暂不解析(传空)。
@@ -510,14 +511,6 @@ class Agent:
         except Exception as e:
             logger.warning(f"初始化质量钩子失败: {e}")
             self._quality_hooks = None
-
-        try:
-            # ── 自动技能路由 ──
-            from auto_skill import AutoSkillActivator
-            self._auto_skill = AutoSkillActivator(self.skill_manager)
-        except Exception as e:
-            logger.warning(f"初始化自动技能路由失败: {e}")
-            self._auto_skill = None
 
         logger.info(f"Agent [{self.name}] 代码质量模块初始化完成")
 
@@ -1062,9 +1055,9 @@ class Agent:
         eff_user = user_id or inherited.user_id
         eff_name = user_name or inherited.user_name
         eff_role = role or inherited.role or "default"
-        # 技能过滤用的显式角色: 渠道传入的 user_role/role 优先, 否则继承父级;
-        # 全空 = 渠道未解析身份(如飞书/webhook), 受限技能不得命中(fail-closed)。
-        eff_user_role = user_role or role or getattr(inherited, "user_role", "")
+        # 技能过滤用的显式角色: 只认显式 user_role 入参或父级继承(不从 role 回退,
+        # 避免无身份渠道的 default 哨兵混入身份); 全空 = 渠道未解析身份, fail-closed。
+        eff_user_role = user_role or getattr(inherited, "user_role", "")
         eff_dept = user_department or getattr(inherited, "user_department", "")
         # 群共享上下文:顶层渠道显式传 True,子代理在同一 Task 内继承父级 run 标记
         eff_group = bool(group_context) or bool(getattr(inherited, "group_context", False))

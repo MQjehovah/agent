@@ -46,7 +46,7 @@
 | **代码变更影响分析** | `src/code_diff.py` ✅ | 已实现 | 风险等级评估、调用方追踪 |
 | **对抗性代码审查** | `src/adversarial.py` ✅ | 已实现 | 攻击者视角猎杀，CRITICAL→LOW 分级 |
 | **代码质量 Hooks** | `src/quality_hooks.py` ✅ | 已实现 | post_edit_lint、pre_commit_secret_scan |
-| **自动技能路由** | `src/auto_skill.py` ✅ | 已实现 | trigger_patterns 匹配自动激活 |
+| **自动技能路由** | `src/auto_skill.py` | 已移除 | trigger_patterns 匹配自动激活（无消费方，P7 技能可见性改造中清理） |
 | **代码工程师 Prompt** | `PROMPT.md` ✅ | 已修改 | 工具纪律、最小读取、批量编辑 |
 | **测试工程师 Prompt** | `PROMPT.md` ✅ | 已修改 | 对抗式测试、边界条件、异常路径 |
 | **安全审查师 Prompt** | `PROMPT.md` ✅ | 已修改 | 攻击面映射、竞态检查、异常路径 |

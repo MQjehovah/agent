@@ -1024,6 +1024,8 @@ class AgentChatbotHandler:
                             session_id=session.session_id,
                             user_id=user_id, user_name=user_name,
                             role=role,
+                            # 技能可见性身份: 显式传 rbac 角色(与权限 role 同源, 语义分离)
+                            user_role=role,
                             # 群共享上下文信号: 记忆不注入个人私有, 群内串行/群间并发见 _conv_lock
                             group_context=is_group,
                             # 返回 AgentResult, 供下方按 sensitive_hit 改道敏感出口

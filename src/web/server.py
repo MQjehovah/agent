@@ -1479,6 +1479,7 @@ class WebServer:
                     router = MessageRouter(agent)
                     await router.route(message, channel="web", session_id=session_id,
                                        role=auth.get("role", "default"),
+                                       user_role=auth.get("role", ""),
                                        user_department=auth.get("department", ""),
                                        user_id=web_user_id, user_name=web_user_name)
                 finally:
@@ -1686,6 +1687,7 @@ class WebServer:
                             session_id=session_id, run_id=stream_run_id,
                             user_id=web_user_id, user_name=web_user_name,
                             role=auth.get("role", "default"),
+                            user_role=auth.get("role", ""),
                             user_department=auth.get("department", ""),
                         )
                         # router.route 对非 cli 渠道返回字符串（result.result），

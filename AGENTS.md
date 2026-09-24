@@ -150,7 +150,7 @@ The agent uses the `skill` tool to load structured workflows. Skills follow the 
 
 ### 技能可见性（部门/角色）
 
-`SKILL.md` frontmatter 可选 `departments: [..]` / `roles: [..]`（列表；`roles` 值为 agent rbac 角色名如 `admin`/`default`）：缺省或空列表=该维度不限；两维度都非空须同时命中（AND，与市场 `services/access.py` 一致）；用户部门/角色为空时不命中受限维度（fail-closed，受限技能不可见且执行前二次校验拒绝）。过滤作用于 `skill` 工具描述中的 `<available_skills>`、团队子代理/CLI 提示中的技能清单及执行入口；部门仅 web 渠道经 `_get_authz` 解析传入，角色取渠道显式传入的 `role`（web/钉钉/定时等已有），未解析身份的渠道（飞书/webhook 等）按空处理=受限技能不可见。frontmatter 类型非法（非列表或列表项全非法）按 fail-closed 处理：技能对所有用户不可见并记 WARNING。样板见 `tests/unit/test_skills.py`。
+`SKILL.md` frontmatter 可选 `departments: [..]` / `roles: [..]`（列表；`roles` 值为 agent rbac 角色名如 `admin`/`default`）：缺省或空列表=该维度不限；两维度都非空须同时命中（AND，与市场 `services/access.py` 一致）；`user_role == "admin"` 直通（忽略限制，同市场 admin 早退）；用户部门/角色为空时不命中受限维度（fail-closed，受限技能不可见且执行前二次校验拒绝，disabled 技能点名调用同样拒绝）。过滤作用于 `skill` 工具描述中的 `<available_skills>`、团队子代理/CLI 提示中的技能清单及执行入口；部门仅 web 渠道经 `_get_authz` 解析传入，角色取渠道显式传入的 `user_role`（web/钉钉/定时均显式传入 rbac 角色，权限用 `role` 与技能身份分离）；未解析身份的渠道（飞书/webhook 等）按空处理=受限技能不可见。frontmatter 类型非法（非列表或列表项全非法）按 fail-closed 处理：非 admin 用户不可见并记 WARNING。样板见 `tests/unit/test_skills.py`。
 
 ### Intent-to-Skill Routing (always check first)
 
