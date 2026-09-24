@@ -62,10 +62,13 @@ _logged_in = False
 
 GITLAB_TOKEN = (os.getenv("GITLAB_TOKEN") or "").strip()
 GITLAB_USERNAME = (os.getenv("GITLAB_USERNAME") or "s_software").strip()
-if GITLAB_TOKEN:
-    GITLAB_PASSWORD = ""
-else:
-    GITLAB_PASSWORD = require_secret(
+
+
+def _password() -> str:
+    """调用时解析口令（缺密钥时报清晰错误；服务仍可启动并列出工具）。"""
+    if GITLAB_TOKEN:
+        return ""
+    return require_secret(
         "GITLAB_PASSWORD", os.getenv("GITLAB_PASSWORD") or os.getenv("IT_SYSTEM_PASSWORD")
     ) or ""
 
@@ -146,7 +149,8 @@ def _ensure_login() -> None:
     global _csrf_token, _logged_in
     if GITLAB_TOKEN or _logged_in:
         return
-    if not GITLAB_PASSWORD:
+    password = _password()
+    if not password:
         raise GitLabError(
             "未配置 GitLab 凭证: 请设置 GITLAB_TOKEN(推荐, Personal Access Token), "
             "或设置 GITLAB_PASSWORD(或 IT_SYSTEM_PASSWORD)以走 LDAP 会话登录"
@@ -164,7 +168,7 @@ def _ensure_login() -> None:
             data={
                 "authenticity_token": match.group(1),
                 "username": GITLAB_USERNAME,
-                "password": GITLAB_PASSWORD,
+                "password": password,
             },
             timeout=_timeout(),
         )

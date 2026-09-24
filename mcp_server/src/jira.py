@@ -61,10 +61,13 @@ _session = requests.Session()
 
 JIRA_TOKEN = (os.getenv("JIRA_TOKEN") or "").strip()
 JIRA_USERNAME = (os.getenv("JIRA_USERNAME") or "s_software").strip()
-if JIRA_TOKEN:
-    JIRA_PASSWORD = ""
-else:
-    JIRA_PASSWORD = require_secret(
+
+
+def _password() -> str:
+    """调用时解析口令（缺密钥时报清晰错误；服务仍可启动并列出工具）。"""
+    if JIRA_TOKEN:
+        return ""
+    return require_secret(
         "JIRA_PASSWORD", os.getenv("JIRA_PASSWORD") or os.getenv("IT_SYSTEM_PASSWORD")
     ) or ""
 
@@ -129,7 +132,7 @@ def _request(method: str, path: str, *, params=None, payload=None, ok=(200,), te
         if JIRA_TOKEN:
             headers["Authorization"] = f"Bearer {JIRA_TOKEN}"
         else:
-            auth = (JIRA_USERNAME, JIRA_PASSWORD)
+            auth = (JIRA_USERNAME, _password())
         url = f"{_base_url()}/rest/api/2{path}"
         try:
             resp = _session.request(
