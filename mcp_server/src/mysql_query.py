@@ -1,4 +1,4 @@
-﻿import os
+import os
 import smtplib
 import datetime
 import logging
