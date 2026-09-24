@@ -177,6 +177,44 @@ def _split_ids(value: str) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+# unionId 换算缓存: 钉钉 userId(纯数字) → unionId; 进程内缓存, 避免重复查询
+_UNIONID_CACHE: dict[str, str] = {}
+
+
+def _resolve_unionid(value: str) -> tuple[str, str]:
+    """接受钉钉 userId(纯数字)或 unionId, 纯数字自动换算; 返回 (union_id, error)。
+
+    纯数字视为 userId: 查进程内缓存, 未命中调 topapi/v2/user/get 取 result.unionid
+    并缓存; 查不到给出明确错误(未找到该钉钉用户(userId=...))。非纯数字视为
+    unionId 原样返回(也写入缓存)。error 非空表示失败, 调用方应直接返回错误。
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "", "unionId/userId 不能为空"
+    if not raw.isdigit():
+        _UNIONID_CACHE[raw] = raw
+        return raw, ""
+    cached = _UNIONID_CACHE.get(raw)
+    if cached:
+        return cached, ""
+
+    try:
+        token = _get_access_token()
+        url = f"https://oapi.dingtalk.com/topapi/v2/user/get?access_token={token}"
+        resp = requests.post(url, json={"userid": raw}, timeout=10)
+        body = resp.json() if resp.text else {}
+    except Exception as e:
+        return "", f"换算 unionId 失败(userId={raw}): {e}"
+    if not isinstance(body, dict) or body.get("errcode") != 0:
+        errmsg = body.get("errmsg") if isinstance(body, dict) else ""
+        return "", f"未找到该钉钉用户(userId={raw})" + (f": {errmsg}" if errmsg else "")
+    union_id = str((body.get("result") or {}).get("unionid") or "").strip()
+    if not union_id:
+        return "", f"未找到该钉钉用户(userId={raw}): 返回缺少 unionid"
+    _UNIONID_CACHE[raw] = union_id
+    return union_id, ""
+
+
 def _int_arg(value, name: str, minimum: int = 0) -> tuple[int, str]:
     """校验整数参数(拒绝 bool/非数字/越界); 返回 (值, 错误串), 错误串为空表示通过。"""
     if value is None or isinstance(value, bool):
@@ -711,6 +749,7 @@ def dingtalk_get_user_detail(userid: str, language: str = "zh_CN"):
                 "success": True,
                 "user": {
                     "userid": user.get("userid"),
+                    "unionid": user.get("unionid"),
                     "name": user.get("name"),
                     "mobile": user.get("mobile"),
                     "email": user.get("email"),
@@ -1352,10 +1391,10 @@ def dingtalk_todo_create(
     """创建待办任务。
 
     参数:
-    - union_id: 待办归属用户 unionId(必填, 钉钉待办接口以用户维度鉴权)
+    - union_id: 待办归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填, 钉钉待办接口以用户维度鉴权)
     - subject: 待办标题(必填)
     - executor_ids: 执行人 userId 列表, 逗号分隔(必填)
-    - creator_id: 创建人 unionId(可选; 缺省为 union_id 对应用户)
+    - creator_id: 创建人 unionId 或钉钉 userId(纯数字自动换算; 可选; 缺省为 union_id 对应用户)
     - description: 待办描述(可选)
     - due_time_ms: 截止时间毫秒时间戳(可选, 0=不设置)
     - priority: 优先级数值(可选, 0=不设置)
@@ -1370,6 +1409,9 @@ def dingtalk_todo_create(
 
     if not str(union_id or "").strip():
         return _dump({"success": False, "error": "union_id 必填"})
+    union_id, union_err = _resolve_unionid(union_id)
+    if union_err:
+        return _dump({"success": False, "error": union_err})
     if not str(subject or "").strip():
         return _dump({"success": False, "error": "subject 必填"})
     executors = _split_ids(executor_ids)
@@ -1378,7 +1420,10 @@ def dingtalk_todo_create(
 
     body: dict = {"subject": str(subject).strip(), "executorIds": executors}
     if creator_id:
-        body["creatorId"] = str(creator_id).strip()
+        creator_union, creator_err = _resolve_unionid(creator_id)
+        if creator_err:
+            return _dump({"success": False, "error": creator_err})
+        body["creatorId"] = creator_union
     if description:
         body["description"] = str(description)
     if due_time_ms:
@@ -1411,7 +1456,7 @@ def dingtalk_todo_update(
     """更新待办任务(状态/描述/标题/截止时间/执行人)。
 
     参数:
-    - union_id: 待办归属用户 unionId(必填)
+    - union_id: 待办归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - task_id: 待办任务 ID(必填)
     - done: 是否完成 true=完成 false=恢复未完成(可选)
     - subject: 新标题(可选)
@@ -1427,6 +1472,9 @@ def dingtalk_todo_update(
 
     if not str(union_id or "").strip():
         return _dump({"success": False, "error": "union_id 必填"})
+    union_id, union_err = _resolve_unionid(union_id)
+    if union_err:
+        return _dump({"success": False, "error": union_err})
     if not str(task_id or "").strip():
         return _dump({"success": False, "error": "task_id 必填"})
 
@@ -1464,7 +1512,7 @@ def dingtalk_todo_list(
     """查询某用户的待办任务列表(按完成状态过滤, 游标分页)。
 
     参数:
-    - union_id: 待办归属用户 unionId(必填)
+    - union_id: 待办归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - is_done: 完成状态过滤 true=已完成 / false=未完成(可选, 缺省不过滤)
     - next_token: 分页游标(上次返回的 next_token, 首页留空)
     """
@@ -1476,6 +1524,9 @@ def dingtalk_todo_list(
 
     if not str(union_id or "").strip():
         return _dump({"success": False, "error": "union_id 必填"})
+    union_id, union_err = _resolve_unionid(union_id)
+    if union_err:
+        return _dump({"success": False, "error": union_err})
 
     body: dict = {}
     if is_done is not None:
@@ -1524,7 +1575,7 @@ def dingtalk_calendar_create_event(
     """创建日程(会议)。
 
     参数:
-    - user_id: 日程归属用户 unionId(必填)
+    - user_id: 日程归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - summary: 日程标题(必填)
     - start_time: 开始时间, ISO8601 形如 2026-09-24T10:00:00+08:00;
         全天日程传日期 2026-09-24(必填)
@@ -1544,6 +1595,9 @@ def dingtalk_calendar_create_event(
 
     if not str(user_id or "").strip():
         return _dump({"success": False, "error": "user_id 必填"})
+    user_id, union_err = _resolve_unionid(user_id)
+    if union_err:
+        return _dump({"success": False, "error": union_err})
     if not str(summary or "").strip():
         return _dump({"success": False, "error": "summary 必填"})
     if not str(start_time or "").strip() or not str(end_time or "").strip():
@@ -1587,7 +1641,7 @@ def dingtalk_calendar_list_events(
     """查询日程列表(时间范围内)。
 
     参数:
-    - user_id: 日程归属用户 unionId(必填)
+    - user_id: 日程归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - calendar_id: 日历 ID, 主日历为 primary(默认)
     - time_min: 起始时间(UTC, yyyy-MM-ddTHH:mmZ, 可选)
     - time_max: 结束时间(UTC, yyyy-MM-ddTHH:mmZ, 可选)
@@ -1602,6 +1656,9 @@ def dingtalk_calendar_list_events(
 
     if not str(user_id or "").strip():
         return _dump({"success": False, "error": "user_id 必填"})
+    user_id, union_err = _resolve_unionid(user_id)
+    if union_err:
+        return _dump({"success": False, "error": union_err})
 
     params: dict = {"maxResults": max(1, min(int(max_results or 20), 100))}
     if time_min:
@@ -1643,7 +1700,7 @@ def dingtalk_calendar_freebusy(
     """查询用户忙闲(会议时间段)。
 
     参数:
-    - user_id: 操作者 unionId(必填)
+    - user_id: 操作者 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - user_ids: 被查询用户 unionId 列表, 逗号分隔(必填)
     - start_time: 起始时间(UTC, yyyy-MM-ddTHH:mmZ, 必填)
     - end_time: 结束时间(UTC, yyyy-MM-ddTHH:mmZ, 必填)
@@ -1656,6 +1713,9 @@ def dingtalk_calendar_freebusy(
 
     if not str(user_id or "").strip():
         return _dump({"success": False, "error": "user_id 必填"})
+    user_id, union_err = _resolve_unionid(user_id)
+    if union_err:
+        return _dump({"success": False, "error": union_err})
     targets = _split_ids(user_ids)
     if not targets:
         return _dump({"success": False, "error": "user_ids 必填(逗号分隔 unionId)"})
