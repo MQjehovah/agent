@@ -18,6 +18,11 @@
 错误透传 errcode/errmsg(HTTP>=400 抛出, 由工具转成 {"success": False, "error": ...});
 少数 body/query 字段名以「线上冒烟待确认」标注(会议/外部联系人/公告/日志/钉盘/机器人文件/
 卡片模板列表/文档 API/文档成员)。
+
+参数命名约定(避免与系统 userId/工号混淆):
+- `dingtalk_userid` = 钉钉用户ID(不是工号, 也不是本系统 userId); `dingtalk_userids` = 上述 ID 列表(逗号分隔);
+- `dingtalk_unionid` = 钉钉 unionId(待办/日程等工具传纯数字时自动按钉钉 userId 换算, 见 `_resolve_unionid`);
+  `dingtalk_unionids` = 钉钉 unionId 列表; `dingtalk_creator_unionid` = 创建人(次级 unionId 参数, 避免重名)。
 """
 import base64
 import hashlib
@@ -325,7 +330,7 @@ def dingtalk_get_access_token():
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_work_notification(
-    user_ids: str,
+    dingtalk_userids: str,
     msg_type: str,
     msg_content: str,
     agent_id: str = ""
@@ -333,7 +338,7 @@ def dingtalk_send_work_notification(
     """发送工作通知消息给指定用户（企业内部应用）。
 
     参数:
-    - user_ids: 接收人用户ID列表，逗号分隔，例如 "user1,user2"
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 接收人用户ID列表，逗号分隔，例如 "user1,user2"
     - msg_type: 消息类型，支持 text / markdown / oa / action_card
     - msg_content: 消息内容JSON字符串。
         text类型: {"content":"消息内容"}
@@ -341,7 +346,7 @@ def dingtalk_send_work_notification(
         oa类型: {"head":{"text":"标题"},"body":{"title":"正文标题","content":"正文内容"}}
     - agent_id: 应用agentId，默认使用环境变量 DINGTALK_AGENT_ID
     """
-    logger.info(f"发送工作通知: type={msg_type}, users={user_ids}")
+    logger.info(f"发送工作通知: type={msg_type}, users={dingtalk_userids}")
 
     err = _check_config()
     if err:
@@ -362,7 +367,7 @@ def dingtalk_send_work_notification(
 
         payload = {
             "agent_id": int(aid),
-            "userid_list": user_ids,
+            "userid_list": dingtalk_userids,
             "msg": {
                 "msgtype": msg_type,
                 msg_type: content_obj
@@ -377,7 +382,7 @@ def dingtalk_send_work_notification(
             return json.dumps({
                 "success": True,
                 "task_id": result.get("task_id"),
-                "message": f"工作通知已发送给 {user_ids}"
+                "message": f"工作通知已发送给 {dingtalk_userids}"
             }, ensure_ascii=False)
         else:
             logger.error(f"工作通知发送失败: {result}")
@@ -390,7 +395,7 @@ def dingtalk_send_work_notification(
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_robot_single_message(
-    user_ids: list[str],
+    dingtalk_userids: list[str],
     msg_key: str,
     msg_param: str,
     robot_code: str = ""
@@ -398,7 +403,7 @@ def dingtalk_send_robot_single_message(
     """通过机器人发送单聊消息给指定用户。
 
     参数:
-    - user_ids: 接收人userId列表
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 接收人userId列表
     - msg_key: 消息类型，如 sampleText / sampleMarkdown / sampleImageMsg / sampleRichText
     - msg_param: 消息参数JSON字符串
         sampleText: {"content":"消息内容"}
@@ -406,7 +411,7 @@ def dingtalk_send_robot_single_message(
         sampleRichText: {"richMessageParamList":[{"type":1,"textContent":"文本"}]}
     - robot_code: 机器人编码，默认使用 DINGTALK_ROBOT_CODE
     """
-    logger.info(f"机器人单聊消息: type={msg_key}, users={user_ids}")
+    logger.info(f"机器人单聊消息: type={msg_key}, users={dingtalk_userids}")
 
     err = _check_config()
     if err:
@@ -424,7 +429,7 @@ def dingtalk_send_robot_single_message(
 
         payload = {
             "robotCode": robot_code or ROBOT_CODE,
-            "userIds": user_ids,
+            "userIds": dingtalk_userids,
             "msgKey": msg_key,
             "msgParam": json.dumps(param_obj, ensure_ascii=False)
         }
@@ -434,7 +439,7 @@ def dingtalk_send_robot_single_message(
 
         if resp.status_code == 200 and "body" not in result.get("code", ""):
             logger.info("机器人单聊消息发送成功")
-            return json.dumps({"success": True, "message": f"消息已发送给 {len(user_ids)} 个用户"}, ensure_ascii=False)
+            return json.dumps({"success": True, "message": f"消息已发送给 {len(dingtalk_userids)} 个用户"}, ensure_ascii=False)
         else:
             logger.error(f"机器人单聊消息发送失败: {result}")
             return json.dumps({"success": False, "error": result.get("message", str(result))}, ensure_ascii=False)
@@ -450,7 +455,7 @@ def dingtalk_send_robot_group_message(
     msg_key: str,
     msg_param: str,
     robot_code: str = "",
-    at_user_ids: list[str] | None = None,
+    dingtalk_userids: list[str] | None = None,
     at_all: bool = False
 ):
     """通过机器人发送群聊消息。
@@ -460,7 +465,7 @@ def dingtalk_send_robot_group_message(
     - msg_key: 消息类型，如 sampleText / sampleMarkdown / sampleActionCard / sampleInteractiveCard
     - msg_param: 消息参数JSON字符串
     - robot_code: 机器人编码，默认使用 DINGTALK_ROBOT_CODE
-    - at_user_ids: @的用户ID列表（可选）
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; @的用户ID列表（可选）
     - at_all: 是否@所有人（默认否）
     """
     logger.info(f"机器人群聊消息: conversation={conversation_id}, type={msg_key}")
@@ -484,7 +489,7 @@ def dingtalk_send_robot_group_message(
             "conversationId": conversation_id,
             "msgKey": msg_key,
             "msgParam": json.dumps(param_obj, ensure_ascii=False),
-            "atUserIds": at_user_ids or [],
+            "atUserIds": dingtalk_userids or [],
             "isAtAll": at_all
         }
 
@@ -722,14 +727,14 @@ def dingtalk_get_department_users(
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
-def dingtalk_get_user_detail(userid: str, language: str = "zh_CN"):
+def dingtalk_get_user_detail(dingtalk_userid: str, language: str = "zh_CN"):
     """获取用户详情。
 
     参数:
-    - userid: 用户ID
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 必填
     - language: 语言，默认 zh_CN
     """
-    logger.info(f"获取用户详情: {userid}")
+    logger.info(f"获取用户详情: {dingtalk_userid}")
 
     err = _check_config()
     if err:
@@ -739,7 +744,7 @@ def dingtalk_get_user_detail(userid: str, language: str = "zh_CN"):
         token = _get_access_token()
         url = f"https://oapi.dingtalk.com/topapi/v2/user/get?access_token={token}"
 
-        payload = {"userid": userid, "language": language}
+        payload = {"userid": dingtalk_userid, "language": language}
         resp = requests.post(url, json=payload, timeout=10)
         result = resp.json()
 
@@ -812,7 +817,7 @@ def dingtalk_send_interactive_card(
     card_data: str,
     out_track_id: str = "",
     robot_code: str = "",
-    at_user_ids: list[str] | None = None,
+    dingtalk_userids: list[str] | None = None,
     at_all: bool = False
 ):
     """发送互动卡片消息到群聊。
@@ -823,7 +828,7 @@ def dingtalk_send_interactive_card(
     - card_data: 卡片数据JSON字符串，格式: {"cardParamMap":{"key1":"val1"},"cardMediaIdMap":{}}
     - out_track_id: 跟踪ID（可选）
     - robot_code: 机器人编码
-    - at_user_ids: @的用户ID列表（可选）
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; @的用户ID列表（可选）
     - at_all: 是否@所有人
     """
     logger.info(f"发送互动卡片: conversation={conversation_id}")
@@ -848,7 +853,7 @@ def dingtalk_send_interactive_card(
             "robotCode": robot_code or ROBOT_CODE,
             "cardData": data_obj,
             "outTrackId": out_track_id or f"mcp_card_{int(time.time())}",
-            "atUserIds": at_user_ids or [],
+            "atUserIds": dingtalk_userids or [],
             "isAtAll": at_all
         }
 
@@ -869,7 +874,7 @@ def dingtalk_send_interactive_card(
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_markdown_single(
-    user_ids: list[str],
+    dingtalk_userids: list[str],
     title: str,
     text: str,
     robot_code: str = ""
@@ -877,13 +882,13 @@ def dingtalk_send_markdown_single(
     """快捷发送Markdown单聊消息给指定用户（封装好的便捷方法）。
 
     参数:
-    - user_ids: 接收人userId列表
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 接收人userId列表
     - title: 消息标题
     - text: Markdown格式正文
     - robot_code: 机器人编码
     """
     msg_param = json.dumps({"title": title, "text": text}, ensure_ascii=False)
-    return dingtalk_send_robot_single_message(user_ids, "sampleMarkdown", msg_param, robot_code)
+    return dingtalk_send_robot_single_message(dingtalk_userids, "sampleMarkdown", msg_param, robot_code)
 
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
@@ -892,7 +897,7 @@ def dingtalk_send_markdown_group(
     title: str,
     text: str,
     robot_code: str = "",
-    at_user_ids: list[str] | None = None,
+    dingtalk_userids: list[str] | None = None,
     at_all: bool = False
 ):
     """快捷发送Markdown群聊消息（封装好的便捷方法）。
@@ -902,28 +907,28 @@ def dingtalk_send_markdown_group(
     - title: 消息标题
     - text: Markdown格式正文
     - robot_code: 机器人编码
-    - at_user_ids: @的用户ID列表
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; @的用户ID列表
     - at_all: 是否@所有人
     """
     msg_param = json.dumps({"title": title, "text": text}, ensure_ascii=False)
-    return dingtalk_send_robot_group_message(conversation_id, "sampleMarkdown", msg_param, robot_code, at_user_ids, at_all)
+    return dingtalk_send_robot_group_message(conversation_id, "sampleMarkdown", msg_param, robot_code, dingtalk_userids, at_all)
 
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_text_single(
-    user_ids: list[str],
+    dingtalk_userids: list[str],
     content: str,
     robot_code: str = ""
 ):
     """快捷发送文本单聊消息给指定用户（封装好的便捷方法）。
 
     参数:
-    - user_ids: 接收人userId列表
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 接收人userId列表
     - content: 文本消息内容
     - robot_code: 机器人编码
     """
     msg_param = json.dumps({"content": content}, ensure_ascii=False)
-    return dingtalk_send_robot_single_message(user_ids, "sampleText", msg_param, robot_code)
+    return dingtalk_send_robot_single_message(dingtalk_userids, "sampleText", msg_param, robot_code)
 
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
@@ -931,7 +936,7 @@ def dingtalk_send_text_group(
     conversation_id: str,
     content: str,
     robot_code: str = "",
-    at_user_ids: list[str] | None = None,
+    dingtalk_userids: list[str] | None = None,
     at_all: bool = False
 ):
     """快捷发送文本群聊消息（封装好的便捷方法）。
@@ -940,11 +945,11 @@ def dingtalk_send_text_group(
     - conversation_id: 群会话ID
     - content: 文本消息内容
     - robot_code: 机器人编码
-    - at_user_ids: @的用户ID列表
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; @的用户ID列表
     - at_all: 是否@所有人
     """
     msg_param = json.dumps({"content": content}, ensure_ascii=False)
-    return dingtalk_send_robot_group_message(conversation_id, "sampleText", msg_param, robot_code, at_user_ids, at_all)
+    return dingtalk_send_robot_group_message(conversation_id, "sampleText", msg_param, robot_code, dingtalk_userids, at_all)
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
@@ -991,25 +996,25 @@ def dingtalk_get_conversation(conversation_id: str):
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_approval_start(
     process_code: str,
-    originator_user_id: str,
+    dingtalk_userid: str,
     form_values: str = "[]",
     dept_id: int = 0,
     approvers: str = "",
-    cc_list: str = "",
+    dingtalk_userids: str = "",
 ):
     """发起审批实例(创建审批单)。
 
     参数:
     - process_code: 审批模板 processCode(审批后台模板唯一标识, 形如 PROC-xxxx)
-    - originator_user_id: 发起人 userId(必填)
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 发起人 userId(必填)
     - form_values: 表单值 JSON 字符串, 形如 [{"name":"报销金额","value":"100"}];
         name 需与模板控件名一致
     - dept_id: 发起人部门 ID(可选)
     - approvers: 指定审批人 JSON 字符串, 形如
         [{"approverUserId":"user1","actionType":"AND"}](可选)
-    - cc_list: 抄送人 userId 列表, 逗号分隔(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 抄送人 userId 列表, 逗号分隔(可选)
     """
-    logger.info(f"发起审批: process_code={process_code}, originator={originator_user_id}")
+    logger.info(f"发起审批: process_code={process_code}, originator={dingtalk_userid}")
 
     err = _check_config()
     if err:
@@ -1017,8 +1022,8 @@ def dingtalk_approval_start(
 
     if not str(process_code or "").strip():
         return _dump({"success": False, "error": "process_code 必填"})
-    if not str(originator_user_id or "").strip():
-        return _dump({"success": False, "error": "originator_user_id 必填"})
+    if not str(dingtalk_userid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_userid 必填"})
 
     try:
         values = json.loads(form_values) if isinstance(form_values, str) else form_values
@@ -1030,7 +1035,7 @@ def dingtalk_approval_start(
 
     body: dict = {
         "processCode": str(process_code).strip(),
-        "originatorUserId": str(originator_user_id).strip(),
+        "originatorUserId": str(dingtalk_userid).strip(),
         "formComponentValues": values,
     }
     if dept_id:
@@ -1040,7 +1045,7 @@ def dingtalk_approval_start(
             body["approvers"] = json.loads(approvers)
         except (json.JSONDecodeError, TypeError):
             return _dump({"success": False, "error": "approvers 需为 JSON 数组字符串"})
-    cc_ids = _split_ids(cc_list)
+    cc_ids = _split_ids(dingtalk_userids)
     if cc_ids:
         body["ccList"] = cc_ids
 
@@ -1168,7 +1173,7 @@ def _is_permission_failure(text: str, body: dict) -> bool:
     return bool(_LEGACY_PERMISSION_RE.search(text))
 
 
-def _legacy_approval_listids(user_id: str, status: int = 0) -> dict:
+def _legacy_approval_listids(dingtalk_userid: str, status: int = 0) -> dict:
     """旧版 OAPI 两段式回退: 列模板(listbyuserid) → 逐模板查实例 ID(listids)。
 
     仅主 v1.0 接口缺权限回 503 时使用; status 0→RUNNING(待办) / 1→COMPLETED(已办)。
@@ -1178,7 +1183,7 @@ def _legacy_approval_listids(user_id: str, status: int = 0) -> dict:
     """
     body, err = _legacy_oapi_post(
         "/topapi/process/listbyuserid",
-        {"userid": user_id, "offset": 0, "size": 100})
+        {"userid": dingtalk_userid, "offset": 0, "size": 100})
     if err:
         return {"success": False, "error": f"旧版审批回退失败(列模板): {err}"}
     errcode = body.get("errcode")
@@ -1213,7 +1218,7 @@ def _legacy_approval_listids(user_id: str, status: int = 0) -> dict:
             continue
         list_body, list_err = _legacy_oapi_post(
             "/topapi/processinstance/listids",
-            {"process_code": process_code, "userid": user_id, "status_list": status_list,
+            {"process_code": process_code, "userid": dingtalk_userid, "status_list": status_list,
              "start_time": start_ms, "end_time": now_ms})
         if list_err or list_body.get("errcode") != 0:
             failed += 1
@@ -1250,7 +1255,7 @@ def _legacy_approval_listids(user_id: str, status: int = 0) -> dict:
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_approval_tasks(
-    user_id: str,
+    dingtalk_userid: str,
     status: int = 0,
     max_results: int = 20,
     next_token: int = 0,
@@ -1258,19 +1263,19 @@ def dingtalk_approval_tasks(
     """查询某用户的审批待办/已办任务列表。
 
     参数:
-    - user_id: 用户 userId(必填)
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 用户 userId(必填)
     - status: 任务状态, 0=待办(默认), 1=已办
     - max_results: 单页条数(1~100, 默认 20)
     - next_token: 分页游标, 首页传 0
     """
-    logger.info(f"查询审批任务: user={user_id}, status={status}")
+    logger.info(f"查询审批任务: user={dingtalk_userid}, status={status}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(user_id or "").strip():
-        return _dump({"success": False, "error": "user_id 必填"})
+    if not str(dingtalk_userid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_userid 必填"})
 
     if isinstance(status, bool) or status not in (0, 1):
         return _dump({"success": False, "error": "status 仅支持 0(待办)/1(已办)"})
@@ -1279,7 +1284,7 @@ def dingtalk_approval_tasks(
 
     try:
         resp = _api("GET", "/v1.0/workflow/workRecords/todoTasks",
-                    params={"userId": str(user_id).strip(), "status": status,
+                    params={"userId": str(dingtalk_userid).strip(), "status": status,
                             "maxResults": size, "nextToken": token})
         data = resp.get("result") if isinstance(resp.get("result"), dict) else resp
         tasks = []
@@ -1306,7 +1311,7 @@ def dingtalk_approval_tasks(
         if "503" not in error_text:
             return _dump({"success": False, "error": error_text})
         # v1.0 对「应用缺权限」也可能统一回 503: 待办/已办均走旧版两段式回退
-        legacy = _legacy_approval_listids(str(user_id).strip(), status)
+        legacy = _legacy_approval_listids(str(dingtalk_userid).strip(), status)
         if legacy.get("success"):
             out = {
                 "success": True,
@@ -1332,7 +1337,7 @@ def dingtalk_approval_action(
     result: str,
     remark: str = "",
     process_instance_id: str = "",
-    actioner_user_id: str = "",
+    dingtalk_userid: str = "",
 ):
     """同意或拒绝审批任务(不可逆, 会推动/终结他人审批流程)。
 
@@ -1341,7 +1346,7 @@ def dingtalk_approval_action(
     - result: 操作结果, agree=同意 / refuse=拒绝
     - remark: 审批意见(可选)
     - process_instance_id: 审批实例 ID(OpenAPI 必填, 建议随 task 一并传入)
-    - actioner_user_id: 操作人 userId(服务端代操作时必填; 缺省由钉钉按应用身份处理)
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 操作人 userId(服务端代操作时必填; 缺省由钉钉按应用身份处理)
     """
     logger.info(f"审批操作: task_id={task_id}, result={result}")
 
@@ -1361,8 +1366,8 @@ def dingtalk_approval_action(
         body["remark"] = str(remark)
     if process_instance_id:
         body["processInstanceId"] = str(process_instance_id).strip()
-    if actioner_user_id:
-        body["actionerUserId"] = str(actioner_user_id).strip()
+    if dingtalk_userid:
+        body["actionerUserId"] = str(dingtalk_userid).strip()
 
     try:
         resp = _api("POST", "/v1.0/workflow/processInstances/execute", json_body=body)
@@ -1378,10 +1383,10 @@ def dingtalk_approval_action(
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_todo_create(
-    union_id: str,
+    dingtalk_unionid: str,
     subject: str,
-    executor_ids: str,
-    creator_id: str = "",
+    dingtalk_userids: str,
+    dingtalk_creator_unionid: str = "",
     description: str = "",
     due_time_ms: int = 0,
     priority: int = 0,
@@ -1391,36 +1396,38 @@ def dingtalk_todo_create(
     """创建待办任务。
 
     参数:
-    - union_id: 待办归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填, 钉钉待办接口以用户维度鉴权)
+    - dingtalk_unionid: 钉钉 unionId; 传纯数字时按钉钉 userId 自动换算(见 _resolve_unionid);
+        待办归属用户(必填, 钉钉待办接口以用户维度鉴权)
     - subject: 待办标题(必填)
-    - executor_ids: 执行人 userId 列表, 逗号分隔(必填)
-    - creator_id: 创建人 unionId 或钉钉 userId(纯数字自动换算; 可选; 缺省为 union_id 对应用户)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 执行人(必填)
+    - dingtalk_creator_unionid: 钉钉 unionId(可选, 纯数字自动换算); 创建人,
+        缺省为 dingtalk_unionid 对应用户
     - description: 待办描述(可选)
     - due_time_ms: 截止时间毫秒时间戳(可选, 0=不设置)
     - priority: 优先级数值(可选, 0=不设置)
     - detail_url: 详情跳转链接(可选)
     - source_id: 业务来源 ID(可选; 同 source_id 幂等, 便于重复创建去重)
     """
-    logger.info(f"创建待办: union_id={union_id}, subject={subject}")
+    logger.info(f"创建待办: dingtalk_unionid={dingtalk_unionid}, subject={subject}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(union_id or "").strip():
-        return _dump({"success": False, "error": "union_id 必填"})
-    union_id, union_err = _resolve_unionid(union_id)
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
+    dingtalk_unionid, union_err = _resolve_unionid(dingtalk_unionid)
     if union_err:
         return _dump({"success": False, "error": union_err})
     if not str(subject or "").strip():
         return _dump({"success": False, "error": "subject 必填"})
-    executors = _split_ids(executor_ids)
+    executors = _split_ids(dingtalk_userids)
     if not executors:
-        return _dump({"success": False, "error": "executor_ids 必填(逗号分隔 userId)"})
+        return _dump({"success": False, "error": "dingtalk_userids 必填(逗号分隔钉钉用户ID)"})
 
     body: dict = {"subject": str(subject).strip(), "executorIds": executors}
-    if creator_id:
-        creator_union, creator_err = _resolve_unionid(creator_id)
+    if dingtalk_creator_unionid:
+        creator_union, creator_err = _resolve_unionid(dingtalk_creator_unionid)
         if creator_err:
             return _dump({"success": False, "error": creator_err})
         body["creatorId"] = creator_union
@@ -1436,7 +1443,7 @@ def dingtalk_todo_create(
         body["sourceId"] = str(source_id)
 
     try:
-        result = _api("POST", f"/v1.0/todo/users/{union_id}/tasks", json_body=body)
+        result = _api("POST", f"/v1.0/todo/users/{dingtalk_unionid}/tasks", json_body=body)
         return _dump({"success": True, "task_id": result.get("id", "")})
     except Exception as e:
         logger.error(f"创建待办异常: {e}")
@@ -1445,34 +1452,34 @@ def dingtalk_todo_create(
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_todo_update(
-    union_id: str,
+    dingtalk_unionid: str,
     task_id: str,
     done: bool | None = None,
     subject: str = "",
     description: str = "",
     due_time_ms: int = 0,
-    executor_ids: str = "",
+    dingtalk_userids: str = "",
 ):
     """更新待办任务(状态/描述/标题/截止时间/执行人)。
 
     参数:
-    - union_id: 待办归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
+    - dingtalk_unionid: 钉钉 unionId; 待办归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - task_id: 待办任务 ID(必填)
     - done: 是否完成 true=完成 false=恢复未完成(可选)
     - subject: 新标题(可选)
     - description: 新描述(可选)
     - due_time_ms: 新截止时间毫秒时间戳(可选, 0=不变)
-    - executor_ids: 新执行人 userId 列表, 逗号分隔(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 新执行人 userId 列表, 逗号分隔(可选)
     """
-    logger.info(f"更新待办: union_id={union_id}, task_id={task_id}")
+    logger.info(f"更新待办: dingtalk_unionid={dingtalk_unionid}, task_id={task_id}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(union_id or "").strip():
-        return _dump({"success": False, "error": "union_id 必填"})
-    union_id, union_err = _resolve_unionid(union_id)
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
+    dingtalk_unionid, union_err = _resolve_unionid(dingtalk_unionid)
     if union_err:
         return _dump({"success": False, "error": union_err})
     if not str(task_id or "").strip():
@@ -1487,14 +1494,14 @@ def dingtalk_todo_update(
         body["description"] = str(description)
     if due_time_ms:
         body["dueTime"] = int(due_time_ms)
-    executors = _split_ids(executor_ids)
+    executors = _split_ids(dingtalk_userids)
     if executors:
         body["executorIds"] = executors
     if not body:
-        return _dump({"success": False, "error": "至少提供一项待更新字段(done/subject/description/due_time_ms/executor_ids)"})
+        return _dump({"success": False, "error": "至少提供一项待更新字段(done/subject/description/due_time_ms/dingtalk_userids)"})
 
     try:
-        result = _api("PUT", f"/v1.0/todo/users/{union_id}/tasks/{task_id}", json_body=body)
+        result = _api("PUT", f"/v1.0/todo/users/{dingtalk_unionid}/tasks/{task_id}", json_body=body)
         ok = result.get("result", True) is not False
         return _dump({"success": bool(ok), "task_id": str(task_id),
                       "error": "" if ok else "更新未成功"})
@@ -1505,26 +1512,26 @@ def dingtalk_todo_update(
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_todo_list(
-    union_id: str,
+    dingtalk_unionid: str,
     is_done: bool | None = None,
     next_token: str = "",
 ):
     """查询某用户的待办任务列表(按完成状态过滤, 游标分页)。
 
     参数:
-    - union_id: 待办归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
+    - dingtalk_unionid: 钉钉 unionId; 待办归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - is_done: 完成状态过滤 true=已完成 / false=未完成(可选, 缺省不过滤)
     - next_token: 分页游标(上次返回的 next_token, 首页留空)
     """
-    logger.info(f"查询待办列表: union_id={union_id}, is_done={is_done}")
+    logger.info(f"查询待办列表: dingtalk_unionid={dingtalk_unionid}, is_done={is_done}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(union_id or "").strip():
-        return _dump({"success": False, "error": "union_id 必填"})
-    union_id, union_err = _resolve_unionid(union_id)
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
+    dingtalk_unionid, union_err = _resolve_unionid(dingtalk_unionid)
     if union_err:
         return _dump({"success": False, "error": union_err})
 
@@ -1535,7 +1542,7 @@ def dingtalk_todo_list(
         body["nextToken"] = str(next_token)
 
     try:
-        result = _api("POST", f"/v1.0/todo/users/{union_id}/tasks/list", json_body=body)
+        result = _api("POST", f"/v1.0/todo/users/{dingtalk_unionid}/tasks/list", json_body=body)
         todos = []
         for card in result.get("todoCards") or []:
             if not isinstance(card, dict):
@@ -1561,21 +1568,21 @@ def dingtalk_todo_list(
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_calendar_create_event(
-    user_id: str,
+    dingtalk_unionid: str,
     summary: str,
     start_time: str,
     end_time: str,
     calendar_id: str = "primary",
     description: str = "",
     location: str = "",
-    attendees: str = "",
+    dingtalk_userids: str = "",
     is_all_day: bool = False,
     time_zone: str = "Asia/Shanghai",
 ):
     """创建日程(会议)。
 
     参数:
-    - user_id: 日程归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
+    - dingtalk_unionid: 钉钉 unionId; 日程归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - summary: 日程标题(必填)
     - start_time: 开始时间, ISO8601 形如 2026-09-24T10:00:00+08:00;
         全天日程传日期 2026-09-24(必填)
@@ -1583,19 +1590,19 @@ def dingtalk_calendar_create_event(
     - calendar_id: 日历 ID, 主日历为 primary(默认)
     - description: 日程描述(可选)
     - location: 地点/会议室名称(可选)
-    - attendees: 参与人 userId 列表, 逗号分隔(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 参与人 userId 列表, 逗号分隔(可选)
     - is_all_day: 是否全天日程(默认否)
     - time_zone: 时区(默认 Asia/Shanghai)
     """
-    logger.info(f"创建日程: user={user_id}, summary={summary}")
+    logger.info(f"创建日程: user={dingtalk_unionid}, summary={summary}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(user_id or "").strip():
-        return _dump({"success": False, "error": "user_id 必填"})
-    user_id, union_err = _resolve_unionid(user_id)
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
+    dingtalk_unionid, union_err = _resolve_unionid(dingtalk_unionid)
     if union_err:
         return _dump({"success": False, "error": union_err})
     if not str(summary or "").strip():
@@ -1616,12 +1623,12 @@ def dingtalk_calendar_create_event(
         body["description"] = str(description)
     if location:
         body["location"] = {"displayName": str(location)}
-    attendee_ids = _split_ids(attendees)
+    attendee_ids = _split_ids(dingtalk_userids)
     if attendee_ids:
         body["attendees"] = [{"id": uid} for uid in attendee_ids]
 
     try:
-        result = _api("POST", f"/v1.0/calendar/users/{user_id}/calendars/{calendar_id}/events",
+        result = _api("POST", f"/v1.0/calendar/users/{dingtalk_unionid}/calendars/{calendar_id}/events",
                       json_body=body)
         return _dump({"success": True, "event_id": result.get("id", "")})
     except Exception as e:
@@ -1631,7 +1638,7 @@ def dingtalk_calendar_create_event(
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_calendar_list_events(
-    user_id: str,
+    dingtalk_unionid: str,
     calendar_id: str = "primary",
     time_min: str = "",
     time_max: str = "",
@@ -1641,22 +1648,22 @@ def dingtalk_calendar_list_events(
     """查询日程列表(时间范围内)。
 
     参数:
-    - user_id: 日程归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
+    - dingtalk_unionid: 钉钉 unionId; 日程归属用户 unionId 或钉钉 userId(纯数字自动换算; 必填)
     - calendar_id: 日历 ID, 主日历为 primary(默认)
     - time_min: 起始时间(UTC, yyyy-MM-ddTHH:mmZ, 可选)
     - time_max: 结束时间(UTC, yyyy-MM-ddTHH:mmZ, 可选)
     - max_results: 单页条数(1~100, 默认 20)
     - next_token: 分页游标(可选)
     """
-    logger.info(f"查询日程列表: user={user_id}, calendar={calendar_id}")
+    logger.info(f"查询日程列表: user={dingtalk_unionid}, calendar={calendar_id}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(user_id or "").strip():
-        return _dump({"success": False, "error": "user_id 必填"})
-    user_id, union_err = _resolve_unionid(user_id)
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
+    dingtalk_unionid, union_err = _resolve_unionid(dingtalk_unionid)
     if union_err:
         return _dump({"success": False, "error": union_err})
 
@@ -1669,7 +1676,7 @@ def dingtalk_calendar_list_events(
         params["nextToken"] = str(next_token)
 
     try:
-        result = _api("GET", f"/v1.0/calendar/users/{user_id}/calendars/{calendar_id}/events",
+        result = _api("GET", f"/v1.0/calendar/users/{dingtalk_unionid}/calendars/{calendar_id}/events",
                       params=params)
         events = []
         for event in result.get("events") or []:
@@ -1692,38 +1699,38 @@ def dingtalk_calendar_list_events(
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_calendar_freebusy(
-    user_id: str,
-    user_ids: str,
+    dingtalk_unionid: str,
+    dingtalk_unionids: str,
     start_time: str,
     end_time: str,
 ):
     """查询用户忙闲(会议时间段)。
 
     参数:
-    - user_id: 操作者 unionId 或钉钉 userId(纯数字自动换算; 必填)
-    - user_ids: 被查询用户 unionId 列表, 逗号分隔(必填)
+    - dingtalk_unionid: 钉钉 unionId; 操作者 unionId 或钉钉 userId(纯数字自动换算; 必填)
+    - dingtalk_unionids: 钉钉 unionId 列表; 被查询用户 unionId 列表, 逗号分隔(必填)
     - start_time: 起始时间(UTC, yyyy-MM-ddTHH:mmZ, 必填)
     - end_time: 结束时间(UTC, yyyy-MM-ddTHH:mmZ, 必填)
     """
-    logger.info(f"查询忙闲: user={user_id}, targets={user_ids}")
+    logger.info(f"查询忙闲: user={dingtalk_unionid}, targets={dingtalk_unionids}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(user_id or "").strip():
-        return _dump({"success": False, "error": "user_id 必填"})
-    user_id, union_err = _resolve_unionid(user_id)
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
+    dingtalk_unionid, union_err = _resolve_unionid(dingtalk_unionid)
     if union_err:
         return _dump({"success": False, "error": union_err})
-    targets = _split_ids(user_ids)
+    targets = _split_ids(dingtalk_unionids)
     if not targets:
-        return _dump({"success": False, "error": "user_ids 必填(逗号分隔 unionId)"})
+        return _dump({"success": False, "error": "dingtalk_unionids 必填(逗号分隔 unionId)"})
     if not str(start_time or "").strip() or not str(end_time or "").strip():
         return _dump({"success": False, "error": "start_time/end_time 必填"})
 
     try:
-        result = _api("POST", f"/v1.0/calendar/users/{user_id}/querySchedule",
+        result = _api("POST", f"/v1.0/calendar/users/{dingtalk_unionid}/querySchedule",
                       json_body={"userIds": targets,
                                  "startTime": str(start_time).strip(),
                                  "endTime": str(end_time).strip()})
@@ -1752,7 +1759,7 @@ def dingtalk_calendar_freebusy(
 def dingtalk_approval_comment(
     process_instance_id: str,
     text: str,
-    comment_user_id: str = "",
+    dingtalk_userid: str = "",
     file: dict | None = None,
 ):
     """评论审批实例(可附附件)。
@@ -1760,7 +1767,7 @@ def dingtalk_approval_comment(
     参数:
     - process_instance_id: 审批实例 ID(必填)
     - text: 评论内容(必填)
-    - comment_user_id: 评论人 userId(可选; 缺省由钉钉按应用身份处理)
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 评论人 userId(可选; 缺省由钉钉按应用身份处理)
     - file: 附件对象或 JSON 字符串(可选), 形如
         {"fileId":"xxx","fileName":"xxx.pdf","fileSize":1024,"fileType":"pdf"}
     """
@@ -1776,8 +1783,8 @@ def dingtalk_approval_comment(
         return _dump({"success": False, "error": "text 必填"})
 
     body: dict = {"processInstanceId": str(process_instance_id).strip(), "text": str(text)}
-    if comment_user_id:
-        body["commentUserId"] = str(comment_user_id).strip()
+    if dingtalk_userid:
+        body["commentUserId"] = str(dingtalk_userid).strip()
     if file is not None:
         if isinstance(file, str):
             try:
@@ -1950,8 +1957,8 @@ def dingtalk_message_read_status(process_query_key: str, scene: str = "single"):
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_create_group(
     name: str,
-    owner_user_id: str = "",
-    member_user_ids: str = "",
+    dingtalk_userid: str = "",
+    dingtalk_userids: str = "",
     icon: str = "",
     only_admin_can_invite: bool = False,
 ):
@@ -1959,8 +1966,8 @@ def dingtalk_create_group(
 
     参数:
     - name: 群名称(必填, 不超过 100 字符)
-    - owner_user_id: 群主 userId(可选)
-    - member_user_ids: 初始成员 userId 列表, 逗号分隔(可选)
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 群主 userId(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 初始成员 userId 列表, 逗号分隔(可选)
     - icon: 群头像 mediaId(可选)
     - only_admin_can_invite: 是否仅群主/管理员可邀请(默认否)
     """
@@ -1977,9 +1984,9 @@ def dingtalk_create_group(
         return _dump({"success": False, "error": "name 长度不能超过 100 字符"})
 
     body: dict = {"name": group_name}
-    if owner_user_id:
-        body["owner"] = str(owner_user_id).strip()
-    members = _split_ids(member_user_ids)
+    if dingtalk_userid:
+        body["owner"] = str(dingtalk_userid).strip()
+    members = _split_ids(dingtalk_userids)
     if members:
         body["memberUserIds"] = members
     if icon:
@@ -1997,12 +2004,12 @@ def dingtalk_create_group(
 
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
-def dingtalk_group_add_members(chat_id: str, user_ids: str):
+def dingtalk_group_add_members(chat_id: str, dingtalk_userids: str):
     """添加群成员。
 
     参数:
     - chat_id: 群会话 ID(必填)
-    - user_ids: 待添加 userId 列表, 逗号分隔(必填)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 待添加 userId 列表, 逗号分隔(必填)
     """
     logger.info(f"添加群成员: chat={_clip(chat_id, 64)}")
 
@@ -2013,9 +2020,9 @@ def dingtalk_group_add_members(chat_id: str, user_ids: str):
     chat = str(chat_id or "").strip()
     if not chat:
         return _dump({"success": False, "error": "chat_id 必填"})
-    members = _split_ids(user_ids)
+    members = _split_ids(dingtalk_userids)
     if not members:
-        return _dump({"success": False, "error": "user_ids 必填(逗号分隔 userId)"})
+        return _dump({"success": False, "error": "dingtalk_userids 必填(逗号分隔钉钉用户ID)"})
 
     try:
         result = _api("POST", f"/v1.0/im/chatGroups/{chat}/members",
@@ -2028,12 +2035,12 @@ def dingtalk_group_add_members(chat_id: str, user_ids: str):
 
 
 @mcp.tool(annotations=_WRITE_ANNOTATIONS)
-def dingtalk_group_remove_members(chat_id: str, user_ids: str):
+def dingtalk_group_remove_members(chat_id: str, dingtalk_userids: str):
     """移除群成员(不可逆, 成员将被移出群聊)。
 
     参数:
     - chat_id: 群会话 ID(必填)
-    - user_ids: 待移除 userId 列表, 逗号分隔(必填)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 待移除 userId 列表, 逗号分隔(必填)
     """
     logger.info(f"移除群成员: chat={_clip(chat_id, 64)}")
 
@@ -2044,9 +2051,9 @@ def dingtalk_group_remove_members(chat_id: str, user_ids: str):
     chat = str(chat_id or "").strip()
     if not chat:
         return _dump({"success": False, "error": "chat_id 必填"})
-    members = _split_ids(user_ids)
+    members = _split_ids(dingtalk_userids)
     if not members:
-        return _dump({"success": False, "error": "user_ids 必填(逗号分隔 userId)"})
+        return _dump({"success": False, "error": "dingtalk_userids 必填(逗号分隔钉钉用户ID)"})
 
     try:
         result = _api("DELETE", f"/v1.0/im/chatGroups/{chat}/members",
@@ -2094,16 +2101,16 @@ def dingtalk_group_set_notice(chat_id: str, notice: str):
 def dingtalk_announcement_create(
     title: str,
     content: str,
-    author_user_id: str = "",
-    send_to: str = "",
+    dingtalk_userid: str = "",
+    dingtalk_userids: str = "",
 ):
     """创建公告。
 
     参数:
     - title: 公告标题(必填)
     - content: 公告正文(必填)
-    - author_user_id: 发布人 userId(可选)
-    - send_to: 送达 userId 列表, 逗号分隔(可选, 缺省不传)
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 发布人 userId(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 送达 userId 列表, 逗号分隔(可选, 缺省不传)
 
     线上冒烟待确认: body 字段名按钉钉惯例 title/content/author/sendTo,
     响应取 boardId/id。
@@ -2120,9 +2127,9 @@ def dingtalk_announcement_create(
         return _dump({"success": False, "error": "content 必填"})
 
     body: dict = {"title": str(title).strip(), "content": str(content)}
-    if author_user_id:
-        body["author"] = str(author_user_id).strip()
-    receivers = _split_ids(send_to)
+    if dingtalk_userid:
+        body["author"] = str(dingtalk_userid).strip()
+    receivers = _split_ids(dingtalk_userids)
     if receivers:
         body["sendTo"] = receivers
 
@@ -2167,7 +2174,7 @@ def dingtalk_announcement_delete(board_id: str):
 def dingtalk_report_submit(
     template_name: str,
     content: str,
-    user_ids: str = "",
+    dingtalk_userids: str = "",
     to_chat: bool = False,
 ):
     """提交钉钉日志。
@@ -2175,7 +2182,7 @@ def dingtalk_report_submit(
     参数:
     - template_name: 日志模板名称(必填, 可用 dingtalk_report_templates 查询)
     - content: 日志内容(必填)
-    - user_ids: 日志发送对象 userId 列表, 逗号分隔(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 日志发送对象 userId 列表, 逗号分隔(可选)
     - to_chat: 是否同步到日志群(默认否)
     """
     logger.info(f"提交日志: template={_clip(template_name, 64)}")
@@ -2190,7 +2197,7 @@ def dingtalk_report_submit(
         return _dump({"success": False, "error": "content 必填"})
 
     body: dict = {"templateName": str(template_name).strip(), "content": str(content)}
-    receivers = _split_ids(user_ids)
+    receivers = _split_ids(dingtalk_userids)
     if receivers:
         body["userIds"] = receivers
     if to_chat:
@@ -2208,7 +2215,7 @@ def dingtalk_report_submit(
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_report_list(
-    user_ids: str = "",
+    dingtalk_userids: str = "",
     start_time: int = 0,
     end_time: int = 0,
     template_name: str = "",
@@ -2218,7 +2225,7 @@ def dingtalk_report_list(
     """查询日志列表(按时间/模板/用户过滤, 游标分页)。
 
     参数:
-    - user_ids: 查询用户 userId 列表, 逗号分隔(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 查询用户 userId 列表, 逗号分隔(可选)
     - start_time: 起始时间毫秒时间戳(可选, 0=不限)
     - end_time: 结束时间毫秒时间戳(可选, 0=不限)
     - template_name: 日志模板名称(可选)
@@ -2241,7 +2248,7 @@ def dingtalk_report_list(
         return _dump({"success": False, "error": problem})
 
     params: dict = {"size": min(page_size, 100), "cursor": page_cursor}
-    receivers = _split_ids(user_ids)
+    receivers = _split_ids(dingtalk_userids)
     if receivers:
         params["userIds"] = receivers
     if start_time:
@@ -2383,25 +2390,25 @@ def dingtalk_drive_download_url(space_id: str, dentry_id: str):
 
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
-def dingtalk_send_file_single(user_ids: str, file_path: str):
+def dingtalk_send_file_single(dingtalk_userids: str, file_path: str):
     """上传本地文件并发送单聊文件消息。
 
     参数:
-    - user_ids: 接收人 userId 列表, 逗号分隔(必填)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 接收人 userId 列表, 逗号分隔(必填)
     - file_path: 本地文件路径(必填, 不超过 20MB)
 
     流程: 先上传媒体得 mediaId, 再以 msgKey=sampleFile 发送
     (线上冒烟待确认: 上传响应 mediaId、msgKey/msgParam 字段)。
     """
-    logger.info(f"发送单聊文件消息: users={_clip(user_ids, 64)}")
+    logger.info(f"发送单聊文件消息: users={_clip(dingtalk_userids, 64)}")
 
     err = _check_config()
     if err:
         return err
 
-    receivers = _split_ids(user_ids)
+    receivers = _split_ids(dingtalk_userids)
     if not receivers:
-        return _dump({"success": False, "error": "user_ids 必填(逗号分隔 userId)"})
+        return _dump({"success": False, "error": "dingtalk_userids 必填(逗号分隔钉钉用户ID)"})
     problem = _check_upload_file(file_path)
     if problem:
         return _dump({"success": False, "error": problem})
@@ -2475,7 +2482,7 @@ def dingtalk_conference_create(
     title: str,
     start_time: int,
     end_time: int,
-    member_user_ids: str = "",
+    dingtalk_userids: str = "",
 ):
     """创建视频会议。
 
@@ -2483,7 +2490,7 @@ def dingtalk_conference_create(
     - title: 会议标题(必填)
     - start_time: 开始时间毫秒时间戳(必填)
     - end_time: 结束时间毫秒时间戳(必填, 需大于 start_time)
-    - member_user_ids: 参会人 userId 列表, 逗号分隔(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 参会人 userId 列表, 逗号分隔(可选)
 
     线上冒烟待确认: body 参会人字段名 memberUserIds(亦可能为 memberUnionIds)。
     """
@@ -2505,7 +2512,7 @@ def dingtalk_conference_create(
         return _dump({"success": False, "error": "end_time 需大于 start_time"})
 
     body: dict = {"title": str(title).strip(), "startTime": start_ms, "endTime": end_ms}
-    members = _split_ids(member_user_ids)
+    members = _split_ids(dingtalk_userids)
     if members:
         body["memberUserIds"] = members
 
@@ -2572,23 +2579,23 @@ def dingtalk_conference_close(conference_id: str):
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
-def dingtalk_user_by_unionid(unionid: str):
+def dingtalk_user_by_unionid(dingtalk_unionid: str):
     """根据 unionId 查询用户详情(新版 v1.0 通讯录)。
 
     参数:
-    - unionid: 用户 unionId(必填)
+    - dingtalk_unionid: 钉钉 unionId(必填); 按 unionId 查询用户, 本工具不做纯数字换算
     """
-    logger.info(f"根据 unionId 查询用户: {_clip(unionid, 64)}")
+    logger.info(f"根据 unionId 查询用户: {_clip(dingtalk_unionid, 64)}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(unionid or "").strip():
-        return _dump({"success": False, "error": "unionid 必填"})
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
 
     try:
-        result = _api("GET", f"/v1.0/contact/users/{str(unionid).strip()}")
+        result = _api("GET", f"/v1.0/contact/users/{str(dingtalk_unionid).strip()}")
         data = result.get("result") if isinstance(result.get("result"), dict) else result
         return _dump({"success": True, "user": data})
     except Exception as e:
@@ -2644,11 +2651,11 @@ def dingtalk_role_list():
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
-def dingtalk_external_contacts(user_ids: str = "", size: int = 20, cursor: int = 0):
+def dingtalk_external_contacts(dingtalk_userids: str = "", size: int = 20, cursor: int = 0):
     """查询外部联系人列表。
 
     参数:
-    - user_ids: 员工 userId 列表, 逗号分隔(可选)
+    - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; 员工 userId 列表, 逗号分隔(可选)
     - size: 单页条数(1~100, 默认 20)
     - cursor: 分页游标, 首页传 0
 
@@ -2668,7 +2675,7 @@ def dingtalk_external_contacts(user_ids: str = "", size: int = 20, cursor: int =
         return _dump({"success": False, "error": problem})
 
     params: dict = {"size": min(page_size, 100), "cursor": page_cursor}
-    owners = _split_ids(user_ids)
+    owners = _split_ids(dingtalk_userids)
     if owners:
         params["userIds"] = owners
 
@@ -2690,7 +2697,7 @@ def dingtalk_external_contacts(user_ids: str = "", size: int = 20, cursor: int =
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_calendar_update_event(
-    user_id: str,
+    dingtalk_unionid: str,
     calendar_id: str,
     event_id: str,
     summary: str = "",
@@ -2701,7 +2708,7 @@ def dingtalk_calendar_update_event(
     """更新日程(仅提交非空字段)。
 
     参数:
-    - user_id: 日程归属用户 unionId(必填)
+    - dingtalk_unionid: 钉钉 unionId; 日程归属用户 unionId(必填)
     - calendar_id: 日历 ID, 主日历为 primary(必填)
     - event_id: 日程事件 ID(必填)
     - summary: 新标题(可选)
@@ -2709,14 +2716,14 @@ def dingtalk_calendar_update_event(
     - end: 新结束时间 ISO8601(可选)
     - description: 新描述(可选)
     """
-    logger.info(f"更新日程: user={_clip(user_id, 64)}, event={_clip(event_id, 64)}")
+    logger.info(f"更新日程: user={_clip(dingtalk_unionid, 64)}, event={_clip(event_id, 64)}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(user_id or "").strip():
-        return _dump({"success": False, "error": "user_id 必填"})
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
     if not str(calendar_id or "").strip():
         return _dump({"success": False, "error": "calendar_id 必填"})
     if not str(event_id or "").strip():
@@ -2734,7 +2741,7 @@ def dingtalk_calendar_update_event(
     if not body:
         return _dump({"success": False, "error": "至少提供一项待更新字段(summary/start/end/description)"})
 
-    uid = str(user_id).strip()
+    uid = str(dingtalk_unionid).strip()
     cal = str(calendar_id).strip()
     event = str(event_id).strip()
     try:
@@ -2749,28 +2756,28 @@ def dingtalk_calendar_update_event(
 
 
 @mcp.tool(annotations=_WRITE_ANNOTATIONS)
-def dingtalk_calendar_delete_event(user_id: str, calendar_id: str, event_id: str):
+def dingtalk_calendar_delete_event(dingtalk_unionid: str, calendar_id: str, event_id: str):
     """删除日程(不可逆)。
 
     参数:
-    - user_id: 日程归属用户 unionId(必填)
+    - dingtalk_unionid: 钉钉 unionId; 日程归属用户 unionId(必填)
     - calendar_id: 日历 ID, 主日历为 primary(必填)
     - event_id: 日程事件 ID(必填)
     """
-    logger.info(f"删除日程: user={_clip(user_id, 64)}, event={_clip(event_id, 64)}")
+    logger.info(f"删除日程: user={_clip(dingtalk_unionid, 64)}, event={_clip(event_id, 64)}")
 
     err = _check_config()
     if err:
         return err
 
-    if not str(user_id or "").strip():
-        return _dump({"success": False, "error": "user_id 必填"})
+    if not str(dingtalk_unionid or "").strip():
+        return _dump({"success": False, "error": "dingtalk_unionid 必填"})
     if not str(calendar_id or "").strip():
         return _dump({"success": False, "error": "calendar_id 必填"})
     if not str(event_id or "").strip():
         return _dump({"success": False, "error": "event_id 必填"})
 
-    uid = str(user_id).strip()
+    uid = str(dingtalk_unionid).strip()
     cal = str(calendar_id).strip()
     event = str(event_id).strip()
     try:
@@ -2813,7 +2820,7 @@ def dingtalk_card_template_list():
 def dingtalk_ai_card_send(
     template_id: str,
     card_data: str,
-    user_id: str = "",
+    dingtalk_userid: str = "",
     open_conversation_id: str = "",
     out_track_id: str = "",
 ):
@@ -2823,9 +2830,10 @@ def dingtalk_ai_card_send(
     - template_id: 卡片模板 ID(必填, 可先用 dingtalk_card_template_list 查询)
     - card_data: 卡片数据 JSON 字符串(必填), 支持
         {"cardParamMap":{"key":"val"}} 形态或直接传参数键值表(自动包 cardParamMap)
-    - user_id: 接收人 userId(投递到私聊场域 dtv1.card//IM_ROBOT.{userId})
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 接收人
+        (投递到私聊场域 dtv1.card//IM_ROBOT.{userId})
     - open_conversation_id: 群 openConversationId(投递到群场域 dtv1.card//IM_GROUP.{id})
-        user_id 与 open_conversation_id 至少提供一个, 两者都给则逐一投递
+        dingtalk_userid 与 open_conversation_id 至少提供一个, 两者都给则逐一投递
     - out_track_id: 卡片实例 ID(可选, 缺省自动生成 mcpcard_ 前缀 ID)
 
     返回要点: out_track_id(更新卡片时使用)、delivered(各场域投递结果列表)。
@@ -2849,12 +2857,12 @@ def dingtalk_ai_card_send(
         return _dump({"success": False, "error": problem})
 
     targets = []
-    if str(user_id or "").strip():
-        targets.append(("IM_ROBOT", f"dtv1.card//IM_ROBOT.{str(user_id).strip()}"))
+    if str(dingtalk_userid or "").strip():
+        targets.append(("IM_ROBOT", f"dtv1.card//IM_ROBOT.{str(dingtalk_userid).strip()}"))
     if str(open_conversation_id or "").strip():
         targets.append(("IM_GROUP", f"dtv1.card//IM_GROUP.{str(open_conversation_id).strip()}"))
     if not targets:
-        return _dump({"success": False, "error": "user_id 与 open_conversation_id 至少提供一个"})
+        return _dump({"success": False, "error": "dingtalk_userid 与 open_conversation_id 至少提供一个"})
 
     track = str(out_track_id or "").strip() or _gen_out_track_id()
     try:
@@ -3089,7 +3097,7 @@ def dingtalk_doc_create(
 def dingtalk_doc_add_member(
     workspace_id: str,
     doc_id: str,
-    user_id: str,
+    dingtalk_userid: str,
     role: str = "READER",
 ):
     """为文档添加成员授权。
@@ -3097,7 +3105,7 @@ def dingtalk_doc_add_member(
     参数:
     - workspace_id: 知识库/团队空间 ID(必填)
     - doc_id: 文档 ID(必填)
-    - user_id: 被授权用户 userId(必填)
+    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 被授权用户 userId(必填)
     - role: 成员角色, 默认 READER(常见 READER/EDITOR/OWNER, 大小写不敏感)
 
     返回要点: success 与透传结果 result。
@@ -3117,9 +3125,9 @@ def dingtalk_doc_add_member(
     doc = str(doc_id or "").strip()
     if not doc:
         return _dump({"success": False, "error": "doc_id 必填"})
-    member = str(user_id or "").strip()
+    member = str(dingtalk_userid or "").strip()
     if not member:
-        return _dump({"success": False, "error": "user_id 必填"})
+        return _dump({"success": False, "error": "dingtalk_userid 必填"})
     member_role = str(role or "").strip().upper()
     if not member_role:
         return _dump({"success": False, "error": "role 必填"})

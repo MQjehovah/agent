@@ -63,9 +63,9 @@ def test_approval_start_success(api):
     module, calls, responses = api
     responses["/v1.0/workflow/processInstances"] = {"instanceId": "PI-123"}
     payload = _payload(module.dingtalk_approval_start(
-        process_code="PROC-1", originator_user_id="user1",
+        process_code="PROC-1", dingtalk_userid="user1",
         form_values='[{"name":"金额","value":"100"}]',
-        dept_id=42, cc_list="user2,user3"))
+        dept_id=42, dingtalk_userids="user2,user3"))
     assert payload == {"success": True, "process_instance_id": "PI-123"}
     call = calls[0]
     assert call["method"] == "POST"
@@ -79,12 +79,12 @@ def test_approval_start_success(api):
 def test_approval_start_param_errors_do_not_call_http(api):
     module, calls, _ = api
     for kwargs in (
-        {"process_code": "", "originator_user_id": "u1"},
-        {"process_code": "P1", "originator_user_id": ""},
-        {"process_code": "P1", "originator_user_id": "u1", "form_values": "not-json"},
-        {"process_code": "P1", "originator_user_id": "u1", "form_values": '{"name":"x"}'},
-        {"process_code": "P1", "originator_user_id": "u1", "form_values": '[{"value":"x"}]'},
-        {"process_code": "P1", "originator_user_id": "u1", "approvers": "bad-json"},
+        {"process_code": "", "dingtalk_userid": "u1"},
+        {"process_code": "P1", "dingtalk_userid": ""},
+        {"process_code": "P1", "dingtalk_userid": "u1", "form_values": "not-json"},
+        {"process_code": "P1", "dingtalk_userid": "u1", "form_values": '{"name":"x"}'},
+        {"process_code": "P1", "dingtalk_userid": "u1", "form_values": '[{"value":"x"}]'},
+        {"process_code": "P1", "dingtalk_userid": "u1", "approvers": "bad-json"},
     ):
         payload = _payload(module.dingtalk_approval_start(**kwargs))
         assert payload["success"] is False
@@ -137,7 +137,7 @@ def test_approval_tasks_success_and_validation(api):
     assert calls[0]["params"]["status"] == 1
     assert calls[0]["params"]["maxResults"] == 100   # 上限 100
 
-    for kwargs in ({"user_id": ""}, {"user_id": "u1", "status": 2}, {"user_id": "u1", "status": True}):
+    for kwargs in ({"dingtalk_userid": ""}, {"dingtalk_userid": "u1", "status": 2}, {"dingtalk_userid": "u1", "status": True}):
         payload = _payload(module.dingtalk_approval_tasks(**kwargs))
         assert payload["success"] is False
     assert len(calls) == 1
@@ -147,7 +147,7 @@ def test_approval_action_success_and_aliases(api):
     module, calls, responses = api
     responses["/v1.0/workflow/processInstances/execute"] = {"success": True, "result": True}
     payload = _payload(module.dingtalk_approval_action(
-        task_id=9, result="同意", remark="同意报销", process_instance_id="PI-1", actioner_user_id="user1"))
+        task_id=9, result="同意", remark="同意报销", process_instance_id="PI-1", dingtalk_userid="user1"))
     assert payload["success"] is True
     assert calls[0]["json"] == {"taskId": 9, "result": "agree", "remark": "同意报销",
                                 "processInstanceId": "PI-1", "actionerUserId": "user1"}
@@ -179,7 +179,7 @@ def test_todo_create_success_and_validation(api):
     module, calls, responses = api
     responses["/tasks"] = {"id": "TODO-1"}
     payload = _payload(module.dingtalk_todo_create(
-        union_id="uni1", subject="写周报", executor_ids="user1,user2",
+        dingtalk_unionid="uni1", subject="写周报", dingtalk_userids="user1,user2",
         description="周五前", due_time_ms=1750000000000, priority=20,
         detail_url="https://x", source_id="src-1"))
     assert payload == {"success": True, "task_id": "TODO-1"}
@@ -191,9 +191,9 @@ def test_todo_create_success_and_validation(api):
     assert body["sourceId"] == "src-1"
 
     for kwargs in (
-        {"union_id": "", "subject": "s", "executor_ids": "u1"},
-        {"union_id": "uni1", "subject": "", "executor_ids": "u1"},
-        {"union_id": "uni1", "subject": "s", "executor_ids": ""},
+        {"dingtalk_unionid": "", "subject": "s", "dingtalk_userids": "u1"},
+        {"dingtalk_unionid": "uni1", "subject": "", "dingtalk_userids": "u1"},
+        {"dingtalk_unionid": "uni1", "subject": "s", "dingtalk_userids": ""},
     ):
         payload = _payload(module.dingtalk_todo_create(**kwargs))
         assert payload["success"] is False
@@ -204,15 +204,15 @@ def test_todo_update_success_and_validation(api):
     module, calls, responses = api
     responses["/tasks/TODO-1"] = {"result": True}
     payload = _payload(module.dingtalk_todo_update(
-        union_id="uni1", task_id="TODO-1", done=True, description="已完成"))
+        dingtalk_unionid="uni1", task_id="TODO-1", done=True, description="已完成"))
     assert payload["success"] is True
     assert calls[0]["method"] == "PUT"
     assert calls[0]["json"] == {"done": True, "description": "已完成"}
 
-    payload = _payload(module.dingtalk_todo_update(union_id="uni1", task_id="TODO-1"))
+    payload = _payload(module.dingtalk_todo_update(dingtalk_unionid="uni1", task_id="TODO-1"))
     assert payload["success"] is False       # 未提供任何更新字段
-    for kwargs in ({"union_id": "", "task_id": "t", "done": True},
-                   {"union_id": "uni1", "task_id": "", "done": True}):
+    for kwargs in ({"dingtalk_unionid": "", "task_id": "t", "done": True},
+                   {"dingtalk_unionid": "uni1", "task_id": "", "done": True}):
         payload = _payload(module.dingtalk_todo_update(**kwargs))
         assert payload["success"] is False
     assert len(calls) == 1
@@ -234,7 +234,7 @@ def test_todo_list_success_and_validation(api):
 
     payload = _payload(module.dingtalk_todo_list(""))
     assert payload["success"] is False
-    assert "union_id" in payload["error"]
+    assert "dingtalk_unionid" in payload["error"]
     assert len(calls) == 1
 
 
@@ -244,9 +244,9 @@ def test_calendar_create_event_success_and_validation(api):
     module, calls, responses = api
     responses["/events"] = {"id": "EV-1"}
     payload = _payload(module.dingtalk_calendar_create_event(
-        user_id="uni1", summary="周会", start_time="2026-09-24T10:00:00+08:00",
+        dingtalk_unionid="uni1", summary="周会", start_time="2026-09-24T10:00:00+08:00",
         end_time="2026-09-24T11:00:00+08:00",
-        description="同步进度", location="301", attendees="u1,u2"))
+        description="同步进度", location="301", dingtalk_userids="u1,u2"))
     assert payload == {"success": True, "event_id": "EV-1"}
     body = calls[0]["json"]
     assert body["summary"] == "周会"
@@ -256,15 +256,15 @@ def test_calendar_create_event_success_and_validation(api):
 
     # 全天日程走 date 字段
     _payload(module.dingtalk_calendar_create_event(
-        user_id="uni1", summary="全天", start_time="2026-09-24",
+        dingtalk_unionid="uni1", summary="全天", start_time="2026-09-24",
         end_time="2026-09-25", is_all_day=True))
     assert calls[1]["json"]["start"] == {"date": "2026-09-24", "timeZone": "Asia/Shanghai"}
 
     for kwargs in (
-        {"user_id": "", "summary": "s", "start_time": "a", "end_time": "b"},
-        {"user_id": "uni1", "summary": "", "start_time": "a", "end_time": "b"},
-        {"user_id": "uni1", "summary": "s", "start_time": "", "end_time": "b"},
-        {"user_id": "uni1", "summary": "s", "start_time": "a", "end_time": ""},
+        {"dingtalk_unionid": "", "summary": "s", "start_time": "a", "end_time": "b"},
+        {"dingtalk_unionid": "uni1", "summary": "", "start_time": "a", "end_time": "b"},
+        {"dingtalk_unionid": "uni1", "summary": "s", "start_time": "", "end_time": "b"},
+        {"dingtalk_unionid": "uni1", "summary": "s", "start_time": "a", "end_time": ""},
     ):
         payload = _payload(module.dingtalk_calendar_create_event(**kwargs))
         assert payload["success"] is False
@@ -281,7 +281,7 @@ def test_calendar_list_events_success_and_validation(api):
         "nextToken": "NT2",
     }
     payload = _payload(module.dingtalk_calendar_list_events(
-        user_id="uni1", time_min="2026-09-01T00:00Z", time_max="2026-10-01T00:00Z",
+        dingtalk_unionid="uni1", time_min="2026-09-01T00:00Z", time_max="2026-10-01T00:00Z",
         max_results=500))
     assert payload["success"] is True
     assert payload["events"][0]["event_id"] == "EV-1"
@@ -306,7 +306,7 @@ def test_calendar_freebusy_success_and_validation(api):
         }],
     }
     payload = _payload(module.dingtalk_calendar_freebusy(
-        user_id="uni1", user_ids="u1,u2",
+        dingtalk_unionid="uni1", dingtalk_unionids="u1,u2",
         start_time="2026-09-24T00:00Z", end_time="2026-09-25T00:00Z"))
     assert payload["success"] is True
     assert payload["schedule"][0]["user_id"] == "u1"
@@ -314,10 +314,10 @@ def test_calendar_freebusy_success_and_validation(api):
     assert calls[0]["json"]["userIds"] == ["u1", "u2"]
 
     for kwargs in (
-        {"user_id": "", "user_ids": "u1", "start_time": "a", "end_time": "b"},
-        {"user_id": "uni1", "user_ids": "", "start_time": "a", "end_time": "b"},
-        {"user_id": "uni1", "user_ids": "u1", "start_time": "", "end_time": "b"},
-        {"user_id": "uni1", "user_ids": "u1", "start_time": "a", "end_time": ""},
+        {"dingtalk_unionid": "", "dingtalk_unionids": "u1", "start_time": "a", "end_time": "b"},
+        {"dingtalk_unionid": "uni1", "dingtalk_unionids": "", "start_time": "a", "end_time": "b"},
+        {"dingtalk_unionid": "uni1", "dingtalk_unionids": "u1", "start_time": "", "end_time": "b"},
+        {"dingtalk_unionid": "uni1", "dingtalk_unionids": "u1", "start_time": "a", "end_time": ""},
     ):
         payload = _payload(module.dingtalk_calendar_freebusy(**kwargs))
         assert payload["success"] is False
@@ -328,7 +328,7 @@ def test_api_error_is_reported_without_raising(api):
     module, calls, responses = api
     responses["/querySchedule"] = RuntimeError("HTTP 500: boom")
     payload = _payload(module.dingtalk_calendar_freebusy(
-        user_id="uni1", user_ids="u1", start_time="a", end_time="b"))
+        dingtalk_unionid="uni1", dingtalk_unionids="u1", start_time="a", end_time="b"))
     assert payload["success"] is False
     assert "HTTP 500" in payload["error"]
 
@@ -339,7 +339,7 @@ def test_approval_comment_success_and_validation(api):
     module, calls, responses = api
     responses["/processInstances/comments"] = {"commentId": "C1"}
     payload = _payload(module.dingtalk_approval_comment(
-        process_instance_id="PI-1", text="同意报销", comment_user_id="user1",
+        process_instance_id="PI-1", text="同意报销", dingtalk_userid="user1",
         file='{"fileId":"F1","fileName":"a.pdf"}'))
     assert payload["success"] is True
     assert payload["comment_id"] == "C1"
@@ -451,7 +451,7 @@ def test_create_group_success_and_validation(api):
     module, calls, responses = api
     responses["/v1.0/im/chatGroups"] = {"chatId": "CHAT-1", "openConversationId": "cidX"}
     payload = _payload(module.dingtalk_create_group(
-        name="项目群", owner_user_id="u1", member_user_ids="u2,u3",
+        name="项目群", dingtalk_userid="u1", dingtalk_userids="u2,u3",
         icon="MEDIA-1", only_admin_can_invite=True))
     assert payload["success"] is True
     assert payload["chat_id"] == "CHAT-1"
@@ -476,7 +476,7 @@ def test_group_add_members_success_and_validation(api):
     assert calls[0]["path"] == "/v1.0/im/chatGroups/CHAT-1/members"
     assert calls[0]["json"] == {"userIds": ["u1", "u2"]}
 
-    for kwargs in ({"chat_id": "", "user_ids": "u1"}, {"chat_id": "c", "user_ids": ""}):
+    for kwargs in ({"chat_id": "", "dingtalk_userids": "u1"}, {"chat_id": "c", "dingtalk_userids": ""}):
         payload = _payload(module.dingtalk_group_add_members(**kwargs))
         assert payload["success"] is False
     assert len(calls) == 1
@@ -517,7 +517,7 @@ def test_announcement_create_success_and_validation(api):
     module, calls, responses = api
     responses["/blackboard/blackboards"] = {"boardId": "B1"}
     payload = _payload(module.dingtalk_announcement_create(
-        "放假通知", "国庆放假 7 天", author_user_id="u1", send_to="u1,u2"))
+        "放假通知", "国庆放假 7 天", dingtalk_userid="u1", dingtalk_userids="u1,u2"))
     assert payload["success"] is True
     assert payload["board_id"] == "B1"
     assert calls[0]["json"] == {"title": "放假通知", "content": "国庆放假 7 天",
@@ -548,7 +548,7 @@ def test_report_submit_success_and_validation(api):
     module, calls, responses = api
     responses["/v1.0/report/entries"] = {"id": "E1"}
     payload = _payload(module.dingtalk_report_submit(
-        "日报", "完成 A/B", user_ids="u1", to_chat=True))
+        "日报", "完成 A/B", dingtalk_userids="u1", to_chat=True))
     assert payload["success"] is True
     assert payload["entry_id"] == "E1"
     assert calls[0]["json"] == {"templateName": "日报", "content": "完成 A/B",
@@ -567,7 +567,7 @@ def test_report_list_success_and_validation(api):
         "entries": [{"entryId": "E1", "templateName": "日报"}],
         "hasMore": True, "nextCursor": 3}
     payload = _payload(module.dingtalk_report_list(
-        user_ids="u1,u2", start_time=1750000000000, end_time=1751000000000,
+        dingtalk_userids="u1,u2", start_time=1750000000000, end_time=1751000000000,
         template_name="日报", size=500))
     assert payload["success"] is True
     assert payload["entries"][0]["entryId"] == "E1"
@@ -661,9 +661,9 @@ def test_send_file_single_success_and_validation(api, tmp_path):
         "mediaId": "M1", "fileName": "report.pdf", "fileType": "pdf"}
 
     for kwargs in (
-        {"user_ids": "", "file_path": str(local)},
-        {"user_ids": "u1", "file_path": ""},
-        {"user_ids": "u1", "file_path": str(tmp_path / "nope.bin")},
+        {"dingtalk_userids": "", "file_path": str(local)},
+        {"dingtalk_userids": "u1", "file_path": ""},
+        {"dingtalk_userids": "u1", "file_path": str(tmp_path / "nope.bin")},
     ):
         payload = _payload(module.dingtalk_send_file_single(**kwargs))
         assert payload["success"] is False
@@ -742,7 +742,7 @@ def test_conference_create_success_and_validation(api):
     module, calls, responses = api
     responses["/conference/videoConferences"] = {"conferenceId": "CONF-1"}
     payload = _payload(module.dingtalk_conference_create(
-        "周会", 1750000000000, 1750003600000, member_user_ids="u1,u2"))
+        "周会", 1750000000000, 1750003600000, dingtalk_userids="u1,u2"))
     assert payload["success"] is True
     assert payload["conference_id"] == "CONF-1"
     assert calls[0]["json"] == {"title": "周会", "startTime": 1750000000000,
@@ -828,7 +828,7 @@ def test_external_contacts_success_and_validation(api):
     module, calls, responses = api
     responses["/empExtContacts"] = {"contacts": [{"userId": "u1"}], "nextCursor": 9}
     payload = _payload(module.dingtalk_external_contacts(
-        user_ids="u1,u2", size=500, cursor=3))
+        dingtalk_userids="u1,u2", size=500, cursor=3))
     assert payload["success"] is True
     assert payload["contacts"] == [{"userId": "u1"}]
     assert payload["next_cursor"] == 9
@@ -849,7 +849,7 @@ def test_calendar_update_event_success_and_validation(api):
     module, calls, responses = api
     responses["/events/EV-1"] = {"result": True}
     payload = _payload(module.dingtalk_calendar_update_event(
-        user_id="uni1", calendar_id="primary", event_id="EV-1",
+        dingtalk_unionid="uni1", calendar_id="primary", event_id="EV-1",
         summary="新标题", start="2026-09-24T11:00:00+08:00",
         end="2026-09-24T12:00:00+08:00", description="改期"))
     assert payload["success"] is True
@@ -866,9 +866,9 @@ def test_calendar_update_event_success_and_validation(api):
     payload = _payload(module.dingtalk_calendar_update_event("uni1", "primary", "EV-1"))
     assert payload["success"] is False       # 未提供任何更新字段
     for kwargs in (
-        {"user_id": "", "calendar_id": "p", "event_id": "e"},
-        {"user_id": "u", "calendar_id": "", "event_id": "e"},
-        {"user_id": "u", "calendar_id": "p", "event_id": ""},
+        {"dingtalk_unionid": "", "calendar_id": "p", "event_id": "e"},
+        {"dingtalk_unionid": "u", "calendar_id": "", "event_id": "e"},
+        {"dingtalk_unionid": "u", "calendar_id": "p", "event_id": ""},
     ):
         payload = _payload(module.dingtalk_calendar_update_event(**kwargs))
         assert payload["success"] is False
@@ -924,7 +924,7 @@ def test_ai_card_send_success_and_validation(api):
     responses["/v1.0/card/instances"] = {"success": True}
     payload = _payload(module.dingtalk_ai_card_send(
         template_id="TPL-1", card_data='{"msgTitle":"标题"}',
-        user_id="staff1", out_track_id="track-1"))
+        dingtalk_userid="staff1", out_track_id="track-1"))
     assert payload["success"] is True
     assert payload["out_track_id"] == "track-1"
     create = calls[0]
@@ -945,7 +945,7 @@ def test_ai_card_send_success_and_validation(api):
     # 群 + 私聊双场域逐一投递; cardParamMap 形态原样透传; outTrackId 自动生成
     payload = _payload(module.dingtalk_ai_card_send(
         template_id="TPL-1", card_data='{"cardParamMap":{"content":"x"}}',
-        user_id="u2", open_conversation_id="cidX"))
+        dingtalk_userid="u2", open_conversation_id="cidX"))
     assert payload["success"] is True
     assert payload["out_track_id"].startswith("mcpcard_")
     assert calls[2]["json"]["cardData"] == {"cardParamMap": {"content": "x"}}
@@ -954,10 +954,10 @@ def test_ai_card_send_success_and_validation(api):
     assert calls[4]["json"]["imGroupOpenDeliverModel"] == {"robotCode": module.ROBOT_CODE}
 
     for kwargs in (
-        {"template_id": "", "card_data": "{}", "user_id": "u1"},
-        {"template_id": "T", "card_data": "not-json", "user_id": "u1"},
-        {"template_id": "T", "card_data": "", "user_id": "u1"},
-        {"template_id": "T", "card_data": "{}", "user_id": "u1"},
+        {"template_id": "", "card_data": "{}", "dingtalk_userid": "u1"},
+        {"template_id": "T", "card_data": "not-json", "dingtalk_userid": "u1"},
+        {"template_id": "T", "card_data": "", "dingtalk_userid": "u1"},
+        {"template_id": "T", "card_data": "{}", "dingtalk_userid": "u1"},
         {"template_id": "T", "card_data": "{}"},
     ):
         payload = _payload(module.dingtalk_ai_card_send(**kwargs))
@@ -973,7 +973,7 @@ def test_ai_card_send_deliver_error_keeps_track_id(api):
         "HTTP 400: code=InvalidParameter message=openSpaceId 非法")
     responses["/v1.0/card/instances"] = {"success": True}
     payload = _payload(module.dingtalk_ai_card_send(
-        template_id="T", card_data='{"a":"1"}', user_id="u1", out_track_id="tk"))
+        template_id="T", card_data='{"a":"1"}', dingtalk_userid="u1", out_track_id="tk"))
     assert payload["success"] is False
     assert payload["out_track_id"] == "tk"
     assert "code=InvalidParameter" in payload["error"]
@@ -1086,7 +1086,7 @@ def test_doc_add_member_success_and_validation(api):
     module, calls, responses = api
     responses["/docs/D1/members"] = {"success": True}
     payload = _payload(module.dingtalk_doc_add_member(
-        workspace_id="WS1", doc_id="D1", user_id="u1", role="editor"))
+        workspace_id="WS1", doc_id="D1", dingtalk_userid="u1", role="editor"))
     assert payload["success"] is True
     assert payload["role"] == "EDITOR"
     assert calls[0]["method"] == "POST"
@@ -1095,10 +1095,10 @@ def test_doc_add_member_success_and_validation(api):
         {"memberId": "u1", "memberType": "USER", "role": "EDITOR"}]}
 
     for kwargs in (
-        {"workspace_id": "", "doc_id": "D1", "user_id": "u1"},
-        {"workspace_id": "WS1", "doc_id": "", "user_id": "u1"},
-        {"workspace_id": "WS1", "doc_id": "D1", "user_id": ""},
-        {"workspace_id": "WS1", "doc_id": "D1", "user_id": "u1", "role": " "},
+        {"workspace_id": "", "doc_id": "D1", "dingtalk_userid": "u1"},
+        {"workspace_id": "WS1", "doc_id": "", "dingtalk_userid": "u1"},
+        {"workspace_id": "WS1", "doc_id": "D1", "dingtalk_userid": ""},
+        {"workspace_id": "WS1", "doc_id": "D1", "dingtalk_userid": "u1", "role": " "},
     ):
         payload = _payload(module.dingtalk_doc_add_member(**kwargs))
         assert payload["success"] is False

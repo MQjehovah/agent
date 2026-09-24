@@ -72,7 +72,7 @@ def env(monkeypatch):
 def test_todo_create_numeric_id_resolves_unionid(env):
     module, state = env
     payload = json.loads(module.dingtalk_todo_create(
-        union_id="1642483198771392", subject="写周报", executor_ids="u1"))
+        dingtalk_unionid="1642483198771392", subject="写周报", dingtalk_userids="u1"))
     assert payload["success"] is True
     assert state["api"][0]["path"] == "/v1.0/todo/users/UNION-1/tasks"
     assert state["user_get"][0]["url"].startswith(
@@ -82,15 +82,15 @@ def test_todo_create_numeric_id_resolves_unionid(env):
 
 def test_unionid_cache_avoids_repeat_query(env):
     module, state = env
-    module.dingtalk_todo_create(union_id="1642483198771392", subject="a", executor_ids="u1")
-    module.dingtalk_todo_create(union_id="1642483198771392", subject="b", executor_ids="u1")
+    module.dingtalk_todo_create(dingtalk_unionid="1642483198771392", subject="a", dingtalk_userids="u1")
+    module.dingtalk_todo_create(dingtalk_unionid="1642483198771392", subject="b", dingtalk_userids="u1")
     assert len(state["user_get"]) == 1
     assert [c["path"] for c in state["api"]] == ["/v1.0/todo/users/UNION-1/tasks"] * 2
 
 
 def test_non_numeric_union_id_used_directly(env):
     module, state = env
-    payload = json.loads(module.dingtalk_todo_list(union_id="uni-direct"))
+    payload = json.loads(module.dingtalk_todo_list(dingtalk_unionid="uni-direct"))
     assert payload["success"] is True
     assert state["user_get"] == []
     assert state["api"][0]["path"] == "/v1.0/todo/users/uni-direct/tasks/list"
@@ -107,7 +107,7 @@ def test_numeric_lookup_errcode_returns_error_without_v1_call(env):
     module, state = env
     state["user_get_response"] = FakeResponse(200, {"errcode": 60121, "errmsg": "找不到该用户"})
     payload = json.loads(module.dingtalk_todo_create(
-        union_id="1642483198771392", subject="s", executor_ids="u1"))
+        dingtalk_unionid="1642483198771392", subject="s", dingtalk_userids="u1"))
     assert payload["success"] is False
     assert "未找到该钉钉用户(userId=1642483198771392)" in payload["error"]
     assert state["api"] == []
@@ -116,7 +116,7 @@ def test_numeric_lookup_errcode_returns_error_without_v1_call(env):
 def test_numeric_lookup_missing_unionid_returns_error_without_v1_call(env):
     module, state = env
     state["user_get_response"] = FakeResponse(200, {"errcode": 0, "result": {"name": "x"}})
-    payload = json.loads(module.dingtalk_todo_list(union_id="1642483198771392"))
+    payload = json.loads(module.dingtalk_todo_list(dingtalk_unionid="1642483198771392"))
     assert payload["success"] is False
     assert "未找到该钉钉用户(userId=1642483198771392)" in payload["error"]
     assert state["api"] == []
@@ -126,7 +126,7 @@ def test_numeric_lookup_request_exception_returns_error(env):
     module, state = env
     state["user_get_response"] = RuntimeError("connection reset")
     payload = json.loads(module.dingtalk_calendar_create_event(
-        user_id="1642483198771392", summary="s", start_time="a", end_time="b"))
+        dingtalk_unionid="1642483198771392", summary="s", start_time="a", end_time="b"))
     assert payload["success"] is False
     assert "换算 unionId 失败" in payload["error"]
     assert "connection reset" in payload["error"]
@@ -138,14 +138,14 @@ def test_numeric_lookup_request_exception_returns_error(env):
 def test_six_union_tools_resolve_numeric_user_id(env):
     module, state = env
     uid = "1642483198771392"
-    module.dingtalk_todo_create(union_id=uid, subject="s", executor_ids="u1")
-    module.dingtalk_todo_update(union_id=uid, task_id="T1", done=True)
-    module.dingtalk_todo_list(union_id=uid)
-    module.dingtalk_calendar_create_event(user_id=uid, summary="s",
+    module.dingtalk_todo_create(dingtalk_unionid=uid, subject="s", dingtalk_userids="u1")
+    module.dingtalk_todo_update(dingtalk_unionid=uid, task_id="T1", done=True)
+    module.dingtalk_todo_list(dingtalk_unionid=uid)
+    module.dingtalk_calendar_create_event(dingtalk_unionid=uid, summary="s",
                                           start_time="2026-09-24T10:00:00+08:00",
                                           end_time="2026-09-24T11:00:00+08:00")
-    module.dingtalk_calendar_list_events(user_id=uid)
-    module.dingtalk_calendar_freebusy(user_id=uid, user_ids="UNION-2",
+    module.dingtalk_calendar_list_events(dingtalk_unionid=uid)
+    module.dingtalk_calendar_freebusy(dingtalk_unionid=uid, dingtalk_unionids="UNION-2",
                                       start_time="a", end_time="b")
     assert [c["path"] for c in state["api"]] == [
         "/v1.0/todo/users/UNION-1/tasks",
@@ -161,8 +161,8 @@ def test_six_union_tools_resolve_numeric_user_id(env):
 def test_todo_create_creator_id_numeric_resolved(env):
     module, state = env
     payload = json.loads(module.dingtalk_todo_create(
-        union_id="uni-owner", subject="s", executor_ids="u1",
-        creator_id="1642483198771392"))
+        dingtalk_unionid="uni-owner", subject="s", dingtalk_userids="u1",
+        dingtalk_creator_unionid="1642483198771392"))
     assert payload["success"] is True
     assert state["api"][0]["json"]["creatorId"] == "UNION-1"
     assert len(state["user_get"]) == 1
