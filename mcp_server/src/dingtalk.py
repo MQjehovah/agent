@@ -25,6 +25,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -92,6 +93,12 @@ def _check_config() -> str:
 _API_BASE = "https://api.dingtalk.com"
 # 单次响应返回上限(8k; 超长截断为 truncated 标记 + 预览, 防止撑爆模型上下文)
 _MAX_RESPONSE_CHARS = 8 * 1024
+# 钉钉 v1.0 在「应用缺权限」时也可能统一回 HTTP 503(实测 todoTasks 连续 503),
+# 与临时故障同码; 故对 503 做短退避重试, 仍失败在文案里给出权限申请入口。
+_API_503_RETRIES = 2
+_API_503_BACKOFF_SECONDS = (0.5, 1.0)
+_API_503_PERMISSION_HINT = ("（钉钉临时故障；若持续出现，通常是应用缺少该接口权限，"
+                            "请在钉钉开放平台→应用→权限管理申请）")
 
 
 def _api_error_detail(resp) -> str:
@@ -125,20 +132,28 @@ def _api(method: str, path: str, *, params: dict | None = None,
 
     统一附带 x-acs-dingtalk-access-token; 非 2xx 抛 RuntimeError(含钉钉
     errcode/errmsg), 由各工具统一转成 {"success": False, "error": ...}。
-    传 files 时走 multipart/form-data(data 作为普通表单字段), 此时不显式
-    设置 Content-Type, 由 requests 生成 boundary。测试经 monkeypatch 替换
-    本函数注入假响应。
+    HTTP 503 按 0.5s/1s 退避重试至多 2 次(共 3 次请求; 钉钉缺权限也可能回 503),
+    持续 503 的错误文案附带权限申请提示。传 files 时走 multipart/form-data
+    (data 作为普通表单字段), 此时不显式设置 Content-Type, 由 requests 生成
+    boundary。测试经 monkeypatch 替换本函数注入假响应。
     """
     token = _get_access_token()
     headers = {"x-acs-dingtalk-access-token": token}
     if files is None:
         headers["Content-Type"] = "application/json"
-    resp = requests.request(
-        method, f"{_API_BASE}{path}", headers=headers,
-        params=params, json=json_body, data=data, files=files, timeout=timeout)
-    if resp.status_code >= 400:
-        raise RuntimeError(f"HTTP {resp.status_code}: {_api_error_detail(resp)}")
-    return resp.json() if resp.text else {}
+    for attempt in range(_API_503_RETRIES + 1):
+        resp = requests.request(
+            method, f"{_API_BASE}{path}", headers=headers,
+            params=params, json=json_body, data=data, files=files, timeout=timeout)
+        if resp.status_code == 503:
+            if attempt < _API_503_RETRIES:
+                time.sleep(_API_503_BACKOFF_SECONDS[attempt])
+                continue
+            raise RuntimeError(
+                f"HTTP 503: {_api_error_detail(resp)}{_API_503_PERMISSION_HINT}")
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code}: {_api_error_detail(resp)}")
+        return resp.json() if resp.text else {}
 
 
 def _clip(value, limit: int = 300) -> str:
@@ -1050,6 +1065,58 @@ def dingtalk_approval_instance(process_instance_id: str):
         return _dump({"success": False, "error": str(e)})
 
 
+# 旧版 OAPI 审批接口回退: v1.0 对「应用缺权限」统一回 503, 而旧版 listids 会明确
+# 返回 errcode 88/sub_code 60011 + 缺失 scope + 申请链接, 便于给出可执行指引。
+_LEGACY_SCOPE_RE = re.compile(r"scope[=:\s]+([A-Za-z][A-Za-z0-9_.-]*)", re.IGNORECASE)
+_LEGACY_APPLY_URL_RE = re.compile(r"https://open-dev\.dingtalk\.com/appscope/apply[^\s\"']*")
+
+
+def _permission_apply_hint(body: dict) -> str:
+    """从旧版错误响应解析缺失 scope 与申请链接, 生成可执行中文文案。"""
+    text = " ".join(str(body.get(key) or "") for key in ("sub_msg", "errmsg"))
+    match = _LEGACY_SCOPE_RE.search(text)
+    scope = f" [{match.group(1)}]" if match else ""
+    hint = (f"应用缺少钉钉权限{scope}（OA审批）。"
+            "请到钉钉开放平台→应用→权限管理申请开通")
+    url = _LEGACY_APPLY_URL_RE.search(text)
+    if url:
+        hint += f"；申请链接: {url.group(0)}"
+    return hint
+
+
+def _legacy_approval_listids(user_id: str) -> dict:
+    """旧版 OAPI 待办审批实例 ID 回退(POST topapi/processinstance/listids, RUNNING)。
+
+    返回 {success: True, instance_ids} 或 {success: False, permission_error?, error}。
+    """
+    try:
+        token = _get_access_token()
+        url = f"https://oapi.dingtalk.com/topapi/processinstance/listids?access_token={token}"
+        resp = requests.post(url, json={"userid": user_id, "status_list": "RUNNING"}, timeout=10)
+        body = resp.json() if resp.text else {}
+    except Exception as e:
+        return {"success": False, "error": f"旧版审批接口请求失败: {e}"}
+    if not isinstance(body, dict):
+        return {"success": False, "error": f"旧版审批接口响应异常: {str(body)[:200]}"}
+    errcode = body.get("errcode")
+    if errcode == 0:
+        result = body.get("result") or {}
+        if isinstance(result, dict):
+            ids = result.get("list")
+        elif isinstance(result, list):
+            ids = result
+        else:
+            ids = None
+        return {"success": True, "instance_ids": list(ids or [])}
+    sub_code = str(body.get("sub_code") or "")
+    if str(errcode) in ("88", "60011") or sub_code == "60011":
+        return {"success": False, "permission_error": True,
+                "error": _permission_apply_hint(body)}
+    detail = (f"errcode={errcode} errmsg={body.get('errmsg') or ''} "
+              f"sub_code={sub_code} sub_msg={_clip(body.get('sub_msg'), 200)}")
+    return {"success": False, "error": f"旧版审批接口失败: {detail.strip()}"}
+
+
 @mcp.tool(annotations=_READ_ANNOTATIONS)
 def dingtalk_approval_tasks(
     user_id: str,
@@ -1103,8 +1170,29 @@ def dingtalk_approval_tasks(
         return _dump({"success": True, "tasks": tasks,
                       "next_token": data.get("nextToken", 0)})
     except Exception as e:
+        error_text = str(e)
         logger.error(f"查询审批任务异常: {e}")
-        return _dump({"success": False, "error": str(e)})
+        if "503" not in error_text:
+            return _dump({"success": False, "error": error_text})
+        # v1.0 对「应用缺权限」也可能统一回 503: 待办走旧版 listids 回退;
+        # 已办(status=1)旧版无等价能力(仅 RUNNING), 直接说明不支持回退
+        if status == 1:
+            return _dump({"success": False, "error": error_text,
+                          "note": "已办查询暂不支持回退（旧版接口仅支持待办 status=RUNNING）"})
+        legacy = _legacy_approval_listids(str(user_id).strip())
+        if legacy.get("success"):
+            return _dump({
+                "success": True,
+                "source": "legacy",
+                "instance_ids": legacy.get("instance_ids", []),
+                "note": "旧版接口仅返回审批实例ID；详情请用 "
+                        "dingtalk_approval_instance(process_instance_id=...)",
+            })
+        if legacy.get("permission_error"):
+            return _dump({"success": False, "error": legacy.get("error", "权限不足")})
+        logger.error(f"旧版审批回退也失败: {legacy.get('error')}")
+        return _dump({"success": False,
+                      "error": f"{error_text}；旧版接口回退失败: {legacy.get('error', '未知错误')}"})
 
 
 @mcp.tool(annotations=_WRITE_ANNOTATIONS)
