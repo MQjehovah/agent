@@ -1,4 +1,5 @@
-"""钉钉 MCP Server: 消息/通讯录/审批/待办/日程/群管理/公告/日志/钉盘/会议/日历工具。
+"""钉钉 MCP Server: 消息/通讯录/审批/待办/日程/群管理/公告/日志/钉盘/会议/日历/
+互动 AI 卡片/钉钉文档工具。
 
 钉钉开放平台权限点(开发者后台「权限管理」申请, 权限名称以控制台为准):
 - 审批: 审批实例管理(发起/评论/撤回实例)、审批任务管理(同意/拒绝)、审批表单读
@@ -10,9 +11,13 @@
 - 视频会议: 视频会议管理(创建/查询/关闭)
 - 通讯录: 用户只读、部门只读、角色只读、外部联系人只读
 - 日历: 日程读写
+- 互动卡片: 卡片平台(模板查询、卡片实例创建/更新、卡片投递)
+- 钉钉文档: 知识库读、文档读写、文档成员授权
 
-实现约定: 统一 `_api`(v2 网关 + token, 支持 multipart 上传), 响应经 `_dump` 截断;
-少数 body/query 字段名以「线上冒烟待确认」标注(会议/外部联系人/公告/日志/钉盘/机器人文件)。
+实现约定: 统一 `_api`(v2 网关 + token, 支持 multipart 上传), 响应经 `_dump` 截断(8k);
+错误透传 errcode/errmsg(HTTP>=400 抛出, 由工具转成 {"success": False, "error": ...});
+少数 body/query 字段名以「线上冒烟待确认」标注(会议/外部联系人/公告/日志/钉盘/机器人文件/
+卡片模板列表/文档 API/文档成员)。
 """
 import base64
 import hashlib
@@ -85,8 +90,32 @@ def _check_config() -> str:
 
 
 _API_BASE = "https://api.dingtalk.com"
-# 单次响应返回上限(超长截断为 truncated 标记 + 预览, 防止撑爆模型上下文)
-_MAX_RESPONSE_CHARS = 6000
+# 单次响应返回上限(8k; 超长截断为 truncated 标记 + 预览, 防止撑爆模型上下文)
+_MAX_RESPONSE_CHARS = 8 * 1024
+
+
+def _api_error_detail(resp) -> str:
+    """提取错误响应中的 errcode/errmsg(新版 v1.0 网关为 code/message)透传。
+
+    两项均无(如网关 502 HTML)时回退响应正文前 200 字符。
+    """
+    try:
+        body = resp.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict):
+        parts = []
+        if body.get("errcode") is not None:
+            parts.append(f"errcode={body.get('errcode')}")
+        if body.get("errmsg"):
+            parts.append(f"errmsg={body.get('errmsg')}")
+        if body.get("code"):
+            parts.append(f"code={body.get('code')}")
+        if body.get("message"):
+            parts.append(f"message={body.get('message')}")
+        if parts:
+            return " ".join(parts)
+    return str(getattr(resp, "text", ""))[:200]
 
 
 def _api(method: str, path: str, *, params: dict | None = None,
@@ -108,7 +137,7 @@ def _api(method: str, path: str, *, params: dict | None = None,
         method, f"{_API_BASE}{path}", headers=headers,
         params=params, json=json_body, data=data, files=files, timeout=timeout)
     if resp.status_code >= 400:
-        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        raise RuntimeError(f"HTTP {resp.status_code}: {_api_error_detail(resp)}")
     return resp.json() if resp.text else {}
 
 
@@ -189,6 +218,41 @@ def _recall_body(process_query_key: str, msg_id: str) -> tuple[dict, str]:
     if mid:
         body["msgId"] = mid
     return body, ""
+
+
+def _first_list(data: dict, *keys: str) -> list:
+    """按 key 顺序返回第一个 list 字段(响应字段名不确定时兜底), 均无则空列表。"""
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _gen_out_track_id() -> str:
+    """生成卡片实例 outTrackId(毫秒时间戳 + 随机后缀, 进程内近似唯一)。"""
+    return f"mcpcard_{int(time.time() * 1000):x}{os.urandom(4).hex()}"
+
+
+def _card_data_arg(card_data) -> tuple[dict, str]:
+    """解析卡片数据参数(JSON 字符串或 dict); 返回 (cardData, 错误串)。
+
+    - 形如 {"cardParamMap": {...}} 的对象原样透传;
+    - 其它非空对象视为参数键值表, 自动包一层 cardParamMap(与插件验证流程一致)。
+    """
+    if isinstance(card_data, str):
+        text = card_data.strip()
+        if not text:
+            return {}, "card_data 必填(JSON 对象)"
+        try:
+            card_data = json.loads(text)
+        except json.JSONDecodeError:
+            return {}, "card_data 需为 JSON 对象字符串"
+    if not isinstance(card_data, dict) or not card_data:
+        return {}, "card_data 需为非空 JSON 对象"
+    if isinstance(card_data.get("cardParamMap"), dict):
+        return card_data, ""
+    return {"cardParamMap": card_data}, ""
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
@@ -2474,6 +2538,361 @@ def dingtalk_calendar_delete_event(user_id: str, calendar_id: str, event_id: str
         return _dump({"success": True, "message": "日程已删除", "result": result})
     except Exception as e:
         logger.error(f"删除日程异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 互动/AI 卡片(卡片平台) ──
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_card_template_list():
+    """查询互动卡片/AI 卡片模板列表(取发卡所需的模板 ID)。
+
+    返回要点: templates(模板数组)与 count。
+
+    线上冒烟待确认: GET /v1.0/card/templates 的 query 参数(是否需要分页)与
+    响应字段名(当前兼容 templates/templateList/data)。
+    """
+    logger.info("查询卡片模板列表")
+
+    err = _check_config()
+    if err:
+        return err
+
+    try:
+        result = _api("GET", "/v1.0/card/templates")
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        templates = _first_list(data, "templates", "templateList", "data")
+        return _dump({"success": True, "templates": templates, "count": len(templates)})
+    except Exception as e:
+        logger.error(f"查询卡片模板列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_ai_card_send(
+    template_id: str,
+    card_data: str,
+    user_id: str = "",
+    open_conversation_id: str = "",
+    out_track_id: str = "",
+):
+    """创建并投递互动/AI 卡片(STREAM 回调, 可用于后续 dingtalk_card_instance_update)。
+
+    参数:
+    - template_id: 卡片模板 ID(必填, 可先用 dingtalk_card_template_list 查询)
+    - card_data: 卡片数据 JSON 字符串(必填), 支持
+        {"cardParamMap":{"key":"val"}} 形态或直接传参数键值表(自动包 cardParamMap)
+    - user_id: 接收人 userId(投递到私聊场域 dtv1.card//IM_ROBOT.{userId})
+    - open_conversation_id: 群 openConversationId(投递到群场域 dtv1.card//IM_GROUP.{id})
+        user_id 与 open_conversation_id 至少提供一个, 两者都给则逐一投递
+    - out_track_id: 卡片实例 ID(可选, 缺省自动生成 mcpcard_ 前缀 ID)
+
+    返回要点: out_track_id(更新卡片时使用)、delivered(各场域投递结果列表)。
+
+    流程与插件验证一致: 创建实例(POST /v1.0/card/instances, callbackType=STREAM)
+    → 投递(POST /v1.0/card/instances/deliver, userIdType=1)。
+    线上冒烟待确认: callbackType 插件验证在 body, 此处 body 与 query 双带;
+    群场域 imGroupOpenDeliverModel.robotCode 字段。
+    """
+    logger.info(f"发送 AI 卡片: template={_clip(template_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    template = str(template_id or "").strip()
+    if not template:
+        return _dump({"success": False, "error": "template_id 必填"})
+    data_obj, problem = _card_data_arg(card_data)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    targets = []
+    if str(user_id or "").strip():
+        targets.append(("IM_ROBOT", f"dtv1.card//IM_ROBOT.{str(user_id).strip()}"))
+    if str(open_conversation_id or "").strip():
+        targets.append(("IM_GROUP", f"dtv1.card//IM_GROUP.{str(open_conversation_id).strip()}"))
+    if not targets:
+        return _dump({"success": False, "error": "user_id 与 open_conversation_id 至少提供一个"})
+
+    track = str(out_track_id or "").strip() or _gen_out_track_id()
+    try:
+        _api("POST", "/v1.0/card/instances", params={"callbackType": "STREAM"},
+             json_body={
+                 "cardTemplateId": template,
+                 "outTrackId": track,
+                 "cardData": data_obj,
+                 "callbackType": "STREAM",
+                 "imGroupOpenSpaceModel": {"supportForward": False},
+                 "imRobotOpenSpaceModel": {"supportForward": False},
+             })
+        delivered = []
+        for space_type, open_space_id in targets:
+            body: dict = {"outTrackId": track, "openSpaceId": open_space_id, "userIdType": 1}
+            if space_type == "IM_ROBOT":
+                body["imRobotOpenDeliverModel"] = {"spaceType": "IM_ROBOT"}
+            else:
+                body["imGroupOpenDeliverModel"] = {"robotCode": ROBOT_CODE}
+            result = _api("POST", "/v1.0/card/instances/deliver", json_body=body)
+            delivered.append({"space_type": space_type, "open_space_id": open_space_id,
+                              "result": result})
+        return _dump({"success": True, "out_track_id": track,
+                      "message": f"AI 卡片已投递({len(delivered)} 个场域)",
+                      "delivered": delivered})
+    except Exception as e:
+        logger.error(f"发送 AI 卡片异常: {e}")
+        return _dump({"success": False, "out_track_id": track, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_card_instance_update(out_track_id: str, card_data: str):
+    """更新互动卡片实例数据(按 key 合并, 未提交的卡片字段保持不变)。
+
+    参数:
+    - out_track_id: 卡片实例 ID(必填, 发卡时返回)
+    - card_data: 卡片数据 JSON 字符串(必填), 支持
+        {"cardParamMap":{"key":"val"}} 形态或直接传参数键值表(自动包 cardParamMap)
+
+    返回要点: success 与透传结果 result。
+    流程与插件验证一致: PUT /v1.0/card/instances,
+    cardUpdateOptions.updateCardDataByKey=true(仅更新提交的 key)。
+    """
+    logger.info(f"更新卡片实例: out_track_id={_clip(out_track_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    track = str(out_track_id or "").strip()
+    if not track:
+        return _dump({"success": False, "error": "out_track_id 必填"})
+    data_obj, problem = _card_data_arg(card_data)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    try:
+        result = _api("PUT", "/v1.0/card/instances", json_body={
+            "outTrackId": track,
+            "cardData": data_obj,
+            "cardUpdateOptions": {"updateCardDataByKey": True},
+        })
+        ok = result.get("success", True) is not False
+        return _dump({"success": bool(ok), "out_track_id": track,
+                      "error": "" if ok else "更新未成功", "result": result})
+    except Exception as e:
+        logger.error(f"更新卡片实例异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 钉钉文档/知识库 ──
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_doc_workspaces():
+    """查询知识库/团队空间列表。
+
+    返回要点: workspaces(知识库数组)与 count。
+
+    线上冒烟待确认: GET /v1.0/doc/workspaces 的 query 参数(是否需要分页)与
+    响应字段名(当前兼容 workspaces/workspaceList/data)。
+    """
+    logger.info("查询知识库列表")
+
+    err = _check_config()
+    if err:
+        return err
+
+    try:
+        result = _api("GET", "/v1.0/doc/workspaces")
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        workspaces = _first_list(data, "workspaces", "workspaceList", "data")
+        return _dump({"success": True, "workspaces": workspaces, "count": len(workspaces)})
+    except Exception as e:
+        logger.error(f"查询知识库列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_doc_list(
+    workspace_id: str,
+    parent_id: str = "",
+    page_size: int = 50,
+    next_token: str = "",
+):
+    """查询知识库中文档列表(可按父目录过滤, 游标分页)。
+
+    参数:
+    - workspace_id: 知识库/团队空间 ID(必填)
+    - parent_id: 父目录 ID(可选, 缺省查根目录)
+    - page_size: 单页条数(1~100, 默认 50)
+    - next_token: 分页游标(上次返回的 next_token, 首页留空)
+
+    返回要点: docs(文档数组)、count 与 next_token(无更多时为空)。
+    线上冒烟待确认: query 参数名 parentId/maxResults/nextToken 与响应字段名
+    (当前兼容 docs/docList/data)。
+    """
+    logger.info(f"查询文档列表: workspace={_clip(workspace_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    workspace = str(workspace_id or "").strip()
+    if not workspace:
+        return _dump({"success": False, "error": "workspace_id 必填"})
+    size, problem = _int_arg(page_size if page_size is not None else 50, "page_size", 1)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    params: dict = {"maxResults": min(size, 100)}
+    if str(parent_id or "").strip():
+        params["parentId"] = str(parent_id).strip()
+    if str(next_token or "").strip():
+        params["nextToken"] = str(next_token).strip()
+
+    try:
+        result = _api("GET", f"/v1.0/doc/workspaces/{workspace}/docs", params=params)
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        docs = _first_list(data, "docs", "docList", "data")
+        return _dump({"success": True, "docs": docs, "count": len(docs),
+                      "next_token": data.get("nextToken", "")})
+    except Exception as e:
+        logger.error(f"查询文档列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_doc_info(workspace_id: str, doc_id: str):
+    """查询文档元信息(名称/类型/创建人/更新时间等)。
+
+    参数:
+    - workspace_id: 知识库/团队空间 ID(必填)
+    - doc_id: 文档 ID(必填)
+
+    返回要点: doc(原始响应体, 字段名以线上为准)。
+    线上冒烟待确认: 路径参数 docId 与响应字段。
+    """
+    logger.info(f"查询文档信息: workspace={_clip(workspace_id, 64)}, doc={_clip(doc_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    workspace = str(workspace_id or "").strip()
+    if not workspace:
+        return _dump({"success": False, "error": "workspace_id 必填"})
+    doc = str(doc_id or "").strip()
+    if not doc:
+        return _dump({"success": False, "error": "doc_id 必填"})
+
+    try:
+        result = _api("GET", f"/v1.0/doc/workspaces/{workspace}/docs/{doc}")
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        return _dump({"success": True, "doc": data})
+    except Exception as e:
+        logger.error(f"查询文档信息异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_doc_create(
+    workspace_id: str,
+    name: str,
+    doc_type: str = "DOC",
+    parent_id: str = "",
+):
+    """在知识库中创建文档。
+
+    参数:
+    - workspace_id: 知识库/团队空间 ID(必填)
+    - name: 文档名称(必填)
+    - doc_type: 文档类型, 默认 DOC(常见 DOC/SHEET, 大小写不敏感)
+    - parent_id: 父目录 ID(可选, 缺省创建在根目录)
+
+    返回要点: doc_id 与 url(若服务端返回)。
+    线上冒烟待确认: body 字段名 name/docType/parentId、doc_type 取值与
+    响应字段(docId/id/url)。
+    """
+    logger.info(f"创建文档: workspace={_clip(workspace_id, 64)}, name={_clip(name, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    workspace = str(workspace_id or "").strip()
+    if not workspace:
+        return _dump({"success": False, "error": "workspace_id 必填"})
+    if not str(name or "").strip():
+        return _dump({"success": False, "error": "name 必填"})
+    kind = str(doc_type or "").strip().upper()
+    if not kind:
+        return _dump({"success": False, "error": "doc_type 必填"})
+
+    body: dict = {"name": str(name).strip(), "docType": kind}
+    if str(parent_id or "").strip():
+        body["parentId"] = str(parent_id).strip()
+
+    try:
+        result = _api("POST", f"/v1.0/doc/workspaces/{workspace}/docs", json_body=body)
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        return _dump({"success": True,
+                      "doc_id": data.get("docId") or data.get("id", ""),
+                      "url": data.get("url") or data.get("docUrl", ""),
+                      "message": "文档已创建"})
+    except Exception as e:
+        logger.error(f"创建文档异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_doc_add_member(
+    workspace_id: str,
+    doc_id: str,
+    user_id: str,
+    role: str = "READER",
+):
+    """为文档添加成员授权。
+
+    参数:
+    - workspace_id: 知识库/团队空间 ID(必填)
+    - doc_id: 文档 ID(必填)
+    - user_id: 被授权用户 userId(必填)
+    - role: 成员角色, 默认 READER(常见 READER/EDITOR/OWNER, 大小写不敏感)
+
+    返回要点: success 与透传结果 result。
+    线上冒烟待确认: 成员接口 body 形态与 role 取值; 当前按
+    {"members":[{"memberId":...,"memberType":"USER","role":...}]} 提交,
+    若线上要求扁平 {"userId":...,"role":...} 需按冒烟结果调整。
+    """
+    logger.info(f"添加文档成员: workspace={_clip(workspace_id, 64)}, doc={_clip(doc_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    workspace = str(workspace_id or "").strip()
+    if not workspace:
+        return _dump({"success": False, "error": "workspace_id 必填"})
+    doc = str(doc_id or "").strip()
+    if not doc:
+        return _dump({"success": False, "error": "doc_id 必填"})
+    member = str(user_id or "").strip()
+    if not member:
+        return _dump({"success": False, "error": "user_id 必填"})
+    member_role = str(role or "").strip().upper()
+    if not member_role:
+        return _dump({"success": False, "error": "role 必填"})
+
+    body = {"members": [{"memberId": member, "memberType": "USER", "role": member_role}]}
+
+    try:
+        result = _api("POST", f"/v1.0/doc/workspaces/{workspace}/docs/{doc}/members",
+                      json_body=body)
+        return _dump({"success": True, "message": "文档成员已授权",
+                      "role": member_role, "result": result})
+    except Exception as e:
+        logger.error(f"添加文档成员异常: {e}")
         return _dump({"success": False, "error": str(e)})
 
 

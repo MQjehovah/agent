@@ -1,11 +1,12 @@
-"""钉钉连接器(MCP)办公 API 扩展测试: 审批/待办/日程 + P0/P1 扩展。
+"""钉钉连接器(MCP)办公 API 扩展测试: 审批/待办/日程 + P0/P1 扩展 + 卡片/文档。
 
 P0: 审批评论/撤销/schema、消息撤回/已读、群管理(建群/成员/公告)。
 P1: 公告、钉钉日志、钉盘/文件消息、视频会议、通讯录进阶、日历更新/删除。
+本批: 互动/AI 卡片(模板/发卡/更新)、钉钉文档/知识库(空间/列表/信息/创建/成员)。
 
 用 monkeypatch 替换模块内 ``_api`` 注入假 HTTP: 每个新工具覆盖成功路径与
 参数必填/非法路径(参数错误不得触达 HTTP), 并断言工具注解(查询 read / 普通写
-非破坏 / 撤回/删除/终止类 destructive)与工具总数(53)。
+非破坏 / 撤回/删除/终止类 destructive)与工具总数(61)。
 """
 import importlib
 import json
@@ -895,6 +896,246 @@ def test_new_tools_api_error_passthrough(api):
     assert "HTTP 403" in payload["error"]
 
 
+# ── 互动/AI 卡片 ──
+
+def test_card_template_list_success(api):
+    module, calls, responses = api
+    responses["/v1.0/card/templates"] = {"templates": [{"id": "T1", "name": "AI 卡片"}]}
+    payload = _payload(module.dingtalk_card_template_list())
+    assert payload["success"] is True
+    assert payload["templates"][0]["id"] == "T1"
+    assert payload["count"] == 1
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["path"] == "/v1.0/card/templates"
+
+    # 字段名兜底: templateList / data
+    responses["/v1.0/card/templates"] = {"templateList": [{"id": "T2"}]}
+    payload = _payload(module.dingtalk_card_template_list())
+    assert payload["templates"] == [{"id": "T2"}]
+    responses["/v1.0/card/templates"] = {"data": {"items": []}}
+    payload = _payload(module.dingtalk_card_template_list())
+    assert payload["templates"] == [] and payload["count"] == 0
+
+
+def test_ai_card_send_success_and_validation(api):
+    module, calls, responses = api
+    # 键按插入顺序匹配: deliver 键须先于 instances(前者是后者的超集)注册
+    responses["/v1.0/card/instances/deliver"] = {"success": True}
+    responses["/v1.0/card/instances"] = {"success": True}
+    payload = _payload(module.dingtalk_ai_card_send(
+        template_id="TPL-1", card_data='{"msgTitle":"标题"}',
+        user_id="staff1", out_track_id="track-1"))
+    assert payload["success"] is True
+    assert payload["out_track_id"] == "track-1"
+    create = calls[0]
+    assert create["method"] == "POST"
+    assert create["path"] == "/v1.0/card/instances"
+    assert create["params"] == {"callbackType": "STREAM"}
+    assert create["json"]["cardTemplateId"] == "TPL-1"
+    assert create["json"]["outTrackId"] == "track-1"
+    assert create["json"]["callbackType"] == "STREAM"
+    assert create["json"]["cardData"] == {"cardParamMap": {"msgTitle": "标题"}}
+    deliver = calls[1]
+    assert deliver["path"] == "/v1.0/card/instances/deliver"
+    assert deliver["json"] == {"outTrackId": "track-1",
+                               "openSpaceId": "dtv1.card//IM_ROBOT.staff1",
+                               "userIdType": 1,
+                               "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT"}}
+
+    # 群 + 私聊双场域逐一投递; cardParamMap 形态原样透传; outTrackId 自动生成
+    payload = _payload(module.dingtalk_ai_card_send(
+        template_id="TPL-1", card_data='{"cardParamMap":{"content":"x"}}',
+        user_id="u2", open_conversation_id="cidX"))
+    assert payload["success"] is True
+    assert payload["out_track_id"].startswith("mcpcard_")
+    assert calls[2]["json"]["cardData"] == {"cardParamMap": {"content": "x"}}
+    assert calls[3]["json"]["openSpaceId"] == "dtv1.card//IM_ROBOT.u2"
+    assert calls[4]["json"]["openSpaceId"] == "dtv1.card//IM_GROUP.cidX"
+    assert calls[4]["json"]["imGroupOpenDeliverModel"] == {"robotCode": module.ROBOT_CODE}
+
+    for kwargs in (
+        {"template_id": "", "card_data": "{}", "user_id": "u1"},
+        {"template_id": "T", "card_data": "not-json", "user_id": "u1"},
+        {"template_id": "T", "card_data": "", "user_id": "u1"},
+        {"template_id": "T", "card_data": "{}", "user_id": "u1"},
+        {"template_id": "T", "card_data": "{}"},
+    ):
+        payload = _payload(module.dingtalk_ai_card_send(**kwargs))
+        assert payload["success"] is False
+        assert payload["error"]
+    assert len(calls) == 5
+
+
+def test_ai_card_send_deliver_error_keeps_track_id(api):
+    module, calls, responses = api
+    # 键按插入顺序匹配: deliver 键须先于 instances(前者是后者的超集)注册
+    responses["/v1.0/card/instances/deliver"] = RuntimeError(
+        "HTTP 400: code=InvalidParameter message=openSpaceId 非法")
+    responses["/v1.0/card/instances"] = {"success": True}
+    payload = _payload(module.dingtalk_ai_card_send(
+        template_id="T", card_data='{"a":"1"}', user_id="u1", out_track_id="tk"))
+    assert payload["success"] is False
+    assert payload["out_track_id"] == "tk"
+    assert "code=InvalidParameter" in payload["error"]
+
+
+def test_card_instance_update_success_and_validation(api):
+    module, calls, responses = api
+    responses["/v1.0/card/instances"] = {"success": True}
+    payload = _payload(module.dingtalk_card_instance_update(
+        out_track_id="track-1", card_data='{"cardParamMap":{"status":"done"}}'))
+    assert payload["success"] is True
+    call = calls[0]
+    assert call["method"] == "PUT"
+    assert call["path"] == "/v1.0/card/instances"
+    assert call["json"] == {"outTrackId": "track-1",
+                            "cardData": {"cardParamMap": {"status": "done"}},
+                            "cardUpdateOptions": {"updateCardDataByKey": True}}
+
+    responses["/v1.0/card/instances"] = {"success": False}
+    payload = _payload(module.dingtalk_card_instance_update("track-1", '{"a":"1"}'))
+    assert payload["success"] is False
+    assert payload["error"]
+
+    for kwargs in (
+        {"out_track_id": "", "card_data": "{}"},
+        {"out_track_id": "t", "card_data": "[]"},
+        {"out_track_id": "t", "card_data": "bad-json"},
+    ):
+        payload = _payload(module.dingtalk_card_instance_update(**kwargs))
+        assert payload["success"] is False
+    assert len(calls) == 2
+
+
+# ── 钉钉文档/知识库 ──
+
+def test_doc_workspaces_success(api):
+    module, calls, responses = api
+    responses["/v1.0/doc/workspaces"] = {"workspaces": [{"id": "WS1", "name": "研发知识库"}]}
+    payload = _payload(module.dingtalk_doc_workspaces())
+    assert payload["success"] is True
+    assert payload["workspaces"][0]["id"] == "WS1"
+    assert payload["count"] == 1
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["path"] == "/v1.0/doc/workspaces"
+
+    # 字段名兜底: workspaceList / data
+    responses["/v1.0/doc/workspaces"] = {"workspaceList": [{"id": "WS2"}]}
+    payload = _payload(module.dingtalk_doc_workspaces())
+    assert payload["workspaces"] == [{"id": "WS2"}]
+
+
+def test_doc_list_success_and_validation(api):
+    module, calls, responses = api
+    responses["/v1.0/doc/workspaces/WS1/docs"] = {
+        "docs": [{"docId": "D1", "name": "设计稿"}], "nextToken": "NT2"}
+    payload = _payload(module.dingtalk_doc_list(
+        workspace_id="WS1", parent_id="P1", page_size=500, next_token="NT1"))
+    assert payload["success"] is True
+    assert payload["docs"][0]["docId"] == "D1"
+    assert payload["count"] == 1
+    assert payload["next_token"] == "NT2"
+    assert calls[0]["path"] == "/v1.0/doc/workspaces/WS1/docs"
+    assert calls[0]["params"] == {"maxResults": 100, "parentId": "P1", "nextToken": "NT1"}
+
+    for kwargs in ({"workspace_id": ""}, {"workspace_id": "WS1", "page_size": 0},
+                   {"workspace_id": "WS1", "page_size": True}):
+        payload = _payload(module.dingtalk_doc_list(**kwargs))
+        assert payload["success"] is False
+    assert len(calls) == 1
+
+
+def test_doc_info_success_and_validation(api):
+    module, calls, responses = api
+    responses["/v1.0/doc/workspaces/WS1/docs/D1"] = {
+        "docId": "D1", "name": "设计稿", "docType": "DOC"}
+    payload = _payload(module.dingtalk_doc_info("WS1", "D1"))
+    assert payload["success"] is True
+    assert payload["doc"]["name"] == "设计稿"
+    assert calls[0]["path"] == "/v1.0/doc/workspaces/WS1/docs/D1"
+
+    for kwargs in ({"workspace_id": "", "doc_id": "D1"},
+                   {"workspace_id": "WS1", "doc_id": ""}):
+        payload = _payload(module.dingtalk_doc_info(**kwargs))
+        assert payload["success"] is False
+    assert len(calls) == 1
+
+
+def test_doc_create_success_and_validation(api):
+    module, calls, responses = api
+    responses["/v1.0/doc/workspaces/WS1/docs"] = {"docId": "D2", "url": "https://d/D2"}
+    payload = _payload(module.dingtalk_doc_create(
+        workspace_id="WS1", name="需求文档", doc_type="doc", parent_id="P1"))
+    assert payload["success"] is True
+    assert payload["doc_id"] == "D2"
+    assert payload["url"] == "https://d/D2"
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["json"] == {"name": "需求文档", "docType": "DOC", "parentId": "P1"}
+
+    for kwargs in (
+        {"workspace_id": "", "name": "n"},
+        {"workspace_id": "WS1", "name": ""},
+        {"workspace_id": "WS1", "name": "n", "doc_type": " "},
+    ):
+        payload = _payload(module.dingtalk_doc_create(**kwargs))
+        assert payload["success"] is False
+    assert len(calls) == 1
+
+
+def test_doc_add_member_success_and_validation(api):
+    module, calls, responses = api
+    responses["/docs/D1/members"] = {"success": True}
+    payload = _payload(module.dingtalk_doc_add_member(
+        workspace_id="WS1", doc_id="D1", user_id="u1", role="editor"))
+    assert payload["success"] is True
+    assert payload["role"] == "EDITOR"
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["path"] == "/v1.0/doc/workspaces/WS1/docs/D1/members"
+    assert calls[0]["json"] == {"members": [
+        {"memberId": "u1", "memberType": "USER", "role": "EDITOR"}]}
+
+    for kwargs in (
+        {"workspace_id": "", "doc_id": "D1", "user_id": "u1"},
+        {"workspace_id": "WS1", "doc_id": "", "user_id": "u1"},
+        {"workspace_id": "WS1", "doc_id": "D1", "user_id": ""},
+        {"workspace_id": "WS1", "doc_id": "D1", "user_id": "u1", "role": " "},
+    ):
+        payload = _payload(module.dingtalk_doc_add_member(**kwargs))
+        assert payload["success"] is False
+    assert len(calls) == 1
+
+
+def test_doc_api_error_passthrough(api):
+    module, calls, responses = api
+    responses["/v1.0/doc/workspaces"] = RuntimeError(
+        "HTTP 403: code=Forbidden.AccessDenied message=无权限")
+    payload = _payload(module.dingtalk_doc_workspaces())
+    assert payload["success"] is False
+    assert "code=Forbidden.AccessDenied" in payload["error"]
+
+
+def test_api_error_detail_extracts_errcode_errmsg(monkeypatch):
+    module = _load()
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"errcode":40035,"errmsg":"参数错误"}'
+
+        def json(self):
+            return {"errcode": 40035, "errmsg": "参数错误"}
+
+    def fake_request(method, url, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr(module.requests, "request", fake_request)
+    monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
+    with pytest.raises(RuntimeError) as excinfo:
+        module._api("GET", "/v1.0/doc/workspaces")
+    assert "HTTP 400" in str(excinfo.value)
+    assert "errcode=40035" in str(excinfo.value)
+    assert "errmsg=参数错误" in str(excinfo.value)
+
+
 # ── 注解与工具总数 ──
 
 async def test_tool_annotations_and_count():
@@ -902,7 +1143,7 @@ async def test_tool_annotations_and_count():
     from mcp import Client
     async with Client(module.mcp, raise_exceptions=True) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-    assert len(tools) == 53
+    assert len(tools) == 61
 
     read_tools = (
         "dingtalk_approval_instance", "dingtalk_approval_tasks",
@@ -914,6 +1155,8 @@ async def test_tool_annotations_and_count():
         "dingtalk_drive_download_url", "dingtalk_conference_query",
         "dingtalk_user_by_unionid", "dingtalk_department_detail",
         "dingtalk_role_list", "dingtalk_external_contacts",
+        "dingtalk_card_template_list",
+        "dingtalk_doc_workspaces", "dingtalk_doc_list", "dingtalk_doc_info",
     )
     safe_write_tools = (
         "dingtalk_approval_start", "dingtalk_approval_comment",
@@ -924,6 +1167,8 @@ async def test_tool_annotations_and_count():
         "dingtalk_report_submit", "dingtalk_drive_upload",
         "dingtalk_send_file_single", "dingtalk_send_file_group",
         "dingtalk_conference_create",
+        "dingtalk_ai_card_send", "dingtalk_card_instance_update",
+        "dingtalk_doc_create", "dingtalk_doc_add_member",
     )
     destructive_tools = (
         "dingtalk_approval_action", "dingtalk_approval_revoke",
@@ -940,4 +1185,4 @@ async def test_tool_annotations_and_count():
     for name in destructive_tools:
         assert tools[name].annotations.read_only_hint is False, name
         assert tools[name].annotations.destructive_hint is True, name
-    assert len(read_tools) + len(safe_write_tools) + len(destructive_tools) == 38
+    assert len(read_tools) + len(safe_write_tools) + len(destructive_tools) == 46

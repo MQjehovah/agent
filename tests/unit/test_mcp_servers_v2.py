@@ -36,7 +36,8 @@ SERVER_TOOL_COUNTS = {
     "default": 2,
     # 15(消息/通讯录/卡片) + 10(审批/待办/日程, 2026-09 办公 API 扩展)
     # + 28(P0/P1: 审批补全/消息治理/群管理/公告/日志/钉盘/会议/通讯录/日历)
-    "dingtalk": 53,
+    # + 8(AI/互动卡片 3 + 钉钉文档/知识库 5)
+    "dingtalk": 61,
     "mysql_query": 3,
     "remote_terminal": 15,
     "rosiwit_cloud_remote": 71,
