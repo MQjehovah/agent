@@ -335,6 +335,7 @@ class SubagentManager:
         })
 
         # 注入团队共享技能（config/agents/<team>/skills/）
+        # 注: 合并逻辑保持全量(技能需注册进 manager 供后续按身份过滤), 提示行另按可见性过滤
         team_skills_dir = os.path.join(self.base_dir, team_name, "skills")
         if os.path.exists(team_skills_dir):
             from skills import SkillManager
@@ -347,11 +348,11 @@ class SubagentManager:
                         _sk = _tsm.get_skill(_sn)
                         if _sk:
                             agent.skill_manager.skills[_sn] = _sk
-            agent.skill_manager._build_builtin_tools()
 
         # 在 system prompt 末尾注入技能使用指引（比 task prompt 更有权威性）
         if agent.skill_manager:
-            skill_names = agent.skill_manager.list_skills()
+            # 只列当前身份可见的技能(受限技能不进提示, 防绕过 <available_skills> 过滤)
+            skill_names = agent.skill_manager.list_visible_skills()
             if skill_names:
                 skill_guide = (
                     "\n\n## 技能工具\n"

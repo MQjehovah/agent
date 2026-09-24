@@ -550,8 +550,8 @@ async def _main_with_args(args):
                                 _sk = _tsm.get_skill(_sn)
                                 if _sk:
                                     agent.skill_manager.skills[_sn] = _sk
-                    agent.skill_manager._build_builtin_tools()
-                    _skill_names = agent.skill_manager.list_skills()
+                    # 只列当前身份可见的技能(CLI 无部门/角色身份, 受限技能不列出)
+                    _skill_names = agent.skill_manager.list_visible_skills()
                     if _skill_names:
                         _skill_guide = (
                             "\n\n## 技能工具\n"

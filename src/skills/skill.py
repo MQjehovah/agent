@@ -161,7 +161,6 @@ class SkillManager:
         self.tools: list[dict[str, Any]] = []
         self._active_skills: dict[str, str] = {}
         self._load_all()
-        self._build_builtin_tools()
 
     def _load_all(self) -> int:
         if not os.path.exists(self.skills_dir):
@@ -281,11 +280,6 @@ class SkillManager:
             }
         }]
 
-    def _build_builtin_tools(self):
-        """构建内置工具定义(全量已启用技能的目录快照, 供初始化/团队技能合并后刷新)。"""
-        self._builtin_tool_defs = self._build_skill_tool_defs(
-            [s for s in self.skills.values() if s.enabled])
-
     @staticmethod
     def _current_user_access() -> tuple[str, str]:
         """当前 run 用户的 (部门, 显式角色); 全空=渠道未解析身份, 受限技能不可见。"""
@@ -325,11 +319,12 @@ class SkillManager:
             available = self.list_visible_skills()
             return json.dumps({"error": f"Skill not found: {skill_name}", "available_skills": available}, ensure_ascii=False)
 
-        # 执行前二次校验(防绕过 <available_skills> 清单直接点名调用): 无权技能一律拒绝
+        # 执行前二次校验(防绕过 <available_skills> 清单直接点名调用): 无权技能一律拒绝。
+        # 对外文案不回显技能名(避免确认受限技能存在性); 技能名仅记服务端告警日志。
         if not skill.is_available_to(*self._current_user_access()):
             logger.warning(f"拒绝执行无权访问的技能: {skill_name}")
             return json.dumps({
-                "error": f"技能 {skill_name} 当前不可用（无权访问）",
+                "error": "该技能当前不可用或无权访问",
                 "available_skills": self.list_visible_skills(),
             }, ensure_ascii=False)
 
@@ -382,13 +377,14 @@ class SkillManager:
         return "\n\n".join(lines)
 
     def get_skills_prompt(self) -> str:
-        if not self.skills:
+        """可用技能清单文本(按当前 run 用户可见性过滤, 不列受限技能)。"""
+        visible = self.visible_skills()
+        if not visible:
             return ""
 
         lines = ["\n可用技能（通过 execute_skill 工具激活）:\n"]
-        for skill in self.skills.values():
-            if skill.enabled:
-                lines.append(f"  - {skill.name}: {skill.description}")
+        for skill in visible:
+            lines.append(f"  - {skill.name}: {skill.description}")
 
         return "\n".join(lines)
 

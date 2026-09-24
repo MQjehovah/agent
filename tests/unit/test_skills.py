@@ -113,6 +113,7 @@ async def test_department_restricted_execution_denied_for_other_or_empty_dept(tm
             out = await mgr.execute_tool("skill", {"name": "it-skill"})
         data = json.loads(out)
         assert "error" in data
+        assert "it-skill" not in data["error"]                  # 拒绝文案不回显技能名
         assert "it-skill" not in data.get("available_skills", [])  # 不泄漏受限技能名
         assert "it-skill" not in mgr._active_skills               # 未激活
     with _as_user("信息部", "default"):
@@ -307,3 +308,54 @@ async def test_router_passes_user_department_and_role(tmp_path):
     out = await router.route("hi", channel="cli")
     assert out["user_department"] == ""   # 未提供身份: 受限技能不可见(fail-closed)
     assert out["user_role"] == ""
+
+
+# ===== 8. system prompt 技能清单可见性(团队子代理 / get_skills_prompt) =====
+
+def _make_team(tmp_path) -> str:
+    """临时团队(成员 + 团队技能): 返回 SubagentManager 的 base_dir。"""
+    base = tmp_path / "agents"
+    team = base / "测试团队"
+    (team / "agents" / "成员A").mkdir(parents=True)
+    (team / "TEAM.md").write_text(
+        "---\nname: 测试团队\nmembers: [成员A]\n---\n\n团队说明", encoding="utf-8")
+    (team / "agents" / "成员A" / "PROMPT.md").write_text(
+        "---\nname: 成员A\ndescription: 测试成员\n---\n\n你是成员A", encoding="utf-8")
+    _add_skill(str(team / "skills"), "open-skill")
+    _add_skill(str(team / "skills"), "it-skill", "departments: [信息部]\n")
+    return str(base)
+
+
+async def test_team_subagent_prompt_only_lists_visible_skills(tmp_path, monkeypatch):
+    """团队子代理 system prompt 的技能指引只列当前身份可见技能(合并仍全量)。"""
+    from agent.subagent import SubagentManager
+
+    async def _noop_initialize(self, session_id=None):
+        pass
+
+    monkeypatch.setattr(Agent, "initialize", _noop_initialize)
+    mgr = SubagentManager(_make_team(tmp_path), parent_workspace=str(tmp_path))
+
+    with _as_user("信息部", "default"):
+        agent = await mgr._create_team_subagent("测试团队", "成员A")
+        assert "open-skill" in agent.system_prompt
+        assert "it-skill" in agent.system_prompt
+
+    with _as_user("研发部", "default"):
+        agent = await mgr._create_team_subagent("测试团队", "成员A")
+        # 合并保持全量: 受限技能已注册进 manager(供有权用户使用), 只是不出现在提示里
+        assert "it-skill" in agent.skill_manager.skills
+        assert "open-skill" in agent.system_prompt
+        assert "it-skill" not in agent.system_prompt
+
+
+def test_get_skills_prompt_filters_by_visibility(tmp_path):
+    d = _skills_dir(tmp_path)
+    _add_skill(d, "open-skill")
+    _add_skill(d, "it-skill", "departments: [信息部]\n")
+    mgr = SkillManager(d)
+    with _as_user("研发部", "default"):
+        prompt = mgr.get_skills_prompt()
+        assert "open-skill" in prompt and "it-skill" not in prompt
+    with _as_user("信息部", "default"):
+        assert "it-skill" in mgr.get_skills_prompt()
