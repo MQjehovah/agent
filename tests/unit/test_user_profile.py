@@ -22,13 +22,19 @@ def _agent(tmp_path) -> Agent:
 
 
 class _FakeRbac:
-    def __init__(self, users: dict):
+    def __init__(self, users: dict, identities: dict | None = None):
         self.users = users
+        self.identities = identities or {}
         self.calls: list[int] = []
+        self.identity_calls: list[int] = []
 
     def get_user(self, uid: int):
         self.calls.append(uid)
         return self.users.get(uid)
+
+    def list_user_identities(self, user_id: int):
+        self.identity_calls.append(user_id)
+        return self.identities.get(user_id, [])
 
 
 class _BrokenRbac:
@@ -119,6 +125,70 @@ def test_rbac_not_initialized_is_silent(tmp_path):
     ctx = RunContext(user_id="web:3", user_name="张明")
     agent._apply_user_profile(ctx)
     assert "当前用户：张明。" in ctx.system_dynamic
+
+
+# ===== 2b. 钉钉 userId: rbac_user_identities 绑定 =====
+
+def test_profile_includes_dingtalk_uid_when_bound(tmp_path):
+    agent = _agent(tmp_path)
+    agent.rbac = _FakeRbac(
+        {3: {"id": 3, "name": "202202100024", "display_name": "季明清",
+             "department": "应用软件部"}},
+        identities={3: [
+            {"platform": "gitlab", "platform_uid": "gl-1"},
+            {"platform": "dingtalk", "platform_uid": "1642483198771392"},
+        ]})
+    ctx = RunContext(user_id="web:3", user_name="季明清",
+                     user_department="应用软件部", user_role="admin")
+    agent._apply_user_profile(ctx)
+    line = ctx.system_dynamic.split("## 当前用户\n\n", 1)[1]
+    assert "钉钉 userId：1642483198771392" in line
+    assert "\n" not in line                                   # 仍单行展平
+    assert line.index("角色：admin") < line.index("钉钉 userId")
+    assert agent.rbac.identity_calls == [3]
+
+
+def test_profile_omits_dingtalk_when_unbound(tmp_path):
+    agent = _agent(tmp_path)
+    agent.rbac = _FakeRbac({3: {"id": 3, "name": "202202100024"}}, identities={})
+    ctx = RunContext(user_id="web:3", user_name="张明")
+    agent._apply_user_profile(ctx)
+    assert "钉钉 userId" not in ctx.system_dynamic
+
+
+def test_profile_dingtalk_lookup_failure_is_silent(tmp_path):
+    class _BrokenIdentities(_FakeRbac):
+        def list_user_identities(self, user_id):
+            raise RuntimeError("db down")
+
+    agent = _agent(tmp_path)
+    agent.rbac = _BrokenIdentities({3: {"id": 3, "name": "202202100024"}})
+    ctx = RunContext(user_id="web:3", user_name="张明")
+    agent._apply_user_profile(ctx)
+    assert "当前用户：张明（工号 202202100024）" in ctx.system_dynamic
+    assert "钉钉 userId" not in ctx.system_dynamic
+
+
+def test_resolve_dingtalk_uid_picks_platform_and_flattens():
+    from agent.user_profile import resolve_dingtalk_uid
+
+    rbac = _FakeRbac({}, identities={3: [
+        {"platform": "DingTalk", "platform_uid": " 1642483198771392 "}]})
+    assert resolve_dingtalk_uid(3, rbac=rbac) == "1642483198771392"
+    assert resolve_dingtalk_uid(None, rbac=rbac) == ""
+    assert resolve_dingtalk_uid(9, rbac=rbac) == ""
+
+
+def test_resolve_dingtalk_uid_error_and_unavailable_are_empty(monkeypatch):
+    from agent import user_profile
+
+    class _Broken:
+        def list_user_identities(self, user_id):
+            raise RuntimeError("db down")
+
+    assert user_profile.resolve_dingtalk_uid(3, rbac=_Broken()) == ""
+    monkeypatch.setattr(user_profile, "_resolve_rbac", lambda rbac=None: None)
+    assert user_profile.resolve_dingtalk_uid(3) == ""
 
 
 def test_profile_fields_flattened_to_single_line(tmp_path):

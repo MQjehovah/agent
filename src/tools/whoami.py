@@ -25,8 +25,8 @@ class WhoamiTool(BuiltinTool):
     @property
     def description(self) -> str:
         return (
-            "返回当前用户的身份画像（姓名、工号、部门、角色、渠道、用户 ID）。"
-            "用于回答“我是谁/我的工号/我的部门/我的角色”等个人身份问题；"
+            "返回当前用户的身份画像（姓名、工号、部门、角色、钉钉 userId、渠道、用户 ID）。"
+            "用于回答“我是谁/我的工号/我的部门/我的角色/我的钉钉号”等个人身份问题；"
             "也可用于核对系统提示中注入的当前用户信息。"
         )
 
@@ -46,6 +46,7 @@ class WhoamiTool(BuiltinTool):
             f"- 工号：{profile['employee_id'] or _UNKNOWN}",
             f"- 部门：{profile['department'] or _UNKNOWN}",
             f"- 角色：{role or _UNKNOWN}",
+            f"- 钉钉 userId：{profile.get('dingtalk') or _UNKNOWN}",
             f"- 渠道：{profile['channel'] or _UNKNOWN}",
             f"- 用户 ID：{profile['uid'] or _UNKNOWN}",
         ]

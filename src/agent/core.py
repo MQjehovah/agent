@@ -1042,7 +1042,8 @@ class Agent:
         - 仅非群聊注入（沿用「群内不注入触发人私有信息」既有约定，防串隐私）；
         - user_name/user_department/user_role 全空不注入（不产生空段；仅凭可解析 uid
           不足以判定「当前用户」，工号/显示名仅作已有身份的补齐）；
-        - 工号/显示名/部门可由 user_id 数字 uid 查 rbac 补齐（查不到静默跳过，不影响运行）；
+        - 工号/显示名/部门/钉钉 userId 可由 user_id 数字 uid 查 rbac 补齐
+          （查不到/未绑定静默跳过，不影响运行）；
         - static 前缀与既有 dynamic 内容不动（与渐进披露提示共存，prompt cache 不受影响）。
         """
         if ctx is None or getattr(ctx, "group_context", False):
@@ -1057,6 +1058,7 @@ class Agent:
         department = profile["department"]
         role = profile["user_role"]  # 身份只看显式 user_role, 不用权限 role 哨兵
         employee_id = profile["employee_id"]
+        dingtalk = profile.get("dingtalk", "")
 
         clauses: list[str] = []
         if name:
@@ -1070,6 +1072,8 @@ class Agent:
             clauses.append(f"部门：{department}")
         if role:
             clauses.append(f"角色：{role}")
+        if dingtalk:
+            clauses.append(f"钉钉 userId：{dingtalk}")
         if not clauses:
             return
 

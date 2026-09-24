@@ -77,9 +77,29 @@ async def test_whoami_display_name_and_role_fallback(monkeypatch):
 async def test_whoami_missing_fields_show_unknown(monkeypatch):
     _patch_rbac(monkeypatch, None)
     out = await _execute(RunContext(user_id="cli:admin", role=""))
-    for field in ("姓名：未知", "工号：未知", "部门：未知", "角色：未知", "用户 ID：未知"):
+    for field in ("姓名：未知", "工号：未知", "部门：未知", "角色：未知",
+                  "钉钉 userId：未知", "用户 ID：未知"):
         assert field in out
     assert "渠道：cli" in out
+
+
+async def test_whoami_includes_dingtalk_uid(monkeypatch):
+    """已绑定钉钉: whoami 返回 platform_uid。"""
+    from agent import user_profile
+
+    monkeypatch.setattr(user_profile, "resolve_rbac_user",
+                        lambda uid, rbac=None: {"id": 3, "name": "202202100024",
+                                                "display_name": "季明清"})
+    monkeypatch.setattr(user_profile, "resolve_dingtalk_uid",
+                        lambda user_id, rbac=None: "1642483198771392"
+                        if str(user_id) == "3" else "")
+    out = await _execute(RunContext(user_id="web:3", user_name="季明清",
+                                    user_department="应用软件部", user_role="admin"))
+    assert "姓名：季明清" in out
+    assert "工号：202202100024" in out
+    assert "部门：应用软件部" in out
+    assert "角色：admin" in out
+    assert "钉钉 userId：1642483198771392" in out
 
 
 async def test_whoami_group_context_still_returns_trigger_user(monkeypatch):
@@ -117,12 +137,25 @@ def test_resolve_user_profile_with_real_rbac(tmp_path):
     rbac = RBACManager(storage)
     uid = rbac.create_user(name="202202100024", department="数字中台部",
                            role="default", display_name="张明")
+    rbac.bind_identity(uid, "dingtalk", "1642483198771392")
     profile = resolve_user_profile(RunContext(user_id=f"web:{uid}"), rbac=rbac)
     assert profile["uid"] == str(uid)
     assert profile["channel"] == "web"
     assert profile["name"] == "张明"
     assert profile["employee_id"] == "202202100024"
     assert profile["department"] == "数字中台部"      # ctx 空 → rbac 兜底
+    assert profile["dingtalk"] == "1642483198771392"
+
+
+def test_resolve_user_profile_dingtalk_empty_when_unbound(tmp_path):
+    from agent.user_profile import resolve_user_profile
+    from security.rbac import RBACManager
+    from storage.storage import Storage
+
+    rbac = RBACManager(Storage(str(tmp_path)))
+    uid = rbac.create_user(name="202202100024", department="数字中台部")
+    profile = resolve_user_profile(RunContext(user_id=f"web:{uid}"), rbac=rbac)
+    assert profile["dingtalk"] == ""
 
 
 def test_resolve_rbac_user_returns_none_when_storage_unavailable(monkeypatch):
