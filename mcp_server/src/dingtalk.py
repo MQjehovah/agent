@@ -182,16 +182,36 @@ def _split_ids(value: str) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
-# unionId 换算缓存: 钉钉 userId(纯数字) → unionId; 进程内缓存, 避免重复查询
+# 用户标识换算缓存: 原始值(钉钉 userId / unionId / 工号) → (userid, unionid)
 _UNIONID_CACHE: dict[str, str] = {}
+_USERID_CACHE: dict[str, tuple[str, str]] = {}
+# 通讯录索引缓存(工号→用户 / unionid→userid / userid→unionid): TTL 懒构建;
+# 构建失败不写缓存(下次重试), 调用方走原错误路径
+_DIRECTORY_INDEX_TTL_SECONDS = 1800
+_DIRECTORY_INDEX_MAX_PAGES = 50
+_directory_index_cache: dict = {"built_at": 0.0, "data": None}
+
+
+def _identity_not_found_hint(value: str) -> str:
+    """用户标识换算失败的统一可执行文案。"""
+    return (f"未找到该钉钉用户(userId={value}): 工号可查通讯录索引匹配, "
+            "或请用当前用户画像中的钉钉 userId/unionId")
+
+
+def _oapi_call(path: str, payload: dict) -> dict:
+    """旧版 OAPI POST 包装: 传输/解析失败抛 RuntimeError; 返回 body(含 errcode)。"""
+    body, err = _legacy_oapi_post(path, payload)
+    if err:
+        raise RuntimeError(err)
+    return body
 
 
 def _resolve_unionid(value: str) -> tuple[str, str]:
-    """接受钉钉 userId(纯数字)或 unionId, 纯数字自动换算; 返回 (union_id, error)。
+    """接受钉钉 userId(纯数字)/工号(纯数字)/unionId, 自动换算; 返回 (union_id, error)。
 
-    纯数字视为 userId: 查进程内缓存, 未命中调 topapi/v2/user/get 取 result.unionid
-    并缓存; 查不到给出明确错误(未找到该钉钉用户(userId=...))。非纯数字视为
-    unionId 原样返回(也写入缓存)。error 非空表示失败, 调用方应直接返回错误。
+    纯数字: 查进程内缓存, 未命中调 topapi/v2/user/get 取 result.unionid; user/get
+    失败(如该数字实为工号) → 查通讯录索引 by_job_number 兜底。非纯数字视为 unionId
+    原样返回(也写入缓存)。error 非空表示失败, 调用方应直接返回错误。
     """
     raw = str(value or "").strip()
     if not raw:
@@ -211,13 +231,152 @@ def _resolve_unionid(value: str) -> tuple[str, str]:
     except Exception as e:
         return "", f"换算 unionId 失败(userId={raw}): {e}"
     if not isinstance(body, dict) or body.get("errcode") != 0:
+        record = _directory_index()["by_job_number"].get(raw)
+        if record and record.get("unionid"):
+            _UNIONID_CACHE[raw] = record["unionid"]
+            _USERID_CACHE.setdefault(raw, (record["userid"], record["unionid"]))
+            return record["unionid"], ""
         errmsg = body.get("errmsg") if isinstance(body, dict) else ""
-        return "", f"未找到该钉钉用户(userId={raw})" + (f": {errmsg}" if errmsg else "")
+        return "", _identity_not_found_hint(raw) + (f"（{errmsg}）" if errmsg else "")
     union_id = str((body.get("result") or {}).get("unionid") or "").strip()
     if not union_id:
-        return "", f"未找到该钉钉用户(userId={raw}): 返回缺少 unionid"
+        return "", _identity_not_found_hint(raw) + "（user/get 返回缺少 unionid）"
     _UNIONID_CACHE[raw] = union_id
     return union_id, ""
+
+
+def _resolve_dingtalk_userid(value: str) -> tuple[str, str, str]:
+    """钉钉用户标识(钉钉 userId/工号/unionId) → (userid, unionid, error)。
+
+    - 纯数字: 先 topapi/v2/user/get 快路径(真 userId); 失败(如该数字实为工号) →
+      查通讯录索引 by_job_number 兜底, 命中返回其 userid/unionid;
+    - 非数字: 调 topapi/user/getbyunionid 换 userid; 失败返回原值与错误;
+    - 命中结果进程内缓存; 失败返回可执行错误(不抛)。
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "", "", "dingtalk_userid/unionId 不能为空"
+    cached = _USERID_CACHE.get(raw)
+    if cached:
+        return cached[0], cached[1], ""
+
+    if raw.isdigit():
+        try:
+            body = _oapi_call("/topapi/v2/user/get", {"userid": raw})
+        except Exception as e:
+            return "", "", f"换算钉钉 userId 失败({raw}): {e}"
+        if body.get("errcode") == 0:
+            unionid = str((body.get("result") or {}).get("unionid") or "").strip()
+            _USERID_CACHE[raw] = (raw, unionid)
+            if unionid:
+                _UNIONID_CACHE.setdefault(raw, unionid)
+            return raw, unionid, ""
+        record = _directory_index()["by_job_number"].get(raw)
+        if record:
+            userid, unionid = record["userid"], record.get("unionid", "")
+            _USERID_CACHE[raw] = (userid, unionid)
+            if unionid:
+                _UNIONID_CACHE.setdefault(raw, unionid)
+            return userid, unionid, ""
+        return "", "", _identity_not_found_hint(raw)
+
+    try:
+        body = _oapi_call("/topapi/user/getbyunionid", {"unionid": raw})
+    except Exception as e:
+        return raw, "", f"换算钉钉 userId 失败({raw}): {e}"
+    if body.get("errcode") == 0:
+        userid = str((body.get("result") or {}).get("userid") or "").strip()
+        if userid:
+            _USERID_CACHE[raw] = (userid, raw)
+            _UNIONID_CACHE.setdefault(raw, raw)
+            return userid, raw, ""
+    return raw, "", _identity_not_found_hint(raw)
+
+
+def _empty_directory_index() -> dict:
+    return {"by_job_number": {}, "by_userid": {}, "by_unionid": {}}
+
+
+def _directory_index() -> dict:
+    """通讯录索引(工号/unionid/userid → 用户); TTL 1800s 懒构建, 失败返回空索引。
+
+    构建需读通讯录(部门全量 + 各部门用户分页); 任何失败仅告警并返回空索引,
+    不抛异常(调用方自然走原错误路径)。
+    """
+    cached = _directory_index_cache["data"]
+    now = time.time()
+    if cached is not None and now - _directory_index_cache["built_at"] < _DIRECTORY_INDEX_TTL_SECONDS:
+        return cached
+    try:
+        data = _build_directory_index()
+    except Exception as e:
+        logger.warning(f"通讯录索引构建失败(忽略, 走原错误路径): {e}")
+        return _empty_directory_index()
+    _directory_index_cache["data"] = data
+    _directory_index_cache["built_at"] = now
+    logger.info(f"通讯录索引构建完成: {len(data['by_userid'])} 个用户")
+    return data
+
+
+def _build_directory_index() -> dict:
+    """枚举全部部门(含根 1)与部门用户, 构建工号/unionid/userid 索引。"""
+    department_ids = _fetch_all_department_ids()
+    by_userid: dict[str, dict] = {}
+    for dept_id in department_ids:
+        for record in _fetch_department_users(dept_id):
+            by_userid[record["userid"]] = record
+    by_job_number = {r["job_number"]: r for r in by_userid.values() if r.get("job_number")}
+    by_unionid = {r["unionid"]: r["userid"] for r in by_userid.values() if r.get("unionid")}
+    return {"by_job_number": by_job_number, "by_userid": by_userid, "by_unionid": by_unionid}
+
+
+def _fetch_all_department_ids() -> list[int]:
+    """复用部门 listsub 递归(fetch_child)取全部部门 id(含根部门 1)。"""
+    payload = json.loads(dingtalk_get_department_list(1, True, "zh_CN"))
+    if not isinstance(payload, dict) or not payload.get("success"):
+        raise RuntimeError((payload or {}).get("error") or "获取部门列表失败")
+    ids = {1}
+    for dept in payload.get("departments") or []:
+        dept_id = dept.get("dept_id")
+        if isinstance(dept_id, int):
+            ids.add(dept_id)
+    return sorted(ids)
+
+
+def _fetch_department_users(dept_id: int) -> list[dict]:
+    """按部门分页(oapi v2 user/list, size=100)拉取用户; 单部门最多 50 页。"""
+    records: list[dict] = []
+    cursor = 0
+    for _ in range(_DIRECTORY_INDEX_MAX_PAGES):
+        body, err = _legacy_oapi_post(
+            "/topapi/v2/user/list",
+            {"dept_id": dept_id, "cursor": cursor, "size": 100})
+        if err:
+            raise RuntimeError(f"获取部门用户失败(dept_id={dept_id}): {err}")
+        if body.get("errcode") != 0:
+            raise RuntimeError(
+                f"获取部门用户失败(dept_id={dept_id}): errcode={body.get('errcode')} "
+                f"errmsg={body.get('errmsg') or ''}")
+        result = body.get("result") if isinstance(body.get("result"), dict) else {}
+        for item in result.get("list") or []:
+            if not isinstance(item, dict):
+                continue
+            userid = str(item.get("userid") or "").strip()
+            if not userid:
+                continue
+            records.append({
+                "userid": userid,
+                "unionid": str(item.get("unionid") or "").strip(),
+                "job_number": str(item.get("job_number") or "").strip(),
+                "name": item.get("name") or "",
+            })
+        if not result.get("has_more"):
+            break
+        next_cursor = result.get("next_cursor")
+        if next_cursor is None or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    return records
 
 
 def _int_arg(value, name: str, minimum: int = 0) -> tuple[int, str]:
@@ -731,7 +890,8 @@ def dingtalk_get_user_detail(dingtalk_userid: str, language: str = "zh_CN"):
     """获取用户详情。
 
     参数:
-    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 必填
+    - dingtalk_userid: 钉钉用户标识(必填): 钉钉 userId, 或工号(纯数字, user/get
+        失败后经通讯录索引匹配换算); 不是本系统 userId
     - language: 语言，默认 zh_CN
     """
     logger.info(f"获取用户详情: {dingtalk_userid}")
@@ -740,13 +900,19 @@ def dingtalk_get_user_detail(dingtalk_userid: str, language: str = "zh_CN"):
     if err:
         return err
 
-    try:
-        token = _get_access_token()
-        url = f"https://oapi.dingtalk.com/topapi/v2/user/get?access_token={token}"
+    raw_userid = str(dingtalk_userid or "").strip()
+    if not raw_userid:
+        return json.dumps({"success": False, "error": "dingtalk_userid 必填"}, ensure_ascii=False)
 
-        payload = {"userid": dingtalk_userid, "language": language}
-        resp = requests.post(url, json=payload, timeout=10)
-        result = resp.json()
+    try:
+        result = _oapi_call("/topapi/v2/user/get",
+                            {"userid": raw_userid, "language": language})
+        if result.get("errcode") != 0 and raw_userid.isdigit():
+            # 工号兜底: user/get 失败后查通讯录索引, 命中则用真实 userid 重试
+            record = _directory_index()["by_job_number"].get(raw_userid)
+            if record:
+                result = _oapi_call("/topapi/v2/user/get",
+                                    {"userid": record["userid"], "language": language})
 
         if result.get("errcode") == 0:
             user = result.get("result", {})
@@ -767,8 +933,11 @@ def dingtalk_get_user_detail(dingtalk_userid: str, language: str = "zh_CN"):
                     "state_code": user.get("state_code")
                 }
             }, ensure_ascii=False)
-        else:
-            return json.dumps({"success": False, "error": result.get("errmsg", "未知错误")}, ensure_ascii=False)
+        errmsg = result.get("errmsg", "未知错误")
+        if raw_userid.isdigit():
+            return json.dumps({"success": False, "error": _identity_not_found_hint(raw_userid)
+                               + f"（{errmsg}）"}, ensure_ascii=False)
+        return json.dumps({"success": False, "error": errmsg}, ensure_ascii=False)
 
     except Exception as e:
         logger.error(f"获取用户详情异常: {e}")
@@ -1024,6 +1193,9 @@ def dingtalk_approval_start(
         return _dump({"success": False, "error": "process_code 必填"})
     if not str(dingtalk_userid or "").strip():
         return _dump({"success": False, "error": "dingtalk_userid 必填"})
+    originator_userid, _, resolve_err = _resolve_dingtalk_userid(dingtalk_userid)
+    if resolve_err:
+        return _dump({"success": False, "error": resolve_err})
 
     try:
         values = json.loads(form_values) if isinstance(form_values, str) else form_values
@@ -1035,7 +1207,7 @@ def dingtalk_approval_start(
 
     body: dict = {
         "processCode": str(process_code).strip(),
-        "originatorUserId": str(dingtalk_userid).strip(),
+        "originatorUserId": originator_userid,
         "formComponentValues": values,
     }
     if dept_id:
@@ -1263,7 +1435,8 @@ def dingtalk_approval_tasks(
     """查询某用户的审批待办/已办任务列表。
 
     参数:
-    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 用户 userId(必填)
+    - dingtalk_userid: 钉钉用户标识(必填): 钉钉 userId, 或工号/unionId(自动换算,
+        见 _resolve_dingtalk_userid; 不是本系统 userId)
     - status: 任务状态, 0=待办(默认), 1=已办
     - max_results: 单页条数(1~100, 默认 20)
     - next_token: 分页游标, 首页传 0
@@ -1276,6 +1449,9 @@ def dingtalk_approval_tasks(
 
     if not str(dingtalk_userid or "").strip():
         return _dump({"success": False, "error": "dingtalk_userid 必填"})
+    dingtalk_userid, _, resolve_err = _resolve_dingtalk_userid(dingtalk_userid)
+    if resolve_err:
+        return _dump({"success": False, "error": resolve_err})
 
     if isinstance(status, bool) or status not in (0, 1):
         return _dump({"success": False, "error": "status 仅支持 0(待办)/1(已办)"})
@@ -1284,7 +1460,7 @@ def dingtalk_approval_tasks(
 
     try:
         resp = _api("GET", "/v1.0/workflow/workRecords/todoTasks",
-                    params={"userId": str(dingtalk_userid).strip(), "status": status,
+                    params={"userId": dingtalk_userid, "status": status,
                             "maxResults": size, "nextToken": token})
         data = resp.get("result") if isinstance(resp.get("result"), dict) else resp
         tasks = []
@@ -1346,7 +1522,8 @@ def dingtalk_approval_action(
     - result: 操作结果, agree=同意 / refuse=拒绝
     - remark: 审批意见(可选)
     - process_instance_id: 审批实例 ID(OpenAPI 必填, 建议随 task 一并传入)
-    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 操作人 userId(服务端代操作时必填; 缺省由钉钉按应用身份处理)
+    - dingtalk_userid: 钉钉用户标识(可选): 钉钉 userId, 或工号/unionId(自动换算);
+        操作人(服务端代操作时必填, 不是本系统 userId; 缺省由钉钉按应用身份处理)
     """
     logger.info(f"审批操作: task_id={task_id}, result={result}")
 
@@ -1367,7 +1544,10 @@ def dingtalk_approval_action(
     if process_instance_id:
         body["processInstanceId"] = str(process_instance_id).strip()
     if dingtalk_userid:
-        body["actionerUserId"] = str(dingtalk_userid).strip()
+        actioner_userid, _, resolve_err = _resolve_dingtalk_userid(dingtalk_userid)
+        if resolve_err:
+            return _dump({"success": False, "error": resolve_err})
+        body["actionerUserId"] = actioner_userid
 
     try:
         resp = _api("POST", "/v1.0/workflow/processInstances/execute", json_body=body)
@@ -1767,7 +1947,8 @@ def dingtalk_approval_comment(
     参数:
     - process_instance_id: 审批实例 ID(必填)
     - text: 评论内容(必填)
-    - dingtalk_userid: 钉钉用户ID(不是工号, 也不是本系统 userId); 评论人 userId(可选; 缺省由钉钉按应用身份处理)
+    - dingtalk_userid: 钉钉用户标识(可选): 钉钉 userId, 或工号/unionId(自动换算);
+        评论人(不是本系统 userId; 缺省由钉钉按应用身份处理)
     - file: 附件对象或 JSON 字符串(可选), 形如
         {"fileId":"xxx","fileName":"xxx.pdf","fileSize":1024,"fileType":"pdf"}
     """
@@ -1784,7 +1965,10 @@ def dingtalk_approval_comment(
 
     body: dict = {"processInstanceId": str(process_instance_id).strip(), "text": str(text)}
     if dingtalk_userid:
-        body["commentUserId"] = str(dingtalk_userid).strip()
+        comment_userid, _, resolve_err = _resolve_dingtalk_userid(dingtalk_userid)
+        if resolve_err:
+            return _dump({"success": False, "error": resolve_err})
+        body["commentUserId"] = comment_userid
     if file is not None:
         if isinstance(file, str):
             try:

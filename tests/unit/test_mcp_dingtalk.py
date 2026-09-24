@@ -33,12 +33,27 @@ def _payload(text: str):
     return json.loads(text)
 
 
+class _OapiResponse:
+    def __init__(self, body):
+        self.status_code = 200
+        self._body = body
+        self.text = json.dumps(body, ensure_ascii=False)
+
+    def json(self):
+        return self._body
+
+
 @pytest.fixture
 def api(monkeypatch):
-    """假 _api: 记录调用并按 path 关键字返回预设响应。"""
+    """假 _api + 假 oapi requests.post(用户标识换算/通讯录索引): 记录调用按 path 返回预设。"""
     module = _load()
+    module._UNIONID_CACHE.clear()
+    module._USERID_CACHE.clear()
+    module._directory_index_cache["data"] = None
+    module._directory_index_cache["built_at"] = 0.0
     monkeypatch.setattr(module, "APP_KEY", "test-key")
     monkeypatch.setattr(module, "APP_SECRET", "test-secret")
+    monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
     calls = []
     responses = {}
 
@@ -53,7 +68,23 @@ def api(monkeypatch):
                 return value
         return {}
 
+    def fake_oapi_post(url, json=None, timeout=10):
+        # 用户标识换算: 非数字(unionId)→同值 userid; 数字(userId/工号)→同值 userid + unionid
+        if "/topapi/v2/user/get" in url:
+            uid = str((json or {}).get("userid") or "")
+            return _OapiResponse({"errcode": 0, "result": {
+                "userid": uid, "unionid": f"UNION-{uid}", "name": uid, "job_number": ""}})
+        if "getbyunionid" in url:
+            union = str((json or {}).get("unionid") or "")
+            return _OapiResponse({"errcode": 0, "result": {"userid": union}})
+        if "/topapi/v2/user/list" in url:
+            return _OapiResponse({"errcode": 0, "result": {"list": [], "has_more": False}})
+        if "department/listsub" in url:
+            return _OapiResponse({"errcode": 0, "result": []})
+        return _OapiResponse({"errcode": 0, "result": {}})
+
     monkeypatch.setattr(module, "_api", fake_api)
+    monkeypatch.setattr(module.requests, "post", fake_oapi_post)
     return module, calls, responses
 
 

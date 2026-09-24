@@ -55,12 +55,16 @@ def _patch_main_api_503(monkeypatch, module):
 def _patch_legacy(monkeypatch, module, listbyuserid=None, listids=None):
     """假 requests.post: 按 URL 分派两段式回退; 返回调用记录。
 
+    getbyunionid(用户标识换算)不记录, 避免干扰回退调用序号断言。
     listbyuserid: FakeResponse | Exception
     listids: FakeResponse | Exception | callable(payload) -> FakeResponse | Exception
     """
     calls = []
 
     def fake_post(url, json=None, timeout=10):
+        if "getbyunionid" in url:
+            union = str((json or {}).get("unionid") or "")
+            return FakeResponse(200, {"errcode": 0, "result": {"userid": union}})
         calls.append({"url": url, "json": json})
         if "/process/listbyuserid" in url:
             response = listbyuserid
@@ -81,6 +85,10 @@ def _patch_config(monkeypatch, module):
 
 
 def _legacy_prepare(monkeypatch, module):
+    module._UNIONID_CACHE.clear()
+    module._USERID_CACHE.clear()
+    module._directory_index_cache["data"] = None
+    module._directory_index_cache["built_at"] = 0.0
     _patch_config(monkeypatch, module)
     _patch_main_api_503(monkeypatch, module)
     monkeypatch.setattr(module, "_get_access_token", lambda: "tok")

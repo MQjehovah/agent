@@ -38,9 +38,12 @@ class FakeResponse:
 
 @pytest.fixture
 def env(monkeypatch):
-    """假 requests.post(topapi user/get) + 假 _api, 记录调用; 清 unionId 缓存。"""
+    """假 requests.post(topapi user/get) + 假 _api, 记录调用; 清换算/索引缓存。"""
     module = _load()
     module._UNIONID_CACHE.clear()
+    module._USERID_CACHE.clear()
+    module._directory_index_cache["data"] = None
+    module._directory_index_cache["built_at"] = 0.0
     monkeypatch.setattr(module, "APP_KEY", "test-key")
     monkeypatch.setattr(module, "APP_SECRET", "test-secret")
     monkeypatch.setattr(module, "_get_access_token", lambda: "tok")
