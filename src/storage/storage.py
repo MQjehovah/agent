@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import sqlite3
@@ -115,10 +116,8 @@ class Storage:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         with sqlite3.connect(self.db_path) as conn:
-            try:
+            with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("PRAGMA journal_mode=WAL")
-            except sqlite3.OperationalError:
-                pass
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -312,6 +311,21 @@ class Storage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_web_tokens_token ON web_tokens(token);
 
+                -- 用户级「云端托管安装」(P3): 市场授权管加入/移出, 各端本地各记安装/启停
+                CREATE TABLE IF NOT EXISTS capability_installations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    capability_id TEXT NOT NULL,
+                    capability_name TEXT NOT NULL DEFAULT '',
+                    kind TEXT DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    installed_at TEXT,
+                    updated_at TEXT,
+                    UNIQUE(user_id, capability_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_cap_install_user_enabled
+                    ON capability_installations(user_id, enabled);
+
                 CREATE TABLE IF NOT EXISTS usage_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL DEFAULT 'system',
@@ -482,13 +496,9 @@ class Storage:
     @contextmanager
     def _get_connection(self):
         """从连接池获取连接"""
-        conn = None
         with self._pool_lock:
-            if self._connection_pool:
-                conn = self._connection_pool.pop()
-            else:
-                # 连接池耗尽，创建临时连接
-                conn = self._new_connection()
+            # 连接池耗尽时创建临时连接
+            conn = self._connection_pool.pop() if self._connection_pool else self._new_connection()
 
         try:
             yield conn
@@ -1052,7 +1062,8 @@ class Storage:
                "WHERE session_id IS NOT NULL AND session_id != '' AND session_id != 'temp'")
         args: list[Any] = []
         if agent_id:
-            sql += " AND agent_id = ?"; args.append(agent_id)
+            sql += " AND agent_id = ?"
+            args.append(agent_id)
         if user_id:
             sql += " AND (user_id = ? OR session_id LIKE ?)"
             args += [user_id, user_id + ":%"]
@@ -1508,18 +1519,24 @@ class Storage:
                       scope: str = None, owner_id: str = None) -> bool:
         sets, args = [], []
         if content is not None:
-            sets.append("content = ?"); args.append(content)
+            sets.append("content = ?")
+            args.append(content)
         if importance is not None:
-            sets.append("importance = ?"); args.append(int(importance))
+            sets.append("importance = ?")
+            args.append(int(importance))
         if category is not None:
-            sets.append("category = ?"); args.append(category)
+            sets.append("category = ?")
+            args.append(category)
         if scope is not None:
-            sets.append("scope = ?"); args.append(scope)
+            sets.append("scope = ?")
+            args.append(scope)
         if owner_id is not None:
-            sets.append("owner_id = ?"); args.append(owner_id)
+            sets.append("owner_id = ?")
+            args.append(owner_id)
         if not sets:
             return False
-        sets.append("updated_at = ?"); args.append(datetime.now().isoformat())
+        sets.append("updated_at = ?")
+        args.append(datetime.now().isoformat())
         args.append(memory_id)
         with self._write_lock, self._get_connection() as conn:
             cur = conn.execute(f"UPDATE memories SET {', '.join(sets)} WHERE id = ?", args)
@@ -1775,6 +1792,70 @@ class Storage:
             cur = conn.execute("DELETE FROM web_tokens WHERE id = ?", (token_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    # ---------------- 用户级云端托管安装(P3) ----------------
+
+    def upsert_installation(self, user_id: int, capability_id: str,
+                            capability_name: str = "", kind: str = "") -> None:
+        """安装(幂等): 已存在则更新名称/类型/updated_at, 保留 enabled 现状。"""
+        now = datetime.now().isoformat()
+        with self._write_lock, self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO capability_installations
+                    (user_id, capability_id, capability_name, kind, enabled, installed_at, updated_at)
+                VALUES (?,?,?,?,1,?,?)
+                ON CONFLICT(user_id, capability_id) DO UPDATE SET
+                    capability_name = excluded.capability_name,
+                    kind = excluded.kind,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, capability_id, capability_name, kind, now, now),
+            )
+            conn.commit()
+
+    def set_installation_enabled(self, user_id: int, capability_id: str, enabled: bool) -> bool:
+        """启停已安装能力; 未安装返回 False。"""
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE capability_installations SET enabled=?, updated_at=? "
+                "WHERE user_id=? AND capability_id=?",
+                (1 if enabled else 0, datetime.now().isoformat(), user_id, capability_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def remove_installation(self, user_id: int, capability_id: str) -> bool:
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM capability_installations WHERE user_id=? AND capability_id=?",
+                (user_id, capability_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def list_installations(self, user_id: int, enabled_only: bool = False) -> list[dict[str, Any]]:
+        sql = ("SELECT id, user_id, capability_id, capability_name, kind, enabled, "
+               "installed_at, updated_at FROM capability_installations WHERE user_id=?")
+        if enabled_only:
+            sql += " AND enabled=1"
+        sql += " ORDER BY id"
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, (user_id,)).fetchall()
+        result = [dict(r) for r in rows]
+        for item in result:
+            item["enabled"] = bool(item["enabled"])
+        return result
+
+    def installed_capability_names(self, user_id: int, enabled_only: bool = True) -> set[str]:
+        """已安装能力名集合(空名过滤); 供平台轨按用户过滤工具出账。"""
+        sql = ("SELECT capability_name FROM capability_installations "
+               "WHERE user_id=? AND capability_name != ''")
+        if enabled_only:
+            sql += " AND enabled=1"
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, (user_id,)).fetchall()
+        return {str(r[0]).strip() for r in rows if str(r[0]).strip()}
 
     def set_user_password(self, user_id: int, password: str):
         import base64

@@ -246,7 +246,7 @@ def _session_opener(sessions, entered, exited, failing=frozenset(), *,
 
 def _make_client(caps, sessions, entered, exited, failing=frozenset(), timeout=60.0, *,
                  refresh_seconds=300.0, now=None, sleeper=None, attempts=None, active=None,
-                 act_as=""):
+                 act_as="", install_filter=None):
     stub = _SyncStub(caps)
     client = platform.PlatformMCPClient(
         platform.PlatformMCPConfig(base_url="http://market.test", service_token="svc-token",
@@ -257,6 +257,7 @@ def _make_client(caps, sessions, entered, exited, failing=frozenset(), timeout=6
                                        attempts=attempts, active=active),
         now=now,
         sleeper=sleeper,
+        install_filter=install_filter,
     )
     return client, stub
 
@@ -617,6 +618,81 @@ async def test_call_tool_timeout_uses_configured_timeout():
         await client.close()
 
 
+# ----- 4b. 用户级云端托管安装过滤(P3) -----
+
+async def test_install_filter_limits_capabilities_and_tools():
+    caps = [_cap("cap-a"), _cap("cap-b")]
+    sessions = {"cap-a": _FakeSession([_tool("t-a")], []),
+                "cap-b": _FakeSession([_tool("t-b")], [])}
+    entered, exited = [], []
+    client, _ = _make_client(caps, sessions, entered, exited,
+                             install_filter=lambda: {"cap-a"})
+    try:
+        assert await client.refresh_once() is True
+        assert sorted(client._caps) == ["cap-a"]
+        assert [e[0] for e in entered] == ["cap-a"]
+        names = [d["function"]["name"] for d in client.tool_defs]
+        assert names == [platform.exposed_tool_name("cap-a", "t-a")]
+    finally:
+        await client.close()
+
+
+async def test_install_filter_empty_or_error_yields_no_capabilities(caplog):
+    import logging
+
+    for flt in (lambda: set(),
+                lambda: (_ for _ in ()).throw(RuntimeError("db down"))):
+        caps = [_cap("cap-a")]
+        sessions = {"cap-a": _FakeSession([_tool("t-a")], [])}
+        entered, exited = [], []
+        client, _ = _make_client(caps, sessions, entered, exited, install_filter=flt)
+        try:
+            with caplog.at_level(logging.WARNING, logger="agent.mcps.platform"):
+                assert await client.refresh_once() is True
+            assert client._caps == {}
+            assert client.tool_defs == []
+            assert entered == []                       # 未连接任何能力
+        finally:
+            await client.close()
+    assert any("安装过滤读取失败" in r.getMessage() for r in caplog.records)
+
+
+async def test_install_filter_reapplied_on_refresh():
+    """过滤集合变化后: 新允许的能力连上, 被移除的能力下线。"""
+    caps = [_cap("cap-a"), _cap("cap-b")]
+    sessions = {"cap-a": _FakeSession([_tool("t-a")], []),
+                "cap-b": _FakeSession([_tool("t-b")], [])}
+    entered, exited = [], []
+    allowed = {"cap-a"}
+    client, _ = _make_client(caps, sessions, entered, exited,
+                             install_filter=lambda: set(allowed))
+    try:
+        assert await client.refresh_once() is True
+        assert sorted(client._caps) == ["cap-a"]
+        allowed = {"cap-b"}
+        assert await client.refresh_once() is True
+        assert sorted(client._caps) == ["cap-b"]
+        names = [d["function"]["name"] for d in client.tool_defs]
+        assert names == [platform.exposed_tool_name("cap-b", "t-b")]
+    finally:
+        await client.close()
+
+
+async def test_no_install_filter_keeps_all_capabilities():
+    """root(不传 filter)保持服务令牌全量视角。"""
+    caps = [_cap("cap-a"), _cap("cap-b")]
+    sessions = {"cap-a": _FakeSession([_tool("t-a")], []),
+                "cap-b": _FakeSession([_tool("t-b")], [])}
+    entered, exited = [], []
+    client, _ = _make_client(caps, sessions, entered, exited)
+    try:
+        assert await client.refresh_once() is True
+        assert sorted(client._caps) == ["cap-a", "cap-b"]
+        assert len(client.tool_defs) == 2
+    finally:
+        await client.close()
+
+
 # ===== 5. 与 MCPManager 合并 =====
 
 class _FakePlatform:
@@ -856,9 +932,10 @@ async def test_connect_mcp_servers_passes_platform_act_as(monkeypatch):
     captured = {}
 
     class _FakePlatformClient:
-        def __init__(self, config, *, act_as=""):
+        def __init__(self, config, *, act_as="", install_filter=None):
             captured["config_enabled"] = config.enabled
             captured["act_as"] = act_as
+            captured["install_filter"] = install_filter
 
         def start(self):
             captured["started"] = True
@@ -884,6 +961,7 @@ async def test_connect_mcp_servers_passes_platform_act_as(monkeypatch):
     agent = Agent.__new__(Agent)
     agent.mcp_configs = []
     agent.platform_act_as = "202202100024"
+    agent.owner_uid = 0                       # 未注入归属身份(非 worker): 不过滤
     agent.name = "test"
     agent.tool_registry = None
     agent.skill_manager = None
@@ -895,6 +973,7 @@ async def test_connect_mcp_servers_passes_platform_act_as(monkeypatch):
         platform_config=platform.PlatformMCPConfig(base_url="http://m", service_token="t"),
     )
     assert captured["act_as"] == "202202100024"
+    assert captured["install_filter"] is None
     assert captured["config_enabled"] is True
     assert captured["started"] is True and captured["health"] is True
 

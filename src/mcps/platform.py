@@ -241,11 +241,15 @@ class PlatformMCPClient:
                  transport: httpx.AsyncBaseTransport | None = None,
                  session_opener: Callable[[str, dict[str, str]], AbstractAsyncContextManager[Any]] | None = None,
                  now: Callable[[], float] | None = None,
-                 sleeper: Callable[[float], Awaitable[None]] | None = None):
+                 sleeper: Callable[[float], Awaitable[None]] | None = None,
+                 install_filter: Callable[[], set[str]] | None = None):
         self.config = config
         # 运行时代表用户身份(市场用户名=工号): 非空时所有请求带 X-Act-As-Sub;
         # 不进 from_env(同一份 env 下每个 worker 身份不同, 只能实例级注入)
         self._act_as = str(act_as or "").strip()
+        # 用户级「云端托管安装」过滤(worker 注入): sync 后仅保留集合内能力;
+        # 返回空集=不出任何平台能力; root 不传(None)=服务令牌全量视角
+        self._install_filter = install_filter
         self._transport = transport
         self._session_opener = session_opener or default_session_opener
         self._now = now or time.monotonic
@@ -377,7 +381,17 @@ class PlatformMCPClient:
             headers=self._auth_headers(),
         )
         response.raise_for_status()
-        return parse_sync_capabilities(response.json())
+        caps = parse_sync_capabilities(response.json())
+        if self._install_filter is not None:
+            # 用户级云端托管安装过滤: 仅保留该用户「已安装且启用」的能力
+            # (过滤读取异常按空集处理=不出平台能力, fail-closed)
+            try:
+                allowed = set(self._install_filter() or set())
+            except Exception as e:
+                logger.warning(f"平台 MCP 安装过滤读取失败(按空集处理): {e}")
+                allowed = set()
+            caps = [c for c in caps if c["name"] in allowed]
+        return caps
 
     async def _ensure_capability(self, item: dict[str, Any]) -> None:
         """确保能力已连接; 版本变化重建连接; 失败保留状态并交给快速重试队列。"""

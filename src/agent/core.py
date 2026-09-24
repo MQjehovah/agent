@@ -160,6 +160,10 @@ class Agent:
         # 平台轨代表用户身份(市场用户名=工号, 运行时注入): 默认空=服务令牌全量视角;
         # worker 池按 MARKET_ACT_AS 在 initialize 前设置(每 worker 恒定 act-as 该用户)
         self.platform_act_as = ""
+        # 归属身份(worker 池在 initialize 前注入): root 保持空/0, 用于用户级
+        # 「云端托管安装」过滤(平台轨只为该用户出已安装且启用的能力)
+        self.owner_tag: str = ""
+        self.owner_uid: int = 0
         # 子代理专属 MCP 配置（运行时传入，方案B；主代理始终为空）
         self._subagent_mcp_configs = list(mcp_servers) if mcp_servers else []
         self.skill_manager = None
@@ -573,7 +577,9 @@ class Agent:
         # 首轮 sync 在后台刷新任务内执行, 失败仅告警, 不阻断本地 MCP 与进程启动。
         if not subagent and platform_config is not None and platform_config.enabled:
             from mcps.platform import PlatformMCPClient
-            platform_client = PlatformMCPClient(platform_config, act_as=self.platform_act_as)
+            platform_client = PlatformMCPClient(
+                platform_config, act_as=self.platform_act_as,
+                install_filter=self._platform_install_filter())
             self.mcp.attach_platform(platform_client)
             platform_client.start()
             logger.info(f"平台 MCP 轨已挂接: {platform_config.base_url}")
@@ -608,6 +614,47 @@ class Agent:
         except Exception as e:
             logger.debug(f"收集非 MCP 工具名失败(忽略): {e}")
         return names
+
+    def _platform_install_filter(self):
+        """用户级「云端托管安装」过滤闭包; root/非 web worker 返回 None(服务全量)。
+
+        仅 worker(owner_uid>0 且平台轨按用户身份 platform_act_as 非空)启用:
+        读取该用户已安装且启用的能力名(存储异常按空集 fail-closed)。
+        """
+        try:
+            owner_uid = int(getattr(self, "owner_uid", 0) or 0)
+        except (TypeError, ValueError):
+            owner_uid = 0
+        if owner_uid <= 0 or not str(self.platform_act_as or "").strip():
+            return None
+
+        def _load() -> set[str]:
+            try:
+                from storage.storage import get_storage
+                storage = get_storage()
+                if storage is None:
+                    return set()
+                return storage.installed_capability_names(owner_uid, enabled_only=True)
+            except Exception as e:
+                logger.warning(f"读取云端托管安装失败(按空集处理): {e}")
+                return set()
+
+        return _load
+
+    async def refresh_platform_installations(self) -> bool:
+        """安装/启停后让平台工具集立即变化(供 web 接口调用); 未挂接平台轨返回 False。"""
+        mcp = getattr(self, "mcp", None)
+        platform_client = getattr(mcp, "platform", None) if mcp is not None else None
+        if platform_client is None:
+            logger.debug("刷新平台安装: 未挂接平台轨(忽略)")
+            return False
+        try:
+            ok = bool(await platform_client.refresh_once())
+            logger.info(f"平台安装刷新完成: success={ok}")
+            return ok
+        except Exception as e:
+            logger.warning(f"平台安装刷新失败(忽略): {e}")
+            return False
 
     def _init_subagents(self):
         agents_dir = os.path.join(self.config_dir, "agents")

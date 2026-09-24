@@ -206,6 +206,11 @@ class WebUserWorkerPool:
         )
         worker.persist_session = True  # 跨轮次保留会话历史（恢复/续聊）
         worker.platform_mcp_enabled = True  # Web 用户 worker 同样接入平台 MCP 轨(市场连接器)
+        # 归属身份(用户级云端托管安装过滤): tag=web:{uid}, uid 为 rbac_users.id;
+        # 须在 initialize 前写入(平台连接/过滤闭包在 initialize 中装配)
+        owner_uid = tag.split(":", 1)[1] if ":" in tag else tag
+        worker.owner_tag = tag
+        worker.owner_uid = int(owner_uid) if owner_uid.isdigit() else 0
         # 平台轨按用户身份(MARKET_ACT_AS=1 且平台轨启用): 每 worker 恒定 act-as 该用户
         # (须在 initialize 之前写入, 平台连接在其中建立); 未启用时为服务令牌全量视角
         worker.platform_act_as = self._resolve_platform_act_as(tag)

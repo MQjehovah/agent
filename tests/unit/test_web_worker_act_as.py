@@ -60,11 +60,15 @@ class _FakeWorker:
         self.kwargs = kwargs
         self.platform_act_as = None
         self.act_as_at_init = None
+        self.owner_tag = None
+        self.owner_uid = None
+        self.owner_at_init = None
         self.initialized = False
 
     async def initialize(self):
-        # 捕获初始化时刻的 platform_act_as: 证明写入发生在 initialize(建平台连接)之前
+        # 捕获初始化时刻的身份: 证明写入发生在 initialize(建平台连接)之前
         self.act_as_at_init = self.platform_act_as
+        self.owner_at_init = (self.owner_tag, self.owner_uid)
         self.initialized = True
 
 
@@ -206,6 +210,26 @@ def test_create_worker_act_as_falls_back_when_user_missing(
     assert worker.platform_act_as == ""
     assert any("999999" in r.getMessage() and r.levelno == logging.WARNING
                for r in caplog.records)
+
+
+# ---------------- worker 归属身份(用户级云托管安装过滤) ----------------
+
+def test_create_worker_injects_owner_identity(store, monkeypatch, tmp_path, fake_agent):
+    _enable_market(monkeypatch)
+    uid = _make_user(store)
+    worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
+    assert worker.owner_tag == f"web:{uid}"
+    assert worker.owner_uid == uid
+    assert worker.owner_at_init == (f"web:{uid}", uid)  # 时序: initialize 前注入
+
+
+def test_create_worker_non_numeric_uid_owner_uid_zero(
+        store, monkeypatch, tmp_path, fake_agent):
+    """非数字 uid(SSO sub 形态): owner_uid=0(无用户级安装可查)。"""
+    _enable_market(monkeypatch)
+    worker = asyncio.run(_pool(tmp_path)._create_worker("web:s_software", str(tmp_path / "ws")))
+    assert worker.owner_tag == "web:s_software"
+    assert worker.owner_uid == 0
 
 
 # ---------------- 无 worker 池: root 保持服务令牌全量 ----------------
