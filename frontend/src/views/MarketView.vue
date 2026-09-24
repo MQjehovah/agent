@@ -53,6 +53,17 @@ const installedMap = computed(() => {
   return m
 })
 
+/** 安装记录(版本漂移兜底: 市场展示最新版 id 可能与安装时 id 不同, 按名称匹配) */
+const installedByName = computed(() => {
+  const m = new Map<string, Installation>()
+  for (const it of installations.value) m.set(it.capability_name, it)
+  return m
+})
+
+function installationOf(item: MarketItem): Installation | undefined {
+  return installedMap.value.get(item.id) ?? installedByName.value.get(item.name)
+}
+
 function typeLabel(t: string): string {
   const map: Record<string, string> = {
     mcp: '连接器', skill: '技能', agent: '专家', plugin: '能力包',
@@ -79,7 +90,7 @@ function canInstall(item: MarketItem): boolean {
 }
 
 function enabledOf(item: MarketItem): boolean {
-  return installedMap.value.get(item.id)?.enabled ?? true
+  return installationOf(item)?.enabled ?? true
 }
 
 async function load() {
@@ -193,12 +204,17 @@ async function install(item: MarketItem) {
 }
 
 async function uninstall(item: MarketItem) {
+  const record = installationOf(item)
+  if (!record) {
+    ElMessage.warning('未找到本地安装记录，请到「我的连接器」处理')
+    return
+  }
   try {
     await ElMessageBox.confirm(`确认卸载「${item.name}」? 卸载后该连接器工具将立即下线。`,
       '卸载确认', { type: 'warning' })
   } catch { return }
   try {
-    await del(`/api/market/installations/${item.id}`)
+    await del(`/api/market/installations/${record.capability_id}`)
     ElMessage.success(`已卸载「${item.name}」`)
     await refreshAfterAction(item.id)
   } catch (e) {
@@ -207,9 +223,15 @@ async function uninstall(item: MarketItem) {
 }
 
 async function toggleEnabled(item: MarketItem, value: string | number | boolean) {
+  const record = installationOf(item)
+  if (!record) {
+    ElMessage.warning('未找到本地安装记录，请到「我的连接器」处理')
+    await load()
+    return
+  }
   const enabled = Boolean(value)
   try {
-    await patch(`/api/market/installations/${item.id}`, { enabled })
+    await patch(`/api/market/installations/${record.capability_id}`, { enabled })
     ElMessage.success(enabled ? '已启用' : '已停用')
   } catch (e) {
     ElMessage.error((e as Error).message)
