@@ -127,6 +127,13 @@ class WebUserWorkerPool:
             info["busy"] = max(0, info["busy"] - 1)
             info["last"] = time.time()
 
+    def get_existing_agent(self, tag: str):
+        """取已存在的 worker agent(不创建/不 acquire); 不存在/池关闭返回 None。"""
+        if not self.enabled:
+            return None
+        info = self._workers.get(tag)
+        return info.get("agent") if isinstance(info, dict) else None
+
     # ---- 运行中会话登记（「运行中」接口在池模式下的主数据源）----
     # acquire/release 只反映“用户是否占着 worker”，不含具体会话；这里在会话
     # 真正开始/结束执行时登记/注销 session_id，使 running_sessions() 能回答

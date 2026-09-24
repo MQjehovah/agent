@@ -624,6 +624,28 @@ class WebServer:
             except Exception as e:
                 logger.warning(f"Web Worker 释放失败({tag}): {e}")
 
+    async def refresh_user_platform(self, uid) -> bool:
+        """P4: 安装/启停/卸载后立即刷新该用户 worker 的平台工具集。
+
+        只刷新「已存在」的 worker(不新建; worker 不存在则下次会话自然生效)。
+        池关闭/无平台轨时返回 False, 异常仅告警。
+        """
+        pool = getattr(self, "_pool", None)
+        getter = getattr(pool, "get_existing_agent", None)
+        if not callable(getter):
+            return False
+        tag = WebServer._owner_tag(str(uid))
+        agent = getter(tag)
+        if agent is None:
+            return False
+        try:
+            okay = bool(await agent.refresh_platform_installations())
+            logger.info(f"用户平台安装刷新({tag}): success={okay}")
+            return okay
+        except Exception as e:
+            logger.warning(f"用户平台安装刷新失败({tag}): {e}")
+            return False
+
     def _pool_run_started(self, rel_tag: str, session_id: str, started_at: str = ""):
         """运行开始：把会话登记到其用户 worker（池模式「运行中」主数据源）。"""
         pool = getattr(self, "_pool", None)
@@ -3017,6 +3039,10 @@ class WebServer:
         # ===== 管理/用量域 Router（Wave B：从 server.py 拆出）=====
         from web.routers.admin import build_admin_router
         self._app.include_router(build_admin_router(self))
+
+        # ===== 能力市场 + 云端托管安装 Router（P4）=====
+        from web.routers.market import build_market_router
+        self._app.include_router(build_market_router(self))
 
         # ===== 工作区文件列表（服务端共享目录，需工作区权限）=====
         @self._app.get("/api/workspace/files")

@@ -16,6 +16,7 @@ WEB_PERMISSIONS = [
     {"key": "admin.memories", "label": "全站记忆", "description": "查看/管理全部用户记忆"},
     {"key": "admin.scheduler", "label": "全站定时任务", "description": "查看/管理全部用户定时任务"},
     {"key": "admin.workspace", "label": "工作区文件", "description": "查看服务端共享工作区文件"},
+    {"key": "admin.mcp_local", "label": "本地 MCP 配置", "description": "查看/新增/编辑/删除全局本地 MCP server 配置"},
 ]
 
 # 数据可见范围：role.data_scope（与本部门隔离配合）。
