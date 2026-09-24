@@ -18,10 +18,10 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("agent.web.security")
 
-# 平台轨按用户身份开关 MARKET_ACT_AS: 1/true/yes 开, 0/false/no 关(大小写不敏感);
+# 平台轨按用户身份开关 MARKET_ACT_AS: 1/true/yes 开, 0/false/no/off 关(大小写不敏感);
 # 缺省/空白按关(静默); 其它非空值告警后按关(对齐既有 env 非法值回退风格)
 _MARKET_ACT_AS_TRUE = frozenset({"1", "true", "yes"})
-_MARKET_ACT_AS_FALSE = frozenset({"0", "false", "no"})
+_MARKET_ACT_AS_FALSE = frozenset({"0", "false", "no", "off"})
 
 
 def market_act_as_enabled(env: Mapping[str, str] | None = None) -> bool:

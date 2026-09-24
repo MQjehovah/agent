@@ -93,12 +93,12 @@ def test_market_act_as_enabled_truthy(value):
     assert market_act_as_enabled({"MARKET_ACT_AS": value}) is True
 
 
-@pytest.mark.parametrize("value", ["", "0", "false", "no", "  "])
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "  "])
 def test_market_act_as_enabled_recognized_false(value):
     assert market_act_as_enabled({"MARKET_ACT_AS": value}) is False
 
 
-@pytest.mark.parametrize("value", ["off", "2", "enabled", "yes1"])
+@pytest.mark.parametrize("value", ["2", "enabled", "yes1"])
 def test_market_act_as_enabled_illegal_value_warns_and_off(value, caplog):
     """非空但未识别 → WARNING(对齐既有 env 非法值回退风格), 仍按关处理。"""
     with caplog.at_level(logging.WARNING, logger="agent.web.security"):
