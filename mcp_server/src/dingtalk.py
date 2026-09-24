@@ -1,3 +1,19 @@
+"""钉钉 MCP Server: 消息/通讯录/审批/待办/日程/群管理/公告/日志/钉盘/会议/日历工具。
+
+钉钉开放平台权限点(开发者后台「权限管理」申请, 权限名称以控制台为准):
+- 审批: 审批实例管理(发起/评论/撤回实例)、审批任务管理(同意/拒绝)、审批表单读
+- 机器人消息: 机器人发送消息(含批量撤回、已读状态查询、消息文件上传)
+- 群管理: 群会话管理(创建群/成员增删/群公告)
+- 公告: 公告管理(创建/删除)
+- 日志: 日志创建、日志读取
+- 钉盘: 钉盘文件上传、钉盘文件下载
+- 视频会议: 视频会议管理(创建/查询/关闭)
+- 通讯录: 用户只读、部门只读、角色只读、外部联系人只读
+- 日历: 日程读写
+
+实现约定: 统一 `_api`(v2 网关 + token, 支持 multipart 上传), 响应经 `_dump` 截断;
+少数 body/query 字段名以「线上冒烟待确认」标注(会议/外部联系人/公告/日志/钉盘/机器人文件)。
+"""
 import base64
 import hashlib
 import hmac
@@ -74,17 +90,23 @@ _MAX_RESPONSE_CHARS = 6000
 
 
 def _api(method: str, path: str, *, params: dict | None = None,
-         json_body: dict | None = None, timeout: int = 10) -> dict:
+         json_body: dict | None = None, data: dict | None = None,
+         files: dict | None = None, timeout: int = 10) -> dict:
     """调用钉钉新版 OpenAPI(v2 网关), 返回解析后的 JSON body。
 
-    统一附带 x-acs-dingtalk-access-token; 非 2xx 抛 RuntimeError, 由各工具统一
-    转成 {"success": False, "error": ...}。测试经 monkeypatch 替换本函数注入假响应。
+    统一附带 x-acs-dingtalk-access-token; 非 2xx 抛 RuntimeError(含钉钉
+    errcode/errmsg), 由各工具统一转成 {"success": False, "error": ...}。
+    传 files 时走 multipart/form-data(data 作为普通表单字段), 此时不显式
+    设置 Content-Type, 由 requests 生成 boundary。测试经 monkeypatch 替换
+    本函数注入假响应。
     """
     token = _get_access_token()
-    headers = {"x-acs-dingtalk-access-token": token, "Content-Type": "application/json"}
+    headers = {"x-acs-dingtalk-access-token": token}
+    if files is None:
+        headers["Content-Type"] = "application/json"
     resp = requests.request(
         method, f"{_API_BASE}{path}", headers=headers,
-        params=params, json=json_body, timeout=timeout)
+        params=params, json=json_body, data=data, files=files, timeout=timeout)
     if resp.status_code >= 400:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
     return resp.json() if resp.text else {}
@@ -109,6 +131,64 @@ def _dump(obj: dict) -> str:
 
 def _split_ids(value: str) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _int_arg(value, name: str, minimum: int = 0) -> tuple[int, str]:
+    """校验整数参数(拒绝 bool/非数字/越界); 返回 (值, 错误串), 错误串为空表示通过。"""
+    if value is None or isinstance(value, bool):
+        return 0, f"{name} 必填且为整数"
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0, f"{name} 需为整数"
+    if number < minimum:
+        return 0, f"{name} 不能小于 {minimum}"
+    return number, ""
+
+
+# 机器人消息文件上限: 钉钉文档为 20MB(线上冒烟待确认, 服务端另有类型限制)
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+
+def _check_upload_file(file_path: str) -> str:
+    """校验待上传本地文件(必填/存在/为文件/不超过上限); 返回错误串(空=通过)。"""
+    path = str(file_path or "").strip()
+    if not path:
+        return "file_path 必填"
+    if not os.path.isfile(path):
+        return f"file_path 不存在或不是文件: {path}"
+    if os.path.getsize(path) > _MAX_UPLOAD_BYTES:
+        return f"文件超过 {_MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限"
+    return ""
+
+
+def _upload_robot_media(file_path: str) -> str:
+    """上传机器人消息媒体文件, 返回 mediaId。
+
+    线上冒烟待确认: 上传接口 multipart 字段名 file、响应字段 mediaId。
+    """
+    path = str(file_path).strip()
+    with open(path, "rb") as fh:
+        result = _api("POST", "/v1.0/robot/messages/upload", params={"type": "file"},
+                      files={"file": (os.path.basename(path), fh)}, timeout=60)
+    media_id = str(result.get("mediaId", "") or "")
+    if not media_id:
+        raise RuntimeError(f"上传媒体文件未返回 mediaId: {result}")
+    return media_id
+
+
+def _recall_body(process_query_key: str, msg_id: str) -> tuple[dict, str]:
+    """构造机器人消息撤回 body(processQueryKey/msgId 二选一); 返回 (body, 错误串)。"""
+    body: dict = {"robotCode": ROBOT_CODE}
+    key = str(process_query_key or "").strip()
+    mid = str(msg_id or "").strip()
+    if not key and not mid:
+        return {}, "process_query_key 与 msg_id 至少提供一个"
+    if key:
+        body["processQueryKey"] = key
+    if mid:
+        body["msgId"] = mid
+    return body, ""
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
@@ -1358,6 +1438,1042 @@ def dingtalk_calendar_freebusy(
         return _dump({"success": True, "schedule": schedule})
     except Exception as e:
         logger.error(f"查询忙闲异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 审批补全(P0) ──
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_approval_comment(
+    process_instance_id: str,
+    text: str,
+    comment_user_id: str = "",
+    file: dict | None = None,
+):
+    """评论审批实例(可附附件)。
+
+    参数:
+    - process_instance_id: 审批实例 ID(必填)
+    - text: 评论内容(必填)
+    - comment_user_id: 评论人 userId(可选; 缺省由钉钉按应用身份处理)
+    - file: 附件对象或 JSON 字符串(可选), 形如
+        {"fileId":"xxx","fileName":"xxx.pdf","fileSize":1024,"fileType":"pdf"}
+    """
+    logger.info(f"审批评论: instance={_clip(process_instance_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(process_instance_id or "").strip():
+        return _dump({"success": False, "error": "process_instance_id 必填"})
+    if not str(text or "").strip():
+        return _dump({"success": False, "error": "text 必填"})
+
+    body: dict = {"processInstanceId": str(process_instance_id).strip(), "text": str(text)}
+    if comment_user_id:
+        body["commentUserId"] = str(comment_user_id).strip()
+    if file is not None:
+        if isinstance(file, str):
+            try:
+                file = json.loads(file)
+            except json.JSONDecodeError:
+                return _dump({"success": False, "error": "file 需为 JSON 对象"})
+        if not isinstance(file, dict):
+            return _dump({"success": False, "error": "file 需为 JSON 对象"})
+        body["file"] = file
+
+    try:
+        result = _api("POST", "/v1.0/workflow/processInstances/comments", json_body=body)
+        return _dump({"success": True, "comment_id": result.get("commentId", ""),
+                      "message": "审批评论已提交"})
+    except Exception as e:
+        logger.error(f"审批评论异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+def dingtalk_approval_revoke(process_instance_id: str, comment: str = ""):
+    """撤销/终止审批实例(不可逆, 会终结他人流程)。
+
+    参数:
+    - process_instance_id: 审批实例 ID(必填)
+    - comment: 撤销说明(可选)
+    """
+    logger.info(f"撤销审批实例: instance={_clip(process_instance_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(process_instance_id or "").strip():
+        return _dump({"success": False, "error": "process_instance_id 必填"})
+
+    body: dict = {"processInstanceId": str(process_instance_id).strip()}
+    if comment:
+        body["comment"] = str(comment)
+
+    try:
+        result = _api("POST", "/v1.0/workflow/processInstances/terminate", json_body=body)
+        ok = bool(result.get("success", True)) and result.get("result", True) is not False
+        if not ok:
+            return _dump({"success": False, "error": result.get("message", "撤销未成功")})
+        return _dump({"success": True, "message": "审批实例已撤销",
+                      "process_instance_id": body["processInstanceId"]})
+    except Exception as e:
+        logger.error(f"撤销审批实例异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_approval_schema(process_code: str):
+    """查询审批表单 schema(控件定义, 发起审批前可先用它校对控件名)。
+
+    参数:
+    - process_code: 审批模板 processCode(必填, 形如 PROC-xxxx)
+    """
+    logger.info(f"查询审批表单 schema: process_code={_clip(process_code, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(process_code or "").strip():
+        return _dump({"success": False, "error": "process_code 必填"})
+
+    try:
+        result = _api("GET", "/v1.0/workflow/forms/schemas/processCodes",
+                      params={"processCode": str(process_code).strip()})
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        return _dump({"success": True, "schema": data})
+    except Exception as e:
+        logger.error(f"查询审批表单 schema 异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 消息治理(P0) ──
+
+
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+def dingtalk_recall_single(process_query_key: str = "", msg_id: str = ""):
+    """批量撤回单聊机器人消息(不可逆; process_query_key 与 msg_id 二选一)。
+
+    参数:
+    - process_query_key: 消息发送时返回的 processQueryKey(可选)
+    - msg_id: 消息 ID(可选)
+    """
+    logger.info("撤回单聊机器人消息")
+
+    err = _check_config()
+    if err:
+        return err
+
+    body, problem = _recall_body(process_query_key, msg_id)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    try:
+        result = _api("POST", "/v1.0/robot/oToMessages/batchRecall", json_body=body)
+        return _dump({"success": True, "message": "撤回请求已提交", "result": result})
+    except Exception as e:
+        logger.error(f"撤回单聊消息异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+def dingtalk_recall_group(process_query_key: str = "", msg_id: str = ""):
+    """批量撤回群聊机器人消息(不可逆; process_query_key 与 msg_id 二选一)。
+
+    参数:
+    - process_query_key: 消息发送时返回的 processQueryKey(可选)
+    - msg_id: 消息 ID(可选)
+    """
+    logger.info("撤回群聊机器人消息")
+
+    err = _check_config()
+    if err:
+        return err
+
+    body, problem = _recall_body(process_query_key, msg_id)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    try:
+        result = _api("POST", "/v1.0/robot/groupMessages/batchRecall", json_body=body)
+        return _dump({"success": True, "message": "撤回请求已提交", "result": result})
+    except Exception as e:
+        logger.error(f"撤回群聊消息异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_message_read_status(process_query_key: str, scene: str = "single"):
+    """查询机器人消息已读状态。
+
+    参数:
+    - process_query_key: 消息发送时返回的 processQueryKey(必填)
+    - scene: 会话场景, single=单聊(默认) / group=群聊
+    """
+    logger.info(f"查询消息已读状态: scene={scene}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    key = str(process_query_key or "").strip()
+    if not key:
+        return _dump({"success": False, "error": "process_query_key 必填"})
+    scene_norm = str(scene or "single").strip().lower()
+    if scene_norm not in ("single", "group"):
+        return _dump({"success": False, "error": "scene 仅支持 single/group"})
+    path = ("/v1.0/robot/oToMessages/readStatus" if scene_norm == "single"
+            else "/v1.0/robot/groupMessages/readStatus")
+
+    try:
+        result = _api("GET", path,
+                      params={"robotCode": ROBOT_CODE, "processQueryKey": key})
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        return _dump({"success": True, "scene": scene_norm, "read_status": data})
+    except Exception as e:
+        logger.error(f"查询消息已读状态异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 群管理(P0) ──
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_create_group(
+    name: str,
+    owner_user_id: str = "",
+    member_user_ids: str = "",
+    icon: str = "",
+    only_admin_can_invite: bool = False,
+):
+    """创建群聊(内部群)。
+
+    参数:
+    - name: 群名称(必填, 不超过 100 字符)
+    - owner_user_id: 群主 userId(可选)
+    - member_user_ids: 初始成员 userId 列表, 逗号分隔(可选)
+    - icon: 群头像 mediaId(可选)
+    - only_admin_can_invite: 是否仅群主/管理员可邀请(默认否)
+    """
+    logger.info(f"创建群聊: name={_clip(name, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    group_name = str(name or "").strip()
+    if not group_name:
+        return _dump({"success": False, "error": "name 必填"})
+    if len(group_name) > 100:
+        return _dump({"success": False, "error": "name 长度不能超过 100 字符"})
+
+    body: dict = {"name": group_name}
+    if owner_user_id:
+        body["owner"] = str(owner_user_id).strip()
+    members = _split_ids(member_user_ids)
+    if members:
+        body["memberUserIds"] = members
+    if icon:
+        body["icon"] = str(icon).strip()
+    if only_admin_can_invite:
+        body["onlyAdminCanInvite"] = True
+
+    try:
+        result = _api("POST", "/v1.0/im/chatGroups", json_body=body)
+        return _dump({"success": True, "chat_id": result.get("chatId", ""),
+                      "open_conversation_id": result.get("openConversationId", "")})
+    except Exception as e:
+        logger.error(f"创建群聊异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_group_add_members(chat_id: str, user_ids: str):
+    """添加群成员。
+
+    参数:
+    - chat_id: 群会话 ID(必填)
+    - user_ids: 待添加 userId 列表, 逗号分隔(必填)
+    """
+    logger.info(f"添加群成员: chat={_clip(chat_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    chat = str(chat_id or "").strip()
+    if not chat:
+        return _dump({"success": False, "error": "chat_id 必填"})
+    members = _split_ids(user_ids)
+    if not members:
+        return _dump({"success": False, "error": "user_ids 必填(逗号分隔 userId)"})
+
+    try:
+        result = _api("POST", f"/v1.0/im/chatGroups/{chat}/members",
+                      json_body={"userIds": members})
+        return _dump({"success": True, "added": len(members),
+                      "message": f"已添加 {len(members)} 名群成员", "result": result})
+    except Exception as e:
+        logger.error(f"添加群成员异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+def dingtalk_group_remove_members(chat_id: str, user_ids: str):
+    """移除群成员(不可逆, 成员将被移出群聊)。
+
+    参数:
+    - chat_id: 群会话 ID(必填)
+    - user_ids: 待移除 userId 列表, 逗号分隔(必填)
+    """
+    logger.info(f"移除群成员: chat={_clip(chat_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    chat = str(chat_id or "").strip()
+    if not chat:
+        return _dump({"success": False, "error": "chat_id 必填"})
+    members = _split_ids(user_ids)
+    if not members:
+        return _dump({"success": False, "error": "user_ids 必填(逗号分隔 userId)"})
+
+    try:
+        result = _api("DELETE", f"/v1.0/im/chatGroups/{chat}/members",
+                      json_body={"userIds": members})
+        return _dump({"success": True, "removed": len(members),
+                      "message": f"已移除 {len(members)} 名群成员", "result": result})
+    except Exception as e:
+        logger.error(f"移除群成员异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_group_set_notice(chat_id: str, notice: str):
+    """设置群公告。
+
+    参数:
+    - chat_id: 群会话 ID(必填)
+    - notice: 群公告内容(必填)
+    """
+    logger.info(f"设置群公告: chat={_clip(chat_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    chat = str(chat_id or "").strip()
+    if not chat:
+        return _dump({"success": False, "error": "chat_id 必填"})
+    if not str(notice or "").strip():
+        return _dump({"success": False, "error": "notice 必填"})
+
+    try:
+        result = _api("PUT", f"/v1.0/im/chatGroups/{chat}",
+                      json_body={"notice": str(notice)})
+        return _dump({"success": True, "message": "群公告已更新", "result": result})
+    except Exception as e:
+        logger.error(f"设置群公告异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 公告(P1) ──
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_announcement_create(
+    title: str,
+    content: str,
+    author_user_id: str = "",
+    send_to: str = "",
+):
+    """创建公告。
+
+    参数:
+    - title: 公告标题(必填)
+    - content: 公告正文(必填)
+    - author_user_id: 发布人 userId(可选)
+    - send_to: 送达 userId 列表, 逗号分隔(可选, 缺省不传)
+
+    线上冒烟待确认: body 字段名按钉钉惯例 title/content/author/sendTo,
+    响应取 boardId/id。
+    """
+    logger.info(f"创建公告: title={_clip(title, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(title or "").strip():
+        return _dump({"success": False, "error": "title 必填"})
+    if not str(content or "").strip():
+        return _dump({"success": False, "error": "content 必填"})
+
+    body: dict = {"title": str(title).strip(), "content": str(content)}
+    if author_user_id:
+        body["author"] = str(author_user_id).strip()
+    receivers = _split_ids(send_to)
+    if receivers:
+        body["sendTo"] = receivers
+
+    try:
+        result = _api("POST", "/v1.0/blackboard/blackboards", json_body=body)
+        return _dump({"success": True,
+                      "board_id": result.get("boardId") or result.get("id", ""),
+                      "message": "公告已创建"})
+    except Exception as e:
+        logger.error(f"创建公告异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+def dingtalk_announcement_delete(board_id: str):
+    """删除公告(不可逆)。
+
+    参数:
+    - board_id: 公告 ID(必填)
+    """
+    logger.info(f"删除公告: board_id={_clip(board_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(board_id or "").strip():
+        return _dump({"success": False, "error": "board_id 必填"})
+
+    try:
+        result = _api("DELETE", f"/v1.0/blackboard/blackboards/{str(board_id).strip()}")
+        return _dump({"success": True, "message": "公告已删除", "result": result})
+    except Exception as e:
+        logger.error(f"删除公告异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 钉钉日志(P1) ──
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_report_submit(
+    template_name: str,
+    content: str,
+    user_ids: str = "",
+    to_chat: bool = False,
+):
+    """提交钉钉日志。
+
+    参数:
+    - template_name: 日志模板名称(必填, 可用 dingtalk_report_templates 查询)
+    - content: 日志内容(必填)
+    - user_ids: 日志发送对象 userId 列表, 逗号分隔(可选)
+    - to_chat: 是否同步到日志群(默认否)
+    """
+    logger.info(f"提交日志: template={_clip(template_name, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(template_name or "").strip():
+        return _dump({"success": False, "error": "template_name 必填"})
+    if not str(content or "").strip():
+        return _dump({"success": False, "error": "content 必填"})
+
+    body: dict = {"templateName": str(template_name).strip(), "content": str(content)}
+    receivers = _split_ids(user_ids)
+    if receivers:
+        body["userIds"] = receivers
+    if to_chat:
+        body["toChat"] = True
+
+    try:
+        result = _api("POST", "/v1.0/report/entries", json_body=body)
+        return _dump({"success": True,
+                      "entry_id": result.get("id") or result.get("entryId", ""),
+                      "message": "日志已提交"})
+    except Exception as e:
+        logger.error(f"提交日志异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_report_list(
+    user_ids: str = "",
+    start_time: int = 0,
+    end_time: int = 0,
+    template_name: str = "",
+    size: int = 20,
+    cursor: int = 0,
+):
+    """查询日志列表(按时间/模板/用户过滤, 游标分页)。
+
+    参数:
+    - user_ids: 查询用户 userId 列表, 逗号分隔(可选)
+    - start_time: 起始时间毫秒时间戳(可选, 0=不限)
+    - end_time: 结束时间毫秒时间戳(可选, 0=不限)
+    - template_name: 日志模板名称(可选)
+    - size: 单页条数(1~100, 默认 20)
+    - cursor: 分页游标, 首页传 0
+
+    线上冒烟待确认: query 参数名 userIds/startTime/endTime。
+    """
+    logger.info("查询日志列表")
+
+    err = _check_config()
+    if err:
+        return err
+
+    page_size, problem = _int_arg(size if size is not None else 20, "size", 1)
+    if problem:
+        return _dump({"success": False, "error": problem})
+    page_cursor, problem = _int_arg(cursor if cursor is not None else 0, "cursor", 0)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    params: dict = {"size": min(page_size, 100), "cursor": page_cursor}
+    receivers = _split_ids(user_ids)
+    if receivers:
+        params["userIds"] = receivers
+    if start_time:
+        start_ms, problem = _int_arg(start_time, "start_time", 1)
+        if problem:
+            return _dump({"success": False, "error": problem})
+        params["startTime"] = start_ms
+    if end_time:
+        end_ms, problem = _int_arg(end_time, "end_time", 1)
+        if problem:
+            return _dump({"success": False, "error": problem})
+        params["endTime"] = end_ms
+    if template_name:
+        params["templateName"] = str(template_name).strip()
+
+    try:
+        result = _api("GET", "/v1.0/report/entries", params=params)
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        entries = data.get("entries")
+        if not isinstance(entries, list):
+            entries = data.get("list") if isinstance(data.get("list"), list) else []
+        return _dump({"success": True, "entries": entries, "count": len(entries),
+                      "has_more": data.get("hasMore", False),
+                      "next_cursor": data.get("nextCursor", 0)})
+    except Exception as e:
+        logger.error(f"查询日志列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_report_templates():
+    """查询当前企业可用的日志模板列表。"""
+    logger.info("查询日志模板列表")
+
+    err = _check_config()
+    if err:
+        return err
+
+    try:
+        result = _api("GET", "/v1.0/report/templates")
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        templates = data.get("templates")
+        if not isinstance(templates, list):
+            templates = data.get("templateList") if isinstance(data.get("templateList"), list) else []
+        return _dump({"success": True, "templates": templates, "count": len(templates)})
+    except Exception as e:
+        logger.error(f"查询日志模板列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 钉盘/文件(P1) ──
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_drive_upload(
+    space_id: str,
+    parent_dentry_id: str,
+    file_path: str,
+    name: str = "",
+    conflict_policy: str = "AUTO_RENAME",
+):
+    """上传本地文件到钉盘。
+
+    参数:
+    - space_id: 钉盘空间 ID(必填)
+    - parent_dentry_id: 父目录 dentryId(必填)
+    - file_path: 本地文件路径(必填)
+    - name: 钉盘中的文件名(可选, 缺省用本地文件名)
+    - conflict_policy: 同名冲突策略, 默认 AUTO_RENAME(可选 OVERWRITE 等)
+
+    线上冒烟待确认: multipart 字段名 file/parentDentryId/conflictPolicy、
+    响应 dentry.id/name。
+    """
+    logger.info(f"上传钉盘文件: space={_clip(space_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    space = str(space_id or "").strip()
+    if not space:
+        return _dump({"success": False, "error": "space_id 必填"})
+    parent = str(parent_dentry_id or "").strip()
+    if not parent:
+        return _dump({"success": False, "error": "parent_dentry_id 必填"})
+    problem = _check_upload_file(file_path)
+    if problem:
+        return _dump({"success": False, "error": problem})
+    policy = str(conflict_policy or "AUTO_RENAME").strip().upper()
+    if not policy:
+        return _dump({"success": False, "error": "conflict_policy 必填"})
+
+    path = str(file_path).strip()
+    upload_name = str(name or "").strip() or os.path.basename(path)
+    try:
+        with open(path, "rb") as fh:
+            result = _api("POST", f"/v1.0/storage/spaces/{space}/files/upload",
+                          data={"parentDentryId": parent, "conflictPolicy": policy},
+                          files={"file": (upload_name, fh)}, timeout=120)
+        dentry = result.get("dentry") if isinstance(result.get("dentry"), dict) else {}
+        return _dump({"success": True,
+                      "dentry_id": dentry.get("id", ""),
+                      "name": dentry.get("name", upload_name),
+                      "message": "文件已上传到钉盘"})
+    except Exception as e:
+        logger.error(f"上传钉盘文件异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_drive_download_url(space_id: str, dentry_id: str):
+    """获取钉盘文件下载链接。
+
+    参数:
+    - space_id: 钉盘空间 ID(必填)
+    - dentry_id: 文件 dentryId(必填)
+    """
+    logger.info(f"获取钉盘下载链接: space={_clip(space_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    space = str(space_id or "").strip()
+    if not space:
+        return _dump({"success": False, "error": "space_id 必填"})
+    dentry = str(dentry_id or "").strip()
+    if not dentry:
+        return _dump({"success": False, "error": "dentry_id 必填"})
+
+    try:
+        result = _api("GET", f"/v1.0/storage/spaces/{space}/dentries/{dentry}/downloadInfos")
+        return _dump({"success": True,
+                      "download_url": result.get("resourceUrl") or result.get("url", ""),
+                      "result": result})
+    except Exception as e:
+        logger.error(f"获取钉盘下载链接异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_send_file_single(user_ids: str, file_path: str):
+    """上传本地文件并发送单聊文件消息。
+
+    参数:
+    - user_ids: 接收人 userId 列表, 逗号分隔(必填)
+    - file_path: 本地文件路径(必填, 不超过 20MB)
+
+    流程: 先上传媒体得 mediaId, 再以 msgKey=sampleFile 发送
+    (线上冒烟待确认: 上传响应 mediaId、msgKey/msgParam 字段)。
+    """
+    logger.info(f"发送单聊文件消息: users={_clip(user_ids, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    receivers = _split_ids(user_ids)
+    if not receivers:
+        return _dump({"success": False, "error": "user_ids 必填(逗号分隔 userId)"})
+    problem = _check_upload_file(file_path)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    path = str(file_path).strip()
+    file_name = os.path.basename(path)
+    try:
+        media_id = _upload_robot_media(path)
+        msg_param = json.dumps({
+            "mediaId": media_id, "fileName": file_name,
+            "fileType": os.path.splitext(file_name)[1].lstrip(".") or "file",
+        }, ensure_ascii=False)
+        result = _api("POST", "/v1.0/robot/oToMessages/batchSend",
+                      json_body={"robotCode": ROBOT_CODE, "userIds": receivers,
+                                 "msgKey": "sampleFile", "msgParam": msg_param})
+        return _dump({"success": True, "media_id": media_id,
+                      "message": f"文件消息已发送给 {len(receivers)} 个用户",
+                      "result": result})
+    except Exception as e:
+        logger.error(f"发送单聊文件消息异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_send_file_group(open_conversation_id: str, file_path: str):
+    """上传本地文件并发送群文件消息。
+
+    参数:
+    - open_conversation_id: 群 openConversationId(必填)
+    - file_path: 本地文件路径(必填, 不超过 20MB)
+
+    线上冒烟待确认: msgKey=sampleFile 及 msgParam 字段。
+    """
+    logger.info(f"发送群文件消息: conversation={_clip(open_conversation_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    conversation = str(open_conversation_id or "").strip()
+    if not conversation:
+        return _dump({"success": False, "error": "open_conversation_id 必填"})
+    problem = _check_upload_file(file_path)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    path = str(file_path).strip()
+    file_name = os.path.basename(path)
+    try:
+        media_id = _upload_robot_media(path)
+        msg_param = json.dumps({
+            "mediaId": media_id, "fileName": file_name,
+            "fileType": os.path.splitext(file_name)[1].lstrip(".") or "file",
+        }, ensure_ascii=False)
+        result = _api("POST", "/v1.0/robot/groupMessages/send",
+                      json_body={"robotCode": ROBOT_CODE, "conversationId": conversation,
+                                 "msgKey": "sampleFile", "msgParam": msg_param})
+        return _dump({"success": True, "media_id": media_id,
+                      "message": "群文件消息已发送",
+                      "process_query_key": result.get("processQueryKey", "")})
+    except Exception as e:
+        logger.error(f"发送群文件消息异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 视频会议(P1) ──
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_conference_create(
+    title: str,
+    start_time: int,
+    end_time: int,
+    member_user_ids: str = "",
+):
+    """创建视频会议。
+
+    参数:
+    - title: 会议标题(必填)
+    - start_time: 开始时间毫秒时间戳(必填)
+    - end_time: 结束时间毫秒时间戳(必填, 需大于 start_time)
+    - member_user_ids: 参会人 userId 列表, 逗号分隔(可选)
+
+    线上冒烟待确认: body 参会人字段名 memberUserIds(亦可能为 memberUnionIds)。
+    """
+    logger.info(f"创建视频会议: title={_clip(title, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(title or "").strip():
+        return _dump({"success": False, "error": "title 必填"})
+    start_ms, problem = _int_arg(start_time, "start_time", 1)
+    if problem:
+        return _dump({"success": False, "error": problem})
+    end_ms, problem = _int_arg(end_time, "end_time", 1)
+    if problem:
+        return _dump({"success": False, "error": problem})
+    if end_ms <= start_ms:
+        return _dump({"success": False, "error": "end_time 需大于 start_time"})
+
+    body: dict = {"title": str(title).strip(), "startTime": start_ms, "endTime": end_ms}
+    members = _split_ids(member_user_ids)
+    if members:
+        body["memberUserIds"] = members
+
+    try:
+        result = _api("POST", "/v1.0/conference/videoConferences", json_body=body)
+        return _dump({"success": True,
+                      "conference_id": result.get("conferenceId") or result.get("id", ""),
+                      "message": "视频会议已创建"})
+    except Exception as e:
+        logger.error(f"创建视频会议异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_conference_query(conference_id: str):
+    """查询视频会议详情。
+
+    参数:
+    - conference_id: 会议 ID(必填)
+    """
+    logger.info(f"查询视频会议: conference={_clip(conference_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(conference_id or "").strip():
+        return _dump({"success": False, "error": "conference_id 必填"})
+
+    try:
+        result = _api("GET", f"/v1.0/conference/videoConferences/{str(conference_id).strip()}")
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        return _dump({"success": True, "conference": data})
+    except Exception as e:
+        logger.error(f"查询视频会议异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+def dingtalk_conference_close(conference_id: str):
+    """关闭视频会议(不可逆, 会议立即结束)。
+
+    参数:
+    - conference_id: 会议 ID(必填)
+    """
+    logger.info(f"关闭视频会议: conference={_clip(conference_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(conference_id or "").strip():
+        return _dump({"success": False, "error": "conference_id 必填"})
+
+    try:
+        result = _api("PUT", f"/v1.0/conference/videoConferences/{str(conference_id).strip()}/close")
+        return _dump({"success": True, "message": "视频会议已关闭", "result": result})
+    except Exception as e:
+        logger.error(f"关闭视频会议异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 通讯录进阶(P1) ──
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_user_by_unionid(unionid: str):
+    """根据 unionId 查询用户详情(新版 v1.0 通讯录)。
+
+    参数:
+    - unionid: 用户 unionId(必填)
+    """
+    logger.info(f"根据 unionId 查询用户: {_clip(unionid, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(unionid or "").strip():
+        return _dump({"success": False, "error": "unionid 必填"})
+
+    try:
+        result = _api("GET", f"/v1.0/contact/users/{str(unionid).strip()}")
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        return _dump({"success": True, "user": data})
+    except Exception as e:
+        logger.error(f"根据 unionId 查询用户异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_department_detail(dept_id: int):
+    """查询部门详情(新版 v1.0 通讯录)。
+
+    参数:
+    - dept_id: 部门 ID(必填, 根部门为 1)
+    """
+    logger.info(f"查询部门详情: dept={dept_id}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    dept, problem = _int_arg(dept_id, "dept_id", 1)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    try:
+        result = _api("GET", f"/v1.0/contact/departments/{dept}")
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        return _dump({"success": True, "department": data})
+    except Exception as e:
+        logger.error(f"查询部门详情异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_role_list():
+    """查询角色列表(新版 v1.0 通讯录)。"""
+    logger.info("查询角色列表")
+
+    err = _check_config()
+    if err:
+        return err
+
+    try:
+        result = _api("GET", "/v1.0/contact/roles")
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        roles = data.get("roles")
+        if not isinstance(roles, list):
+            roles = data.get("list") if isinstance(data.get("list"), list) else []
+        return _dump({"success": True, "roles": roles, "count": len(roles)})
+    except Exception as e:
+        logger.error(f"查询角色列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_external_contacts(user_ids: str = "", size: int = 20, cursor: int = 0):
+    """查询外部联系人列表。
+
+    参数:
+    - user_ids: 员工 userId 列表, 逗号分隔(可选)
+    - size: 单页条数(1~100, 默认 20)
+    - cursor: 分页游标, 首页传 0
+
+    线上冒烟待确认: query 参数名 userIds/size/cursor 与响应字段。
+    """
+    logger.info("查询外部联系人列表")
+
+    err = _check_config()
+    if err:
+        return err
+
+    page_size, problem = _int_arg(size if size is not None else 20, "size", 1)
+    if problem:
+        return _dump({"success": False, "error": problem})
+    page_cursor, problem = _int_arg(cursor if cursor is not None else 0, "cursor", 0)
+    if problem:
+        return _dump({"success": False, "error": problem})
+
+    params: dict = {"size": min(page_size, 100), "cursor": page_cursor}
+    owners = _split_ids(user_ids)
+    if owners:
+        params["userIds"] = owners
+
+    try:
+        result = _api("GET", "/v1.0/contact/empExtContacts", params=params)
+        data = result.get("result") if isinstance(result.get("result"), dict) else result
+        contacts = data.get("contacts")
+        if not isinstance(contacts, list):
+            contacts = data.get("list") if isinstance(data.get("list"), list) else []
+        return _dump({"success": True, "contacts": contacts, "count": len(contacts),
+                      "next_cursor": data.get("nextCursor", 0)})
+    except Exception as e:
+        logger.error(f"查询外部联系人列表异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+# ── 日历补全(P1) ──
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def dingtalk_calendar_update_event(
+    user_id: str,
+    calendar_id: str,
+    event_id: str,
+    summary: str = "",
+    start: str = "",
+    end: str = "",
+    description: str = "",
+):
+    """更新日程(仅提交非空字段)。
+
+    参数:
+    - user_id: 日程归属用户 unionId(必填)
+    - calendar_id: 日历 ID, 主日历为 primary(必填)
+    - event_id: 日程事件 ID(必填)
+    - summary: 新标题(可选)
+    - start: 新开始时间 ISO8601, 形如 2026-09-24T10:00:00+08:00(可选)
+    - end: 新结束时间 ISO8601(可选)
+    - description: 新描述(可选)
+    """
+    logger.info(f"更新日程: user={_clip(user_id, 64)}, event={_clip(event_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(user_id or "").strip():
+        return _dump({"success": False, "error": "user_id 必填"})
+    if not str(calendar_id or "").strip():
+        return _dump({"success": False, "error": "calendar_id 必填"})
+    if not str(event_id or "").strip():
+        return _dump({"success": False, "error": "event_id 必填"})
+
+    body: dict = {}
+    if summary:
+        body["summary"] = str(summary)
+    if start:
+        body["start"] = {"dateTime": str(start).strip(), "timeZone": "Asia/Shanghai"}
+    if end:
+        body["end"] = {"dateTime": str(end).strip(), "timeZone": "Asia/Shanghai"}
+    if description:
+        body["description"] = str(description)
+    if not body:
+        return _dump({"success": False, "error": "至少提供一项待更新字段(summary/start/end/description)"})
+
+    uid = str(user_id).strip()
+    cal = str(calendar_id).strip()
+    event = str(event_id).strip()
+    try:
+        result = _api("PUT", f"/v1.0/calendar/users/{uid}/calendars/{cal}/events/{event}",
+                      json_body=body)
+        ok = result.get("result", True) is not False
+        return _dump({"success": bool(ok), "event_id": event,
+                      "error": "" if ok else "更新未成功"})
+    except Exception as e:
+        logger.error(f"更新日程异常: {e}")
+        return _dump({"success": False, "error": str(e)})
+
+
+@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+def dingtalk_calendar_delete_event(user_id: str, calendar_id: str, event_id: str):
+    """删除日程(不可逆)。
+
+    参数:
+    - user_id: 日程归属用户 unionId(必填)
+    - calendar_id: 日历 ID, 主日历为 primary(必填)
+    - event_id: 日程事件 ID(必填)
+    """
+    logger.info(f"删除日程: user={_clip(user_id, 64)}, event={_clip(event_id, 64)}")
+
+    err = _check_config()
+    if err:
+        return err
+
+    if not str(user_id or "").strip():
+        return _dump({"success": False, "error": "user_id 必填"})
+    if not str(calendar_id or "").strip():
+        return _dump({"success": False, "error": "calendar_id 必填"})
+    if not str(event_id or "").strip():
+        return _dump({"success": False, "error": "event_id 必填"})
+
+    uid = str(user_id).strip()
+    cal = str(calendar_id).strip()
+    event = str(event_id).strip()
+    try:
+        result = _api("DELETE", f"/v1.0/calendar/users/{uid}/calendars/{cal}/events/{event}")
+        return _dump({"success": True, "message": "日程已删除", "result": result})
+    except Exception as e:
+        logger.error(f"删除日程异常: {e}")
         return _dump({"success": False, "error": str(e)})
 
 
