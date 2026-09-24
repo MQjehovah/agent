@@ -1,9 +1,8 @@
-import os
 import json
 import logging
-from typing import Dict, Any, List, Optional, Callable, Awaitable
+import os
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import Any
 
 from utils.frontmatter import extract_frontmatter
 
@@ -16,15 +15,36 @@ class Skill:
     description: str
     version: str = "1.0.0"
     author: str = ""
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     enabled: bool = True
     prompt_template: str = ""
-    tools: List[Dict[str, Any]] = field(default_factory=list)
-    variables: List[Dict[str, Any]] = field(default_factory=list)
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    variables: list[dict[str, Any]] = field(default_factory=list)
     output_format: str = "markdown"
     skill_dir: str = ""
+    # 可见性限制(frontmatter 可选): 空列表=该维度不限; 两维度都非空须同时命中(AND)
+    departments: list[str] = field(default_factory=list)
+    roles: list[str] = field(default_factory=list)
+    # 限制字段类型非法(见 _parse_access_list): fail-closed, 该技能对所有用户不可见
+    access_invalid: bool = False
 
-    def get_info(self) -> Dict[str, Any]:
+    def is_available_to(self, department: str = "", role: str = "") -> bool:
+        """技能对给定用户是否可用(部门/角色维度, 与市场 services/access.py 同语义)。
+
+        fail-closed: 维度非空时用户值缺失或未命中即不可用; 缺省(空)维度不限制。
+        """
+        if self.access_invalid:
+            return False
+        return (self._dimension_allows(self.departments, department)
+                and self._dimension_allows(self.roles, role))
+
+    @staticmethod
+    def _dimension_allows(required: list[str], actual: str) -> bool:
+        if not required:
+            return True
+        return bool(actual) and actual in required
+
+    def get_info(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
@@ -39,7 +59,7 @@ class Skill:
             "has_assets": os.path.isdir(os.path.join(self.skill_dir, "assets")),
         }
 
-    def render_prompt(self, variables: Dict[str, Any]) -> str:
+    def render_prompt(self, variables: dict[str, Any]) -> str:
         if not self.prompt_template:
             return ""
 
@@ -117,7 +137,7 @@ class Skill:
 
         return "\n\n".join(sections)
 
-    def get_tool_definitions(self) -> List[Dict[str, Any]]:
+    def get_tool_definitions(self) -> list[dict[str, Any]]:
         return self.tools
 
 
@@ -125,8 +145,8 @@ class Skill:
 class SkillResult:
     success: bool
     data: Any = None
-    error: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class SkillManager:
@@ -137,9 +157,9 @@ class SkillManager:
 
     def __init__(self, skills_dir: str):
         self.skills_dir = skills_dir
-        self.skills: Dict[str, Skill] = {}
-        self.tools: List[Dict[str, Any]] = []
-        self._active_skills: Dict[str, str] = {}
+        self.skills: dict[str, Skill] = {}
+        self.tools: list[dict[str, Any]] = []
+        self._active_skills: dict[str, str] = {}
         self._load_all()
         self._build_builtin_tools()
 
@@ -151,13 +171,12 @@ class SkillManager:
         loaded = 0
         for item in os.listdir(self.skills_dir):
             skill_path = os.path.join(self.skills_dir, item)
-            if os.path.isdir(skill_path):
-                if self._load_skill(skill_path):
-                    logger.debug(f"加载技能: {item}")
-                    loaded += 1
+            if os.path.isdir(skill_path) and self._load_skill(skill_path):
+                logger.debug(f"加载技能: {item}")
+                loaded += 1
         return loaded
 
-    def _load_skill(self, skill_dir: str) -> Optional[Skill]:
+    def _load_skill(self, skill_dir: str) -> Skill | None:
         skill_file = os.path.join(skill_dir, self.SKILL_FILE)
         if not os.path.exists(skill_file):
             logger.warning(f"未找到SKILL.md: {skill_dir}")
@@ -175,6 +194,11 @@ class SkillManager:
             name = front_matter.get("name", os.path.basename(skill_dir))
             description = front_matter.get("description", "")
 
+            departments, dept_invalid = self._parse_access_list(
+                front_matter.get("departments"), "departments", skill_file)
+            roles, role_invalid = self._parse_access_list(
+                front_matter.get("roles"), "roles", skill_file)
+
             skill = Skill(
                 name=name,
                 description=description,
@@ -186,7 +210,10 @@ class SkillManager:
                 tools=front_matter.get("tools", []),
                 variables=front_matter.get("variables", []),
                 output_format=front_matter.get("output_format", "markdown"),
-                skill_dir=skill_dir
+                skill_dir=skill_dir,
+                departments=departments,
+                roles=roles,
+                access_invalid=dept_invalid or role_invalid,
             )
 
             self.skills[skill.name] = skill
@@ -196,13 +223,43 @@ class SkillManager:
             logger.error(f"加载技能失败: {skill_dir}, 错误: {e}")
             return None
 
-    def _build_builtin_tools(self):
+    @staticmethod
+    def _parse_access_list(raw: Any, field: str, skill_file: str) -> tuple[list[str], bool]:
+        """解析 departments/roles 限制字段 → (值列表, 是否类型非法)。
+
+        容错规则(fail-closed):
+        - 缺省(键不存在/None)或空列表 → ([], False), 该维度不限(保持既有技能行为);
+        - 非空列表 → 只取非空字符串项; 清洗后为空(全部非法项) → ([], True), 恒不可见;
+        - 非列表类型(如手写 ``roles: admin``) → ([], True), 恒不可见并记 WARNING。
+        """
+        if raw is None:
+            return [], False
+        if not isinstance(raw, list):
+            logger.warning(
+                f"技能 {skill_file} 的 {field} 必须是列表(实际 {type(raw).__name__}), "
+                "按 fail-closed 处理: 该技能对所有用户不可见")
+            return [], True
+        values = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                values.append(item.strip())
+            else:
+                logger.warning(f"技能 {skill_file} 的 {field} 含非法项(忽略): {item!r}")
+        if raw and not values:
+            logger.warning(
+                f"技能 {skill_file} 的 {field} 无有效项, "
+                "按 fail-closed 处理: 该技能对所有用户不可见")
+            return [], True
+        return values, False
+
+    @staticmethod
+    def _build_skill_tool_defs(skills: list["Skill"]) -> list[dict[str, Any]]:
+        """构建 skill 内置工具定义, <available_skills> 只列传入的技能。"""
         skills_xml = ""
-        for s in self.skills.values():
-            if s.enabled:
-                skills_xml += f"  <skill>\n    <name>{s.name}</name>\n    <description>{s.description}</description>\n  </skill>\n"
+        for s in skills:
+            skills_xml += f"  <skill>\n    <name>{s.name}</name>\n    <description>{s.description}</description>\n  </skill>\n"
         skill_block = f"\n<available_skills>\n{skills_xml}</available_skills>" if skills_xml else ""
-        self._builtin_tool_defs = [{
+        return [{
             "type": "function",
             "function": {
                 "name": "skill",
@@ -224,25 +281,57 @@ class SkillManager:
             }
         }]
 
-    def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        return self._builtin_tool_defs
+    def _build_builtin_tools(self):
+        """构建内置工具定义(全量已启用技能的目录快照, 供初始化/团队技能合并后刷新)。"""
+        self._builtin_tool_defs = self._build_skill_tool_defs(
+            [s for s in self.skills.values() if s.enabled])
 
-    def get_skill_names(self) -> List[str]:
+    @staticmethod
+    def _current_user_access() -> tuple[str, str]:
+        """当前 run 用户的 (部门, 显式角色); 全空=渠道未解析身份, 受限技能不可见。"""
+        from agent.core import current_run  # 延迟导入: 避免 skills <-> agent.core 循环依赖
+        rc = current_run()
+        return rc.user_department, rc.user_role
+
+    def visible_skills(self) -> list[Skill]:
+        """当前 run 用户可见的已启用技能(按部门/显式角色过滤)。
+
+        机制与 tool_search 一致: 读进程内 contextvar(_current_run)。技能清单在 run 内
+        由 Agent 组装工具表时生成, 故能拿到该 run 的用户部门/角色; 渠道未解析
+        部门/角色时其值为空 → 受限技能不可见(fail-closed)。
+        """
+        department, role = self._current_user_access()
+        return [s for s in self.skills.values()
+                if s.enabled and s.is_available_to(department, role)]
+
+    def get_tool_definitions(self) -> list[dict[str, Any]]:
+        """skill 工具定义; <available_skills> 按当前 run 用户动态过滤。"""
+        return self._build_skill_tool_defs(self.visible_skills())
+
+    def get_skill_names(self) -> list[str]:
         return [s.name for s in self.skills.values() if s.enabled]
 
-    async def execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
+    async def execute_tool(self, tool_name: str, args: dict[str, Any]) -> str:
         if tool_name in ("skill", "execute_skill"):
             return await self._execute_skill(args)
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
-    async def _execute_skill(self, args: Dict[str, Any]) -> str:
+    async def _execute_skill(self, args: dict[str, Any]) -> str:
         skill_name = args.get("name") or args.get("skill_name", "")
         user_input = args.get("user_input", "")
 
         skill = self.skills.get(skill_name)
         if not skill:
-            available = self.list_skills()
+            available = self.list_visible_skills()
             return json.dumps({"error": f"Skill not found: {skill_name}", "available_skills": available}, ensure_ascii=False)
+
+        # 执行前二次校验(防绕过 <available_skills> 清单直接点名调用): 无权技能一律拒绝
+        if not skill.is_available_to(*self._current_user_access()):
+            logger.warning(f"拒绝执行无权访问的技能: {skill_name}")
+            return json.dumps({
+                "error": f"技能 {skill_name} 当前不可用（无权访问）",
+                "available_skills": self.list_visible_skills(),
+            }, ensure_ascii=False)
 
         prompt = skill.render_prompt({"user_input": user_input})
 
@@ -270,10 +359,15 @@ class SkillManager:
         logger.info(f"Skill executed: {skill_name}")
         return result
 
-    def list_skills(self) -> List[str]:
+    def list_skills(self) -> list[str]:
+        """全量已启用技能名(目录快照: 团队技能合并/日志/自动路由等非 LLM 场景)。"""
         return [skill.name for skill in self.skills.values() if skill.enabled]
 
-    def get_skill(self, name: str) -> Optional[Skill]:
+    def list_visible_skills(self) -> list[str]:
+        """当前 run 用户可见的技能名(校验失败提示用, 不泄漏受限技能名)。"""
+        return [skill.name for skill in self.visible_skills()]
+
+    def get_skill(self, name: str) -> Skill | None:
         return self.skills.get(name)
 
     def clear_active_skills(self):
@@ -318,12 +412,12 @@ description: {description or f"{name} skill"}
 
 ## When to Use
 
-- 
+-
 
 ## Workflow
 
-1. 
-2. 
+1.
+2.
 
 ## Output Format
 
@@ -339,7 +433,7 @@ description: {description or f"{name} skill"}
         logger.info(f"创建技能目录: {skill_dir}")
         return skill_dir
 
-    def reload_skill(self, skill_dir: str) -> Optional[Skill]:
+    def reload_skill(self, skill_dir: str) -> Skill | None:
         """热加载指定目录的技能（如果已存在则覆盖）"""
         skill = self._load_skill(skill_dir)
         if skill:

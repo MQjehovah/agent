@@ -56,6 +56,13 @@ class RunContext:
     user_id: str = ""
     user_name: str = ""
     role: str = "default"
+    # 渠道显式提供的 rbac 角色名(web/钉钉/定时等): 供技能 roles 过滤; 空=渠道未提供
+    # (fail-closed, 受限技能不可见)。注意 role 是权限判定值, 无身份时回落 "default"
+    # 哨兵, 不用于技能过滤。
+    user_role: str = ""
+    # RBAC 部门名(SSO 登录回写 rbac_users.department); 空=未知。技能等按部门过滤时
+    # fail-closed: 受限资源对空部门不可见; 非 web 渠道暂不解析(传空)。
+    user_department: str = ""
     # 群聊共享上下文信号：钉钉群共享根运行时置 True，子代理/团队继承；
     # 命中后本轮不注入触发人私有记忆（防串隐私），行级审计仍记触发人。
     group_context: bool = False
@@ -1036,7 +1043,12 @@ class Agent:
             ctx.system_dynamic = f"{tail}\n\n{section}" if tail else section
         ctx.system_prompt = ctx.system_static + ctx.system_dynamic
 
-    async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "", role: str = "", group_context: bool = False) -> AgentResult:
+    async def run(
+        self, task: str, session_id: str = None, user_id: str = "",
+        user_name: str = "", run_id: str = "", role: str = "",
+        group_context: bool = False, user_department: str = "",
+        user_role: str = "",
+    ) -> AgentResult:
         from hooks import get_run_id, reset_run_id, set_run_id
         # 顶层 agent 重置 ask_user 模式为交互模式
         if not self.parent_agent:
@@ -1050,11 +1062,16 @@ class Agent:
         eff_user = user_id or inherited.user_id
         eff_name = user_name or inherited.user_name
         eff_role = role or inherited.role or "default"
+        # 技能过滤用的显式角色: 渠道传入的 user_role/role 优先, 否则继承父级;
+        # 全空 = 渠道未解析身份(如飞书/webhook), 受限技能不得命中(fail-closed)。
+        eff_user_role = user_role or role or getattr(inherited, "user_role", "")
+        eff_dept = user_department or getattr(inherited, "user_department", "")
         # 群共享上下文:顶层渠道显式传 True,子代理在同一 Task 内继承父级 run 标记
         eff_group = bool(group_context) or bool(getattr(inherited, "group_context", False))
         ctx = RunContext(
             task=task, run_id=run_id or uuid.uuid4().hex,
             user_id=eff_user, user_name=eff_name, role=eff_role,
+            user_role=eff_user_role, user_department=eff_dept,
             group_context=eff_group,
         )
         # 群共享根整轮标记：顶层群 run 用自身 run_id；嵌套 run(子代理/团队)继承父级，

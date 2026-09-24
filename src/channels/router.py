@@ -11,9 +11,13 @@ class MessageRouter:
     职责：
     - 标准化 session_id 格式 ({channel}:{unique_id})
     - 非交互渠道自动设 ask_user_mode=auto
-    - 一致的用户身份传递
+    - 一致的用户身份传递（含部门/显式角色: web 渠道由 server 认证处传入 rbac 值）
     - 运行中登记：除 cli（本机交互，不属线上会话）外，route 前后对会话做
       开始/结束登记，使「运行中」API 对钉钉/飞书/webhook/定时等渠道同样可见。
+
+    注：技能可见性按用户部门/显式角色过滤（fail-closed）。web 渠道由 server 认证处
+    传入 department/role；钉钉/定时等渠道已有的显式 role 照常生效；未解析身份的渠道
+    （飞书/webhook 等）department 为空、role 缺省，受限技能对其不可见也不可执行。
     """
 
     def __init__(self, agent):
@@ -33,6 +37,8 @@ class MessageRouter:
         user_name: str = "",
         group_context: bool = False,
         return_result: bool = False,
+        user_department: str = "",
+        user_role: str = "",
         **kwargs,
     ) -> Any:
         if not session_id:
@@ -57,6 +63,8 @@ class MessageRouter:
                     content, session_id=session_id,
                     user_id=user_id, user_name=user_name,
                     group_context=group_context,
+                    user_department=user_department,
+                    user_role=user_role,
                     **kwargs,
                 )
             else:
@@ -66,6 +74,8 @@ class MessageRouter:
                         content, session_id=session_id,
                         user_id=user_id, user_name=user_name,
                         group_context=group_context,
+                        user_department=user_department,
+                        user_role=user_role,
                         **kwargs,
                     )
                     # 渠道层需要结果元信息(如钉钉群敏感标记改道)时返回 AgentResult；
