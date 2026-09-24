@@ -339,7 +339,8 @@ class Storage:
                     context_stats TEXT DEFAULT '',
                     updated_at TEXT,
                     title TEXT DEFAULT '',
-                    pinned INTEGER DEFAULT 0
+                    pinned INTEGER DEFAULT 0,
+                    active_tools TEXT DEFAULT '[]'
                 );
 
                 -- 逻辑删除的对话: 只登记标记, 消息数据保留(会话数据对审计/分析有价值)
@@ -408,6 +409,8 @@ class Storage:
             # 老库升级: session_meta 增加会话自定义标题与置顶标记
             _add_col("session_meta", "title TEXT DEFAULT ''")
             _add_col("session_meta", "pinned INTEGER DEFAULT 0")
+            # 老库升级: 渐进披露(工具搜索)的会话激活集(JSON 数组)
+            _add_col("session_meta", "active_tools TEXT DEFAULT '[]'")
             _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
             _add_col("rbac_users", "display_name TEXT DEFAULT ''")
             # 老库升级: 内置角色的 Web 权限/数据范围回填(仅当仍为默认空值时, 幂等)
@@ -1355,13 +1358,22 @@ class Storage:
     # ---------------- 会话元状态（P4c：压缩摘要持久化与重建）----------------
 
     def save_session_meta(self, session_id: str, summary: str, context_stats: str = "") -> None:
-        """持久化会话压缩摘要，供重启后无损恢复（INSERT OR REPLACE 按 session_id）。"""
+        """持久化会话压缩摘要，供重启后无损恢复（按 session_id UPSERT）。
+
+        仅更新摘要字段, 保留同行的 title/pinned/active_tools 等其他列
+        （旧实现 INSERT OR REPLACE 会整行覆盖, 丢掉渐进披露的激活集）。
+        """
         now = datetime.now().isoformat()
         with self._write_lock, self._get_connection() as conn:
             conn.execute("""
-                INSERT OR REPLACE INTO session_meta
+                INSERT INTO session_meta
                 (session_id, last_summary, summary_at, context_stats, updated_at)
                 VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    last_summary = excluded.last_summary,
+                    summary_at = excluded.summary_at,
+                    context_stats = excluded.context_stats,
+                    updated_at = excluded.updated_at
             """, (session_id, summary, now, context_stats, now))
             conn.commit()
 
@@ -1371,6 +1383,60 @@ class Storage:
                 "SELECT session_id, last_summary, summary_at, context_stats, updated_at "
                 "FROM session_meta WHERE session_id = ?", (session_id,)).fetchone()
         return dict(row) if row else None
+
+    # ---------------- 渐进披露(工具搜索): 会话激活集 ----------------
+
+    def get_active_tools(self, session_id: str) -> list[str]:
+        """读取该会话已激活的远程工具名列表(JSON 数组); 缺失/损坏一律返回空列表。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return []
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT active_tools FROM session_meta WHERE session_id = ?", (sid,)).fetchone()
+        if not row or not row[0]:
+            return []
+        try:
+            data = json.loads(row[0])
+        except (TypeError, ValueError):
+            logger.warning(f"session_meta.active_tools 损坏(按空处理): {sid[:24]}")
+            return []
+        if not isinstance(data, list):
+            logger.warning(f"session_meta.active_tools 非数组(按空处理): {sid[:24]}")
+            return []
+        return [str(name) for name in data if str(name).strip()]
+
+    def set_active_tools(self, session_id: str, names: list[str]) -> None:
+        """覆盖写入该会话的激活集(JSON 数组); 会话行不存在时按需插入。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        payload = json.dumps([str(name) for name in (names or []) if str(name).strip()],
+                             ensure_ascii=False)
+        now = datetime.now().isoformat()
+        with self._write_lock, self._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO session_meta (session_id, last_summary, context_stats, updated_at, active_tools) "
+                "VALUES (?, '', '', ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET active_tools = excluded.active_tools, "
+                "updated_at = excluded.updated_at",
+                (sid, now, payload),
+            )
+            conn.commit()
+
+    def delete_active_tools(self, session_id: str) -> bool:
+        """清空该会话的激活集(保留 session_meta 其他字段); 无变化返回 False。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return False
+        with self._write_lock, self._get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE session_meta SET active_tools = '[]', updated_at = ? "
+                "WHERE session_id = ? AND COALESCE(active_tools, '') NOT IN ('', '[]')",
+                (datetime.now().isoformat(), sid),
+            )
+            conn.commit()
+            return cur.rowcount > 0
 
     # ---------------- 记忆管理（WebUI 后台用）----------------
 

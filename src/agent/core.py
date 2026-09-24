@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from agent import tool_search
 from agent.session import sanitize_tool_message_pairs
 from agent.subagent import SubagentManager
 from learning import Learner
@@ -88,6 +89,8 @@ class RunContext:
     conversation_id: str = ""
     # 会话对象（复用 session_id 时保留历史消息）
     session: Any = None
+    # 渐进披露: 最近一次工具注入的签名(去重 INFO 日志, 每次注入变化打一条)
+    tool_injection_sig: str = ""
 
 
 # 模块级 ContextVar：run() 内 set()，协程任意位置 get() 取回“当前 run”的上下文。
@@ -130,6 +133,9 @@ class Agent:
         self.system_dynamic = ""
         self.max_iterations = 200
         self.tool_denylist: set[str] = set()
+        # 渐进披露(工具搜索)模式/阈值: 启动时解析 env(非法值告警回退默认)
+        self._tool_search_mode = tool_search.tool_search_mode_from_env()
+        self._tool_search_threshold = tool_search.tool_search_threshold_from_env()
 
         # Prompt 分层拼装器
         self._prompt_builder: PromptBuilder | None = None
@@ -414,6 +420,14 @@ class Agent:
         # task/bind_session 是管理命令，不是 LLM 工具，排除
         self.tool_denylist.update(["task_list", "task_get", "task_create", "task_cancel",
                                    "bind_session"])
+
+        # 渐进披露入口: search_tools 的检索源/激活回调按当前对话根读写(见 agent.tool_search)
+        search_tool = self.tool_registry.get_tool(tool_search.SEARCH_TOOLS_NAME)
+        if search_tool is not None and hasattr(search_tool, "configure"):
+            search_tool.configure(
+                entries_provider=self._remote_tool_entries,
+                activator=self._activate_remote_tools,
+            )
 
         self._init_retrieval()
 
@@ -852,31 +866,172 @@ class Agent:
             parts.append(f"\n### {path}\n```\n{preview}\n```")
         return "\n".join(parts)
 
-    @property
-    def tool_defs(self) -> list[dict[str, Any]]:
-        tools = []
+    def _collect_tool_defs(self) -> list[tuple[dict[str, Any], str, str]]:
+        """组装全部工具定义及其来源: (tool_def, source, source_name)。
+
+        source ∈ builtin/mcp/skill/plugin; source_name 为 MCP server(平台轨为
+        `platform:{能力}`)或插件名(核心工具为空串)。渐进披露据此区分核心(恒注入)
+        与远程(命中激活才注入)。
+        """
+        pairs: list[tuple[dict[str, Any], str, str]] = []
 
         if self.tool_registry:
             for t in self.tool_registry.get_tool_definitions():
                 if t.get("function", {}).get("name") not in self.tool_denylist:
-                    tools.append(t)
+                    pairs.append((t, "builtin", ""))
 
         if self.mcp:
             # 插件较 MCP 后加载: 每次组装时刷新保留名, 保证与内置/技能/插件重名的 MCP 工具带前缀
             self.mcp.set_reserved_names(self._non_mcp_tool_names())
-            tools.extend(self.mcp.tool_defs)
+            for t in self.mcp.tool_defs:
+                name = t.get("function", {}).get("name", "")
+                server = ""
+                try:
+                    server = self.mcp.tool_server(name) or ""
+                except Exception:
+                    server = ""
+                pairs.append((t, "mcp", server))
 
         if self.skill_manager:
-            tools.extend(self.skill_manager.get_tool_definitions())
+            for t in self.skill_manager.get_tool_definitions():
+                pairs.append((t, "skill", ""))
 
         if self.plugin_manager:
             for plugin in self.plugin_manager.plugins.values():
                 if plugin.enabled:
                     for t in plugin.get_tool_defs():
                         if t.get("function", {}).get("name") not in self.tool_denylist:
-                            tools.append(t)
+                            pairs.append((t, "plugin", getattr(plugin, "name", "") or ""))
 
-        return tools
+        return pairs
+
+    def _remote_tool_available(self, name: str, source: str) -> bool:
+        """远程工具注入前可用性过滤: MCP 按 server/平台连接态; 插件装好即视为可用。"""
+        if source == "mcp" and self.mcp is not None:
+            checker = getattr(self.mcp, "is_tool_available", None)
+            if callable(checker):
+                try:
+                    return bool(checker(name))
+                except Exception as e:
+                    logger.debug(f"远程工具可用性检查失败(按可用处理): {name}: {e}")
+        return True
+
+    def _remote_tool_entries(self) -> list[tool_search.ToolSearchEntry]:
+        """当前可用远程工具条目(search_tools 检索源; 断开/下线工具不参与检索)。"""
+        entries: list[tool_search.ToolSearchEntry] = []
+        seen: set[str] = set()
+        for tool_def, source, source_name in self._collect_tool_defs():
+            name = tool_def.get("function", {}).get("name", "")
+            if not name or name in seen or not tool_search.is_remote_tool(name, source):
+                continue
+            if not self._remote_tool_available(name, source):
+                continue
+            seen.add(name)
+            entries.append(tool_search.ToolSearchEntry(
+                name=name,
+                description=str(tool_def.get("function", {}).get("description", "") or ""),
+                source=source_name,
+            ))
+        return entries
+
+    def _activate_remote_tools(self, names: list[str]) -> frozenset[str]:
+        """把命中工具并入当前对话根的激活集(持久化 + 进程内缓存), 返回最新集合。"""
+        conversation_id = current_run().conversation_id
+        if not conversation_id:
+            logger.warning("工具搜索激活失败: 当前 run 无对话根(conversation_id 为空)")
+            return frozenset()
+        activated = tool_search.ToolActivationStore.activate(
+            conversation_id, names, self.storage)
+        logger.info(
+            f"工具搜索: 激活 {len(names)} 个, 对话 {conversation_id[:32]} 现有 {len(activated)} 个已激活远程工具")
+        return activated
+
+    def _log_tool_injection(self, rc: RunContext, progressive: bool, core_count: int,
+                            active_count: int, remote_count: int) -> None:
+        """工具注入 INFO 日志(签名去重: 注入集合变化才打, 便于线上验证)。"""
+        mode = self._tool_search_mode.value
+        signature = f"{mode}:{progressive}:{core_count}:{active_count}:{remote_count}"
+        if getattr(rc, "tool_injection_sig", "") == signature:
+            return
+        rc.tool_injection_sig = signature
+        if progressive:
+            logger.info(f"工具注入: 核心 {core_count} + 激活 {active_count} + search_tools（渐进 {mode}）")
+        else:
+            logger.info(f"工具注入: 全量 {core_count + remote_count}（渐进未启用, 模式 {mode}）")
+
+    @property
+    def tool_defs(self) -> list[dict[str, Any]]:
+        """LLM 工具表(每轮组装, 已应用 deny 名单)。
+
+        非渐进(off / auto 未达阈值 / 无对话根): 现状全量;
+        渐进(auto 达阈值 / always): 核心工具 + search_tools(内置表中) +
+        该对话根已激活且当前可用的远程工具。激活状态见 agent.tool_search。
+        """
+        pairs = self._collect_tool_defs()
+        if not pairs:
+            return []
+        rc = current_run()
+        conversation_id = getattr(rc, "conversation_id", "") or ""
+        if not conversation_id:
+            return [tool_def for tool_def, _, _ in pairs]
+
+        core_defs: list[dict[str, Any]] = []
+        remote_defs: list[tuple[dict[str, Any], str, str]] = []
+        for tool_def, source, source_name in pairs:
+            name = tool_def.get("function", {}).get("name", "")
+            if tool_search.is_remote_tool(name, source):
+                remote_defs.append((tool_def, source, source_name))
+            else:
+                core_defs.append(tool_def)
+
+        progressive = tool_search.should_use_progressive(
+            self._tool_search_mode, len(remote_defs), self._tool_search_threshold)
+        if not progressive:
+            self._log_tool_injection(rc, False, len(core_defs), 0, len(remote_defs))
+            return [tool_def for tool_def, _, _ in pairs]
+
+        active = tool_search.ToolActivationStore.load(conversation_id, self.storage)
+        injected: list[dict[str, Any]] = []
+        for tool_def, source, _ in remote_defs:
+            name = tool_def.get("function", {}).get("name", "")
+            if name in active and self._remote_tool_available(name, source):
+                injected.append(tool_def)
+        self._log_tool_injection(rc, True, len(core_defs), len(injected), len(remote_defs))
+        return core_defs + injected
+
+    def _apply_progressive_hint(self, ctx: RunContext) -> None:
+        """渐进模式下把工具搜索说明追加到本 run 的 system prompt。
+
+        每次 run 开始时按该对话激活集刷新(同名区块替换语义), 非渐进/无对话根不动作。
+        """
+        if ctx is None or not ctx.conversation_id:
+            return
+        try:
+            pairs = self._collect_tool_defs()
+        except Exception as e:
+            logger.debug(f"渐进提示构建失败(忽略): {e}")
+            return
+        remote_count = sum(
+            1 for tool_def, source, _ in pairs
+            if tool_search.is_remote_tool(tool_def.get("function", {}).get("name", ""), source))
+        if not tool_search.should_use_progressive(
+                self._tool_search_mode, remote_count, self._tool_search_threshold):
+            return
+        active = tool_search.ToolActivationStore.load(ctx.conversation_id, self.storage)
+        hint = tool_search.progressive_hint(sorted(active))
+        section = f"## 工具搜索\n\n{hint}"
+        base_static = self.system_static or ""
+        base_dynamic = self.system_dynamic or ""
+        full = self.system_prompt or (base_static + base_dynamic)
+        ctx.system_static = base_static
+        if full == base_static + base_dynamic:
+            ctx.system_dynamic = f"{base_dynamic}\n\n{section}" if base_dynamic else section
+        else:
+            # 实例完整提示含额外追加(如子代理技能指引): static 前缀保持可缓存,
+            # 剩余部分连同工具搜索说明并入 dynamic, 不丢内容
+            tail = full[len(base_static):] if full.startswith(base_static) else full
+            ctx.system_dynamic = f"{tail}\n\n{section}" if tail else section
+        ctx.system_prompt = ctx.system_static + ctx.system_dynamic
 
     async def run(self, task: str, session_id: str = None, user_id: str = "", user_name: str = "", run_id: str = "", role: str = "", group_context: bool = False) -> AgentResult:
         from hooks import get_run_id, reset_run_id, set_run_id
@@ -912,6 +1067,9 @@ class Agent:
         elif not self.parent_agent:
             ctx.task_dir = self._init_task_dir(task)
         run_token = _current_run.set(ctx)
+
+        # 渐进披露: 按本对话激活集刷新系统提示中的工具搜索说明(非渐进模式无操作)
+        self._apply_progressive_hint(ctx)
 
         # 建立流式事件作用域：仅顶层 run 建立；嵌套子代理 run 继承父级作用域，
         # 使整条调用树共享同一 run_id（配合 HookManager 的 run_id 过滤，杜绝并发串流）。

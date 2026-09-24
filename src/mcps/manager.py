@@ -716,6 +716,20 @@ class MCPManager:
             return True
         return bool(self.platform and self.platform.has_tool(name))
 
+    def is_tool_available(self, name: str) -> bool:
+        """暴露工具名当前是否可用(渐进披露注入前过滤用)。
+
+        本地 MCP: 映射存在且对应 server 已连接(断开 server 的工具定义仍留在
+        工具表里, 供重连恢复, 但不能注入给 LLM); 平台轨: 未连接能力不暴露
+        (platform.has_tool 只反映已连接能力); 未知名字返回 False。
+        """
+        server_name = self._tool_to_server.get(name)
+        if server_name:
+            server = self.servers.get(server_name)
+            return bool(server and server.is_connected)
+        platform = self.platform
+        return bool(platform is not None and platform.has_tool(name))
+
     def tool_risk(self, exposed_name: str) -> McpRisk | None:
         """暴露工具名 → 风险级别(read/write/destructive/unknown)。
 
