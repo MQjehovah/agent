@@ -143,5 +143,44 @@
             "PG_MCP_MAX_ROWS": "200"
         },
         "description": "PostgreSQL 只读查询服务（默认禁用）- 单条 SELECT/WITH/EXPLAIN/SHOW/VALUES 查询与表结构查看；启用需将 enabled 改为 true 并在 .env 配置 PG_MCP_DSN；连接强制只读事务+语句超时+返回行数上限（默认 200，上限 1000）"
+    },
+    {
+        "name": "gerrit",
+        "enabled": false,
+        "command": "python",
+        "args": [
+            "mcp_server/src/gerrit.py"
+        ],
+        "env": {
+            "GERRIT_USERNAME": "s_software",
+            "GERRIT_HTTP_PASSWORD": ""
+        },
+        "description": "Gerrit 代码评审（变更/评审/仓库查询）—— 启用前在 .env 配置 GERRIT_HTTP_PASSWORD（可选 GERRIT_URL/GERRIT_USERNAME）"
+    },
+    {
+        "name": "gitlab",
+        "enabled": false,
+        "command": "python",
+        "args": [
+            "mcp_server/src/gitlab.py"
+        ],
+        "env": {
+            "GITLAB_USERNAME": "s_software",
+            "GITLAB_TOKEN": ""
+        },
+        "description": "GitLab DevOps（项目/MR/流水线/Issue）—— 启用前在 .env 配置 GITLAB_TOKEN 或 GITLAB_PASSWORD（可选 GITLAB_URL/GITLAB_USERNAME）"
+    },
+    {
+        "name": "jira",
+        "enabled": false,
+        "command": "python",
+        "args": [
+            "mcp_server/src/jira.py"
+        ],
+        "env": {
+            "JIRA_USERNAME": "s_software",
+            "JIRA_TOKEN": ""
+        },
+        "description": "Jira 研发管理（Issue/评论/查询）—— 启用前在 .env 配置 JIRA_TOKEN 或 JIRA_PASSWORD（可选 JIRA_URL/JIRA_USERNAME）"
     }
 ]
