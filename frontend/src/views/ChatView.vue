@@ -5,7 +5,7 @@ import { useRoute } from 'vue-router'
 import { api, post, streamChat } from '../api'
 import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import MarkdownIt from 'markdown-it'
-import { Promotion, VideoPause, Plus, Delete, Warning, ArrowRight } from '@element-plus/icons-vue'
+import { Promotion, VideoPause, Warning, ArrowRight } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -418,28 +418,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat">
-    <aside class="chat-side">
-      <el-button class="new-btn" type="primary" plain style="width: 100%" :icon="Plus" @click="newSession">新会话</el-button>
-      <div class="sess-list">
-        <div v-for="s in sessions" :key="s.id" class="sess-item" :class="{ active: s.id === sessionId }" @click="openSession(s)">
-          <div class="sess-top">
-            <el-tag size="small" effect="plain" :type="channelMeta(s.channel, s.id).type" class="sess-ch">{{ channelMeta(s.channel, s.id).label }}</el-tag>
-            <span class="sess-id" :title="s.id">{{ displayTitle(s) }}</span>
-          </div>
-          <div class="sess-meta">
-            <span>{{ s.message_count ?? 0 }} 条</span>
-            <span>{{ shortTime(s.last_accessed || s.created_at) }}</span>
-            <span v-if="s.is_streaming" class="sess-run">运行中</span>
-          </div>
-        </div>
-        <div v-if="sessions.length === 0" style="font-size: 12px; color: var(--text-3); padding: 6px">暂无历史会话</div>
-      </div>
-      <div v-if="sessionId && !readonly" style="display: flex; align-items: center; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border)">
-        <span class="mono" style="flex: 1; font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis">{{ sessionId }}</span>
-        <el-button size="small" text type="danger" :icon="Delete" @click="newSession" title="结束当前会话" />
-      </div>
-    </aside>
-
     <div class="chat-main">
       <div v-if="readonly" class="readonly-bar">
         <el-icon :size="14"><Warning /></el-icon>
