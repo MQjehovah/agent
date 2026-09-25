@@ -77,27 +77,31 @@ class MarketRuntimeTool(BuiltinTool):
     @property
     def parameters(self) -> dict:
         return {
-            "capability": {
-                "type": "string",
-                "description": "能力名称(市场中的 name), 如某工具/某 Agent",
+            "type": "object",
+            "properties": {
+                "capability": {
+                    "type": "string",
+                    "description": "能力名称(市场中的 name), 如某工具/某 Agent",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["tool", "mcp", "agent"],
+                    "description": "能力类型: tool=工具(默认), mcp=连接器(调用其工具), agent=下发 Agent 任务",
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "kind=tool/mcp 时的工具名(该能力暴露的具体工具)",
+                },
+                "params": {
+                    "type": "object",
+                    "description": "kind=tool 时传给工具的参数对象",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "kind=agent 时的任务描述",
+                },
             },
-            "kind": {
-                "type": "string",
-                "enum": ["tool", "mcp", "agent"],
-                "description": "能力类型: tool=工具(默认), mcp=连接器(调用其工具), agent=下发 Agent 任务",
-            },
-            "tool": {
-                "type": "string",
-                "description": "kind=tool/mcp 时的工具名(该能力暴露的具体工具)",
-            },
-            "params": {
-                "type": "object",
-                "description": "kind=tool 时传给工具的参数对象",
-            },
-            "task": {
-                "type": "string",
-                "description": "kind=agent 时的任务描述",
-            },
+            "required": ["capability"],
         }
 
     async def execute(self, capability: str = "", kind: str = "tool",

@@ -53,6 +53,21 @@ def _market_env(monkeypatch):
     yield
 
 
+def test_market_runtime_tool_schema_is_object():
+    """回归: 工具 parameters 必须是完整 JSON Schema(type=object/properties/required)。
+
+    曾因只返回字段字典导致 LLM 报 `type: null`。
+    """
+    tool = MarketRuntimeTool()
+    params = tool.parameters
+    assert params.get("type") == "object"
+    assert isinstance(params.get("properties"), dict)
+    assert "capability" in params["properties"]
+    assert params.get("required") == ["capability"]
+    definition = tool.get_definition()
+    assert definition["function"]["parameters"] == params
+
+
 async def _run_with(user_id: str, coro_factory):
     rc = RunContext(user_id=user_id, role="default")
     token = _current_run.set(rc)
