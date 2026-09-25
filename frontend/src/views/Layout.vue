@@ -234,9 +234,9 @@ function onUserCommand(cmd: string | number | object) {
 
       <div class="side-section">
         <div class="side-section-title collapsible" @click="sessionsCollapsed = !sessionsCollapsed">
-          <el-icon :size="11" class="side-caret" :class="{ open: !sessionsCollapsed }"><CaretRight /></el-icon>
+          <el-icon :size="14" class="side-caret" :class="{ open: !sessionsCollapsed }"><CaretRight /></el-icon>
           会话
-          <el-icon class="side-section-action" :class="{ 'is-loading': sideLoading }" title="刷新" @click.stop="loadSideSessions"><Refresh /></el-icon>
+          <el-icon :size="15" class="side-section-action" :class="{ 'is-loading': sideLoading }" title="刷新" @click.stop="loadSideSessions"><Refresh /></el-icon>
         </div>
         <div v-show="!sessionsCollapsed" class="side-sessions">
           <div
@@ -330,7 +330,7 @@ function onUserCommand(cmd: string | number | object) {
 .side-section { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 12px; }
 .side-section-title {
   display: flex; align-items: center; gap: 6px;
-  font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  font-size: 13px; letter-spacing: 0.02em;
   color: var(--text-3); padding: 0 10px 6px;
 }
 .side-section-action { margin-left: auto; cursor: pointer; }

@@ -427,10 +427,10 @@ async function doLogout() {
 
         <div class="side-section">
           <span class="side-section-title collapsible" @click="sessionsCollapsed = !sessionsCollapsed">
-            <el-icon :size="11" class="side-caret" :class="{ open: !sessionsCollapsed }"><CaretRight /></el-icon>
+            <el-icon :size="14" class="side-caret" :class="{ open: !sessionsCollapsed }"><CaretRight /></el-icon>
             会话
             <el-icon v-if="sessionsStore.loading" class="is-loading spin"><Loading /></el-icon>
-            <el-icon v-else class="side-section-action" title="刷新" @click.stop="sessionsStore.refresh()"><Refresh /></el-icon>
+            <el-icon v-else :size="15" class="side-section-action" title="刷新" @click.stop="sessionsStore.refresh()"><Refresh /></el-icon>
           </span>
           <div v-show="!sessionsCollapsed" class="side-sessions">
             <div v-for="group in sessionGroups" :key="group.key" class="side-group">
