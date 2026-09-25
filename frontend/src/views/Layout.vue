@@ -339,7 +339,7 @@ function onUserCommand(cmd: string | number | object) {
 .side-session {
   display: flex; align-items: center; gap: 7px;
   padding: 6px 8px; border-radius: 8px; cursor: pointer;
-  color: var(--text-2); font-size: 12.5px; margin-bottom: 1px;
+  color: var(--text-2); font-size: 13.5px; margin-bottom: 1px;
 }
 .side-session:hover { background: var(--bg-hover); }
 .side-session.active { background: var(--el-fill-color-darker); color: var(--text); }
