@@ -1,11 +1,11 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatView' })
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api, post, streamChat } from '../api'
 import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import MarkdownIt from 'markdown-it'
-import { CaretRight, Warning, ArrowRight } from '@element-plus/icons-vue'
+import { CaretRight, Warning, ArrowRight, Plus, Microphone, MagicStick, Check } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -17,6 +17,26 @@ const suggestions = [
   '起草一份本周工作周报',
   '从知识库检索报销制度'
 ]
+
+/** 权限模式(在线): default 每次询问 / smart 必要时询问 / auto 完全访问 */
+const PERM_MODES: Record<'default' | 'smart' | 'auto', { label: string; hint: string }> = {
+  default: { label: '默认(每次询问)', hint: '写操作需确认' },
+  smart: { label: '智能(必要时询问)', hint: '仅高危操作需确认' },
+  auto: { label: '完全访问', hint: '不询问，直接执行' }
+}
+const permMode = ref<'default' | 'smart' | 'auto'>('default')
+const permLabel = computed(() => PERM_MODES[permMode.value].label)
+const onlineModel = ref('')
+const plusOpen = ref(false)
+
+async function loadOnlineModel(): Promise<void> {
+  try {
+    const s = await api<{ model?: string }>('/api/agent/status')
+    onlineModel.value = String(s?.model ?? '').trim()
+  } catch {
+    /* 忽略 */
+  }
+}
 
 interface TextBlock { kind: 'text'; content: string; sealed?: boolean; html: string }
 interface ToolBlock { kind: 'tool'; name: string }
@@ -258,7 +278,7 @@ function send() {
 
   abort = new AbortController()
   streamChat(
-    { message: text, session_id: sessionId.value || undefined },
+    { message: text, session_id: sessionId.value || undefined, permission_mode: permMode.value },
     (ev) => {
       const data = (ev.data ?? {}) as Record<string, any>
       switch (ev.type) {
@@ -389,6 +409,7 @@ async function cancelAsk() {
 
 /** 从「会话历史」跳转:按 ?session=<id> 打开指定会话 */
 const route = useRoute()
+const router = useRouter()
 async function openFromQuery(): Promise<void> {
   const sid = String(route.query.session ?? '').trim()
   if (!sid || streaming.value) return
@@ -403,6 +424,7 @@ async function openFromQuery(): Promise<void> {
 
 let pollTimer: number | undefined
 onMounted(async () => {
+  void loadOnlineModel()
   await loadSessions()
   await openFromQuery()
   pollTimer = window.setInterval(() => void loadSessions(), 15000)
@@ -539,9 +561,27 @@ onBeforeUnmount(() => {
           />
           <div class="composer-bar">
             <div class="composer-left">
+              <el-popover v-model:visible="plusOpen" trigger="click" placement="top-start" :width="300" :show-arrow="false" popper-class="plus-popper">
+                <template #reference>
+                  <button class="plus-btn" :disabled="streaming || readonly" title="添加">
+                    <el-icon :size="15"><Plus /></el-icon>
+                  </button>
+                </template>
+                <div class="plus-menu">
+                  <button class="plus-item" @click="plusOpen = false; router.push('/market')">
+                    <el-icon :size="14"><MagicStick /></el-icon>
+                    <span class="plus-label">管理专家 / 技能 / 连接器</span>
+                  </button>
+                  <p class="plus-empty">本地文件 / 人设 / 语音等请使用桌面端</p>
+                </div>
+              </el-popover>
               <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
             </div>
             <div class="composer-right">
+              <span v-if="onlineModel" class="model-badge" title="云端 Agent 模型（只读）">{{ onlineModel }}</span>
+              <button class="icon-btn voice-btn" disabled title="语音输入需桌面端（ASR）">
+                <el-icon :size="15"><Microphone /></el-icon>
+              </button>
               <button v-if="!streaming" class="send-btn" :disabled="!input.trim() || readonly" title="发送" @click="send">
                 <el-icon :size="15"><CaretRight /></el-icon>
               </button>
@@ -550,7 +590,30 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="composer-foot">
-          <div class="foot-left"></div>
+          <div class="foot-left">
+            <el-dropdown trigger="click" :disabled="streaming">
+              <button class="foot-chip" :disabled="streaming">在线 · 零号员工<span class="foot-caret">▾</span></button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item>在线 · 零号员工 <el-icon class="mode-check"><Check /></el-icon></el-dropdown-item>
+                  <el-dropdown-item disabled>本地模式（请使用桌面端）</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-dropdown trigger="click" :disabled="streaming" @command="(c: 'default' | 'smart' | 'auto') => (permMode = c)">
+              <button class="foot-chip" :disabled="streaming" :title="PERM_MODES[permMode].hint">
+                权限 · {{ permLabel }}<span class="foot-caret">▾</span>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="(info, key) in PERM_MODES" :key="key" :command="key">
+                    {{ info.label }}
+                    <el-icon v-if="permMode === key" class="mode-check"><Check /></el-icon>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
           <span class="foot-hint">由零号员工云端执行</span>
         </div>
       </footer>

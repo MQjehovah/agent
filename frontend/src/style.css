@@ -298,6 +298,25 @@ html.dark .composer { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); }
 .send-btn:disabled { background: var(--el-fill-color-darker); color: var(--el-text-color-secondary); opacity: 0.6; cursor: default; }
 .send-btn.stop { background: transparent; border: 1px solid var(--el-border-color); color: var(--el-text-color-primary); }
 .stop-square { width: 10px; height: 10px; border-radius: 2px; background: currentColor; }
+
+/* 加号菜单 / 语音 / 模型徽标 / 底部 chips(对齐桌面端) */
+.plus-popper { padding: 6px !important; }
+.plus-btn { flex: none; width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--el-border-color); background: var(--el-bg-color); color: var(--el-text-color-regular); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+.plus-btn:hover:not(:disabled) { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+.plus-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.plus-menu { max-height: 62vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.plus-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: transparent; border-radius: 8px; padding: 6px 8px; font-size: 13px; color: var(--el-text-color-regular); cursor: pointer; }
+.plus-item:hover { background: var(--el-fill-color-light); }
+.plus-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plus-empty { margin: 2px 0 4px; padding: 0 8px; font-size: 12px; color: var(--el-text-color-secondary); }
+.model-badge { font-size: 12px; color: var(--el-text-color-secondary); font-family: Consolas, monospace; }
+.icon-btn { flex: none; width: 28px; height: 28px; border-radius: 50%; border: none; background: transparent; color: var(--el-text-color-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.foot-chip { border: 1px solid var(--el-border-color-lighter); background: var(--el-bg-color); color: var(--el-text-color-regular); font-size: 12px; padding: 3px 10px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: border-color 0.15s, color 0.15s; }
+.foot-chip:hover:not(:disabled) { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+.foot-chip:disabled { opacity: 0.6; cursor: not-allowed; }
+.foot-caret { font-size: 10px; color: var(--el-text-color-secondary); }
+.mode-check { margin-left: 10px; color: var(--el-color-primary); vertical-align: -2px; }
 .chip-running { animation: pulse 1s infinite; display: inline-block; }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
