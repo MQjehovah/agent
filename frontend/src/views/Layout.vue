@@ -7,7 +7,7 @@ import { useTheme } from '../theme'
 import {
   Monitor, ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
-  Shop, Connection, Files
+  Shop, Connection, Files, Collection
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -30,11 +30,11 @@ interface NavItem {
 const personalItems: NavItem[] = [
   { path: '/dashboard', title: '工作台', icon: Monitor },
   { path: '/chat', title: '对话', icon: ChatDotRound },
+  { path: '/knowledge', title: '知识库', icon: Collection },
   { path: '/market', title: '能力市场', icon: Shop },
   { path: '/connectors', title: '我的连接器', icon: Connection },
   { path: '/scheduler', title: '定时任务', icon: Timer },
-  { path: '/memories', title: '记忆管理', icon: Coin },
-  { path: '/settings', title: '设置', icon: Setting }
+  { path: '/memories', title: '记忆管理', icon: Coin }
 ]
 
 // —— 一级：运维与管理（按细粒度权限展示）——
@@ -142,6 +142,9 @@ function onUserCommand(cmd: string | number | object) {
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <button class="icon-btn" title="设置" @click="router.push('/settings')">
+          <el-icon :size="15"><Setting /></el-icon>
+        </button>
       </div>
     </aside>
 
@@ -168,6 +171,8 @@ function onUserCommand(cmd: string | number | object) {
 </template>
 
 <style scoped>
+.side-foot { display: flex; align-items: center; gap: 6px; }
+.side-foot .el-dropdown { flex: 1; min-width: 0; }
 .ops-title { margin-top: 14px; }
 .foot-user {
   display: flex; align-items: center; gap: 9px;

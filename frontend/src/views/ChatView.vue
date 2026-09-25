@@ -543,7 +543,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .sess-item:hover { background: var(--bg-hover); }
-.sess-item.active { background: var(--accent-dim); color: var(--accent); }
+.sess-item.active { background: var(--el-fill-color-darker); color: var(--text); }
 .sess-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .sess-ch { flex: none; }
 .sess-id {

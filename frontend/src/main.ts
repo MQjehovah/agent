@@ -22,6 +22,7 @@ import AdminView from './views/AdminView.vue'
 import MonitorView from './views/MonitorView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
+import KnowledgeView from './views/KnowledgeView.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -34,6 +35,7 @@ const router = createRouter({
       children: [
         { path: 'dashboard', component: DashboardView, meta: { title: '工作台' } },
         { path: 'chat', component: ChatView, meta: { title: '对话' } },
+        { path: 'knowledge', component: KnowledgeView, meta: { title: '知识库' } },
         { path: 'scheduler', component: SchedulerView, meta: { title: '定时任务' } },
         { path: 'memories', component: MemoriesView, meta: { title: '记忆管理' } },
         { path: 'market', component: MarketView, meta: { title: '能力市场' } },

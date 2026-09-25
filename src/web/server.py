@@ -3040,6 +3040,10 @@ class WebServer:
         from web.routers.market import build_market_router
         self._app.include_router(build_market_router(self))
 
+        # ===== 知识库(RAG)只读代理 Router（员工端经 agent 访问 wiki/search）=====
+        from web.routers.knowledge import build_knowledge_router
+        self._app.include_router(build_knowledge_router(self))
+
         # ===== 工作区文件列表（服务端共享目录，需工作区权限）=====
         @self._app.get("/api/workspace/files")
         async def workspace_files(request: Request):
