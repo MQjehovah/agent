@@ -1158,14 +1158,6 @@ class WebServer:
             """服务间专用凭证(X-Service-Token):仅用于网关等可信服务的自动开号,不替代用户登录。"""
             return bool(_service_token) and request.headers.get("X-Service-Token") == _service_token
 
-        async def _get_admin(request: Request) -> dict[str, Any]:
-            if _is_service_request(request):
-                return {"uid": 0, "name": "service", "role": "admin"}
-            u = await _get_auth(request)
-            if u.get("role") != "admin":
-                raise HTTPException(403, "Admin required")
-            return u
-
         # ===== 细粒度权限 / 数据范围（角色 + 部门） =====
         from web.security import _resolve_role as _resolve_role_perm
         from web.security import has_permission as _has_perm
@@ -1174,11 +1166,11 @@ class WebServer:
         async def _get_authz(request: Request) -> dict[str, Any]:
             """身份 + 角色权限 + 数据范围 + 部门（SSO/JWT 均适用）。
 
-            服务间凭证(X-Service-Token)按服务账号处理,与 _get_admin 语义一致:
-            网关/工作台等可信服务经此访问 RBAC、记忆、工作区等细粒度端点。
+            服务间凭证(X-Service-Token)按 ``service`` RBAC 角色处理(最小权限 admin.users):
+            网关/工作台等可信服务经此访问开号/改密等端点; 不再隐式 admin。
             """
             if _is_service_request(request):
-                u = {"uid": 0, "name": "service", "role": "admin"}
+                u = {"uid": 0, "name": "service", "role": "service"}
             else:
                 u = dict(await _get_auth(request))
             try:
@@ -1356,8 +1348,8 @@ class WebServer:
 
         @self._app.post("/api/auth/set-password")
         async def auth_set_password(request: Request):
-            """Admin 为用户设置/重置密码"""
-            await _get_admin(request)
+            """为用户设置/重置密码(需 admin.users 权限; 服务身份按 RBAC 角色授权)"""
+            await _require_perm(request, "admin.users")
             data = await request.json()
             uid = data.get("user_id")
             new_pw = (data.get("password") or "").strip()
@@ -1444,6 +1436,8 @@ class WebServer:
                 auth = await _get_authz(request)
             except Exception:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            # 服务身份由 RBAC 的 service 角色表达(无工具权限, 见 storage 种子),
+            # _get_authz 已解析其权限, 此处无需再特判。
             data = await request.json()
             if not data or not data.get("message"):
                 return JSONResponse({"error": "Missing message"}, status_code=400)
@@ -1456,7 +1450,7 @@ class WebServer:
 
             uid = str(auth.get("uid", "anon"))
             tag = WebServer._owner_tag(uid)
-            is_admin = auth.get("role") == "admin"
+            is_admin = _has_perm(auth, "*")
             if not is_admin:
                 if not self._user_rate_ok(tag):
                     return JSONResponse({"error": "请求太频繁，请稍后再试"}, status_code=429)
@@ -1519,6 +1513,7 @@ class WebServer:
                 auth = await _get_authz(request)
             except Exception:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            # 服务身份由 RBAC 的 service 角色表达(同 /api/chat)。
             data = await request.json()
             if not data or not data.get("message"):
                 return JSONResponse({"error": "Missing message"}, status_code=400)
@@ -1528,7 +1523,7 @@ class WebServer:
 
             uid = str(auth.get("uid", "anon"))
             tag = WebServer._owner_tag(uid)
-            is_admin = auth.get("role") == "admin"
+            is_admin = _has_perm(auth, "*")
             if not is_admin:
                 if not self._user_rate_ok(tag):
                     return JSONResponse({"error": "请求太频繁，请稍后再试"}, status_code=429)
@@ -1675,7 +1670,7 @@ class WebServer:
                                          "smart": "smart", "necessary": "smart",
                                          "auto": "auto", "full": "auto", "plan": "plan"}
                         _confirm_guard = os.environ.get("AGENT_WEB_CONFIRM", "") == "1"
-                        _is_admin = auth.get("role") == "admin"
+                        _is_admin = _has_perm(auth, "*")
                         _want = _mode_aliases.get(str(data.get("permission_mode") or "").strip().lower(), "")
                         if _want == "auto" and _confirm_guard and not _is_admin:
                             _want = "smart"  # 非 admin 不允许完全访问, 降级为必要时询问
@@ -1802,7 +1797,7 @@ class WebServer:
                 logger.warning(f"answer {ask_id[:8]} 已过期或不存在 (uid={uid})")
                 return JSONResponse({"error": "该问题已过期或不存在"}, status_code=404)
             tag = WebServer._owner_tag(str(uid))
-            if u.get("role") != "admin" and not WebServer._same_owner(info.get("tag", ""), tag):
+            if not _has_perm(u, "*") and not WebServer._same_owner(info.get("tag", ""), tag):
                 logger.warning(
                     f"answer {ask_id[:8]} 越权回答被拒: uid={uid} owner={info.get('tag', '')}")
                 return JSONResponse({"error": "无权回答该问题"}, status_code=403)
@@ -1861,7 +1856,7 @@ class WebServer:
                 return JSONResponse({"error": "Kanban not available", "code": 503}, status_code=503)
             try:
                 auth = await _get_auth(request)
-                admin = auth.get("role") == "admin"
+                admin = _has_perm(auth, "*")
                 uid = str(auth.get("uid"))
                 stats = self._kanban.get_stats()
                 tasks = self._kanban.list_tasks(user_id=None if admin else uid)
@@ -1895,7 +1890,7 @@ class WebServer:
             if not self._kanban:
                 return JSONResponse({"error": "Kanban not available"}, status_code=503)
             auth = await _get_auth(request)
-            admin = auth.get("role") == "admin"
+            admin = _has_perm(auth, "*")
             uid = str(auth.get("uid"))
             owner = None if admin else uid
             data = await request.json()
@@ -1914,7 +1909,7 @@ class WebServer:
             if not self._kanban:
                 return JSONResponse({"error": "Kanban not available"}, status_code=503)
             auth = await _get_auth(request)
-            owner = None if auth.get("role") == "admin" else str(auth.get("uid"))
+            owner = None if _has_perm(auth, "*") else str(auth.get("uid"))
             if self._kanban.remove_task(task_id, user_id=owner):
                 return {"success": True}
             return JSONResponse({"error": "Task not found"}, status_code=404)
@@ -1927,7 +1922,7 @@ class WebServer:
             data = await request.json()
             if not data or "column" not in data:
                 return JSONResponse({"error": "Missing column"}, status_code=400)
-            owner = None if auth.get("role") == "admin" else str(auth.get("uid"))
+            owner = None if _has_perm(auth, "*") else str(auth.get("uid"))
             ok = self._kanban.move_task(task_id, data["column"], user_id=owner)
             return {"success": ok}
 
@@ -2119,7 +2114,7 @@ class WebServer:
             tag, admin = "", False
             try:
                 u = await _get_auth(request)
-                admin = u.get("role") == "admin"
+                admin = _has_perm(u, "*")
                 tag = WebServer._owner_tag(str(u.get("uid")))
             except Exception:
                 admin = True  # DISABLE_AUTH 场景视为 admin
@@ -2237,7 +2232,7 @@ class WebServer:
                 u = await _get_auth(request)
             except Exception:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
-            admin = u.get("role") == "admin"
+            admin = _has_perm(u, "*")
             tag = WebServer._owner_tag(str(u.get("uid")))
             if self._session_access(sid, tag, admin) == "deny":
                 return JSONResponse({"error": "Session not found"}, status_code=404)
@@ -2271,7 +2266,7 @@ class WebServer:
                 u = await _get_auth(request)
             except Exception:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
-            admin = u.get("role") == "admin"
+            admin = _has_perm(u, "*")
             tag = WebServer._owner_tag(str(u.get("uid")))
             if self._session_access(sid, tag, admin) == "deny":
                 return JSONResponse({"error": "Session not found"}, status_code=404)
@@ -2309,7 +2304,7 @@ class WebServer:
                 u = await _get_auth(request)
             except Exception:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
-            admin = u.get("role") == "admin"
+            admin = _has_perm(u, "*")
             tag = WebServer._owner_tag(str(u.get("uid")))
             # 消息数据仍在, 归属判定照旧可用(admin 恒 allow)
             if self._session_access(sid, tag, admin) == "deny":
@@ -2442,7 +2437,7 @@ class WebServer:
             if request is not None:
                 try:
                     u = await _get_auth(request)
-                    admin = u.get("role") == "admin"
+                    admin = _has_perm(u, "*")
                     tag = WebServer._owner_tag(str(u.get("uid")))
                 except Exception:
                     admin = True

@@ -89,6 +89,7 @@ def _record_mcp_call(agent, exposed_name: str, duration_ms: int,
         rc = _current_run()
         user_id = getattr(rc, "user_id", "") or ""
         conv_id = getattr(rc, "conversation_id", "") or ""
+        actor_id = getattr(rc, "actor_id", "") or ""
         if ":" in conv_id:
             channel = conv_id.split(":", 1)[0]
         elif ":" in user_id:
@@ -109,6 +110,8 @@ def _record_mcp_call(agent, exposed_name: str, duration_ms: int,
             user_id=user_id,
             channel=channel,
             agent_name=getattr(agent, "name", "") or getattr(rc, "agent_id", "") or "",
+            actor_id=actor_id,
+            subject_id=user_id,
         )
     except Exception as e:
         logger.warning(f"MCP 调用审计写入失败(忽略): {e}")
@@ -134,6 +137,12 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
             is_write = True  # 分类异常保守视为写操作, 只读限定条目不放行
         if not agent.rbac.check_tool(role, name, is_write=is_write):
             logger.warning(f"RBAC: 角色 [{role}] 无权执行工具 [{name}]")
+            return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
+        # 代授权求交(on-behalf-of): 零号员工等服务身份代为执行时, actor 也须放行;
+        # 有效权限 = actor grant ∩ subject grant。个人 Agent(actor 为空)不受影响。
+        actor_role = getattr(_current_run(), "actor_role", "") or ""
+        if actor_role and not agent.rbac.check_tool(actor_role, name, is_write=is_write):
+            logger.warning(f"RBAC: 代授权执行者 [{actor_role}] 无权执行工具 [{name}](subject={role})")
             return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
 
     if perm_result.reason == "需要用户确认" and agent.on_confirm:

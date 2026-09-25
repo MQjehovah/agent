@@ -137,6 +137,37 @@ def test_chat_with_service_token_uid0(env, monkeypatch):
     assert created and created[0].startswith("web:0:"), created
 
 
+def test_chat_stream_service_token_uses_minimal_role(env, monkeypatch):
+    """服务间凭证对话不隐式 admin: 运行角色为最小 'service'(工具全拒), 仍按 uid 0 进入。"""
+    w, st, client, created = env
+    captured: dict = {}
+
+    class _CaptureRouter:
+        def __init__(self, agent):
+            self.agent = agent
+
+        @staticmethod
+        def format_session_id(channel, uid, rand):
+            return f"{channel}:{uid}:{rand}"
+
+        async def route(self, *args, **kwargs):
+            captured.update(kwargs)
+            return "ok"
+
+    monkeypatch.setattr("channels.MessageRouter", _CaptureRouter, raising=False)
+
+    async def _agent_for_web(auth):
+        return SimpleNamespace(hooks=_FakeHooks(), _permission_config=None), ""
+
+    monkeypatch.setattr(w, "_agent_for_web", _agent_for_web)
+    r = client.post("/api/chat/stream", json={"message": "你好"},
+                    headers={"X-Service-Token": SERVICE_TOKEN})
+    assert r.status_code == 200, r.text
+    assert captured.get("role") == "service", captured
+    assert captured.get("user_role") == "service", captured
+    assert created and created[0].startswith("web:0:"), created
+
+
 def test_chat_invalid_token_still_401(env):
     w, st, client, created = env
     r = client.post("/api/chat", json={"message": "你好"},

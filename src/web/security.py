@@ -101,7 +101,7 @@ def get_auth(request: Request) -> dict:
     if os.environ.get("WEBUI_DISABLE_AUTH") == "1":
         return {"uid": 1, "name": "test", "role": "admin"}
     if service_request(request):
-        return {"uid": 0, "name": "service", "role": "admin"}
+        return {"uid": 0, "name": "service", "role": "service"}
     h = request.headers.get("Authorization", "")
     if not h.startswith("Bearer "):
         raise ValueError("missing bearer")
@@ -121,8 +121,16 @@ def get_auth(request: Request) -> dict:
 
 
 def _resolve_role(role: str, uid) -> tuple[list, str, str]:
-    """解析角色权限/数据范围与用户部门；DB 不可用时仅 admin 兜底放行。"""
-    admin_fallback = (["*"], "all", "") if role == "admin" else ([], "self", "")
+    """解析角色权限/数据范围与用户部门；DB 不可用时仅 admin/service 兜底放行。
+
+    service 兜底为最小权限 ``admin.users``(与种子一致), admin 为全量通配。
+    """
+    if role == "admin":
+        admin_fallback = (["*"], "all", "")
+    elif role == "service":
+        admin_fallback = (["admin.users"], "all", "")
+    else:
+        admin_fallback = ([], "self", "")
     try:
         from security.rbac import RBACManager  # noqa: PLC0415
         from storage.storage import get_storage  # noqa: PLC0415
@@ -205,5 +213,24 @@ def scope_department(user: dict) -> str | None:
 
 
 def _service_identity() -> dict:
-    return {"uid": 0, "name": "service", "role": "admin",
-            "permissions": ["*"], "data_scope": "all", "department": ""}
+    """服务身份(统一用 RBAC): 取 ``service`` 角色的权限/数据范围。
+
+    服务身份不再硬编码 admin;默认由种子角色 ``service``(permissions=['admin.users'],
+    data_scope=all)表达, 管理员可在「角色管理」中按需调整。DB 不可用时按最小权限兜底。
+    """
+    role = "service"
+    perms, scope = ["admin.users"], "all"
+    try:
+        from security.rbac import RBACManager  # noqa: PLC0415
+        from storage.storage import get_storage  # noqa: PLC0415
+        storage = get_storage()
+        if storage:
+            rbac = RBACManager(storage)
+            resolved = rbac.get_permissions(role)
+            if resolved:
+                perms = resolved
+            scope = rbac.get_data_scope(role) or scope
+    except Exception:
+        pass
+    return {"uid": 0, "name": "service", "role": role,
+            "permissions": perms, "data_scope": scope, "department": ""}

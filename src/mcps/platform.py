@@ -165,11 +165,17 @@ def parse_sync_capabilities(payload: Any) -> list[dict[str, Any]]:
             continue
         gateway = item.get("gateway")
         distribution = str(item.get("distribution") or "both").strip().lower()
+        binding = str(item.get("binding") or "service").strip().lower()
+        if binding == "user":
+            # 用户级能力(binding=user)需按提问者逐请求代授权, 持久 MCP 会话无法变换身份,
+            # 故不挂载到平台轨; 由 agent 的 market_runtime 工具走 /api/runtime/* 调用。
+            continue
         caps.append({
             "name": name,
             "version": str(item.get("version") or ""),
             "status": str(item.get("status") or ""),
             "distribution": distribution,
+            "binding": binding,
             "gateway": gateway if isinstance(gateway, dict) else None,
         })
     return caps

@@ -388,7 +388,9 @@ class Storage:
                     conversation_id TEXT DEFAULT '',
                     user_id TEXT DEFAULT '',
                     channel TEXT DEFAULT '',
-                    agent_name TEXT DEFAULT ''
+                    agent_name TEXT DEFAULT '',
+                    actor_id TEXT DEFAULT '',
+                    subject_id TEXT DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_mcp_calls_ts ON mcp_calls(ts);
                 CREATE INDEX IF NOT EXISTS idx_mcp_calls_server ON mcp_calls(server);
@@ -404,6 +406,9 @@ class Storage:
             _add_col("rbac_roles", "data_scope TEXT DEFAULT 'self'")
             # 老库升级: rbac_users 增加 email(SSO 识别/建号用)
             _add_col("rbac_users", "email TEXT")
+            # 老库升级: mcp_calls 增加代授权审计列(actor=执行者服务身份, subject=真实提问者)
+            _add_col("mcp_calls", "actor_id TEXT DEFAULT ''")
+            _add_col("mcp_calls", "subject_id TEXT DEFAULT ''")
 
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
@@ -413,6 +418,26 @@ class Storage:
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
                 VALUES ('admin', '管理员-全部权限', '["*"]', '["*"]', '["*"]', 'all', datetime('now'))
             """)
+            # 零号员工代授权执行者角色(actor): 能力超集, 有效权限由 subject 求交收敛;
+            # 不授予 Web 管理权限(permissions=[]), data_scope=self(数据过滤以 subject 为准)。
+            # 见 docs/零号员工与个人Agent演进方案.md
+            conn.execute("""
+                INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
+                VALUES ('supreme', '零号员工-代授权执行者(能力超集, 权限由 subject 求交)', '["*"]', '["*"]', '[]', 'self', datetime('now'))
+            """)
+            # 服务身份(X-Service-Token)角色: 统一用 RBAC 表达, 不再硬编码 admin 旁路。
+            # 最小权限: 仅 admin.users(供网关/工作台开号与改密); 可在角色管理中按需调整。
+            conn.execute("""
+                INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
+                VALUES ('service', '服务身份-可信服务间调用(X-Service-Token)', '[]', '[]', '["admin.users"]', 'all', datetime('now'))
+            """)
+            # 老库升级: 未定制过的 service 角色(仍为上一版默认 ['*'])收窄为最小权限;
+            # 已被管理员修改过(非 ['*'])则保留其定制, 不覆盖。
+            with suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "UPDATE rbac_roles SET permissions = '[\"admin.users\"]' "
+                    "WHERE name = 'service' AND permissions = '[\"*\"]'"
+                )
             conn.commit()
 
             _add_col("messages", "reasoning_content TEXT")
@@ -1307,9 +1332,14 @@ class Storage:
         user_id: str = "",
         channel: str = "",
         agent_name: str = "",
+        actor_id: str = "",
+        subject_id: str = "",
         ts: str = "",
     ) -> int:
-        """记录一次 MCP 工具调用(成功/失败都落库), 返回行 id; error 截断 ≤300 字。"""
+        """记录一次 MCP 工具调用(成功/失败都落库), 返回行 id; error 截断 ≤300 字。
+
+        actor_id=代授权执行者服务身份(零号员工, 空=用户直连), subject_id=真实提问者。
+        """
         row = (
             ts or datetime.now().isoformat(),
             server or "", tool or "", exposed or "",
@@ -1318,12 +1348,14 @@ class Storage:
             max(0, int(result_chars or 0)),
             (error or "")[:MCP_CALL_ERROR_MAX_LEN],
             conversation_id or "", user_id or "", channel or "", agent_name or "",
+            actor_id or "", subject_id or "",
         )
         with self._write_lock, self._get_connection() as conn:
             cur = conn.execute("""
                 INSERT INTO mcp_calls (ts, server, tool, exposed, ok, duration_ms,
-                    result_chars, error, conversation_id, user_id, channel, agent_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    result_chars, error, conversation_id, user_id, channel, agent_name,
+                    actor_id, subject_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, row)
             conn.commit()
             return cur.lastrowid
@@ -1332,7 +1364,8 @@ class Storage:
                         tool: str | None = None, since: str | None = None) -> list[dict[str, Any]]:
         """查询 MCP 调用审计(按 id 倒序); limit 上限 1000, since 为 ISO 时间下界。"""
         sql = ("SELECT id, ts, server, tool, exposed, ok, duration_ms, result_chars, "
-               "error, conversation_id, user_id, channel, agent_name FROM mcp_calls")
+               "error, conversation_id, user_id, channel, agent_name, actor_id, subject_id "
+               "FROM mcp_calls")
         where: list[str] = []
         args: list[Any] = []
         if server:

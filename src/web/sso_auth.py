@@ -242,6 +242,57 @@ def exchange_code(code: str) -> str:
     return id_token
 
 
+# RFC 8693 token exchange 常量
+TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
+TOKEN_TYPE_ACCESS = "urn:ietf:params:oauth:token-type:access_token"
+
+
+def exchange_token(subject_token: str, audience: str) -> str:
+    """RFC 8693 token exchange: 本客户端持有的 subject_token → 目标受众 access_token。
+
+    零号员工代授权用: 把提问者的 SSO token(受众=本客户端) 换成 rag/market 等下游
+    受众的短期令牌, 由下游按 subject 权限求交(而非以零号员工服务身份放大)。
+
+    前置(SSO 侧强制): ``subject_token.aud`` 必须等于本客户端 ``sso_client_id``, 且
+    ``audience`` 在该客户端的 ``allowed_audiences`` 白名单内。返回 access_token;
+    未配置/缺参/交换失败抛 ``SsoAuthError``。
+    """
+    issuer = sso_issuer()
+    if not issuer:
+        raise SsoAuthError("SSO not configured")
+    sub = (subject_token or "").strip()
+    aud = (audience or "").strip()
+    if not sub or not aud:
+        raise SsoAuthError("token exchange 缺少 subject_token 或 audience")
+    form = {
+        "grant_type": TOKEN_EXCHANGE_GRANT,
+        "subject_token": sub,
+        "subject_token_type": TOKEN_TYPE_ACCESS,
+        "requested_token_type": TOKEN_TYPE_ACCESS,
+        "audience": aud,
+        "client_id": sso_client_id(),
+    }
+    secret = sso_client_secret()
+    if secret:
+        form["client_secret"] = secret
+    data = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(issuer.rstrip("/") + "/token", data=data, method="POST")
+    if secret:
+        basic = base64.b64encode(f"{sso_client_id()}:{secret}".encode()).decode("ascii")
+        req.add_header("Authorization", "Basic " + basic)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError) as e:
+        raise SsoAuthError(f"SSO token exchange 失败: {e}") from e
+    access = payload.get("access_token")
+    if not access:
+        raise SsoAuthError("SSO token exchange 响应缺少 access_token")
+    return access
+
+
+
 # ---- state 管理(内存, TTL 过期, callback 校验后即删)----
 _states: dict[str, float] = {}
 _states_lock = threading.Lock()

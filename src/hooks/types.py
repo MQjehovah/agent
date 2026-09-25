@@ -39,3 +39,7 @@ class HookContext:
     agent_name: str = ""
     agent_type: str = ""
     run_id: str = ""
+    # 代授权审计: actor=执行者服务身份(零号员工, 空=用户直连), subject=真实提问者。
+    # 仅作审计元信息, 不参与授权判定(授权在 executor 按 RunContext 求交)。
+    actor_id: str = ""
+    subject_id: str = ""

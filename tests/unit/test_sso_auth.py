@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
@@ -285,3 +286,61 @@ def test_get_auth_dual_track_rejects_invalid_sso_token(sso_env, tmp_path):
     finally:
         s.close()
         storage_mod._storage_instance = prev
+
+
+# ---- RFC 8693 token exchange(零号员工代授权) ----
+
+
+class _FakeResp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_exchange_token_posts_rfc8693_and_returns_access_token(monkeypatch):
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=10):
+        captured["url"] = req.full_url
+        captured["data"] = req.data
+        captured["auth"] = req.get_header("Authorization")
+        return _FakeResp(b'{"access_token":"downstream-token"}')
+
+    monkeypatch.setattr(sso_auth.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sso_auth, "sso_issuer", lambda: "https://sso.example.com")
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
+    monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "s3cr3t")
+
+    out = sso_auth.exchange_token("subject-abc", "market")
+    assert out == "downstream-token"
+    body = captured["data"].decode("utf-8")
+    assert "grant_type=" + urllib.parse.quote(sso_auth.TOKEN_EXCHANGE_GRANT, safe="") in body
+    assert "subject_token=subject-abc" in body
+    assert "audience=market" in body
+    assert captured["url"] == "https://sso.example.com/token"
+    assert captured["auth"].startswith("Basic ")
+
+
+def test_exchange_token_missing_access_token_raises(monkeypatch):
+    monkeypatch.setattr(sso_auth.urllib.request, "urlopen", lambda req, timeout=10: _FakeResp(b"{}"))
+    monkeypatch.setattr(sso_auth, "sso_issuer", lambda: "https://sso.example.com")
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
+    monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "")
+    with pytest.raises(SsoAuthError):
+        sso_auth.exchange_token("subject-abc", "market")
+
+
+def test_exchange_token_requires_subject_and_audience(monkeypatch):
+    monkeypatch.setattr(sso_auth, "sso_issuer", lambda: "https://sso.example.com")
+    with pytest.raises(SsoAuthError):
+        sso_auth.exchange_token("", "market")
+    with pytest.raises(SsoAuthError):
+        sso_auth.exchange_token("subject-abc", "")

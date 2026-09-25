@@ -109,6 +109,25 @@ def test_classify_mcp_resolver_exception_falls_back_builtin():
     assert checker.classify_access("search", {}) == "read"
 
 
+# ===== RBAC 统一: 种子 service / supreme 角色 =====
+
+def test_seed_service_and_supreme_roles(rbac):
+    """服务身份(service)与代授权执行者(supreme)均为 RBAC 角色。
+
+    - service: 无工具权限(对话面 fail-closed), 但具备服务级 Web 权限键, data_scope=all;
+    - supreme: 代授权执行者, 能力超集(供 actor 门禁), Web 权限为空、data_scope=self。
+    """
+    assert rbac.check_tool("service", "shell") is False
+    assert rbac.check_tool("service", "file", is_write=True) is False
+    assert rbac.get_permissions("service") == ["admin.users"]
+    assert rbac.get_data_scope("service") == "all"
+
+    assert rbac.check_tool("supreme", "shell", is_write=True) is True
+    assert rbac.check_agent("supreme", "任意代理") is True
+    assert rbac.get_permissions("supreme") == []
+    assert rbac.get_data_scope("supreme") == "self"
+
+
 # ===== RBAC check_tool: 只读限定 / 兼容 =====
 
 def test_check_tool_readonly_entry_allows_read_denies_write(rbac):
@@ -207,3 +226,40 @@ async def test_executor_classify_exception_treated_as_write(monkeypatch, storage
         assert "权限" in denied
     finally:
         _current_run.reset(token)
+
+
+async def test_executor_obo_intersection_requires_both(monkeypatch, storage):
+    """代授权求交(on-behalf-of): actor 与 subject 都须放行, 任一方无权即拒绝。
+
+    零号员工场景: actor=服务身份(supreme), subject=提问用户; 有效权限 = actor ∩ subject。
+    个人 Agent 直连(actor_role 为空)时行为不变, 不受影响。
+    """
+    import agent.executor as executor
+
+    mgr = RBACManager(storage)
+    mgr.update_role("default", allowed_tools=["file:read"])  # subject: 只读
+    mgr.create_role("supreme", allowed_tools=["*"])           # actor: 全放行
+    mgr.create_role("restricted", allowed_tools=[])           # actor: 无任何工具
+
+    async def fake_execute(agent, name, args):
+        return json.dumps({"success": True, "content": "data"}, ensure_ascii=False)
+
+    monkeypatch.setattr(executor, "execute_tool", fake_execute)
+    agent = _fake_agent(storage)
+
+    async def run_with(actor_role, op):
+        rc = RunContext(user_id="web:2", role="default",
+                        session=SimpleNamespace(role="default"),
+                        actor_id="zero-employee", actor_role=actor_role)
+        token = _current_run.set(rc)
+        try:
+            return await executor.execute_tool_safe(
+                agent, "file", {"operation": op, "path": "a.txt"})
+        finally:
+            _current_run.reset(token)
+
+    # actor=supreme ∩ subject(file:read): read 放行, write 拒绝(交集收窄)
+    assert '"success": true' in await run_with("supreme", "read")
+    assert "权限" in await run_with("supreme", "write")
+    # actor=restricted 无权: 即便 subject 允许 read 也拒绝
+    assert "权限" in await run_with("restricted", "read")

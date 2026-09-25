@@ -67,6 +67,12 @@ class RunContext:
     # 群聊共享上下文信号：钉钉群共享根运行时置 True，子代理/团队继承；
     # 命中后本轮不注入触发人私有记忆（防串隐私），行级审计仍记触发人。
     group_context: bool = False
+    # 代授权(on-behalf-of)执行者身份: 零号员工等超级代理以服务身份代为执行时,
+    # 真实提问者放 user_id/role/user_role/user_department(subject), 自身服务身份放
+    # actor_id/actor_role; 有效权限 = actor ∩ subject, 由 executor 双重 check_tool 求交,
+    # 审计同时记录 actor_id 与 subject_id(user_id)。个人 Agent 直连用户时留空(actor 即 subject)。
+    actor_id: str = ""
+    actor_role: str = ""
     # 本轮 run 是否命中敏感工具(保守: 调过敏感清单工具即 True)：
     # 由工具执行层按清单置位；嵌套 run(子代理)结束时汇聚到父级 run 上下文，
     # 顶层 run 结束时写入 AgentResult.sensitive_hit 供渠道层改道。
@@ -446,6 +452,8 @@ class Agent:
 
         self._init_retrieval()
 
+        self._init_market_runtime()
+
         self._init_code_quality()
 
         logger.info(
@@ -469,6 +477,18 @@ class Agent:
         )
         self.tool_registry.register_tool(tool)
         logger.info(f"Agent [{self.name}] RAG 知识库已接入: {rag_url}")
+
+    def _init_market_runtime(self):
+        """市场云端运行时工具(代授权/OBO): 仅市场配置齐备时保留。
+
+        该工具走市场 ``/api/runtime/*`` 逐请求携带 ``X-Act-As-Sub``(当前提问者),
+        由市场 actor ∩ subject 求交; 未配置市场时从工具表中移除, 避免暴露无效入口。
+        """
+        from mcps.platform import PlatformMCPConfig
+        if PlatformMCPConfig.from_env().enabled:
+            logger.info("市场运行时工具 market_runtime 已启用(逐请求代授权)")
+            return
+        self.tool_registry.unregister_tool("market_runtime")
 
     def _init_code_quality(self):
         """初始化代码质量相关模块"""
@@ -1139,7 +1159,7 @@ class Agent:
         self, task: str, session_id: str = None, user_id: str = "",
         user_name: str = "", run_id: str = "", role: str = "",
         group_context: bool = False, user_department: str = "",
-        user_role: str = "",
+        user_role: str = "", actor_id: str = "", actor_role: str = "",
     ) -> AgentResult:
         from hooks import get_run_id, reset_run_id, set_run_id
         # 顶层 agent 重置 ask_user 模式为交互模式
@@ -1158,6 +1178,9 @@ class Agent:
         # 避免无身份渠道的 default 哨兵混入身份); 全空 = 渠道未解析身份, fail-closed。
         eff_user_role = user_role or getattr(inherited, "user_role", "")
         eff_dept = user_department or getattr(inherited, "user_department", "")
+        # 代授权执行者(零号员工服务身份): 显式入参或父级继承; 个人 Agent 直连用户时为空。
+        eff_actor = actor_id or getattr(inherited, "actor_id", "")
+        eff_actor_role = actor_role or getattr(inherited, "actor_role", "")
         # 群共享上下文:顶层渠道显式传 True,子代理在同一 Task 内继承父级 run 标记
         eff_group = bool(group_context) or bool(getattr(inherited, "group_context", False))
         ctx = RunContext(
@@ -1165,6 +1188,7 @@ class Agent:
             user_id=eff_user, user_name=eff_name, role=eff_role,
             user_role=eff_user_role, user_department=eff_dept,
             group_context=eff_group,
+            actor_id=eff_actor, actor_role=eff_actor_role,
         )
         # 群共享根整轮标记：顶层群 run 用自身 run_id；嵌套 run(子代理/团队)继承父级，
         # 使本轮全部落库消息带同一 round_token(敏感轮据此整轮改道私有旁路，见 finally)。
