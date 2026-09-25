@@ -99,6 +99,18 @@ def build_market_router(server) -> APIRouter:
         from web.security import resolve_market_act_as
         return resolve_market_act_as(f"web:{uid}")
 
+    def _require_act_as(uid: int):
+        """用户级市场调用必须具备市场身份: 解析失败/服务身份(uid<=0)一律 fail-closed 403。
+
+        禁止静默降级为服务令牌身份(否则会串到服务账号的市场视角)。
+        """
+        act_as = _act_as(uid) if uid > 0 else ""
+        if not act_as:
+            return "", JSONResponse(
+                {"error": "无法解析市场用户身份，请确认账号已同步到市场（工号）"},
+                status_code=403)
+        return act_as, None
+
     def _storage():
         from storage.storage import get_storage
         return get_storage()
@@ -113,9 +125,9 @@ def build_market_router(server) -> APIRouter:
             logger.warning(f"读取本地安装失败(按空集处理): {e}")
             return set()
 
-    async def _joined_names(uid: int) -> set[str]:
+    async def _joined_names(act_as: str) -> set[str]:
         status, payload = await _market_request(
-            "GET", "/api/my/capabilities", act_as=_act_as(uid),
+            "GET", "/api/my/capabilities", act_as=act_as,
             params={"scope": "added"})
         if status >= 400 or not isinstance(payload, list):
             logger.warning(f"读取市场已加入清单失败(status={status}), joined 按空集")
@@ -144,14 +156,17 @@ def build_market_router(server) -> APIRouter:
         type: str = "",
         category: str = "",
     ):
-        """代理市场货架浏览, 并 merge 本地两个状态: joined / installed。"""
+        """代理市场货架浏览(act-as 身份, fail-closed), 并 merge joined / installed。"""
         u, denied = _authz_or_401(request)
         if denied:
             return denied
         uid = _uid(u)
+        act_as, act_denied = _require_act_as(uid)
+        if act_denied:
+            return act_denied
         try:
             status, payload = await _market_request(
-                "GET", "/api/capabilities",
+                "GET", "/api/capabilities", act_as=act_as,
                 params={"page": page, "page_size": page_size,
                         "q": q, "type": type, "category": category})
         except (MarketUnavailableError, MarketUpstreamError) as e:
@@ -162,7 +177,7 @@ def build_market_router(server) -> APIRouter:
         if not isinstance(items, list):
             items = []
         try:
-            joined = await _joined_names(uid)
+            joined = await _joined_names(act_as)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             logger.warning(f"joined 查询失败(按空集处理): {e}")
             joined = set()
@@ -174,12 +189,15 @@ def build_market_router(server) -> APIRouter:
             item["joined"] = name in joined
             item["installed"] = name in installed
         total = payload.get("total", len(items)) if isinstance(payload, dict) else len(items)
-        return {"items": items, "total": total,
-                "page": page, "page_size": page_size}
+        result: dict[str, Any] = {"items": items, "total": total,
+                                  "page": page, "page_size": page_size}
+        if isinstance(payload, dict) and "runtime" in payload:
+            result["runtime"] = payload["runtime"]  # 市场 runtime 契约原样透传
+        return result
 
     @router.get("/api/market/capabilities/{cap_id}")
     async def market_capability_detail(cap_id: str, request: Request):
-        """代理市场能力详情 + joined/installed。
+        """代理市场能力详情(act-as 身份, fail-closed) + joined/installed。
 
         plugin 组件清单: 市场详情 `components`(与 input_schema.components 同源)
         已包含, 无需再调 `/api/my/capabilities?include_components=1`。
@@ -188,9 +206,12 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
+        act_as, act_denied = _require_act_as(uid)
+        if act_denied:
+            return act_denied
         try:
             status, payload = await _market_request(
-                "GET", f"/api/capabilities/{cap_id}")
+                "GET", f"/api/capabilities/{cap_id}", act_as=act_as)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         if status >= 400:
@@ -198,7 +219,7 @@ def build_market_router(server) -> APIRouter:
         if isinstance(payload, dict):
             name = str(payload.get("name") or "")
             try:
-                payload["joined"] = name in await _joined_names(uid)
+                payload["joined"] = name in await _joined_names(act_as)
             except (MarketUnavailableError, MarketUpstreamError) as e:
                 logger.warning(f"joined 查询失败(按空集处理): {e}")
                 payload["joined"] = False
@@ -211,9 +232,12 @@ def build_market_router(server) -> APIRouter:
         u, denied = _authz_or_401(request)
         if denied:
             return denied
+        act_as, act_denied = _require_act_as(_uid(u))
+        if act_denied:
+            return act_denied
         try:
             status, payload = await _market_request(
-                "POST", "/api/my/capabilities", act_as=_act_as(_uid(u)),
+                "POST", "/api/my/capabilities", act_as=act_as,
                 json_body={"capability_id": cap_id})
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
@@ -225,10 +249,12 @@ def build_market_router(server) -> APIRouter:
         u, denied = _authz_or_401(request)
         if denied:
             return denied
+        act_as, act_denied = _require_act_as(_uid(u))
+        if act_denied:
+            return act_denied
         try:
             status, payload = await _market_request(
-                "DELETE", f"/api/my/capabilities/{cap_id}",
-                act_as=_act_as(_uid(u)))
+                "DELETE", f"/api/my/capabilities/{cap_id}", act_as=act_as)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         return _forward(status, payload)
@@ -237,24 +263,28 @@ def build_market_router(server) -> APIRouter:
 
     @router.get("/api/market/installations")
     async def list_installations(request: Request):
-        """本地安装列表(纯本地表, 不依赖市场)。"""
+        """本地安装列表(本地表; 仍需市场身份, fail-closed 防服务身份串用)。"""
         u, denied = _authz_or_401(request)
         if denied:
             return denied
         uid = _uid(u)
+        _, act_denied = _require_act_as(uid)
+        if act_denied:
+            return act_denied
         storage = _storage()
-        rows = storage.list_installations(uid) if storage is not None and uid > 0 else []
+        rows = storage.list_installations(uid) if storage is not None else []
         return {"installations": rows}
 
     @router.post("/api/market/installations")
     async def install_capability(request: Request):
-        """安装到云端托管: 校验 mcp + 已加入 + 非 local, 写表并刷新 worker。"""
+        """安装到云端托管: 校验 mcp + 已加入 + runtime.cloud, 写表并刷新 worker。"""
         u, denied = _authz_or_401(request)
         if denied:
             return denied
         uid = _uid(u)
-        if uid <= 0:
-            return JSONResponse({"error": "用户身份不可用"}, status_code=400)
+        act_as, act_denied = _require_act_as(uid)
+        if act_denied:
+            return act_denied
         try:
             data = await request.json()
         except Exception:
@@ -265,7 +295,7 @@ def build_market_router(server) -> APIRouter:
 
         try:
             status, payload = await _market_request(
-                "GET", f"/api/capabilities/{capability_id}")
+                "GET", f"/api/capabilities/{capability_id}", act_as=act_as)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         if status >= 400:
@@ -276,13 +306,19 @@ def build_market_router(server) -> APIRouter:
         if cap_type != "mcp":
             return JSONResponse({"error": "仅支持安装 type=mcp 的云端托管能力"},
                                 status_code=422)
-        if distribution == "local":
+        runtime = detail.get("runtime")
+        cloud = runtime.get("cloud") if isinstance(runtime, dict) else None
+        if cloud is not None and not cloud:
+            return JSONResponse(
+                {"error": "该能力不支持云端托管（runtime.cloud=false）"},
+                status_code=422)
+        if cloud is None and distribution == "local":
             return JSONResponse(
                 {"error": "该能力为本地分发(local), 不支持云端托管安装"},
                 status_code=422)
         name = str(detail.get("name") or (data or {}).get("capability_name") or capability_id)
         try:
-            joined = await _joined_names(uid)
+            joined = await _joined_names(act_as)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         if name not in joined:
@@ -306,8 +342,9 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        if uid <= 0:
-            return JSONResponse({"error": "用户身份不可用"}, status_code=400)
+        _, act_denied = _require_act_as(uid)
+        if act_denied:
+            return act_denied
         try:
             data = await request.json()
         except Exception:
@@ -330,8 +367,9 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        if uid <= 0:
-            return JSONResponse({"error": "用户身份不可用"}, status_code=400)
+        _, act_denied = _require_act_as(uid)
+        if act_denied:
+            return act_denied
         storage = _storage()
         okay = bool(storage and storage.remove_installation(uid, capability_id))
         if not okay:

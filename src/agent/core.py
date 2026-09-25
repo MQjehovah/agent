@@ -616,16 +616,17 @@ class Agent:
         return names
 
     def _platform_install_filter(self):
-        """用户级「云端托管安装」过滤闭包; root/非 web worker 返回 None(服务全量)。
+        """用户级「云端托管安装」过滤闭包; root(owner_uid=0)返回 None(服务全量)。
 
-        仅 worker(owner_uid>0 且平台轨按用户身份 platform_act_as 非空)启用:
-        读取该用户已安装且启用的能力名(存储异常按空集 fail-closed)。
+        仅 worker(owner_uid>0)启用, 与 MARKET_ACT_AS/platform_act_as 解耦:
+        即便 act-as 未开(服务令牌视角), 用户级安装过滤仍生效; 读取该用户
+        「已安装且启用」的能力名(存储异常按空集 fail-closed)。
         """
         try:
             owner_uid = int(getattr(self, "owner_uid", 0) or 0)
         except (TypeError, ValueError):
             owner_uid = 0
-        if owner_uid <= 0 or not str(self.platform_act_as or "").strip():
+        if owner_uid <= 0:
             return None
 
         def _load() -> set[str]:

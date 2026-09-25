@@ -103,7 +103,7 @@ def test_browse_merges_joined_and_installed(env):
     first, second = market["calls"]
     assert first["path"] == "/api/capabilities"
     assert first["params"]["q"] == "x" and first["params"]["type"] == "mcp"
-    assert first["act_as"] == ""                       # 浏览用服务令牌
+    assert first["act_as"] == MARKET_WORKID            # 浏览也带 act-as
     assert second["path"] == "/api/my/capabilities"
     assert second["params"] == {"scope": "added"}
     assert second["act_as"] == MARKET_WORKID           # 已加入清单用 act-as
@@ -123,6 +123,22 @@ def test_detail_merges_statuses_without_extra_components_call(env):
     assert data["components"] == [{"name": "comp"}]    # 详情自带, 不再辅助调用
     assert [c["path"] for c in market["calls"]] == ["/api/capabilities/c1",
                                                     "/api/my/capabilities"]
+    assert all(c["act_as"] == MARKET_WORKID for c in market["calls"])
+
+
+def test_browse_passes_through_runtime(env):
+    """runtime 契约原样透传(顶层与条目内均不解析)。"""
+    server, store, client, market, uid = env
+    runtime = {"cloud": True, "version": 2}
+    market["routes"][("GET", "/api/capabilities")] = (200, {
+        "items": [{"id": "c1", "name": "天气", "runtime": runtime}],
+        "total": 1, "runtime": {"api": 3}})
+    market["routes"][("GET", "/api/my/capabilities")] = (200, [])
+    r = client.get("/api/market/capabilities")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["runtime"] == {"api": 3}
+    assert body["items"][0]["runtime"] == runtime
 
 
 def test_browse_503_when_market_not_configured(env, monkeypatch):
@@ -133,6 +149,38 @@ def test_browse_503_when_market_not_configured(env, monkeypatch):
     r = client.get("/api/market/capabilities")
     assert r.status_code == 503
     assert r.json()["error"] == "能力市场未配置"
+
+
+# ===== 1b. C1: act-as 解析失败 fail-closed(禁止静默降级服务身份) =====
+
+def test_user_endpoints_fail_closed_when_act_as_unresolved(env, monkeypatch):
+    server, store, client, market, uid = env
+    monkeypatch.setattr(security, "resolve_market_act_as", lambda owner: "")
+    cases = [
+        ("get", "/api/market/capabilities", None),
+        ("get", "/api/market/capabilities/c1", None),
+        ("post", "/api/market/capabilities/c1/join", {}),
+        ("post", "/api/market/capabilities/c1/leave", {}),
+        ("get", "/api/market/installations", None),
+        ("post", "/api/market/installations", {"capability_id": "c1"}),
+        ("patch", "/api/market/installations/c1", {"enabled": False}),
+        ("delete", "/api/market/installations/c1", None),
+    ]
+    for method, path, body in cases:
+        fn = getattr(client, method)
+        r = fn(path, json=body) if body is not None else fn(path)
+        assert r.status_code == 403, (method, path)
+        assert "市场用户身份" in r.json()["error"], (method, path)
+    assert market["calls"] == []          # 未发出任何市场请求
+
+
+def test_service_identity_uid0_rejected_for_user_endpoints(env, monkeypatch):
+    server, store, client, market, uid = env
+    monkeypatch.setattr(security, "get_authz", lambda request: {
+        "uid": 0, "role": "admin", "permissions": ["*"], "data_scope": "all"})
+    assert client.get("/api/market/capabilities").status_code == 403
+    assert client.get("/api/market/installations").status_code == 403
+    assert market["calls"] == []
 
 
 def test_join_and_leave_forward_market_errors(env):
@@ -178,6 +226,28 @@ def test_install_rejects_non_mcp_local_and_not_joined(env):
     assert r.status_code == 404
     assert store.list_installations(uid) == []
     assert server.refreshed == []
+
+
+def test_install_runtime_cloud_false_rejected(env):
+    server, store, client, market, uid = env
+    market["routes"][("GET", "/api/capabilities/c-rt")] = (200, {
+        "id": "c-rt", "name": "天气", "type": "mcp", "distribution": "remote",
+        "runtime": {"cloud": False}})
+    r = client.post("/api/market/installations", json={"capability_id": "c-rt"})
+    assert r.status_code == 422
+    assert "runtime.cloud" in r.json()["error"]
+    assert store.list_installations(uid) == [] and server.refreshed == []
+
+
+def test_install_runtime_cloud_true_overrides_distribution(env):
+    """runtime 存在时以其为准: cloud=true 时不再看 distribution。"""
+    server, store, client, market, uid = env
+    market["routes"][("GET", "/api/capabilities/c-rt2")] = (200, {
+        "id": "c-rt2", "name": "天气", "type": "mcp", "distribution": "local",
+        "runtime": {"cloud": True}})
+    market["routes"][("GET", "/api/my/capabilities")] = (200, [{"name": "天气"}])
+    r = client.post("/api/market/installations", json={"capability_id": "c-rt2"})
+    assert r.status_code == 200 and r.json()["success"] is True
 
 
 def test_install_success_idempotent_and_refresh(env):

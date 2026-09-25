@@ -100,14 +100,15 @@ def test_installed_capability_names_filters_empty_and_disabled(store):
 
 # ===== 2. Agent 过滤闭包 =====
 
-def test_platform_install_filter_none_for_root_and_partial_identity(tmp_path):
+def test_platform_install_filter_root_vs_worker(tmp_path):
+    """过滤仅由 owner_uid 决定(与 MARKET_ACT_AS/platform_act_as 解耦)。"""
     agent = _agent(tmp_path)
     assert agent._platform_install_filter() is None          # root 默认
-    agent.platform_act_as = WORKID
-    assert agent._platform_install_filter() is None          # owner_uid 仍 0
-    agent.platform_act_as = ""
     agent.owner_uid = UID
-    assert agent._platform_install_filter() is None          # 无 act_as(服务视角)
+    assert agent._platform_install_filter() is not None      # act_as 未开仍注入(解耦)
+    agent.owner_uid = 0
+    agent.platform_act_as = WORKID
+    assert agent._platform_install_filter() is None          # root 仍不过滤
 
 
 def test_platform_install_filter_reads_enabled_installations(store, tmp_path):
@@ -116,9 +117,8 @@ def test_platform_install_filter_reads_enabled_installations(store, tmp_path):
     store.set_installation_enabled(UID, "cap-2", False)
 
     agent = _agent(tmp_path)
-    agent.platform_act_as = WORKID
     agent.owner_tag = f"web:{UID}"
-    agent.owner_uid = UID
+    agent.owner_uid = UID                                    # 不设 platform_act_as
     loader = agent._platform_install_filter()
     assert callable(loader)
     assert loader() == {"天气"}                              # 停用/空名不出
