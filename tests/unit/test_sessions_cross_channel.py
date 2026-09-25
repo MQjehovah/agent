@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from storage.storage import Storage, channel_of_conversation  # noqa: E402
+from storage.storage import Storage, channel_of_conversation, conversation_kind  # noqa: E402
 
 # ---------------- 种子数据辅助 ----------------
 
@@ -44,6 +44,15 @@ def test_channel_of_conversation_prefix():
     assert channel_of_conversation("random_no_prefix") == "other"
     assert channel_of_conversation("random_no_prefix", "dingtalk:7") == "dingtalk"
     assert channel_of_conversation("", "") == "other"
+
+
+def test_conversation_kind_splits_dingtalk_group():
+    """渠道细类: web / dingtalk / dingtalk_group(群) / other, 供前端区分展示。"""
+    assert conversation_kind("web:7:abc") == "web"
+    assert conversation_kind("dingtalk:7:abc") == "dingtalk"
+    assert conversation_kind("dingtalk_group:cidhash:rand") == "dingtalk_group"
+    assert conversation_kind("wecom:7:abc") == "wecom"
+    assert conversation_kind("random_no_prefix") == "other"
 
 
 # ---------------- 跨渠道合并查询 ----------------

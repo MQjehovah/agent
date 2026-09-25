@@ -2193,6 +2193,7 @@ class WebServer:
                 "agent_id": r.get("agent_id") or "",
                 "user_id": r.get("user_id") or "",
                 "channel": r.get("channel") or "other",
+                "channel_kind": r.get("channel_kind") or "other",
                 "messages": r["msg_count"],
                 "thread_count": r.get("thread_count") or 0,
                 "last_accessed": r["last_at"],

@@ -48,6 +48,22 @@ def channel_of_conversation(conversation_id: str, user_id: str = "") -> str:
     return "other"
 
 
+def conversation_kind(conversation_id: str, user_id: str = "") -> str:
+    """会话「渠道细类」(供前端区分): web / dingtalk / dingtalk_group / other。
+
+    与 channel_of_conversation 的区别: 钉钉群共享根细分为 ``dingtalk_group``,
+    供前端区分「钉钉私聊」与「钉钉群」; ``channel`` 字段保持历史语义(群仍归 dingtalk)。
+    """
+    cid = str(conversation_id or "")
+    if cid.startswith("dingtalk_group:"):
+        return "dingtalk_group"
+    if cid.startswith("dingtalk:"):
+        return "dingtalk"
+    if cid.startswith("web:"):
+        return "web"
+    return channel_of_conversation(conversation_id, user_id)
+
+
 def _session_channel(session_id: str) -> str:
     """落库用会话默认渠道：取 session 前缀；钉钉群共享根归一为 dingtalk。"""
     sid = str(session_id or "")
@@ -828,6 +844,8 @@ class Storage:
             item["thread_count"] = item.get("thread_count") or 0
             item["channel"] = channel_of_conversation(
                 item["conversation_id"], item.get("user_id") or "")
+            item["channel_kind"] = conversation_kind(
+                item["conversation_id"], item.get("user_id") or "")
             out.append(item)
         return out
 
@@ -886,6 +904,8 @@ class Storage:
             item = dict(r)
             item["thread_count"] = item.get("thread_count") or 0
             item["channel"] = channel_of_conversation(
+                item["conversation_id"], item.get("user_id") or "")
+            item["channel_kind"] = conversation_kind(
                 item["conversation_id"], item.get("user_id") or "")
             out.append(item)
         return out
@@ -1673,6 +1693,8 @@ class Storage:
             item["snippet"] = snippet.replace("\n", " ")
             item["pinned"] = int(item.get("pinned") or 0)
             item["channel"] = channel_of_conversation(
+                item["conversation_id"], "")
+            item["channel_kind"] = conversation_kind(
                 item["conversation_id"], "")
             out.append(item)
         return out
