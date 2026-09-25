@@ -1,0 +1,11 @@
+{
+  "oidcIssuer": "https://auth.xzrobot.com",
+  "oidcClientId": "dashboard-gateway",
+  "agentUrl": "https://ai.xzrobot.com/agent",
+  "ragUrl": "https://ai.xzrobot.com/rag",
+  "marketUrl": "https://ai.xzrobot.com/market",
+  "routerUrl": "https://ai.xzrobot.com/router",
+  "routerAdminUrl": "https://ai.xzrobot.com/router",
+  "updateFeedUrl": "https://ai.xzrobot.com/updates/dashboard",
+  "asrUrl": "https://ai.xzrobot.com/router/v1"
+}

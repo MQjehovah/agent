@@ -1,0 +1,31 @@
+appId: com.company.aibench.dashboard
+productName: 零号员工工作台
+directories:
+  output: release/${version}
+extraResources:
+  - from: build/enterprise.json
+    to: enterprise.json
+  - from: build/icon.png
+    to: icon.png
+files:
+  - out/**
+  - package.json
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  shortcutName: 零号员工
+# 占位更新源:只为打包时产出 latest.yml 与 app-update.yml;
+# 运行期由 enterprise.json 注入的 updateFeedUrl 覆盖(setFeedURL)
+publish:
+  - provider: generic
+    url: https://updates.invalid/desktop
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/

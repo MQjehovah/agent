@@ -1,0 +1,44 @@
+{
+  "name": "desktop",
+  "version": "0.1.0",
+  "description": "闆跺彿鍛樺伐骞冲彴 路 鍛樺伐 AI 宸ヤ綔鍙版闈㈢",
+  "main": "./out/main/index.js",
+  "author": "Platform Team",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test": "tsx --test test/**/*.test.ts",
+    "dist": "electron-vite build && electron-builder",
+    "dist:win": "electron-vite build && electron-builder --win"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "echarts": "^5.5.0",
+    "electron-updater": "^6.8.9",
+    "element-plus": "^2.14.5",
+    "fflate": "^0.8.3",
+    "highlight.js": "^11.12.0",
+    "jose": "^6.2.11",
+    "markdown-it": "^15.0.1",
+    "mermaid": "^12.0.0",
+    "pinia": "^4.0.3",
+    "vue": "^3.5.42",
+    "vue-echarts": "^6.6.0",
+    "vue-router": "^5.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vue-tsc": "^3.3.11"
+  }
+}

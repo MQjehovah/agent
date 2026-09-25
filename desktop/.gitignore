@@ -1,0 +1,10 @@
+node_modules/
+out/
+release/
+*.log
+data/
+.DS_Store
+*.tsbuildinfo
+
+# 打包时注入的企业配置(含 OIDC client secret, 不提交)
+build/enterprise.json

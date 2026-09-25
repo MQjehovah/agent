@@ -6,4 +6,6 @@ tests
 docs
 frontend/node_modules
 frontend/dist
+# 桌面端(Electron)不参与 agent 镜像构建:整目录排除,避免 COPY . . 带入 Electron 依赖
+desktop
 *.bak

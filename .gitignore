@@ -55,3 +55,11 @@ node_modules/
 
 # 员工端前端构建产物(容器构建阶段生成; 本地开发 cd frontend && npm run build)
 src/web/static_vue/
+
+# 桌面端(Electron)运行/构建产物; enterprise.json 含 OIDC 凭据不入库
+desktop/out/
+desktop/release/
+desktop/data/
+desktop/*.tsbuildinfo
+desktop/build/enterprise.json
+!desktop/build/

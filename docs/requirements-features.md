@@ -3,7 +3,7 @@
 > 目的：把“公司级 AI 助手”的目标收敛成 需求域 → 功能清单(F-xx)，逐项标注
 > 现状(✅已实现 / ⭕部分实现或需开启 / 🕐规划/依赖其它子系统)、所在模块、优先级，
 > 作为演进与验收的统一依据。
-> 上游参考：`../../docs/零号员工方案设计.md`、`dashboard/docs/design.md`、`docs/architecture-review-2026.md`。
+> 上游参考：`../../docs/零号员工方案设计.md`、`../desktop/docs/design.md`、`docs/architecture-review-2026.md`。
 
 ## 一、产品目标（一句话）
 
