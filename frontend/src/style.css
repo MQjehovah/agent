@@ -1,63 +1,79 @@
-/* ===== 设计令牌 —— Design Read:内部管理后台 · 深色工作台 · 中性 Zinc 基底 + 单一电蓝 accent ===== */
-/* 纪律:全站仅一个 accent 色;无渐变 slop;动效克制(MOTION 2);密度 DENSITY 5 */
+/* ===== 设计令牌 —— 与桌面端(desktop/src/styles/main.css)对齐 ===== */
+/* 浅色为默认;深色经 html.dark 覆盖(Element Plus 近黑风格)。页面令牌映射到 EP/app 变量,视图类名无需改动。 */
 
 :root {
-  --bg-page: #131417;
-  --bg-sider: #17181b;
-  --bg-card: #1c1d21;
-  --bg-inset: #101113;
-  --bg-hover: #232428;
-  --border: #26272b;
-  --border-strong: #34363c;
-  --text: #e6e7ea;
-  --text-2: #9da1a8;
-  --text-3: #676b73;
-  --accent: #4c8dff;
-  --accent-dim: rgba(76, 141, 255, 0.14);
-  --ok: #3fb970;
-  --warn: #d9a13b;
-  --bad: #e5726b;
-  --radius: 10px;
-  --radius-lg: 14px;
-  --sidebar-w: 218px;
+  /* 应用语义变量(浅色默认值,与桌面端 desktop/src/styles/main.css 一致) */
+  --app-bg-panel: #ffffff;
+  --app-bg-raised: #ffffff;
+  --app-code-bg: #f5f7fa;
+  --app-border-strong: #c0c4cc;
+  --app-ok: #67c23a;
+  --app-ok-text: #529b2e;
+  --app-ok-bg: #f0f9eb;
+  --app-info-text: #409eff;
+  --app-info-bg: #ecf5ff;
+  --app-danger: #f56c6c;
+  --app-danger-text: #c45656;
+  --app-danger-bg: rgba(245, 108, 108, 0.1);
+  --app-brand-gradient: linear-gradient(135deg, var(--el-color-primary), #7c3aed);
+  --app-on-accent: #ffffff;
+
+  /* 页面令牌 → 映射到 Element Plus / app 变量(既有类名不变,整体与桌面端同色) */
+  --bg-page: var(--el-bg-color-page);
+  --bg-sider: var(--app-bg-panel);
+  --bg-card: var(--el-bg-color);
+  --bg-inset: var(--app-code-bg);
+  --bg-hover: var(--el-fill-color-light);
+  --border: var(--el-border-color);
+  --border-strong: var(--app-border-strong);
+  --text: var(--el-text-color-primary);
+  --text-2: var(--el-text-color-secondary);
+  --text-3: var(--el-text-color-placeholder);
+  --accent: var(--el-color-primary);
+  --accent-dim: var(--el-color-primary-light-9);
+  --ok: var(--app-ok);
+  --warn: var(--el-color-warning);
+  --bad: var(--app-danger);
+
+  --radius: 8px;
+  --radius-lg: 12px;
+  --sidebar-w: 236px;
   --sidebar-collapsed: 58px;
   --topbar-h: 52px;
 }
 
-html.light {
-  --bg-page: #f5f6f8;
-  --bg-sider: #ffffff;
-  --bg-card: #ffffff;
-  --bg-inset: #eceef1;
-  --bg-hover: #eceef1;
-  --border: #e4e6ea;
-  --border-strong: #d2d5db;
-  --text: #1f2126;
-  --text-2: #6b7280;
-  --text-3: #9aa1ad;
-  --accent: #2f6fe0;
-  --accent-dim: rgba(47, 111, 224, 0.10);
-  --ok: #2e9e5b;
-  --warn: #b8822a;
-  --bad: #d65a51;
-}
+/* 浅色为默认(:root),无需 html.light 覆盖 */
 
-/* Element Plus 深色变量对齐 */
+/* Element Plus 深色调色(与桌面端对齐:近黑 ZCode 风格) */
 html.dark {
-  --el-bg-color: #1c1d21;
-  --el-bg-color-page: #131417;
-  --el-bg-color-overlay: #212226;
-  --el-fill-color: #202126;
-  --el-fill-color-light: #26272c;
-  --el-fill-color-lighter: #222328;
-  --el-fill-color-darker: #2e2f35;
-  --el-border-color: #33353a;
-  --el-border-color-light: #2b2c31;
-  --el-border-color-lighter: #26272b;
-  --el-text-color-primary: #e6e7ea;
-  --el-text-color-regular: #cfcfd4;
-  --el-text-color-secondary: #9da1a8;
-  --el-color-primary: #4c8dff;
+  --el-bg-color: #1c1c1c;
+  --el-bg-color-page: #161616;
+  --el-bg-color-overlay: #232323;
+  --el-fill-color: #202020;
+  --el-fill-color-light: #262626;
+  --el-fill-color-lighter: #222222;
+  --el-fill-color-darker: #2e2e2e;
+  --el-border-color: #333333;
+  --el-border-color-light: #2e2e2e;
+  --el-border-color-lighter: #292929;
+  --el-text-color-primary: #e8e8e8;
+  --el-text-color-regular: #cfcfcf;
+  --el-text-color-secondary: #9b9b9b;
+  --el-border-radius-base: 8px;
+
+  /* 应用语义变量深色覆盖 */
+  --app-bg-panel: #1a1a1a;
+  --app-bg-raised: #1e1e1e;
+  --app-code-bg: #111111;
+  --app-border-strong: #4a4a4a;
+  --app-ok: #57c472;
+  --app-ok-text: #7fd894;
+  --app-ok-bg: #2c3b2f;
+  --app-info-text: #8fa4ff;
+  --app-info-bg: #2f3550;
+  --app-danger: #d96b6b;
+  --app-danger-text: #e39393;
+  --app-danger-bg: rgba(217, 107, 107, 0.12);
 }
 
 * { box-sizing: border-box; }
@@ -145,7 +161,7 @@ body {
   white-space: nowrap; transition: background 0.12s, color 0.12s;
 }
 .sider nav a:hover { background: var(--bg-hover); color: var(--text); }
-.sider nav a.router-link-active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.sider nav a.router-link-active { background: var(--el-fill-color-darker); color: var(--text); font-weight: 600; }
 
 .side-foot { border-top: 1px solid var(--border); padding-top: 9px; margin-top: 8px; }
 .side-foot .foot-row {
@@ -228,12 +244,16 @@ body {
 .chat-scroll { flex: 1; overflow-y: auto; padding: 20px 8%; }
 .msg { margin-bottom: 18px; display: flex; }
 .msg.user { justify-content: flex-end; }
+/* 消息样式对齐桌面端:用户=浅填充气泡,助手=全宽文档式 */
 .msg .bubble {
-  max-width: 80%; border-radius: 12px; padding: 10px 14px;
-  line-height: 1.68; background: var(--bg-card);
-  border: 1px solid var(--border);
+  max-width: 100%; padding: 0; border: none; background: transparent;
+  line-height: 1.7; font-size: 14px;
 }
-.msg.user .bubble { background: var(--accent); color: #fff; border: none; white-space: pre-wrap; }
+.msg.user .bubble {
+  max-width: 70%; border-radius: 14px; padding: 10px 14px;
+  background: var(--el-fill-color-light); color: var(--el-text-color-primary);
+  white-space: pre-wrap; word-break: break-word;
+}
 .msg .tools { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
 .msg .err { margin-top: 8px; }
 
