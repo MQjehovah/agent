@@ -5,10 +5,18 @@ import { useRoute } from 'vue-router'
 import { api, post, streamChat } from '../api'
 import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import MarkdownIt from 'markdown-it'
-import { Promotion, VideoPause, Warning, ArrowRight } from '@element-plus/icons-vue'
+import { CaretRight, Warning, ArrowRight } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
+
+/** 推荐问句(点一下填进输入框) */
+const suggestions = [
+  '帮我总结今天的会议要点',
+  '查询设备在线状态与告警',
+  '起草一份本周工作周报',
+  '从知识库检索报销制度'
+]
 
 interface TextBlock { kind: 'text'; content: string; sealed?: boolean; html: string }
 interface ToolBlock { kind: 'tool'; name: string }
@@ -419,15 +427,16 @@ onBeforeUnmount(() => {
 <template>
   <div class="chat">
     <div class="chat-main">
-      <div v-if="readonly" class="readonly-bar">
-        <el-icon :size="14"><Warning /></el-icon>
-        <span>该会话来自「{{ channelMeta(currentSession?.channel || '', currentSession?.id || '').label }}」渠道，仅支持查看历史，请在对应渠道继续对话。</span>
-        <el-button size="small" @click="newSession">新建会话</el-button>
-      </div>
+      <header class="chat-head">
+        <span class="chat-title">{{ sessionId || '新对话' }}</span>
+      </header>
       <div ref="scrollRef" class="chat-scroll">
-        <div v-if="messages.length === 0" style="text-align: center; margin-top: 13vh">
-          <h2 style="font-weight: 650; font-size: 22px">有什么可以帮你?</h2>
-          <p style="color: var(--text-2); font-size: 13.5px">回答问题 · 查知识 · 处理工单 · 定时任务</p>
+        <div v-if="messages.length === 0" class="chat-empty">
+          <h1>你好，我是零号员工</h1>
+          <p>你的全能 AI 助手</p>
+          <div class="suggestions">
+            <button v-for="s in suggestions" :key="s" class="suggestion" @click="input = s">{{ s }}</button>
+          </div>
         </div>
 
         <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
@@ -496,39 +505,55 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="composer">
-        <div v-if="ask" class="ask-bar">
-          <div class="ask-q"><el-tag size="small" type="warning" effect="plain">需你确认</el-tag> {{ ask.question }}</div>
-          <div v-if="ask.options && ask.options.length" style="margin-top: 6px">
-            <el-radio-group v-model="askSel">
-              <el-radio v-for="op in ask.options" :key="op" :value="op">{{ op }}</el-radio>
-            </el-radio-group>
-          </div>
-          <el-input v-else v-model="askText" size="small" placeholder="输入回答后回车…" @keyup.enter="submitAsk" style="margin-top:6px" />
-          <div style="margin-top: 8px; display: flex; gap: 8px">
-            <el-button type="primary" size="small" @click="submitAsk">提交</el-button>
-            <el-button size="small" @click="cancelAsk">默认/取消</el-button>
-          </div>
+      <footer class="composer-wrap">
+        <div class="suggest-row">
+          <button v-for="s in suggestions" :key="s" class="suggest-chip" :disabled="streaming" @click="input = s">{{ s }}</button>
         </div>
-        <div class="composer-box">
+        <div class="composer" :class="{ readonly }">
+          <div v-if="ask" class="ask-bar">
+            <div class="ask-q"><el-tag size="small" type="warning" effect="plain">需你确认</el-tag> {{ ask.question }}</div>
+            <div v-if="ask.options && ask.options.length" style="margin-top: 6px">
+              <el-radio-group v-model="askSel">
+                <el-radio v-for="op in ask.options" :key="op" :value="op">{{ op }}</el-radio>
+              </el-radio-group>
+            </div>
+            <el-input v-else v-model="askText" size="small" placeholder="输入回答后回车…" @keyup.enter="submitAsk" style="margin-top:6px" />
+            <div style="margin-top: 8px; display: flex; gap: 8px">
+              <el-button type="primary" size="small" @click="submitAsk">提交</el-button>
+              <el-button size="small" @click="cancelAsk">默认/取消</el-button>
+            </div>
+          </div>
+          <div v-if="readonly" class="composer-readonly">
+            <el-icon :size="14"><Warning /></el-icon>
+            <span>该会话来自「{{ channelMeta(currentSession?.channel || '', currentSession?.id || '').label }}」渠道，仅支持查看历史，请在对应渠道继续对话。</span>
+          </div>
           <el-input
             v-model="input"
             type="textarea"
-            :autosize="{ minRows: 1, maxRows: 8 }"
+            :autosize="{ minRows: 3, maxRows: 12 }"
             :disabled="readonly"
-            :placeholder="readonly ? '该会话只读，不可发送消息' : '输入任务或问题，Enter 发送，Shift+Enter 换行'"
+            :placeholder="readonly ? '该会话只读，不可发送消息' : '今天帮你做些什么？'"
             resize="none"
+            class="composer-input"
             @keydown.enter.exact.prevent="send"
           />
-          <div class="composer-foot">
-            <span class="foot-hint">Enter 发送 · Shift+Enter 换行</span>
-            <span class="spacer" />
-            <el-button v-if="readonly" type="primary" :icon="Promotion" disabled>只读</el-button>
-            <el-button v-else-if="!streaming" type="primary" :icon="Promotion" circle :disabled="!input.trim()" title="发送" @click="send" />
-            <el-button v-else type="warning" :icon="VideoPause" circle title="停止" @click="stop" />
+          <div class="composer-bar">
+            <div class="composer-left">
+              <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+            </div>
+            <div class="composer-right">
+              <button v-if="!streaming" class="send-btn" :disabled="!input.trim() || readonly" title="发送" @click="send">
+                <el-icon :size="15"><CaretRight /></el-icon>
+              </button>
+              <button v-else class="send-btn stop" title="停止" @click="stop"><span class="stop-square" /></button>
+            </div>
           </div>
         </div>
-      </div>
+        <div class="composer-foot">
+          <div class="foot-left"></div>
+          <span class="foot-hint">由零号员工云端执行</span>
+        </div>
+      </footer>
     </div>
   </div>
 </template>
