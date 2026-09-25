@@ -657,6 +657,11 @@ async def _main_with_args(args):
             web_server = WebServer(
                 port=args.web_port, loop=asyncio.get_running_loop())
             web_server.set_agent(agent)
+            # 非 web 渠道(钉钉/飞书单聊)也按用户隔离: 把 worker 池注入插件路由
+            _pool = getattr(web_server, "_pool", None)
+            if _pool is not None:
+                router.set_worker_pool(_pool)
+                logger.info("非 web 单聊(钉钉/飞书)按用户隔离工作区(复用 Worker 池)")
             if kanban_board:
                 web_server.set_kanban(kanban_board)
             web_server.start()
