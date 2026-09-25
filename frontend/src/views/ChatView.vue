@@ -1,6 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatView' })
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { api, post, streamChat } from '../api'
 import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import MarkdownIt from 'markdown-it'
@@ -378,11 +379,37 @@ async function cancelAsk() {
   ask.value = null
 }
 
+/** 从「会话历史」跳转:按 ?session=<id> 打开指定会话 */
+const route = useRoute()
+async function openFromQuery(): Promise<void> {
+  const sid = String(route.query.session ?? '').trim()
+  if (!sid || streaming.value) return
+  if (sessionId.value === sid) return
+  const row = sessions.value.find((s) => s.id === sid) ?? {
+    id: sid,
+    channel: sid.startsWith('web:') ? 'web' : sid.startsWith('dingtalk') ? 'dingtalk' : 'other',
+    message_count: 0
+  }
+  await openSession(row)
+}
+
 let pollTimer: number | undefined
-onMounted(() => {
-  void loadSessions()
+onMounted(async () => {
+  await loadSessions()
+  await openFromQuery()
   pollTimer = window.setInterval(() => void loadSessions(), 15000)
 })
+watch(
+  () => route.query.session,
+  () => void openFromQuery()
+)
+// 侧栏「新建任务」:跳转到 /chat?new=<ts> 时清空当前会话
+watch(
+  () => route.query.new,
+  (v) => {
+    if (v) newSession()
+  }
+)
 onBeforeUnmount(() => {
   abort?.abort()
   if (pollTimer) window.clearInterval(pollTimer)

@@ -1,19 +1,56 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../theme'
   import { api, clearToken, getRole, hasPerm, setIdentity } from '../api'
   import logoUrl from '../assets/logo.svg'
+import CommandPalette from '../components/CommandPalette.vue'
 import {
   Monitor, ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
-  Shop, Connection, Files, Collection
+  Shop, Connection, Files, Collection, Clock, Search
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const { theme, toggle } = useTheme()
 const collapsed = ref(false)
+
+/** 命令面板(Ctrl+K)/新建任务(Ctrl+N) */
+const paletteVisible = ref(false)
+function newTask(): void {
+  void router.push({ path: '/chat', query: { new: String(Date.now()) } })
+}
+function isTypingTarget(el: EventTarget | null): boolean {
+  const node = el as HTMLElement | null
+  if (!node) return false
+  const tag = node.tagName?.toLowerCase()
+  return tag === 'input' || tag === 'textarea' || node.isContentEditable === true
+}
+function onKeydown(e: KeyboardEvent): void {
+  if (isTypingTarget(e.target)) return
+  if (e.ctrlKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    paletteVisible.value = true
+    return
+  }
+  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
+    e.preventDefault()
+    newTask()
+  }
+}
+function onPaletteNavigate(path: string): void {
+  paletteVisible.value = false
+  router.push(path)
+}
+function onPaletteOpenSession(id: string): void {
+  paletteVisible.value = false
+  void router.push({ path: '/chat', query: { session: id } })
+}
+function onPaletteNewTask(): void {
+  paletteVisible.value = false
+  newTask()
+}
 
 const role = ref(getRole())
 const me = ref<{ name: string; role: string; department?: string }>({ name: '', role: '' })
@@ -30,6 +67,7 @@ interface NavItem {
 const personalItems: NavItem[] = [
   { path: '/dashboard', title: '工作台', icon: Monitor },
   { path: '/chat', title: '对话', icon: ChatDotRound },
+  { path: '/sessions', title: '会话历史', icon: Clock },
   { path: '/knowledge', title: '知识库', icon: Collection },
   { path: '/market', title: '能力市场', icon: Shop },
   { path: '/connectors', title: '我的连接器', icon: Connection },
@@ -87,7 +125,11 @@ async function refreshMe() {
   }
 }
 
-onMounted(refreshMe)
+onMounted(() => {
+  void refreshMe()
+  window.addEventListener('keydown', onKeydown)
+})
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 async function logout() {
   try { await api('/api/auth/logout', { method: 'POST' }) } catch { /* 忽略 */ }
@@ -104,6 +146,18 @@ function onUserCommand(cmd: string | number | object) {
   <div class="layout" :class="{ collapsed }">
     <aside class="sider">
       <div class="brand"><img class="logo" :src="logoUrl" alt="Rosiwit" /><span class="side-label">零号员工</span></div>
+      <div class="side-actions">
+        <button class="side-action" @click="newTask">
+          <el-icon :size="15"><SwitchButton /></el-icon>
+          <span class="side-label">新建任务</span>
+          <span class="side-kbd">Ctrl+N</span>
+        </button>
+        <button class="side-action" @click="paletteVisible = true">
+          <el-icon :size="15"><Search /></el-icon>
+          <span class="side-label">搜索</span>
+          <span class="side-kbd">Ctrl+K</span>
+        </button>
+      </div>
       <nav>
         <div class="side-group-title">个人空间</div>
         <a v-for="item in personalItems" :key="item.path" href="#"
@@ -167,6 +221,12 @@ function onUserCommand(cmd: string | number | object) {
         </router-view>
       </div>
     </main>
+    <CommandPalette
+      v-model="paletteVisible"
+      @navigate="onPaletteNavigate"
+      @open-session="onPaletteOpenSession"
+      @new-task="onPaletteNewTask"
+    />
   </div>
 </template>
 
@@ -174,6 +234,17 @@ function onUserCommand(cmd: string | number | object) {
 .side-foot { display: flex; align-items: center; gap: 6px; }
 .side-foot .el-dropdown { flex: 1; min-width: 0; }
 .ops-title { margin-top: 14px; }
+.side-actions { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.side-action {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  border: none; background: transparent; color: var(--text-2);
+  padding: 8.5px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 13.5px; white-space: nowrap;
+}
+.side-action:hover { background: var(--bg-hover); color: var(--text); }
+.side-kbd { margin-left: auto; font-size: 11px; color: var(--text-3); font-family: Consolas, monospace; }
+.layout.collapsed .side-action { justify-content: center; padding: 9px 0; }
+.layout.collapsed .side-kbd { display: none; }
 .foot-user {
   display: flex; align-items: center; gap: 9px;
   padding: 7px 8px 10px; overflow: hidden;

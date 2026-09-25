@@ -41,7 +41,7 @@ const router = createRouter({
         { path: 'market', component: MarketView, meta: { title: '能力市场' } },
         { path: 'connectors', component: ConnectorsView, meta: { title: '我的连接器' } },
         { path: 'settings', component: SettingsView, meta: { title: '设置' } },
-        { path: 'sessions', component: SessionsView, meta: { title: '会话管理', perm: 'admin.monitor' } },
+        { path: 'sessions', component: SessionsView, meta: { title: '会话历史' } },
         { path: 'kanban', component: KanbanView, meta: { title: '任务看板', perm: 'admin.monitor' } },
         { path: 'monitor', component: MonitorView, meta: { title: '运行监控',
           permAny: ['admin.monitor', 'admin.logs', 'admin.scheduler', 'admin.memories'] } },
