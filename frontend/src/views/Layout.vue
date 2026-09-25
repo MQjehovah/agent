@@ -114,7 +114,6 @@ interface NavItem {
 
 // —— 一级：个人空间（所有登录用户，平铺）——
 const personalItems: NavItem[] = [
-  { path: '/dashboard', title: '工作台', icon: Monitor },
   { path: '/chat', title: '对话', icon: ChatDotRound },
   { path: '/sessions', title: '会话历史', icon: Clock },
   { path: '/knowledge', title: '知识库', icon: Collection },
@@ -125,6 +124,7 @@ const personalItems: NavItem[] = [
 
 // —— 一级：运维与管理（按细粒度权限展示）——
 const allOpsItems: NavItem[] = [
+  { path: '/dashboard', title: '工作台', icon: Monitor },
   { path: '/monitor', title: '运行监控', icon: Odometer, perm: 'admin.monitor' },
   { path: '/admin/local-mcp', title: '本地安装', icon: Files, perm: 'admin.mcp_local' },
   { path: '/admin', title: '用户与权限', icon: User,
