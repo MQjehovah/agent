@@ -248,6 +248,25 @@ html.dark {
   color: var(--el-text-color-primary);
 }
 
+/* 会话区块折叠 */
+.side-section-title.collapsible {
+  cursor: pointer;
+  user-select: none;
+}
+
+.side-section-title.collapsible:hover {
+  color: var(--el-text-color-regular);
+}
+
+.side-caret {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+.side-caret.open {
+  transform: rotate(90deg);
+}
+
 .side-sessions {
   flex: 1;
   overflow-y: auto;

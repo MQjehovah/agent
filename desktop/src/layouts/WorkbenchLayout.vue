@@ -169,6 +169,8 @@ function sideCanContinue(s: SessionListItem): boolean {
 
 /** 已归档分组默认折叠; 仅在有内容时显示 */
 const archivedOpen = ref(false)
+/** 会话列表折叠(默认展开) */
+const sessionsCollapsed = ref(false)
 
 /** 打开会话:本地会话切到本地模式,agent 会话走 HTTP 历史 */
 async function openSession(s: SessionListItem) {
@@ -423,12 +425,13 @@ async function doLogout() {
         </div>
 
         <div class="side-section">
-          <span class="side-section-title">
+          <span class="side-section-title collapsible" @click="sessionsCollapsed = !sessionsCollapsed">
+            <el-icon :size="11" class="side-caret" :class="{ open: !sessionsCollapsed }"><CaretRight /></el-icon>
             会话
             <el-icon v-if="sessionsStore.loading" class="is-loading spin"><Loading /></el-icon>
-            <el-icon v-else class="side-section-action" title="刷新" @click="sessionsStore.refresh()"><FolderOpened /></el-icon>
+            <el-icon v-else class="side-section-action" title="刷新" @click.stop="sessionsStore.refresh()"><FolderOpened /></el-icon>
           </span>
-          <div class="side-sessions">
+          <div v-show="!sessionsCollapsed" class="side-sessions">
             <div v-for="group in sessionGroups" :key="group.key" class="side-group">
               <div v-if="group.items.length" class="side-group-label">
                 {{ group.label }}

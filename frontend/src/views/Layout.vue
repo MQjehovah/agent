@@ -8,7 +8,7 @@ import CommandPalette from '../components/CommandPalette.vue'
 import {
   Monitor, ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
-  Shop, Files, Collection, Clock, Search, Refresh
+  Shop, Files, Collection, Clock, Search, Refresh, CaretRight, FolderOpened
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -56,7 +56,20 @@ function onPaletteNewTask(): void {
 interface SideSession { id: string; channel: string; at?: string; streaming?: boolean }
 const sideSessions = ref<SideSession[]>([])
 const sideLoading = ref(false)
+const sessionsCollapsed = ref(false)
 const currentSessionId = computed(() => String(route.query.session ?? ''))
+
+/** 会话渠道细类(按 id 前缀, 与桌面端一致) */
+function chanKind(s: SideSession): 'web' | 'dingtalk' | 'dingtalk_group' | 'other' {
+  if (s.id.startsWith('dingtalk_group:')) return 'dingtalk_group'
+  if (s.id.startsWith('dingtalk:')) return 'dingtalk'
+  if (s.id.startsWith('web:')) return 'web'
+  return s.channel === 'web' ? 'web' : s.channel === 'dingtalk' ? 'dingtalk' : 'other'
+}
+function chanShort(s: SideSession): string {
+  const k = chanKind(s)
+  return k === 'web' ? 'Web' : k === 'dingtalk' ? '钉钉' : k === 'dingtalk_group' ? '钉钉群' : '其他'
+}
 async function loadSideSessions(): Promise<void> {
   sideLoading.value = true
   try {
@@ -220,11 +233,12 @@ function onUserCommand(cmd: string | number | object) {
       </nav>
 
       <div class="side-section">
-        <div class="side-section-title">
+        <div class="side-section-title collapsible" @click="sessionsCollapsed = !sessionsCollapsed">
+          <el-icon :size="11" class="side-caret" :class="{ open: !sessionsCollapsed }"><CaretRight /></el-icon>
           会话
-          <el-icon class="side-section-action" :class="{ 'is-loading': sideLoading }" title="刷新" @click="loadSideSessions"><Refresh /></el-icon>
+          <el-icon class="side-section-action" :class="{ 'is-loading': sideLoading }" title="刷新" @click.stop="loadSideSessions"><Refresh /></el-icon>
         </div>
-        <div class="side-sessions">
+        <div v-show="!sessionsCollapsed" class="side-sessions">
           <div
             v-for="s in sideSessions"
             :key="s.id"
@@ -233,8 +247,9 @@ function onUserCommand(cmd: string | number | object) {
             :title="s.id"
             @click="openSideSession(s.id)"
           >
-            <el-icon :size="13" class="side-session-icon"><ChatDotRound /></el-icon>
+            <el-icon :size="13" class="side-session-icon"><FolderOpened /></el-icon>
             <span class="side-session-name">{{ s.id }}</span>
+            <span class="side-session-chan" :class="'chan-' + chanKind(s)">{{ chanShort(s) }}</span>
             <span v-if="s.streaming" class="side-session-tag" title="运行中">运行中</span>
             <span class="side-session-time">{{ shortTime(s.at) }}</span>
           </div>
@@ -337,6 +352,18 @@ function onUserCommand(cmd: string | number | object) {
 .side-session-tag { flex: none; font-size: 10px; color: var(--el-color-warning); }
 .side-empty { padding: 6px 8px; font-size: 12px; color: var(--text-3); }
 .layout.collapsed .side-section { display: none; }
+.side-section-title.collapsible { cursor: pointer; user-select: none; }
+.side-section-title.collapsible:hover { color: var(--text-2); }
+.side-caret { flex: none; transition: transform 0.15s; }
+.side-caret.open { transform: rotate(90deg); }
+.side-session-chan {
+  flex: none; padding: 0 5px; border-radius: 8px; font-size: 10px; line-height: 15px;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.side-session-chan.chan-web { color: var(--el-color-primary); background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-7); }
+.side-session-chan.chan-dingtalk { color: var(--el-color-success); background: var(--el-color-success-light-9); border-color: var(--el-color-success-light-7); }
+.side-session-chan.chan-dingtalk_group { color: var(--el-color-warning); background: var(--el-color-warning-light-9); border-color: var(--el-color-warning-light-7); }
+.side-session-chan.chan-other { color: var(--el-text-color-secondary); background: var(--el-fill-color-light); border-color: var(--el-border-color-lighter); }
 .foot-user {
   display: flex; align-items: center; gap: 9px;
   padding: 7px 8px 10px; overflow: hidden;
