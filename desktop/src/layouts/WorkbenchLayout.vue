@@ -6,6 +6,7 @@ import {
   CaretRight,
   ChatDotRound,
   Clock,
+  Coin,
   Collection,
   Delete,
   FolderOpened,
@@ -15,6 +16,7 @@ import {
   Search,
   Setting,
   SwitchButton,
+  Timer,
   Top,
   UserFilled
 } from '@element-plus/icons-vue'
@@ -331,7 +333,9 @@ const navMain = [
   { path: '/chat', title: '对话', icon: ChatDotRound },
   { path: '/sessions', title: '会话历史', icon: Clock },
   { path: '/knowledge', title: '知识库', icon: Collection },
-  { path: '/market', title: '能力市场', icon: MagicStick }
+  { path: '/market', title: '能力市场', icon: MagicStick },
+  { path: '/scheduler', title: '定时任务', icon: Timer },
+  { path: '/memories', title: '记忆管理', icon: Coin }
 ]
 
 const userInitial = (): string => {

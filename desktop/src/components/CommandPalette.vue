@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch, type Component } from 'vue'
 import {
   ChatDotRound,
   Clock,
+  Coin,
   Collection,
   Document,
   FolderOpened,
@@ -10,6 +11,7 @@ import {
   Search,
   Setting,
   SwitchButton,
+  Timer,
   TrendCharts
 } from '@element-plus/icons-vue'
 import { request } from '../api/client'
@@ -59,6 +61,8 @@ const commandItems: PaletteItem[] = [
   { key: 'cmd:sessions', title: '会话历史', icon: Clock, run: () => emit('navigate', '/sessions') },
   { key: 'cmd:knowledge', title: '知识库', icon: Collection, run: () => emit('navigate', '/knowledge') },
   { key: 'cmd:market', title: '能力市场', icon: MagicStick, run: () => emit('navigate', '/market') },
+  { key: 'cmd:scheduler', title: '定时任务', icon: Timer, run: () => emit('navigate', '/scheduler') },
+  { key: 'cmd:memories', title: '记忆管理', icon: Coin, run: () => emit('navigate', '/memories') },
   { key: 'cmd:usage', title: '用量', icon: TrendCharts, run: () => emit('navigate', '/usage') },
   { key: 'cmd:settings', title: '设置', icon: Setting, run: () => emit('navigate', '/settings') },
   {

@@ -13,6 +13,8 @@ const routes: Array<RouteRecordRaw> = [
       { path: 'sessions', name: 'sessions', component: () => import('../views/SessionsView.vue'), meta: { title: '会话历史' } },
       { path: 'knowledge', name: 'knowledge', component: () => import('../views/KnowledgeView.vue'), meta: { title: '知识库' } },
       { path: 'market', name: 'market', component: () => import('../views/MarketView.vue'), meta: { title: '能力市场' } },
+      { path: 'scheduler', name: 'scheduler', component: () => import('../views/SchedulerView.vue'), meta: { title: '定时任务' } },
+      { path: 'memories', name: 'memories', component: () => import('../views/MemoriesView.vue'), meta: { title: '记忆管理' } },
       { path: 'profile', name: 'profile', component: () => import('../views/ProfileView.vue'), meta: { title: '个人中心' } },
       // 用量已并入个人中心,保留旧路径重定向避免历史链接失效
       { path: 'usage', redirect: '/profile' },
