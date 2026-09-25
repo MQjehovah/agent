@@ -6,7 +6,8 @@
 
 契约(市场生产已验证):
 - 目录: ``GET {MARKET_BASE_URL}/api/capabilities/sync`` (Bearer=市场服务令牌) → 数组;
-  仅接 ``type=="mcp"`` 且 ``distribution in (remote,both)`` 的能力(local 网关会 403);
+  仅接 ``type=="mcp"`` 且可云端托管的能力(优先消费 ``runtime.cloud``，缺失回退
+  ``distribution in (remote,both)``；local 分发会 403);
 - 能力级网关: ``/api/mcp-gateway/relay/{name}/stream`` (Streamable HTTP, 同 Bearer),
   name 支持 ``name@version`` 钉版本; gateway 为 null 时同样可按名路由。
 - 代表用户: 构造参数 ``act_as``(市场用户名=工号) 非空时, sync 与 relay 请求额外带
@@ -137,7 +138,11 @@ class PlatformMCPConfig:
 
 
 def parse_sync_capabilities(payload: Any) -> list[dict[str, Any]]:
-    """sync 响应 → 可经网关直连的 MCP 能力(非法项跳过; distribution 缺省按 both)。"""
+    """sync 响应 → 可经网关直连的 MCP 能力(非法项跳过)。
+
+    可用性判定优先消费能力层 **runtime.cloud**（设计契约单一来源）；
+    字段缺失时回退旧口径 ``distribution in (remote, both)``（缺省 both）。
+    """
     if not isinstance(payload, list):
         return []
     caps: list[dict[str, Any]] = []
@@ -146,13 +151,20 @@ def parse_sync_capabilities(payload: Any) -> list[dict[str, Any]]:
             continue
         if str(item.get("type") or "").strip().lower() != "mcp":
             continue
-        distribution = str(item.get("distribution") or "both").strip().lower()
-        if distribution not in MARKET_DISTRIBUTIONS:
-            continue
+        runtime = item.get("runtime")
+        cloud = runtime.get("cloud") if isinstance(runtime, dict) else None
+        if isinstance(cloud, bool):
+            if not cloud:
+                continue  # runtime 明示不可云端托管(local 分发)
+        else:
+            distribution = str(item.get("distribution") or "both").strip().lower()
+            if distribution not in MARKET_DISTRIBUTIONS:
+                continue
         name = str(item.get("name") or "").strip()
         if not name:
             continue
         gateway = item.get("gateway")
+        distribution = str(item.get("distribution") or "both").strip().lower()
         caps.append({
             "name": name,
             "version": str(item.get("version") or ""),

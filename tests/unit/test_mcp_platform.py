@@ -91,6 +91,24 @@ def test_parse_sync_non_list_returns_empty():
     assert platform.parse_sync_capabilities(None) == []
 
 
+def test_parse_sync_prefers_runtime_cloud_over_distribution():
+    payload = [
+        # runtime.cloud=False（即使 distribution=both）→ 跳过
+        {"name": "cloud-off", "type": "mcp", "distribution": "both",
+         "runtime": {"cloud": False, "local": True, "recommended": "local"}},
+        # runtime.cloud=True 优先接受
+        {"name": "cloud-on", "type": "mcp", "distribution": "remote",
+         "runtime": {"cloud": True, "local": True, "recommended": "cloud"}},
+        # runtime 非法/缺失 → 回退 distribution 旧口径
+        {"name": "fallback-remote", "type": "mcp", "distribution": "remote",
+         "runtime": {"cloud": "yes"}},
+        {"name": "fallback-no-runtime", "type": "mcp", "distribution": "remote"},
+        {"name": "fallback-local", "type": "mcp", "distribution": "local"},
+    ]
+    caps = platform.parse_sync_capabilities(payload)
+    assert [c["name"] for c in caps] == ["cloud-on", "fallback-remote", "fallback-no-runtime"]
+
+
 # ===== 3. 暴露名与 relay URL =====
 
 def test_exposed_tool_name_prefix_and_sanitize():
