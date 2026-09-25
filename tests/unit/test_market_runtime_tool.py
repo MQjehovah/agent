@@ -119,6 +119,18 @@ async def test_market_runtime_tool_mcp_mode(monkeypatch):
     assert cap["json"] == {"tool": "t", "params": {"x": 2}}
 
 
+async def test_market_runtime_tool_skill_mode(monkeypatch):
+    monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
+    tool = MarketRuntimeTool()
+    await _run_with(
+        "web:jimingqing",
+        lambda: tool.execute(capability="某技能", kind="skill", task="写周报"),
+    )
+    cap = _FakeClient.captured
+    assert cap["url"] == "http://market.local/api/runtime/skills/某技能/activate"
+    assert cap["json"] == {"context": "写周报"}
+
+
 async def test_market_runtime_tool_requires_subject(monkeypatch):
     monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
     tool = MarketRuntimeTool()

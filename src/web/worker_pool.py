@@ -225,6 +225,23 @@ class WebUserWorkerPool:
         if getattr(self.root, "name", ""):
             worker.name = self.root.name
         await worker.initialize()
+        # 员工助手人设(与 root「零号员工」分离): config/assistant/PROMPT.md 存在时覆盖 worker 人设
+        try:
+            _cfg = getattr(worker, "config_dir", "") or ""
+            _p = os.path.join(_cfg, "assistant", "PROMPT.md")
+            if os.path.exists(_p):
+                with open(_p, encoding="utf-8") as _f:
+                    _t = _f.read()
+                if _t.startswith("---"):
+                    _parts = _t.split("---", 2)
+                    if len(_parts) >= 3:
+                        _t = _parts[2]
+                _t = _t.strip()
+                if _t:
+                    worker.system_prompt = _t
+                    worker.system_prompt_raw = _t
+        except Exception:
+            pass
         return worker
 
     def _resolve_platform_act_as(self, tag: str) -> str:

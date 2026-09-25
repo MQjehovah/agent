@@ -11,11 +11,11 @@
 
 import json
 import logging
-import os
 
 import httpx
 
 from . import BuiltinTool
+from .market_common import market_config, resolve_subject
 
 logger = logging.getLogger("agent.tools")
 
@@ -23,43 +23,11 @@ logger = logging.getLogger("agent.tools")
 _TOOL_INVOKE_PATH = "/api/runtime/tools/{capability}/invoke"
 _AGENT_TASK_PATH = "/api/runtime/agents/{capability}/tasks"
 _MCP_CALL_PATH = "/api/runtime/mcp/{capability}/call"
-
-
-def _market_config() -> tuple[str, str, float]:
-    """读取市场配置(base_url, service_token, timeout)。
-
-    镜像 ``mcps.platform.PlatformMCPConfig.from_env`` 语义; 此处刻意不 import ``mcps``,
-    以避免仅为读配置而引入 MCP SDK(mcps 包初始化会拉起 MCP 客户端依赖)。
-    """
-    base = os.environ.get("MARKET_BASE_URL", "").strip().rstrip("/")
-    token = os.environ.get("MARKET_SERVICE_TOKEN", "").strip()
-    try:
-        timeout = float(os.environ.get("MARKET_PLATFORM_TIMEOUT", "60") or "60")
-    except ValueError:
-        timeout = 60.0
-    if timeout <= 0:
-        timeout = 60.0
-    return base, token, timeout
-
-
-def _resolve_subject() -> str:
-    """当前 run 的提问者(subject) → 市场用户名(= rbac 工号); 解析失败返回空串。"""
-    try:
-        from agent.core import current_run
-        raw = getattr(current_run(), "user_id", "") or ""
-    except Exception:
-        raw = ""
-    if not raw:
-        return ""
-    try:
-        from web.security import resolve_market_act_as
-        return resolve_market_act_as(raw)
-    except Exception:
-        return ""
+_SKILL_ACTIVATE_PATH = "/api/runtime/skills/{capability}/activate"
 
 
 class MarketRuntimeTool(BuiltinTool):
-    """按用户身份调用市场能力(工具调用 / Agent 任务)。"""
+    """按用户身份调用市场能力(工具 / 连接器 / 技能 / Agent)。"""
 
     @property
     def name(self) -> str:
@@ -70,7 +38,8 @@ class MarketRuntimeTool(BuiltinTool):
         return (
             "以当前提问者的权限(市场代授权)调用能力市场的云端能力: "
             "kind=tool 调用工具能力(params 为参数对象); kind=mcp 调用连接器能力暴露的工具"
-            "(tool 指定工具名, params 为参数对象); kind=agent 向某 Agent 下发任务(task)。"
+            "(tool 指定工具名, params 为参数对象); kind=skill 激活技能(返回技能说明文本, task 为使用场景); "
+            "kind=agent 向某 Agent 下发任务(task)。"
             "仅能使用提问者本人有权访问的能力, 不会越权。"
         )
 
@@ -81,12 +50,12 @@ class MarketRuntimeTool(BuiltinTool):
             "properties": {
                 "capability": {
                     "type": "string",
-                    "description": "能力名称(市场中的 name), 如某工具/某 Agent",
+                    "description": "能力名称(市场中的 name), 如某工具/某 Agent/某技能",
                 },
                 "kind": {
                     "type": "string",
-                    "enum": ["tool", "mcp", "agent"],
-                    "description": "能力类型: tool=工具(默认), mcp=连接器(调用其工具), agent=下发 Agent 任务",
+                    "enum": ["tool", "mcp", "skill", "agent"],
+                    "description": "能力类型: tool=工具(默认), mcp=连接器, skill=技能, agent=下发 Agent 任务",
                 },
                 "tool": {
                     "type": "string",
@@ -98,7 +67,7 @@ class MarketRuntimeTool(BuiltinTool):
                 },
                 "task": {
                     "type": "string",
-                    "description": "kind=agent 时的任务描述",
+                    "description": "kind=agent 时的任务描述; kind=skill 时的使用场景(可选)",
                 },
             },
             "required": ["capability"],
@@ -114,14 +83,14 @@ class MarketRuntimeTool(BuiltinTool):
                               ensure_ascii=False)
 
         # 用户级代授权: 无 subject 一律 fail-closed(不得以服务身份越权执行)
-        subject = _resolve_subject()
+        subject = resolve_subject()
         if not subject:
             return json.dumps(
                 {"ok": False, "error": "无法解析当前用户的市场身份，已拒绝代授权调用"},
                 ensure_ascii=False,
             )
 
-        base, token, timeout = _market_config()
+        base, token, timeout = market_config()
         if not (base and token):
             return json.dumps({"ok": False, "error": "能力市场未配置"},
                               ensure_ascii=False)
@@ -132,6 +101,9 @@ class MarketRuntimeTool(BuiltinTool):
         elif kind == "mcp":
             path = _MCP_CALL_PATH.format(capability=capability)
             body = {"tool": tool or "", "params": params or {}}
+        elif kind == "skill":
+            path = _SKILL_ACTIVATE_PATH.format(capability=capability)
+            body = {"context": task or ""}
         else:
             path = _TOOL_INVOKE_PATH.format(capability=capability)
             body = {"tool": tool or "", "params": params or {}}

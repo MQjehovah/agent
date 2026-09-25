@@ -479,16 +479,18 @@ class Agent:
         logger.info(f"Agent [{self.name}] RAG 知识库已接入: {rag_url}")
 
     def _init_market_runtime(self):
-        """市场云端运行时工具(代授权/OBO): 仅市场配置齐备时保留。
+        """市场工具(代授权/OBO): 仅市场配置齐备时保留。
 
-        该工具走市场 ``/api/runtime/*`` 逐请求携带 ``X-Act-As-Sub``(当前提问者),
-        由市场 actor ∩ subject 求交; 未配置市场时从工具表中移除, 避免暴露无效入口。
+        - ``market_search``: 按 subject 视角检索市场目录(发现层);
+        - ``market_runtime``: 按 subject 调用 /api/runtime/*(执行层)。
+        两者逐请求携带 ``X-Act-As-Sub``, 由市场 actor ∩ subject 求交; 未配置市场时移除。
         """
         from mcps.platform import PlatformMCPConfig
         if PlatformMCPConfig.from_env().enabled:
-            logger.info("市场运行时工具 market_runtime 已启用(逐请求代授权)")
+            logger.info("市场工具已启用: market_search(检索) + market_runtime(执行, 逐请求代授权)")
             return
         self.tool_registry.unregister_tool("market_runtime")
+        self.tool_registry.unregister_tool("market_search")
 
     def _init_code_quality(self):
         """初始化代码质量相关模块"""
@@ -1181,6 +1183,12 @@ class Agent:
         # 代授权执行者(零号员工服务身份): 显式入参或父级继承; 个人 Agent 直连用户时为空。
         eff_actor = actor_id or getattr(inherited, "actor_id", "")
         eff_actor_role = actor_role or getattr(inherited, "actor_role", "")
+        # 零号员工(root)默认以服务身份 actor 运行: 有效权 = actor(超集) ∩ subject; 子代理经 ContextVar 继承。
+        # ZERO_EMPLOYEE_OBO=0 可关闭(回退纯 subject)。个人 worker / 子代理不设 actor。
+        if not eff_actor and self.parent_agent is None:
+            _obo = (os.environ.get("ZERO_EMPLOYEE_OBO", "1") or "1").strip().lower()
+            if _obo not in ("0", "false", "no", "off"):
+                eff_actor, eff_actor_role = "zero-employee", "supreme"
         # 群共享上下文:顶层渠道显式传 True,子代理在同一 Task 内继承父级 run 标记
         eff_group = bool(group_context) or bool(getattr(inherited, "group_context", False))
         ctx = RunContext(
