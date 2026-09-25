@@ -432,9 +432,9 @@ onBeforeUnmount(() => {
 
             <!-- 助手消息：按输出顺序的时间线流 -->
             <template v-else>
-              <details v-if="m.reasoning" style="margin-bottom: 6px">
-                <summary style="font-size: 12px; color: var(--text-2); cursor: pointer">思考过程</summary>
-                <div style="font-size: 12px; color: var(--text-2); white-space: pre-wrap; margin-top: 4px">{{ m.reasoning }}</div>
+              <details v-if="m.reasoning" class="reasoning">
+                <summary class="reasoning-summary">思考过程</summary>
+                <div class="reasoning-text">{{ m.reasoning }}</div>
               </details>
 
               <div v-for="(b, bi) in m.blocks" :key="bi" class="flow-block">
@@ -505,18 +505,24 @@ onBeforeUnmount(() => {
             <el-button size="small" @click="cancelAsk">默认/取消</el-button>
           </div>
         </div>
-        <el-input
-          v-model="input"
-          type="textarea"
-          :autosize="{ minRows: 1, maxRows: 8 }"
-          :disabled="readonly"
-          :placeholder="readonly ? '该会话只读，不可发送消息' : '输入任务或问题,Enter 发送,Shift+Enter 换行'"
-          resize="none"
-          @keydown.enter.exact.prevent="send"
-        />
-        <el-button v-if="readonly" type="primary" :icon="Promotion" disabled>只读</el-button>
-        <el-button v-else-if="!streaming" type="primary" :icon="Promotion" :disabled="!input.trim()" @click="send" />
-        <el-button v-else type="warning" :icon="VideoPause" @click="stop" />
+        <div class="composer-box">
+          <el-input
+            v-model="input"
+            type="textarea"
+            :autosize="{ minRows: 1, maxRows: 8 }"
+            :disabled="readonly"
+            :placeholder="readonly ? '该会话只读，不可发送消息' : '输入任务或问题，Enter 发送，Shift+Enter 换行'"
+            resize="none"
+            @keydown.enter.exact.prevent="send"
+          />
+          <div class="composer-foot">
+            <span class="foot-hint">Enter 发送 · Shift+Enter 换行</span>
+            <span class="spacer" />
+            <el-button v-if="readonly" type="primary" :icon="Promotion" disabled>只读</el-button>
+            <el-button v-else-if="!streaming" type="primary" :icon="Promotion" circle :disabled="!input.trim()" title="发送" @click="send" />
+            <el-button v-else type="warning" :icon="VideoPause" circle title="停止" @click="stop" />
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -568,16 +574,35 @@ onBeforeUnmount(() => {
   animation: caret-blink 0.9s step-end infinite;
 }
 @keyframes caret-blink { 50% { opacity: 0; } }
+/* 工具调用卡片(对齐桌面端 .tool-card) */
 .tool-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid #e3b0ff; background: #faf3ff; color: #6b3fa0;
-  border-radius: 14px; padding: 2px 10px; font-size: 12px; margin: 2px 0;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--el-fill-color-light);
+  border: none;
+  border-radius: 12px;
+  padding: 8px 12px;
+  margin: 6px 0;
+  font-size: 13px;
+  color: var(--text);
 }
-.tool-chip .tool-name { font-weight: 600; font-size: 12px; }
-.chip-running { color: #f56c6c; font-size: 10px; animation: blink 1s infinite; }
+.tool-chip .tool-name { font-family: Consolas, 'Courier New', monospace; font-weight: 600; font-size: 13px; }
+.chip-running { color: var(--el-color-primary); font-size: 11px; animation: blink 1s infinite; }
 @keyframes blink { 50% { opacity: 0.2; } }
 .tools-sum {
   margin-top: 6px; font-size: 11.5px; color: var(--text-3);
+}
+/* 思考过程折叠(对齐桌面端 .reasoning) */
+.reasoning { margin-bottom: 8px; }
+.reasoning-summary {
+  font-size: 12.5px; color: var(--text-2); cursor: pointer; list-style: none;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.reasoning-summary::-webkit-details-marker { display: none; }
+.reasoning-summary::before { content: '▸'; transition: transform 0.15s; }
+.reasoning[open] .reasoning-summary::before { transform: rotate(90deg); }
+.reasoning-text {
+  font-size: 12.5px; color: var(--text-2); white-space: pre-wrap;
+  margin-top: 4px; padding-left: 4px;
 }
 .agent-card {
   border: 1px solid var(--border, #e5e7eb);
