@@ -8,7 +8,7 @@ import CommandPalette from '../components/CommandPalette.vue'
 import {
   Monitor, ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
-  Shop, Connection, Files, Collection, Clock, Search, Refresh
+  Shop, Files, Collection, Clock, Search, Refresh
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -106,7 +106,6 @@ const personalItems: NavItem[] = [
   { path: '/sessions', title: '会话历史', icon: Clock },
   { path: '/knowledge', title: '知识库', icon: Collection },
   { path: '/market', title: '能力市场', icon: Shop },
-  { path: '/connectors', title: '我的连接器', icon: Connection },
   { path: '/scheduler', title: '定时任务', icon: Timer },
   { path: '/memories', title: '记忆管理', icon: Coin }
 ]

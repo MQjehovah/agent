@@ -16,7 +16,6 @@ import KanbanView from './views/KanbanView.vue'
 import SchedulerView from './views/SchedulerView.vue'
 import MemoriesView from './views/MemoriesView.vue'
 import MarketView from './views/MarketView.vue'
-import ConnectorsView from './views/ConnectorsView.vue'
 import LocalMcpView from './views/LocalMcpView.vue'
 import AdminView from './views/AdminView.vue'
 import MonitorView from './views/MonitorView.vue'
@@ -39,7 +38,6 @@ const router = createRouter({
         { path: 'scheduler', component: SchedulerView, meta: { title: '定时任务' } },
         { path: 'memories', component: MemoriesView, meta: { title: '记忆管理' } },
         { path: 'market', component: MarketView, meta: { title: '能力市场' } },
-        { path: 'connectors', component: ConnectorsView, meta: { title: '我的连接器' } },
         { path: 'settings', component: SettingsView, meta: { title: '设置' } },
         { path: 'sessions', component: SessionsView, meta: { title: '会话历史' } },
         { path: 'kanban', component: KanbanView, meta: { title: '任务看板', perm: 'admin.monitor' } },
