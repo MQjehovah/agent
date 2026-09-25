@@ -1,5 +1,6 @@
 import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, Notification, screen, shell } from 'electron'
 import { join } from 'node:path'
+import './load-env'
 import { getConfig, updateConfig, getStoredConfig, type AppConfig } from './store'
 import { filterUserConfigPatch } from './config-core'
 import { existsSync, readFileSync } from 'node:fs'
