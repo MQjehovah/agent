@@ -97,6 +97,18 @@ async def test_market_search_tool_sends_subject_and_groups(monkeypatch):
     assert cap["params"] == {"q": "报销"}
 
 
+async def test_market_search_tool_kind_filter(monkeypatch):
+    monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
+    tool = MarketSearchTool()
+    out = await _run_with("web:jimingqing", lambda: tool.execute(query="报销", kind="agent"))
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["kind"] == "agent"
+    assert payload["total"] == 1
+    assert payload["agents"][0]["name"] == "财务专家"
+    assert "skills" not in payload
+
+
 async def test_market_search_tool_requires_subject(monkeypatch):
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     tool = MarketSearchTool()

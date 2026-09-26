@@ -32,6 +32,7 @@ class MarketSearchTool(BuiltinTool):
             "在能力市场按要办的事检索可用能力(以当前提问者视角): 返回 agent(专家)/skill(技能)/"
             "mcp(连接器)/tool(工具) 清单及简介。用于**先发现再调用**——找到合适的后，"
             "用 market_runtime 执行(kind=tool/mcp/skill/agent)。"
+            "可用 `kind` 只看某一类(如先 kind=\"agent\" 找专家；没有再 kind=\"skill\"/\"mcp\"/\"tool\")。"
         )
 
     @property
@@ -40,15 +41,23 @@ class MarketSearchTool(BuiltinTool):
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "要办的事 / 关键词(自然语言)"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["agent", "skill", "mcp", "tool", "all"],
+                    "description": "只看某类能力: agent=专家, skill=技能, mcp=连接器, tool=工具; 默认 all(全部)",
+                },
                 "limit": {"type": "integer", "description": "每组返回上限, 默认 8"},
             },
             "required": ["query"],
         }
 
-    async def execute(self, query: str = "", limit: int = 8, **kwargs) -> str:
+    async def execute(self, query: str = "", kind: str = "all", limit: int = 8, **kwargs) -> str:
         q = (query or "").strip()
         if not q:
             return json.dumps({"ok": False, "error": "缺少 query"}, ensure_ascii=False)
+        k = (kind or "all").strip().lower()
+        if k == "expert":
+            k = "agent"
         try:
             limit = int(limit)
         except (TypeError, ValueError):
@@ -99,18 +108,25 @@ class MarketSearchTool(BuiltinTool):
             }
 
         groups = {
-            "agents": data.get("agents", []),
-            "skills": data.get("skills", []),
-            "mcps": data.get("mcps", []),
-            "tools": list(data.get("others", [])) + list(data.get("plugins", [])),
+            "agent": data.get("agents", []),
+            "skill": data.get("skills", []),
+            "mcp": data.get("mcps", []),
+            "tool": list(data.get("others", [])) + list(data.get("plugins", [])),
         }
+        plural = {"agent": "agents", "skill": "skills", "mcp": "mcps", "tool": "tools"}
         out: dict = {"ok": True, "query": data.get("q", q), "terms": data.get("terms", [])}
         total = 0
-        for key, rows in groups.items():
-            items = [_row(r) for r in rows[:limit]]
-            out[key] = items
-            total += len(items)
+        if k in plural:
+            items = [_row(r) for r in groups[k][:limit]]
+            out[plural[k]] = items
+            out["kind"] = k
+            total = len(items)
+        else:
+            for key, rows in groups.items():
+                items = [_row(r) for r in rows[:limit]]
+                out[plural[key]] = items
+                total += len(items)
         out["total"] = total
         if total == 0:
-            out["hint"] = "未命中，可换更贴近的词语再检索"
+            out["hint"] = "未命中，可换更贴近的词语再检索" if k not in plural else "该类型下未命中，可换词或 kind=all 看全部"
         return json.dumps(out, ensure_ascii=False)
