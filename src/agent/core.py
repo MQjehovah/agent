@@ -133,6 +133,15 @@ def current_agent() -> "Agent | None":
     return _current_agent.get()
 
 
+# 本地专家/技能取舍(收口到市场): market(默认) / both / local
+_LOCAL_EXPERTS_KEEP = {"AI开发团队"}
+
+
+def _local_experts_mode() -> str:
+    v = (os.environ.get("AGENT_LOCAL_EXPERTS_MODE", "market") or "market").strip().lower()
+    return v if v in ("market", "both", "local") else "market"
+
+
 class Agent:
     def __init__(
         self,
@@ -553,6 +562,11 @@ class Agent:
         logger.info(f"Agent [{self.name}] 代码质量模块初始化完成")
 
     def _init_skills(self):
+        # 技能收口: market 模式下根 agent 不加载本地顶层技能(改由市场技能文本注入/委派);
+        # 子代理(如保留团队)仍按各自 config_dir 加载。AGENT_LOCAL_EXPERTS_MODE=both|local 恢复。
+        if not self.parent_agent and _local_experts_mode() == "market":
+            logger.info("技能市场优先(AGENT_LOCAL_EXPERTS_MODE=market): 跳过本地顶层技能加载")
+            return
         skills_dir = os.path.join(self.config_dir, "skills")
         if os.path.exists(skills_dir):
             from skills import SkillManager
@@ -748,6 +762,15 @@ class Agent:
         if os.path.exists(agents_dir):
             self.subagent_manager = SubagentManager(agents_dir, parent_workspace=self.workspace)
             self.subagent_manager._parent_agent = self
+            # 专家收口: market 模式下根 agent 仅保留本地团队(白名单), 其余专家走市场(market_search/market_delegate)。
+            if not self.parent_agent and _local_experts_mode() == "market":
+                templates = getattr(self.subagent_manager, "templates", {}) or {}
+                removed = [n for n in list(templates) if n not in _LOCAL_EXPERTS_KEEP]
+                for n in removed:
+                    templates.pop(n, None)
+                if removed:
+                    logger.info(
+                        f"专家市场优先: 本地仅保留 {sorted(_LOCAL_EXPERTS_KEEP)}; 移除本地专家 {removed}")
             self.subagent_manager.start_cleanup_task()
             logger.info(
                 f"Agent [{self.name}] 已加载 {len(self.subagent_manager.list_templates())} 个子代理: {self.subagent_manager.list_templates()}")
