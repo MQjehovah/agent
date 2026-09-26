@@ -235,10 +235,16 @@ class MarketDelegateTool(BuiltinTool):
             data = resp.json()
         except ValueError:
             return _err("专家定义返回非 JSON")
-        persona = str((data or {}).get("prompt") or "").strip()
-        deps = list((data or {}).get("dependencies") or [])
+        # 市场 runtime 把内容包在 result 里(见 market routers/runtime.py 的 _result):
+        # {ok, capability, action, message, result:{prompt, dependencies, ...}}
+        res = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(res, dict):
+            res = data if isinstance(data, dict) else {}
+        persona = str(res.get("prompt") or "").strip()
+        deps = list(res.get("dependencies") or [])
         if not persona:
-            return _err("专家无人设(PROMPT.md)")
+            note = str(res.get("note") or "")
+            return _err(f"专家无人设(PROMPT.md){('；' + note) if note else ''}")
 
         # 2) 校验依赖: 平台不支持 local(stdio) mcp 依赖
         bad = [

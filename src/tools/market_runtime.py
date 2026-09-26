@@ -114,12 +114,14 @@ class MarketRuntimeTool(BuiltinTool):
             "Content-Type": "application/json",
         }
         url = f"{base}{path}"
+        # Agent 任务在云端跑完整推理链，通常远超默认 60s；单独放宽避免误判为"空错误"超时
+        call_timeout = max(timeout, 300.0) if kind == "agent" else timeout
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=call_timeout) as client:
                 resp = await client.post(url, headers=headers, json=body)
         except httpx.HTTPError as e:
             logger.warning(f"市场运行时调用失败: {e}")
-            return json.dumps({"ok": False, "error": f"市场请求失败: {e}"},
+            return json.dumps({"ok": False, "error": f"市场请求失败: {type(e).__name__}: {e}"},
                               ensure_ascii=False)
 
         try:

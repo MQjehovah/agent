@@ -43,7 +43,14 @@ class _FakeClient:
         return False
 
     async def get(self, url, headers=None, **kwargs):
-        return _FakeResp(200, {"agent": "e", "prompt": "你是报销专家", "dependencies": list(_FakeClient.deps)})
+        # 与市场 /api/runtime/agents/{name}/persona 真实响应一致: 内容包在 result 里
+        return _FakeResp(200, {
+            "ok": True,
+            "capability": {"name": "e"},
+            "action": "persona",
+            "message": "ok",
+            "result": {"agent": "e", "prompt": "你是报销专家", "dependencies": list(_FakeClient.deps)},
+        })
 
     async def post(self, url, headers=None, json=None, **kwargs):
         _FakeClient.posts.append(url)

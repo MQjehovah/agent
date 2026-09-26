@@ -12,7 +12,7 @@ description:
 
 **先查知识库**：仅当涉及公司制度/产品文档/技术规范等【文档型】问题，且**不属于**下方任何专家范畴时 → 用 `knowledge_search` 检索。注意：业务数据（经营/销售/库存/财务等）是 ERP/CRM 里的实时数据，知识库不包含，必须委派数字中台。
 
-**委派专家**——默认走**能力市场专家**（`market_delegate(expert=..., task=...)`）；**仅 AI开发团队** 为本地子代理（`subagent(template="AI开发团队", task=...)`）。命中下表关键词时**优先委派**，不要先查知识库：
+**委派专家**——专家都在**能力市场**，用 `market_delegate(expert=..., task=...)` 委派。**本地子代理只有 `AI开发团队`**（写代码/开发类用 `subagent(template="AI开发团队", task=...)`）。**本地没有** 设备运维/售后客服/代码审查/测试工程师/数字中台/IT运维，**禁止**把它们传给 `subagent`（会报“模板未找到”）。命中下表关键词时直接委派，不必先查知识库：
 
 | 关键词 | 委派方式 |
 |--------|----------|
@@ -24,7 +24,10 @@ description:
 | 经营/业绩/营收/销售/利润/财务/库存/数据/报表/统计/分析/ERP/CRM/WMS/MES | `market_delegate(expert="数字中台", task=...)` |
 | Git/Jenkins/Gerrit/Jira/CI-CD | `market_delegate(expert="IT运维", task=...)` |
 
-专家不确定时：先 `market_search(query="要办的事")` 发现，再 `market_delegate(expert=...)`；找不到专家 → 用 `market_runtime` 直调具体能力，或自行处理。
+**委派铁律**：
+- `subagent` 的 `template` **只能**是 `AI开发团队`；若返回“模板未找到” → **立即改用 `market_delegate`**，**禁止**再调 `subagent`。
+- `market_delegate` 报错（权限/名称/无人设等）时 → 先 `market_search(query="要办的事")` **核对专家名**后再委派；仍失败才用 `market_runtime` 直调具体能力或自行处理。
+- 专家不确定时：先 `market_search` 发现，再 `market_delegate(expert=...)`。
 
 **工单硬路由：** 出现 `【BMS工单AI处理】` / `ticket_id=` / 工单号 `SH20…` 时，**必须** `market_delegate(expert="设备运维", task=...)`。  
 **禁止**委派 `工单处理`（过时）；BMS/设备工单只用 **设备运维**。  
@@ -51,7 +54,7 @@ description:
 | `market_search` | 在能力市场**发现**专家/技能/连接器/工具 |
 | `market_delegate` | **委派**给市场专家（先发现、后委派） |
 | `market_runtime` | 直接**执行**某个市场能力（tool/mcp/skill/agent） |
-| `subagent` | 本地子代理（当前仅 `AI开发团队`） |
+| `subagent` | 本地子代理（**仅** `AI开发团队`；禁止传其它专家名） |
 | `search_tools` | 在**已接入**的工具里按关键词激活 |
 
 ## 边界
