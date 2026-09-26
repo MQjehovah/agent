@@ -1121,7 +1121,8 @@ const isLocal = computed(() => chat.sessionMode === 'local')
       </div>
     </header>
 
-    <div ref="scrollRef" class="chat-scroll" @scroll.passive="onScroll">
+      <div class="chat-body">
+      <div ref="scrollRef" class="chat-scroll" @scroll.passive="onScroll">
       <template v-if="chat.messages.length === 0">
         <div class="chat-empty">
           <template v-if="isLocal">
@@ -1246,6 +1247,7 @@ const isLocal = computed(() => chat.sessionMode === 'local')
     <button v-if="!pinned" class="to-bottom" title="回到底部" @click="jumpToBottom">
       <el-icon :size="16"><ArrowDown /></el-icon>
     </button>
+      </div>
 
     <!-- ZCode 式输入区:大圆角容器,工具栏内嵌 -->
     <footer class="composer-wrap">
@@ -1983,12 +1985,12 @@ const isLocal = computed(() => chat.sessionMode === 'local')
 </style>
 
 <style scoped>
-/* 悬浮「回到底部」按钮的定位锚点 */
-.chat-col { position: relative; }
+/* 悬浮「回到底部」按钮：锚在聊天区(不含输入区)底部 */
+.chat-body { position: relative; flex: 1; min-height: 0; display: flex; }
 .to-bottom {
   position: absolute;
   right: 24px;
-  bottom: 132px;
+  bottom: 16px;
   z-index: 6;
   width: 36px;
   height: 36px;
