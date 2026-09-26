@@ -72,6 +72,8 @@ const installed = ref<MarketInstalledItem[]>([])
 
 /** 我的能力 id 集合(listMy added,用于对拍浏览卡片的订阅态) */
 const mineIds = ref<Set<string>>(new Set())
+/** 我的能力「名称」集合：加入记录可能指向旧版本 id，按名称判定可跨版本（与 web 一致） */
+const mineNames = ref<Set<string>>(new Set())
 
 // 细粒度动作 loading:分别锁住当前卡片的按钮,避免整页抖动
 const busySub = ref('')
@@ -171,15 +173,20 @@ async function fetchBrowseDirectory(): Promise<MarketCapabilityLite[]> {
   return out
 }
 
-/** 拉取「我的能力」id 集合;失败时保留旧值,talk=true 时报错提示 */
+/** 拉取「我的能力」:按 id + 名称双集合(名称可跨版本, 与 web 口径一致);失败保留旧值 */
 async function loadMine(talk = false): Promise<void> {
   try {
-    const list = await window.desktop.invoke<Array<{ id?: unknown }>>('localagent:market:listMy')
+    const list = await window.desktop.invoke<Array<{ id?: unknown; name?: unknown }>>(
+      'localagent:market:listMy'
+    )
     const ids: string[] = []
+    const names: string[] = []
     for (const item of Array.isArray(list) ? list : []) {
       if (item && typeof item.id === 'string' && item.id) ids.push(item.id)
+      if (item && typeof item.name === 'string' && item.name) names.push(item.name)
     }
     mineIds.value = new Set(ids)
+    mineNames.value = new Set(names)
   } catch (err) {
     if (talk) ElMessage.error(`刷新「我的能力」失败:${invokeErr(err)}`)
   }
@@ -273,10 +280,11 @@ const cards = computed<BrowseCard[]>(() => {
     return true
   })
   const mine = mineIds.value
+  const mineNamesSet = mineNames.value
   const instKeys = new Set(installed.value.map((it) => typeKey(it.type, it.name)))
   return filtered.map((c) => ({
     ...c,
-    mine: mine.has(c.id),
+    mine: mine.has(c.id) || mineNamesSet.has(c.name),
     installed: instKeys.has(typeKey(c.type, c.name))
   }))
 })
