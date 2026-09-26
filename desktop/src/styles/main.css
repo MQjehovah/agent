@@ -582,6 +582,23 @@ html.dark {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  }
+
+.side-footer-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.side-footer-info .side-footer-name { flex: none; }
+.side-footer-role {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
 }
 
 .side-footer-icon {

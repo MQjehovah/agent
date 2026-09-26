@@ -46,27 +46,6 @@ function newTask() {
   void router.push('/chat')
 }
 
-/** 新建临时会话(仅本地):退出/启动时自动删除, 侧栏有「临时」徽标 */
-async function newEphemeralTask(): Promise<void> {
-  if (chat.streaming) return
-  try {
-    await chat.startLocalSession(undefined, undefined, { ephemeral: true })
-    // 未设置默认工作区时会弹目录选择, 取消则中止
-    if (!chat.sessionId) return
-    await sessionsStore.refresh(true)
-    await router.push('/chat')
-    ElMessage.success('已创建临时会话(退出后自动删除)')
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  }
-}
-
-/** 侧栏「新建任务」菜单:普通 / 临时 */
-function onNewCommand(command: string): void {
-  if (command === 'ephemeral') void newEphemeralTask()
-  else newTask()
-}
-
 /** 快速提问窗提交:新建会话发送;成功才请主进程关窗,失败/流式中回执错误并保留输入 */
 async function handleQuickPrompt(text: string): Promise<void> {
   const message = text.trim()
@@ -270,12 +249,7 @@ function onKeydown(e: KeyboardEvent) {
     paletteVisible.value = true
     return
   }
-  // Ctrl+Shift+N:新建临时会话(仅本地); 需先于 Ctrl+N 分支判断
-  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'n') {
-    e.preventDefault()
-    void newEphemeralTask()
-    return
-  }
+  // Ctrl+N: 新建任务
   if (e.ctrlKey && e.key.toLowerCase() === 'n') {
     e.preventDefault()
     newTask()
@@ -346,6 +320,14 @@ const userInitial = (): string => {
   return name ? name.slice(0, 1).toUpperCase() : '?'
 }
 
+/** 角色 + 部门（对齐 web 左下角用户信息） */
+const roleLabel = computed(() => {
+  const u = settings.user
+  if (!u) return ''
+  const base = u.role === 'admin' ? '管理员' : '成员'
+  return u.department ? `${base} · ${u.department}` : base
+})
+
 const paletteVisible = ref(false)
 
 /** 命令面板跳转:关闭面板后交给路由 */
@@ -389,23 +371,11 @@ async function doLogout() {
 
     <aside class="sidebar">
       <div class="side-top">
-        <!-- 新建任务菜单: 普通会话 / 临时会话(仅本地, 退出即删) -->
-        <el-dropdown trigger="click" class="side-new-dropdown" @command="onNewCommand">
-          <button class="side-item">
-            <el-icon :size="15"><SwitchButton /></el-icon>
-            <span class="side-label">新建任务</span>
-            <span class="side-kbd">Ctrl+N</span>
-          </button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="normal">新建任务</el-dropdown-item>
-              <el-dropdown-item command="ephemeral">
-                新建临时会话（退出即删）
-                <span class="dd-kbd">Ctrl+Shift+N</span>
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+        <button class="side-item" @click="newTask">
+          <el-icon :size="15"><SwitchButton /></el-icon>
+          <span class="side-label">新建任务</span>
+          <span class="side-kbd">Ctrl+N</span>
+        </button>
         <button class="side-item" title="搜索" @click="paletteVisible = true">
           <el-icon :size="15"><Search /></el-icon>
           <span class="side-label">搜索</span>
@@ -535,7 +505,10 @@ async function doLogout() {
         <el-dropdown trigger="click" class="user-menu" @command="onUserCommand">
           <div class="user-trigger">
             <span class="avatar" :class="{ ghost: !settings.user }">{{ userInitial() }}</span>
-            <span class="side-footer-name">{{ settings.user ? settings.user.name : '未登录' }}</span>
+            <span class="side-footer-info">
+              <span class="side-footer-name">{{ settings.user ? settings.user.name : '未登录' }}</span>
+              <span v-if="roleLabel" class="side-footer-role">{{ roleLabel }}</span>
+            </span>
           </div>
           <template #dropdown>
             <el-dropdown-menu>

@@ -5,6 +5,7 @@ import { useTheme } from '../theme'
   import { api, clearToken, getRole, hasPerm, setIdentity } from '../api'
   import logoUrl from '../assets/logo.svg'
 import CommandPalette from '../components/CommandPalette.vue'
+import { dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import {
   Monitor, ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
@@ -69,6 +70,12 @@ function chanKind(s: SideSession): 'web' | 'dingtalk' | 'dingtalk_group' | 'othe
 function chanShort(s: SideSession): string {
   const k = chanKind(s)
   return k === 'web' ? 'Web' : k === 'dingtalk' ? '钉钉' : k === 'dingtalk_group' ? '钉钉群' : '其他'
+}
+/** 会话显示名: 群用群名, 其余去掉 `channel:userid:` 前缀只留 hash(与桌面端一致) */
+function sessionLabel(s: SideSession): string {
+  if (isDingtalkGroupSession(s.id)) return dingtalkGroupDisplayName(s.id)
+  const m = /^[^:]+:\d+:(.+)$/.exec(s.id)
+  return m ? m[1] : s.id
 }
 async function loadSideSessions(): Promise<void> {
   sideLoading.value = true
@@ -248,7 +255,7 @@ function onUserCommand(cmd: string | number | object) {
             @click="openSideSession(s.id)"
           >
             <el-icon :size="13" class="side-session-icon"><FolderOpened /></el-icon>
-            <span class="side-session-name">{{ s.id }}</span>
+            <span class="side-session-name">{{ sessionLabel(s) }}</span>
             <span class="side-session-chan" :class="'chan-' + chanKind(s)">{{ chanShort(s) }}</span>
             <span v-if="s.streaming" class="side-session-tag" title="运行中">运行中</span>
             <span class="side-session-time">{{ shortTime(s.at) }}</span>
@@ -366,16 +373,18 @@ function onUserCommand(cmd: string | number | object) {
 .side-session-chan.chan-other { color: var(--el-text-color-secondary); background: var(--el-fill-color-light); border-color: var(--el-border-color-lighter); }
 .foot-user {
   display: flex; align-items: center; gap: 9px;
+  width: 100%; min-width: 0;
   padding: 7px 8px 10px; overflow: hidden;
   cursor: pointer; border-radius: 8px;
 }
 .foot-user:hover { background: var(--bg-hover); }
+.foot-user .side-label { flex: 1; min-width: 0; overflow: hidden; }
 .user-avatar {
   width: 30px; height: 30px; flex: none; border-radius: 50%;
   background: var(--accent-dim); color: var(--accent);
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; font-weight: 650;
 }
-.user-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
-.user-role { font-size: 11px; color: var(--text-3); margin-top: 1px; white-space: nowrap; }
+.user-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-role { font-size: 11px; color: var(--text-3); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
