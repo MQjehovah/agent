@@ -7,6 +7,7 @@ import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '.
 import MarkdownIt from 'markdown-it'
 import { CaretRight, Warning, ArrowRight, Plus, Microphone, MagicStick, Check, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import AttachmentImage from '../components/AttachmentImage.vue'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
@@ -121,6 +122,7 @@ interface Msg {
   blocks: MsgBlock[]
   toolCount: number
   error: string
+  images?: { ref: string; name: string; url?: string }[]
 }
 interface SessionRow {
   id: string
@@ -302,11 +304,24 @@ async function openSession(row: SessionRow) {
     procTip.value = ''
     messages.value = msgs.map(m => {
       const c: any = m.content
-      const text = Array.isArray(c)
-        ? c.map((p: any) => (p && p.type === 'text' ? p.text : (p && (p.type === 'image_ref' || p.type === 'image_url') ? `[图片${p.name ? '：' + p.name : ''}]` : ''))).join('')
+      const isList = Array.isArray(c)
+      const text = isList
+        ? c.map((p: any) => (p && p.type === 'text' ? p.text : '')).join('')
         : String(c ?? '')
+      const imgs = isList
+        ? c.filter((p: any) => p && (p.type === 'image_ref' || p.type === 'image_url'))
+            .map((p: any) => {
+              const raw = String(p.ref || (p.image_url && p.image_url.url) || '')
+              const isData = raw.startsWith('data:')
+              return { ref: isData ? '' : raw, name: String(p.name || ''), url: isData ? raw : undefined }
+            })
+            .filter((x: any) => x.ref || x.url)
+        : []
       if (m.role === 'user') {
-        return { role: 'user' as const, content: text, reasoning: '', blocks: [], toolCount: 0, error: '' }
+        return {
+          role: 'user' as const, content: text, reasoning: '', blocks: [], toolCount: 0, error: '',
+          images: imgs.length ? imgs : undefined
+        }
       }
       const a = emptyAssistant()
       if (text) a.blocks.push({ kind: 'text', content: text, html: '' })
@@ -340,7 +355,15 @@ function send() {
   input.value = ''
   pendingAttachments.value = []
   const shown = text || (imgs.length ? `[图片 ×${imgs.length}]` : '')
-  messages.value.push({ role: 'user', content: shown, reasoning: '', blocks: [], toolCount: 0, error: '' })
+  messages.value.push({
+    role: 'user',
+    content: shown,
+    reasoning: '',
+    blocks: [],
+    toolCount: 0,
+    error: '',
+    images: imgs.map((a) => ({ ref: a.ref, name: a.name, url: a.url || undefined }))
+  })
   const reply: Msg = emptyAssistant()
   messages.value.push(reply)
   streaming.value = true
@@ -544,8 +567,19 @@ onBeforeUnmount(() => {
 
         <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
           <div class="bubble" style="min-width: 30%">
-            <!-- 用户消息：纯文本 -->
-            <div v-if="m.role === 'user'">{{ m.content }}</div>
+            <!-- 用户消息：图片 + 纯文本 -->
+            <template v-if="m.role === 'user'">
+              <div v-if="m.images && m.images.length" class="msg-images">
+                <AttachmentImage
+                  v-for="(im, ii) in m.images"
+                  :key="ii"
+                  :ref-id="im.ref"
+                  :url="im.url"
+                  :alt="im.name"
+                />
+              </div>
+              <div v-if="m.content">{{ m.content }}</div>
+            </template>
 
             <!-- 助手消息：按输出顺序的时间线流 -->
             <template v-else>
@@ -632,7 +666,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="pendingAttachments.length" class="pending-images">
             <span v-for="(a, i) in pendingAttachments" :key="a.ref" class="pending-chip" :title="a.name">
-              <el-icon :size="12"><Picture /></el-icon>
+              <AttachmentImage :ref-id="a.ref" :url="a.url" :alt="a.name" class="chip-thumb" />
               <span class="chip-name">{{ a.name }}</span>
               <button class="thumb-x" title="移除" @click="removeAttachment(i)">×</button>
             </span>
@@ -826,7 +860,9 @@ onBeforeUnmount(() => {
   margin-top: 2px;
 }
 .proc-hint { color: var(--text-2, #555); font-size: 13px; margin-top: 4px; }
-.pending-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 8% 8px; }
+.pending-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 8% 8px; align-items: center; }
+.pending-chip :deep(.att-img) { max-width: 40px; max-height: 40px; }
+.msg-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .pending-chip {
   display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
   padding: 4px 8px; border-radius: 8px; font-size: 12px;

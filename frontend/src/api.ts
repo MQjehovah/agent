@@ -16,7 +16,7 @@ const SCOPE_KEY = 'agent_scope'
 const DEPT_KEY = 'agent_dept'
 
 export function getToken(): string {
-  return localStorage.getItem(TOKEN_KEY) ?? ''
+  return localStorage.getItem(TOKEN_KEY) || ''
 }
 
 export function setToken(t: string) {
@@ -202,4 +202,17 @@ export async function streamChat(
       }
     }
   }
+}
+
+/** 附件预览 URL（需鉴权，故用 fetch 拿 blob 转 objectURL） */
+export function attachmentUrl(ref: string): string {
+  return `/api/attachments/${encodeURIComponent(ref)}`
+}
+
+export async function fetchAttachmentObjectUrl(ref: string): Promise<string> {
+  const res = await fetch(attachmentUrl(ref), {
+    headers: { Authorization: `Bearer ${getToken()}` }
+  })
+  if (!res.ok) throw new Error(`附件加载失败 ${res.status}`)
+  return URL.createObjectURL(await res.blob())
 }
