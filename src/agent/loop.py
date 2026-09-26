@@ -339,6 +339,9 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                         msg[key] = kwargs[key]
                 self.messages.append(msg)
         session = _MinSession()
+        # 无会话/无 session_manager 的临时运行(如 market_delegate 的临时子代理):
+        # 必须把本轮 task 播种为 user 消息, 否则首调 messages 为空被网关判 400。
+        session.add_message("user", task)
     if session and session_id:
         session.session_id = session_id
 
@@ -542,6 +545,9 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                         msg[key] = kwargs[key]
                 self.messages.append(msg)
         session = _MinSession()
+        # 无会话/无 session_manager 的临时运行(如 market_delegate 的临时子代理):
+        # 必须把本轮 task 播种为 user 消息, 否则首调 messages 为空被网关判 400。
+        session.add_message("user", task)
     if session and session_id:
         session.session_id = session_id
 

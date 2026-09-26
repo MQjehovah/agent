@@ -150,6 +150,10 @@ async def _run_transient(system_prompt: str, task: str) -> dict:
         await sub.initialize()
         sub.system_prompt = system_prompt
         sub.system_prompt_raw = system_prompt
+        # 人设需作为 static system 段注入消息列表(经 RunContext.system_static, 见 loop.run_impl);
+        # 仅设 system_prompt 时, 有 dynamic 段(用户画像)会走 else 分支而丢掉 static 前缀。
+        sub.system_static = system_prompt
+        sub.system_dynamic = ""
         r = await sub.run(
             task,
             session_id="",
