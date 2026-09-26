@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api, del, patch, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import MarketCard from '../components/MarketCard.vue'
 
 interface MarketComponent {
   name?: string
@@ -13,15 +14,22 @@ interface MarketComponent {
 interface MarketItem {
   id: string
   name: string
+  display_name?: string
   type: string
   description?: string
   category?: string
   tags?: string[]
   version?: string
   distribution?: string
-  components?: MarketComponent[]
+  icon_url?: string
   joined?: boolean
   installed?: boolean
+  verified?: boolean
+  install_policy?: string
+  rating_count?: number
+  avg_rating?: number
+  usage_count?: number
+  components?: MarketComponent[]
 }
 
 interface Installation {
@@ -297,58 +305,25 @@ onMounted(() => {
               title="能力市场未配置，请联系管理员" style="margin-bottom: 12px" />
 
     <div v-loading="loading">
-      <el-table v-if="!marketMissing" :data="items" stripe>
-        <el-table-column label="名称" min-width="180">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openDetail(row)">{{ row.name }}</el-button>
-            <div class="muted">{{ row.version || '' }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="类型" width="110">
-          <template #default="{ row }">
-            <el-tag size="small" effect="plain">{{ typeLabel(row.type) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="说明" min-width="240" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.description || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="标签" min-width="150">
-          <template #default="{ row }">
-            <el-tag v-for="t in (row.tags || []).slice(0, 3)" :key="t" size="small" effect="plain"
-                    style="margin-right: 4px">{{ t }}</el-tag>
-            <span v-if="!(row.tags || []).length" class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="分发" width="110">
-          <template #default="{ row }">
-            <el-tag size="small" :type="distTagType(row.distribution)">{{ distLabel(row.distribution) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="150">
-          <template #default="{ row }">
-            <el-tag v-if="row.joined" size="small" type="success" effect="light" style="margin-right: 4px">已加入</el-tag>
-            <el-tag v-if="row.installed" size="small" type="primary" effect="light">已安装</el-tag>
-            <span v-if="!row.joined && !row.installed" class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="290" fixed="right">
-          <template #default="{ row }">
-            <el-button v-if="!row.joined" size="small" type="primary" plain @click="join(row)">加入</el-button>
-            <el-button v-else size="small" plain @click="leave(row)">移出</el-button>
-            <el-button v-if="canInstall(row) && !row.installed" size="small" type="primary"
-                       @click="install(row)">安装（云端托管）</el-button>
-            <el-button v-if="row.installed" size="small" type="danger" plain
-                       @click="uninstall(row)">卸载</el-button>
-            <el-switch v-if="row.installed" :model-value="enabledOf(row)" inline-prompt
-                       active-text="启用" inactive-text="停用"
-                       @change="(v: string | number | boolean) => toggleEnabled(row, v)" />
-          </template>
-        </el-table-column>
-      </el-table>
+      <div v-if="!marketMissing && items.length" class="cards">
+        <MarketCard
+          v-for="row in items"
+          :key="row.id"
+          :cap="row"
+          :can-install="canInstall(row)"
+          :enabled="enabledOf(row)"
+          @open="openDetail(row)"
+          @join="join(row)"
+          @leave="leave(row)"
+          @install="install(row)"
+          @uninstall="uninstall(row)"
+          @toggle="(v: boolean) => toggleEnabled(row, v)"
+        />
+      </div>
 
       <div v-if="!loading && (marketMissing || items.length === 0)" style="margin-top: 12px">
         <el-empty v-if="marketMissing" description="能力市场未配置，请联系管理员" />
-        <el-empty v-else :description="query.q || query.type ? '无匹配能力' : '暂无能力'" />
+        <el-empty v-else :description="query.q || query.type || query.category ? '无匹配能力' : '暂无能力'" />
       </div>
 
       <div v-if="!marketMissing && total > 0" class="pager">
@@ -414,4 +389,12 @@ onMounted(() => {
 .detail-desc { font-size: 13px; line-height: 1.7; white-space: pre-wrap; color: var(--text-2); }
 .section-title { font-size: 13px; font-weight: 600; margin: 6px 0 8px; }
 .drawer-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+</style>
+
+<style scoped>
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
 </style>

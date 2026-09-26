@@ -11,6 +11,15 @@ import type {
   MarketInstalledItem
 } from '../api/types'
 import { useSettingsStore } from '../stores/settings'
+import {
+  distBadgeCls,
+  distName,
+  gradeOf,
+  iconPhStyle,
+  policyName,
+  typeLetter,
+  typeName
+} from '../utils/market'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -126,6 +135,8 @@ function mapLite(v: unknown): MarketCapabilityLite | null {
   if (category) out.category = category
   const distribution = typeof r.distribution === 'string' && r.distribution ? r.distribution : ''
   if (distribution) out.distribution = distribution
+  const policy = typeof r.install_policy === 'string' ? r.install_policy : ''
+  if (policy) out.install_policy = policy
   const runtime = mapRuntime(r.runtime)
   if (runtime) out.runtime = runtime
   const ratingCount = Number(r.rating_count ?? 0)
@@ -210,6 +221,7 @@ async function refreshBrowse(): Promise<void> {
   try {
     browse.value = await fetchBrowseDirectory()
     browseLoaded.value = true
+    void loadIcons()
   } catch (err) {
     browseError.value = marketErr(err)
   } finally {
@@ -281,6 +293,23 @@ function resetBrowseFilter(): void {
   q.value = ''
   typeFilter.value = ''
   categoryFilter.value = ''
+}
+
+/** 能力图标 id → data URL（懒加载；无图标为空） */
+const iconMap = ref<Record<string, string>>({})
+function iconOf(id: string): string {
+  return iconMap.value[id] || ''
+}
+async function loadIcons(): Promise<void> {
+  for (const c of browse.value) {
+    if (iconMap.value[c.id] !== undefined) continue
+    try {
+      const url = await window.desktop.invoke<string>('localagent:market:icon', { id: c.id })
+      iconMap.value = { ...iconMap.value, [c.id]: url || '' }
+    } catch {
+      iconMap.value = { ...iconMap.value, [c.id]: '' }
+    }
+  }
 }
 
 async function subscribeCap(card: BrowseCard): Promise<void> {
@@ -573,26 +602,39 @@ onMounted(() => {
           <div v-else-if="browseLoaded" v-loading="browseLoading" class="market-grid">
             <article v-for="card in cards" :key="card.id" class="market-card">
               <div class="market-card-head">
-                <span class="market-type" :class="'t-' + card.type">{{ TYPE_LABEL[card.type] }}</span>
-                <span v-if="card.type === 'mcp'" class="market-dist" :title="'分发方式：' + distLabel(card)">
-                  {{ distLabel(card) }}
+                <img
+                  v-if="iconOf(card.id)"
+                  class="market-icon"
+                  :src="iconOf(card.id)"
+                  :alt="card.name"
+                />
+                <span v-else class="market-icon market-icon-ph" :style="iconPhStyle(card.type)">
+                  {{ typeLetter(card.type) }}
                 </span>
-                <span class="market-spacer"></span>
-                <span v-if="card.rating_count" class="market-rating" title="评分">
-                  {{ ratingText(card) }}
-                </span>
+                <div class="market-head-text">
+                  <h3 class="market-name" :title="card.name">{{ card.name }}</h3>
+                  <div class="market-sub">
+                    {{ typeName(card.type) }}<span v-if="card.version"> · v{{ card.version }}</span>
+                  </div>
+                </div>
               </div>
-              <h3 class="market-name" :title="card.name">{{ card.name }}</h3>
               <p class="market-desc">{{ card.description || '暂无描述' }}</p>
-              <div class="market-meta">
-                <span v-if="card.author_name" class="market-meta-item">{{ card.author_name }}</span>
-                <span v-if="card.category" class="market-meta-item">{{ card.category }}</span>
-                <span class="market-spacer"></span>
-                <span class="market-meta-item market-ver">v{{ card.version }}</span>
+              <div class="market-tags">
+                <span class="badge" :class="gradeOf(card).cls">{{ gradeOf(card).label }}</span>
+                <span class="badge" :class="distBadgeCls(card.distribution)">{{ distName(card.distribution) }}</span>
+                <span v-if="card.category" class="badge">{{ card.category }}</span>
+                <span v-if="(card.install_policy || 'optional') !== 'optional'" class="badge badge-warning">
+                  {{ policyName(card.install_policy) }}
+                </span>
               </div>
               <div class="market-card-foot">
-                <el-tag v-if="card.mine" size="small" type="success" effect="plain">我的</el-tag>
+                <span class="market-foot-meta">
+                  <span v-if="card.rating_count" class="market-rating" title="评分">{{ ratingText(card) }}</span>
+                  <span v-else class="market-muted">暂无评分</span>
+                  <span v-if="card.usage_count"> · {{ card.usage_count }} 次</span>
+                </span>
                 <span class="market-spacer"></span>
+                <el-tag v-if="card.mine" size="small" type="success" effect="plain">我的</el-tag>
                 <el-button
                   size="small"
                   type="primary"
