@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import MarketIcon from './MarketIcon.vue'
-import { typeColor, typeLetter, typeName } from '../utils/market'
+import { typeColor, typeName } from '../utils/market'
 
 interface Cap {
   id: string
@@ -36,6 +36,8 @@ const emit = defineEmits<{
 
 const c = props.cap
 const title = (c.display_name || '').trim() || c.name
+/** 默认头像用名称首字符（不是类型首字母） */
+const iconLetter = (title || '?').trim().slice(0, 1).toUpperCase() || '?'
 const isNew = !c.rating_count
 // 属性标签：分类 + 能力自带 tags（不含功能性标记）
 const attrTags = [
@@ -57,7 +59,7 @@ onMounted(() => emit('mounted', c.id))
         :name="title"
         :size="44"
         :has-icon="!!c.icon_url"
-        :letter="typeLetter(c.type)"
+        :letter="iconLetter"
         :color="typeColor(c.type)"
       />
       <div class="head-text">

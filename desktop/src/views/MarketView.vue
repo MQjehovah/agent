@@ -11,7 +11,7 @@ import type {
   MarketInstalledItem
 } from '../api/types'
 import { useSettingsStore } from '../stores/settings'
-import { iconPhStyle, typeLetter, typeName } from '../utils/market'
+import { iconPhStyle, typeName } from '../utils/market'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -612,7 +612,7 @@ onMounted(() => {
                   :alt="card.name"
                 />
                 <span v-else class="market-icon market-icon-ph" :style="iconPhStyle(card.type)">
-                  {{ typeLetter(card.type) }}
+                  {{ (card.name || '?').slice(0, 1).toUpperCase() }}
                 </span>
                 <div class="market-head-text">
                   <h3 class="market-name" :title="card.name">{{ card.name }}</h3>
