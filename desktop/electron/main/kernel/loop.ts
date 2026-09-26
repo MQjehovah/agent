@@ -4,6 +4,7 @@ import type { StoredMessage } from './session'
 import type { AgentEvent, ChatMessage, ToolCall, ToolResult } from './types'
 import { buildToolNameMaps, toProviderToolName } from './tool-names'
 import { selectRoundTools } from './tool-search'
+import { buildWireContent } from './image-wire'
 
 /**
  * agent 工具调用循环：经 router 网关的 OpenAI 兼容 SSE 流驱动多轮对话，
@@ -121,7 +122,7 @@ export function toWireMessages(
       }
       return wire
     }
-    return { role: msg.role, content: msg.content }
+    return { role: msg.role, content: msg.wireContent ?? msg.content }
   })
 }
 
@@ -249,7 +250,13 @@ export async function runAgentTurn(deps: LoopDeps, input: RunTurnInput): Promise
     // 技能改写发生在请求组装时（applySkillsToMessages），存储与 UI 保留原始用户文本：
     // 重新生成/编辑重发可直接复用原文，技能正文不会丢。
     if (!input.skipPersistUserMessage) deps.persist({ role: 'user', content: input.userMessage })
-    messages.push({ role: 'user', content: input.userMessage })
+    // 多模态：消息里的图片附件路径内联成图片（仅本轮；历史仍存文本路径）
+    const userWire = buildWireContent(input.userMessage, input.workspace)
+    messages.push(
+      userWire === input.userMessage
+        ? { role: 'user', content: input.userMessage }
+        : { role: 'user', content: input.userMessage, wireContent: userWire }
+    )
 
     for (let round = 0; round < maxRounds; round++) {
       if (input.signal?.aborted) {

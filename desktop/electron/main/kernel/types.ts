@@ -41,6 +41,8 @@ export interface ToolCall {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** 仅用于 wire 的多模态 content（[{type:text},{type:image_url}]）；落库/UI 仍用 content 文本 */
+  wireContent?: unknown
   toolCalls?: ToolCall[]
   toolCallId?: string
   name?: string
