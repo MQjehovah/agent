@@ -590,26 +590,49 @@ class Agent:
             return []
 
     async def _connect_mcp_servers(self, subagent: bool = False, platform_config=None):
-        """连接 mcp_configs 中的 MCP servers; 主 agent 另挂接市场平台 MCP 轨。"""
+        """连接 MCP servers; 主 agent 另挂接市场平台 MCP 轨。
+
+        ``AGENT_MCP_LOCAL_MODE``:
+          - ``market``(默认): 市场优先——平台轨启用则不连本地; 平台未启用→本地兜底;
+            平台首轮刷新 0 可用能力(市场不可达/空)→ 自动兜底连本地。
+          - ``both``: 本地 + 平台(旧行为)。
+          - ``local``: 仅本地(不挂平台轨)。
+        """
         from mcps import MCPManager
         self.mcp = MCPManager("")
         # 内置/技能工具名先行登记, MCP 重名工具会被 manager 加 server 前缀(避免 LLM 400)
         self.mcp.set_reserved_names(self._non_mcp_tool_names())
-        for config in self.mcp_configs:
-            if config.get("enabled", True):
-                try:
-                    await self.mcp.connect_server(config)
-                except Exception as e:
-                    logger.warning(f"MCP [{config.get('name', 'unnamed')}] 连接失败: {e}")
-                    continue
-            else:
-                logger.debug(
-                    f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
+
+        use_platform = bool(
+            not subagent and platform_config is not None
+            and getattr(platform_config, "enabled", False)
+        )
+        mode = (os.environ.get("AGENT_MCP_LOCAL_MODE", "market") or "market").strip().lower()
+        if mode not in ("market", "both", "local"):
+            mode = "market"
+        if mode == "local":
+            use_platform = False
+        # market 模式且平台启用 → 市场优先, 不连本地(失败兜底见下)
+        connect_local = not (mode == "market" and use_platform)
+
+        if connect_local:
+            for config in self.mcp_configs:
+                if config.get("enabled", True):
+                    try:
+                        await self.mcp.connect_server(config)
+                    except Exception as e:
+                        logger.warning(f"MCP [{config.get('name', 'unnamed')}] 连接失败: {e}")
+                        continue
+                else:
+                    logger.debug(
+                        f"跳过已禁用的 MCP server: {config.get('name', 'unnamed')}")
+        else:
+            logger.info("市场优先(AGENT_MCP_LOCAL_MODE=market): 跳过本地 MCP; 平台无可用能力时自动兜底")
         self.mcp.start_health_check()
 
         # 平台 MCP 轨(市场能力目录 sync + /relay 直连): 与本地合并(本地优先);
         # 首轮 sync 在后台刷新任务内执行, 失败仅告警, 不阻断本地 MCP 与进程启动。
-        if not subagent and platform_config is not None and platform_config.enabled:
+        if use_platform:
             from mcps.platform import PlatformMCPClient
             platform_client = PlatformMCPClient(
                 platform_config, act_as=self.platform_act_as,
@@ -617,12 +640,41 @@ class Agent:
             self.mcp.attach_platform(platform_client)
             platform_client.start()
             logger.info(f"平台 MCP 轨已挂接: {platform_config.base_url}")
+            if not connect_local:
+                self._schedule_local_fallback(platform_client)
 
         connected = [c.get("name", "unnamed")
-                     for c in self.mcp_configs if c.get("enabled", True)]
+                     for c in self.mcp_configs if c.get("enabled", True)] if connect_local else []
         role = "子 Agent" if subagent else "Agent"
         logger.info(
-            f"{role} [{self.name}] 已连接 {len(connected)} MCP servers: {connected}")
+            f"{role} [{self.name}] 本地 MCP: {connected or '无(市场优先, 兜底待命)'}")
+
+    def _schedule_local_fallback(self, platform_client) -> None:
+        """市场优先模式的本地兜底: 平台首轮刷新后若 0 能力连上(市场不可达/空), 连接本地 MCP。"""
+        async def _fallback() -> None:
+            try:
+                for _ in range(8):  # 最多约 40s
+                    await asyncio.sleep(5)
+                    caps = getattr(platform_client, "_caps", {}) or {}
+                    if any(getattr(c, "connected", False) for c in caps.values()):
+                        return
+                done = []
+                for config in self.mcp_configs:
+                    if config.get("enabled", True):
+                        try:
+                            await self.mcp.connect_server(config)
+                            done.append(config.get("name", "unnamed"))
+                        except Exception:
+                            continue
+                if done:
+                    logger.warning(f"平台轨无可用能力, 已兜底连接本地 MCP: {done}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"本地 MCP 兜底失败: {e}")
+
+        # 在运行中的事件循环内调度(本方法为 async, 必有 loop)
+        asyncio.create_task(_fallback())
 
     def _non_mcp_tool_names(self) -> set[str]:
         """当前非 MCP 工具名(内置/技能/插件), 供 MCP 暴露名去重避开 LLM 工具名冲突。"""
