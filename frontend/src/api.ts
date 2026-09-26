@@ -114,9 +114,15 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
 
   const res = await fetch(apiUrl(path), { ...options, headers })
   if (res.status === 401) {
-    clearToken()
-    location.hash = '#/login'
-    throw new ApiError(401, '登录已过期,请重新登录')
+    // 仅"认证端点"的 401 才判定会话过期并登出; 其它接口(如市场代理/上游)的 401 不误伤会话,
+    // 交给调用方处理。真实过期时布局的 /api/auth/me 会命中认证端点从而登出。
+    const bare = path.split('?')[0]
+    if (bare.startsWith('/api/auth/')) {
+      clearToken()
+      location.hash = '#/login'
+      throw new ApiError(401, '登录已过期,请重新登录')
+    }
+    throw new ApiError(401, '请求未授权，请稍后重试')
   }
   const text = await res.text()
   let data: unknown = null
