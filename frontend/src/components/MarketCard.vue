@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import MarketIcon from './MarketIcon.vue'
-import { distName, gradeOf, policyName, typeColor, typeLetter, typeName } from '../utils/market'
+import { typeColor, typeLetter, typeName } from '../utils/market'
 
 interface Cap {
   id: string
@@ -36,9 +36,13 @@ const emit = defineEmits<{
 
 const c = props.cap
 const title = (c.display_name || '').trim() || c.name
-const grade = gradeOf(c)
-const tags = (c.tags || []).filter((t) => t && t !== 'plugin-component').slice(0, 2)
-const policy = c.install_policy || 'optional'
+const isNew = !c.rating_count
+// 属性标签：分类 + 能力自带 tags（不含功能性标记）
+const attrTags = [
+  ...(c.category ? [c.category] : []),
+  ...(c.tags || []).filter((t) => t && t !== 'plugin-component')
+]
+const subline = c.version ? `v${c.version}` : ''
 
 // 让父级知道卡片已挂载(用于按需加载图标)
 onMounted(() => emit('mounted', c.id))
@@ -46,6 +50,7 @@ onMounted(() => emit('mounted', c.id))
 
 <template>
   <article class="cap-card">
+    <span v-if="isNew" class="cap-ribbon">新品</span>
     <div class="card-head">
       <MarketIcon
         :id="c.id"
@@ -57,29 +62,21 @@ onMounted(() => emit('mounted', c.id))
       />
       <div class="head-text">
         <h3 class="cap-name" :title="title" @click="emit('open')">{{ title }}</h3>
-        <div class="head-sub">
-          {{ typeName(c.type) }}<span v-if="c.version"> · v{{ c.version }}</span>
-        </div>
+        <div v-if="subline" class="head-sub">{{ subline }}</div>
       </div>
+      <span class="cap-type" :class="'t-' + c.type">{{ typeName(c.type) }}</span>
     </div>
 
     <p class="cap-desc" @click="emit('open')">{{ c.description || '暂无描述' }}</p>
 
-    <div class="cap-tags">
-      <span class="badge" :class="grade.cls">{{ grade.label }}</span>
-      <span class="badge" :class="c.distribution === 'remote' ? 'badge-primary' : c.distribution === 'local' ? 'badge' : 'badge-success'">
-        {{ distName(c.distribution) }}
-      </span>
-      <span v-if="c.verified" class="badge badge-success">认证</span>
-      <span v-if="c.category" class="badge">{{ c.category }}</span>
-      <span v-if="policy !== 'optional'" class="badge badge-warning">{{ policyName(policy) }}</span>
-      <span v-for="t in tags" :key="t" class="badge">{{ t }}</span>
+    <div v-if="attrTags.length" class="cap-tags">
+      <span v-for="t in attrTags" :key="t" class="badge">{{ t }}</span>
     </div>
 
     <div class="cap-foot">
       <span class="foot-meta">
         <span v-if="c.rating_count" class="rating">★ {{ c.avg_rating || '暂无' }}<em>（{{ c.rating_count }}）</em></span>
-        <span v-else class="rating muted">暂无评分</span>
+        <span v-else class="muted">暂无评分</span>
         <span v-if="c.usage_count"> · {{ c.usage_count }} 次</span>
       </span>
       <div class="foot-actions">
@@ -108,6 +105,7 @@ onMounted(() => emit('mounted', c.id))
 
 <style scoped>
 .cap-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   background: var(--bg-card, #fff);
@@ -136,6 +134,24 @@ onMounted(() => emit('mounted', c.id))
   min-height: 38px;
 }
 .cap-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; min-height: 24px; }
+.cap-ribbon {
+  position: absolute; top: 0; right: 0; z-index: 2;
+  padding: 3px 10px; border-bottom-left-radius: 10px;
+  font-size: 11px; font-weight: 650; color: #fff;
+  background: linear-gradient(135deg, var(--el-color-primary), var(--el-color-success));
+}
+.cap-type {
+  flex: none; align-self: flex-start;
+  font-size: 11px; line-height: 18px; padding: 0 8px; border-radius: 999px;
+  border: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-regular); background: var(--el-fill-color-light);
+}
+.t-agent { color: #2f6bff; background: #2f6bff14; border-color: #2f6bff55; }
+.t-tool { color: #12b76a; background: #12b76a14; border-color: #12b76a55; }
+.t-skill { color: #f5a524; background: #f5a52414; border-color: #f5a52455; }
+.t-mcp { color: #7c3aed; background: #7c3aed14; border-color: #7c3aed55; }
+.t-plugin { color: #e5484d; background: #e5484d14; border-color: #e5484d55; }
+.t-workflow { color: #0ea5e9; background: #0ea5e914; border-color: #0ea5e955; }
 .cap-foot {
   display: flex; justify-content: space-between; align-items: center; gap: 8px;
   margin-top: auto; font-size: 12px; padding: 10px 0;

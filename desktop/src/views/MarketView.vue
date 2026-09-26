@@ -11,15 +11,7 @@ import type {
   MarketInstalledItem
 } from '../api/types'
 import { useSettingsStore } from '../stores/settings'
-import {
-  distBadgeCls,
-  distName,
-  gradeOf,
-  iconPhStyle,
-  policyName,
-  typeLetter,
-  typeName
-} from '../utils/market'
+import { iconPhStyle, typeLetter, typeName } from '../utils/market'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -137,6 +129,8 @@ function mapLite(v: unknown): MarketCapabilityLite | null {
   if (distribution) out.distribution = distribution
   const policy = typeof r.install_policy === 'string' ? r.install_policy : ''
   if (policy) out.install_policy = policy
+  const tags = Array.isArray(r.tags) ? r.tags.filter((x) => typeof x === 'string') : []
+  if (tags.length) out.tags = tags as string[]
   const runtime = mapRuntime(r.runtime)
   if (runtime) out.runtime = runtime
   const ratingCount = Number(r.rating_count ?? 0)
@@ -601,6 +595,7 @@ onMounted(() => {
           </div>
           <div v-else-if="browseLoaded" v-loading="browseLoading" class="market-grid">
             <article v-for="card in cards" :key="card.id" class="market-card">
+              <span v-if="!card.rating_count" class="market-ribbon">新品</span>
               <div class="market-card-head">
                 <img
                   v-if="iconOf(card.id)"
@@ -613,18 +608,15 @@ onMounted(() => {
                 </span>
                 <div class="market-head-text">
                   <h3 class="market-name" :title="card.name">{{ card.name }}</h3>
-                  <div class="market-sub">
-                    {{ typeName(card.type) }}<span v-if="card.version"> · v{{ card.version }}</span>
-                  </div>
+                  <div v-if="card.version" class="market-sub">v{{ card.version }}</div>
                 </div>
+                <span class="market-type" :class="'t-' + card.type">{{ typeName(card.type) }}</span>
               </div>
               <p class="market-desc">{{ card.description || '暂无描述' }}</p>
-              <div class="market-tags">
-                <span class="badge" :class="gradeOf(card).cls">{{ gradeOf(card).label }}</span>
-                <span class="badge" :class="distBadgeCls(card.distribution)">{{ distName(card.distribution) }}</span>
+              <div v-if="card.category || (card.tags && card.tags.length)" class="market-tags">
                 <span v-if="card.category" class="badge">{{ card.category }}</span>
-                <span v-if="(card.install_policy || 'optional') !== 'optional'" class="badge badge-warning">
-                  {{ policyName(card.install_policy) }}
+                <span v-for="t in (card.tags || []).filter((x) => x && x !== 'plugin-component')" :key="t" class="badge">
+                  {{ t }}
                 </span>
               </div>
               <div class="market-card-foot">

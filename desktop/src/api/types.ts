@@ -132,6 +132,7 @@ export interface MarketCapabilityLite {
   avg_rating?: number
   rating_count?: number
   install_policy?: string
+  tags?: string[]
   /** 分发方式(仅 mcp 有意义):local=本地安装、remote=云端托管、both/缺失=双模式可选 */
   distribution?: string
   /** 运行规格(优先于 distribution;缺失回退) */
