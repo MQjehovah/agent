@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from mcps.platform import PlatformMCPConfig
 from web import security
@@ -64,6 +64,23 @@ async def _market_request(method: str, path: str, *, act_as: str = "",
     except Exception:
         payload = {"error": (resp.text or "")[:300]}
     return resp.status_code, payload
+
+
+async def _market_request_raw(method: str, path: str, *, act_as: str = "",
+                              params: dict | None = None):
+    """代理市场 HTTP 并返回原始响应(用于二进制, 如图标)。"""
+    cfg = PlatformMCPConfig.from_env()
+    if not cfg.enabled:
+        raise MarketUnavailableError()
+    headers = {"Authorization": f"Bearer {cfg.service_token}"}
+    if act_as:
+        headers["X-Act-As-Sub"] = act_as
+    try:
+        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
+            return await client.request(method, f"{cfg.base_url}{path}",
+                                        headers=headers, params=params)
+    except httpx.HTTPError as e:
+        raise MarketUpstreamError(f"能力市场请求失败: {e}") from e
 
 
 def _market_error(exc: Exception) -> JSONResponse:
@@ -212,6 +229,29 @@ def build_market_router(server) -> APIRouter:
         if isinstance(payload, dict) and "runtime" in payload:
             result["runtime"] = payload["runtime"]  # 市场 runtime 契约原样透传
         return result
+
+    @router.get("/api/market/capabilities/{cap_id}/icon")
+    async def market_capability_icon(cap_id: str, request: Request):
+        """代理市场能力图标(二进制透传, act-as 身份)。"""
+        u, denied = _authz_or_401(request)
+        if denied:
+            return denied
+        uid = _uid(u)
+        act_as, act_denied = _require_act_as(uid)
+        if act_denied:
+            return act_denied
+        try:
+            resp = await _market_request_raw(
+                "GET", f"/api/capabilities/{cap_id}/icon", act_as=act_as)
+        except (MarketUnavailableError, MarketUpstreamError) as e:
+            return _market_error(e)
+        if resp.status_code >= 400:
+            return Response(status_code=resp.status_code)
+        return Response(
+            content=resp.content,
+            media_type=resp.headers.get("content-type", "image/png"),
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
 
     @router.get("/api/market/capabilities/{cap_id}")
     async def market_capability_detail(cap_id: str, request: Request):

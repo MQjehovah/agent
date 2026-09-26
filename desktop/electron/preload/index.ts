@@ -49,6 +49,7 @@ const ALLOWED_CHANNELS = new Set([
   'localagent:market:install',
   'localagent:market:uninstall',
   'localagent:market:listInstalled',
+  'localagent:market:icon',
   'localagent:personas:list',
   'localagent:mcp:status',
   'localagent:mcp:set-enabled',

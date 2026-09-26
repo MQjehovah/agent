@@ -56,6 +56,8 @@ export interface MarketClient {
   unsubscribe(capabilityId: string): Promise<void>
   /** 按名称下载能力包(可带版本),返回原始 bytes */
   download(name: string, version?: string): Promise<Buffer>
+  /** 取能力图标(返回 data URL;无图标或失败返回空串) */
+  icon(id: string): Promise<string>
 }
 
 /** 从非 2xx 正文里提炼短原因:优先 JSON 的 detail/error/message,否则截断原文 */
@@ -175,6 +177,17 @@ export function createMarketClient(deps: MarketClientDeps): MarketClient {
       const suffix = version ? `?version=${encodeURIComponent(version)}` : ''
       const res = await request('GET', `/api/capabilities/${encodeURIComponent(name)}/download${suffix}`)
       return Buffer.from(await res.arrayBuffer())
+    },
+
+    async icon(id) {
+      try {
+        const res = await request('GET', `/api/capabilities/${encodeURIComponent(id)}/icon`)
+        const buf = Buffer.from(await res.arrayBuffer())
+        const ct = res.headers.get('content-type') || 'image/png'
+        return `data:${ct};base64,${buf.toString('base64')}`
+      } catch {
+        return ''
+      }
     }
   }
 }

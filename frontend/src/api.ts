@@ -216,3 +216,12 @@ export async function fetchAttachmentObjectUrl(ref: string): Promise<string> {
   if (!res.ok) throw new Error(`附件加载失败 ${res.status}`)
   return URL.createObjectURL(await res.blob())
 }
+
+/** 通用鉴权二进制取回：转 objectURL（<img> 无法带 Authorization 头） */
+export async function fetchBlobUrl(path: string): Promise<string> {
+  const res = await fetch(apiUrl(path), {
+    headers: { Authorization: `Bearer ${getToken()}` }
+  })
+  if (!res.ok) throw new Error(`加载失败 ${res.status}`)
+  return URL.createObjectURL(await res.blob())
+}

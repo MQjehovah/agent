@@ -602,6 +602,16 @@ function handleMarketListMy(): Promise<MarketCapability[]> {
   return createMarketClientForIpc().listMy('added')
 }
 
+async function handleMarketIcon(
+  _event: IpcMainInvokeEvent,
+  payload?: { id?: string }
+): Promise<string> {
+  requireSsoLogin()
+  const id = typeof payload?.id === 'string' ? payload.id.trim() : ''
+  if (!id) return ''
+  return createMarketClientForIpc().icon(id)
+}
+
 async function handleMarketSubscribe(
   _event: IpcMainInvokeEvent,
   payload?: { capabilityId?: string }
@@ -1467,6 +1477,7 @@ export function registerKernelIpc(): void {
     requireSsoLogin()
     return handleMarketListInstalled()
   })
+  ipcMain.handle('localagent:market:icon', handleMarketIcon)
   ipcMain.handle('localagent:personas:list', () => {
     requireSsoLogin()
     return listLocalPersonas()
