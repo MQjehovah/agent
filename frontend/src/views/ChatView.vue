@@ -29,6 +29,12 @@ const permLabel = computed(() => PERM_MODES[permMode.value].label)
 const onlineModel = ref('')
 const plusOpen = ref(false)
 
+/** 入口: company=零号员工(企业单例) / personal=我的员工助手(个人实例) */
+const entryScope = ref<'company' | 'personal'>('company')
+watch(entryScope, () => {
+  if (sessionId.value) newSession()
+})
+
 async function loadOnlineModel(): Promise<void> {
   try {
     const s = await api<{ model?: string }>('/api/agent/status')
@@ -278,7 +284,7 @@ function send() {
 
   abort = new AbortController()
   streamChat(
-    { message: text, session_id: sessionId.value || undefined, permission_mode: permMode.value },
+    { message: text, session_id: sessionId.value || undefined, permission_mode: permMode.value, scope: entryScope.value },
     (ev) => {
       const data = (ev.data ?? {}) as Record<string, any>
       switch (ev.type) {
@@ -451,6 +457,10 @@ onBeforeUnmount(() => {
     <div class="chat-main">
       <header class="chat-head">
         <span class="chat-title">{{ sessionId || '新对话' }}</span>
+        <el-radio-group v-model="entryScope" size="small">
+          <el-radio-button value="company">零号员工</el-radio-button>
+          <el-radio-button value="personal">员工助手</el-radio-button>
+        </el-radio-group>
       </header>
       <div ref="scrollRef" class="chat-scroll">
         <div v-if="messages.length === 0" class="chat-empty">

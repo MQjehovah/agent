@@ -599,8 +599,14 @@ class WebServer:
         except Exception as e:
             logger.debug(f"MARKET_ACT_AS 启动检查跳过: {e}")
 
-    async def _agent_for_web(self, auth: dict):
-        """返回 (执行 agent, 释放tag)；池启用时按用户分配独立 worker。饱和抛 PoolBusyError。"""
+    async def _agent_for_web(self, auth: dict, scope: str = ""):
+        """按入口选择执行 agent。
+
+        scope='company' → root(零号员工, 企业单例); 其它 → 池启用时按用户分配 worker(员工助手)。
+        返回 (执行 agent, 释放tag)。
+        """
+        if (scope or "").strip().lower() == "company":
+            return self.agent, ""
         pool = getattr(self, "_pool", None)
         if pool is not None and pool.enabled:
             uid = str(auth.get("uid", "anon"))
@@ -1480,11 +1486,12 @@ class WebServer:
 
             web_user_id = tag
             web_user_name = auth_display
+            scope = str(data.get("scope") or "").strip().lower()
 
             # 非流式：后台执行，立即返回 session_id
             async def _web_auto_run():
                 try:
-                    agent, rel_tag = await self._agent_for_web(auth)
+                    agent, rel_tag = await self._agent_for_web(auth, scope)
                 except Exception as e:
                     logger.warning(f"非流式任务 worker 分配失败: {e}")
                     chat_session.stop_stream()
@@ -1553,12 +1560,13 @@ class WebServer:
 
             web_user_id = tag
             web_user_name = auth_display
+            scope = str(data.get("scope") or "").strip().lower()
 
             # 本次流式请求的唯一 run_id，把流式事件限定在本请求内，杜绝并发串流
             stream_run_id = uuid.uuid4().hex
-            # 执行 agent：池启用时按用户分配独立 worker（隔离上下文/workspace），否则用 root
+            # 执行 agent：scope=company→root(零号员工); 否则池启用时按用户分配独立 worker
             try:
-                agent_ref, rel_tag = await self._agent_for_web(auth)
+                agent_ref, rel_tag = await self._agent_for_web(auth, scope)
             except Exception as e:
                 chat_session.stop_stream()
                 return JSONResponse({"error": f"系统繁忙，请稍后重试（{type(e).__name__}）"},
