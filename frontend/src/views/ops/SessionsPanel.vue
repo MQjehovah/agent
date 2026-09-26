@@ -3,6 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, del, hasPerm } from '../../api'
 import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../../channel'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import MarkdownIt from 'markdown-it'
+
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
 interface SessionRow {
   id: string
@@ -15,7 +18,18 @@ interface SessionRow {
   channel?: string
   source?: 'live' | 'history'
 }
-interface HistoryMsg { role: string; content: string }
+interface HistoryMsg {
+  role: string
+  content: string
+  name?: string
+  tool_calls?: unknown[]
+  tool_call_id?: string
+  reasoning_content?: string
+  created_at?: string
+  user_id?: string
+  channel?: string
+  agent_id?: string
+}
 interface RunningRow {
   id: string
   conversation_id?: string
@@ -109,21 +123,65 @@ async function view(row: SessionRow) {
   viewId.value = row.id
   viewVisible.value = true
   viewMessages.value = []
-  let msgs: HistoryMsg[] = []
-  try {
-    const d = await api<{ messages: HistoryMsg[] }>(`/api/sessions/${encodeURIComponent(row.id)}/messages`)
-    msgs = d.messages ?? []
-  } catch {
-    /* 内存会话不存在则回退 DB 历史 */
+  const paths = admin
+    ? [
+        `/api/admin/sessions/${encodeURIComponent(row.id)}/messages`,
+        `/api/sessions/${encodeURIComponent(row.id)}/messages`,
+        `/api/agent/sessions/messages?session_id=${encodeURIComponent(row.id)}`
+      ]
+    : [
+        `/api/sessions/${encodeURIComponent(row.id)}/messages`,
+        `/api/agent/sessions/messages?session_id=${encodeURIComponent(row.id)}`
+      ]
+  for (const p of paths) {
     try {
-      const d = await api<{ messages: HistoryMsg[] }>(`/api/agent/sessions/messages?session_id=${encodeURIComponent(row.id)}`)
-      msgs = d.messages ?? []
-    } catch (e) {
-      ElMessage.error((e as Error).message)
-      return
+      const d = await api<{ messages: HistoryMsg[] }>(p)
+      const msgs = d.messages ?? []
+      if (msgs.length) {
+        viewMessages.value = msgs
+        return
+      }
+    } catch {
+      /* 该来源无权限/不存在 → 试下一个 */
     }
   }
-  viewMessages.value = msgs
+}
+
+/** 审计视图辅助 */
+function roleLabel(r: string): string {
+  return r === 'user' ? '用户' : r === 'assistant' ? '助手' : r === 'tool' ? '工具结果' : r === 'system' ? '系统' : r || '?'
+}
+function roleTagType(r: string): 'primary' | 'success' | 'warning' | 'info' {
+  return r === 'user' ? 'primary' : r === 'assistant' ? 'success' : r === 'tool' ? 'warning' : 'info'
+}
+function fmtTime(t?: string): string {
+  if (!t) return ''
+  const d = new Date(t)
+  return Number.isNaN(d.getTime()) ? String(t) : d.toLocaleString()
+}
+function renderMd(text: string): string {
+  return md.render(text ?? '')
+}
+interface ToolCallView { name: string; arguments: string }
+function toolCallsOf(m: HistoryMsg): ToolCallView[] {
+  const tcs = m.tool_calls
+  if (!Array.isArray(tcs)) return []
+  return tcs
+    .map((t) => {
+      const o = (t ?? {}) as Record<string, unknown>
+      const fn = (o.function ?? {}) as Record<string, unknown>
+      const name = String(o.name || fn.name || '')
+      let args: unknown = o.arguments ?? fn.arguments ?? ''
+      if (typeof args !== 'string') {
+        try {
+          args = JSON.stringify(args, null, 2)
+        } catch {
+          args = String(args)
+        }
+      }
+      return { name, arguments: String(args) }
+    })
+    .filter((x) => x.name || x.arguments)
 }
 
 async function remove(row: SessionRow) {
@@ -264,7 +322,7 @@ onBeforeUnmount(() => {
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="viewVisible" :title="`会话 ${viewId}`" width="760px" top="6vh">
+    <el-dialog v-model="viewVisible" :title="`会话 ${viewId}`" width="900px" top="4vh">
       <el-alert
         v-if="isViewRunning"
         type="warning"
@@ -274,9 +332,27 @@ onBeforeUnmount(() => {
         description="当前内容为进行中的快照，可能不完整，请稍后刷新查看最终结果。"
         style="margin-bottom: 10px"
       />
-      <div style="max-height: 60vh; overflow-y: auto">
-        <div v-for="(m, i) in viewMessages" :key="i" class="msg" :class="m.role === 'user' ? 'user' : 'assistant'">
-          <div class="bubble" :style="m.role !== 'user' ? 'white-space:pre-wrap' : ''">{{ m.content }}</div>
+      <div class="audit-body">
+        <div v-for="(m, i) in viewMessages" :key="i" class="audit-msg" :class="'r-' + (m.role || 'x')">
+          <div class="audit-head">
+            <el-tag size="small" :type="roleTagType(m.role)" effect="plain">{{ roleLabel(m.role) }}</el-tag>
+            <span v-if="m.name" class="mono audit-name">{{ m.name }}</span>
+            <span v-if="m.agent_id" class="mono audit-name">{{ m.agent_id }}</span>
+            <span class="audit-time">{{ fmtTime(m.created_at) }}</span>
+          </div>
+          <details v-if="m.reasoning_content" class="audit-reason">
+            <summary>思考过程</summary>
+            <pre>{{ m.reasoning_content }}</pre>
+          </details>
+          <div v-for="(tc, ti) in toolCallsOf(m)" :key="ti" class="audit-tool">
+            <div class="audit-tool-name mono">工具调用 · {{ tc.name || '(未命名)' }}</div>
+            <pre class="audit-tool-args">{{ tc.arguments }}</pre>
+          </div>
+          <div v-if="m.content" class="audit-content">
+            <div v-if="m.role === 'assistant' || m.role === 'system'" class="md" v-html="renderMd(m.content)" />
+            <pre v-else>{{ m.content }}</pre>
+          </div>
+          <div v-if="m.role === 'tool' && m.tool_call_id" class="audit-tool-id mono">→ {{ m.tool_call_id }}</div>
         </div>
         <el-empty v-if="viewMessages.length === 0" description="无消息" />
       </div>
@@ -313,4 +389,24 @@ onBeforeUnmount(() => {
 }
 .sess-cell .sess-full-id { opacity: 0.85; }
 @keyframes runpulse { 50% { opacity: 0.35; } }
+
+/* 审计视图: 完整消息(含工具调用/结果/思考) */
+.audit-body { max-height: 66vh; overflow-y: auto; padding-right: 4px; }
+.audit-msg { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; background: var(--bg-card); }
+.audit-msg.r-user { border-left: 3px solid var(--accent, #409eff); }
+.audit-msg.r-assistant { border-left: 3px solid var(--ok, #67c23a); }
+.audit-msg.r-tool { border-left: 3px solid var(--warn, #e6a23c); background: var(--bg-inset); }
+.audit-msg.r-system { border-left: 3px solid var(--text-3); }
+.audit-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.audit-name { font-size: 12px; color: var(--text-2); }
+.audit-time { margin-left: auto; font-size: 11.5px; color: var(--text-3); }
+.audit-reason summary { font-size: 12px; color: var(--text-2); cursor: pointer; }
+.audit-reason pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--text-2); background: var(--bg-inset); border-radius: 8px; padding: 8px 10px; }
+.audit-tool { margin: 6px 0; border-left: 3px solid var(--accent, #409eff); padding-left: 8px; }
+.audit-tool-name { font-size: 12.5px; font-weight: 600; }
+.audit-tool-args { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; background: var(--bg-inset); border-radius: 8px; padding: 8px 10px; max-height: 240px; overflow: auto; }
+.audit-tool-id { margin-top: 4px; font-size: 11px; color: var(--text-3); }
+.audit-content { margin-top: 4px; }
+.audit-content pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+.audit-content .md { font-size: 14px; line-height: 1.7; }
 </style>
