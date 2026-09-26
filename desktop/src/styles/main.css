@@ -2307,9 +2307,9 @@ html.dark .composer {
   background: var(--el-fill-color-light);
   border: 1px solid var(--el-border-color-lighter);
 }
-.badge-success { color: #12b76a; background: #e9f9f0; border-color: #bdeed3; }
-.badge-primary { color: #2f6bff; background: #eaf1ff; border-color: #cdddff; }
-.badge-warning { color: #b7791f; background: #fff6e5; border-color: #f5dfae; }
+.badge-success { color: var(--el-color-success); background: var(--el-color-success-light-9); border-color: var(--el-color-success-light-7); }
+.badge-primary { color: var(--el-color-primary); background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-7); }
+.badge-warning { color: var(--el-color-warning); background: var(--el-color-warning-light-9); border-color: var(--el-color-warning-light-7); }
 
 .market-state {
   flex: 1;
