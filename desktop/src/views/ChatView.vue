@@ -822,6 +822,11 @@ function scheduleScroll(force = false): void {
   // nextTick + rAF：等 DOM 更新与布局完成再滚，避免停在旧高度
   void nextTick(() => requestAnimationFrame(() => scrollToBottom(force)))
 }
+/** 回到底部按钮：恢复贴底并强制滚到底 */
+function jumpToBottom(): void {
+  pinned.value = true
+  scheduleScroll(true)
+}
 
 onMounted(() => {
   // 监听内容变化（流式文本、工具/子代理块、图片与 markdown 异步渲染增高）→ 贴底时跟随
@@ -1236,6 +1241,11 @@ const isLocal = computed(() => chat.sessionMode === 'local')
         </div>
       </template>
     </div>
+
+    <!-- 回到底部(用户上滚后显示) -->
+    <button v-if="!pinned" class="to-bottom" title="回到底部" @click="jumpToBottom">
+      <el-icon :size="16"><ArrowDown /></el-icon>
+    </button>
 
     <!-- ZCode 式输入区:大圆角容器,工具栏内嵌 -->
     <footer class="composer-wrap">
@@ -1970,4 +1980,28 @@ const isLocal = computed(() => chat.sessionMode === 'local')
   font-size: 11px;
   color: var(--el-text-color-secondary);
 }
+</style>
+
+<style scoped>
+/* 悬浮「回到底部」按钮的定位锚点 */
+.chat-col { position: relative; }
+.to-bottom {
+  position: absolute;
+  right: 24px;
+  bottom: 132px;
+  z-index: 6;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--el-border-color);
+  background: var(--el-bg-color-overlay, #fff);
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+.to-bottom:hover { color: var(--el-color-primary); transform: translateY(-1px); }
 </style>
