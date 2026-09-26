@@ -561,10 +561,20 @@ class Agent:
 
         logger.info(f"Agent [{self.name}] 代码质量模块初始化完成")
 
+    def _local_cutoff(self) -> bool:
+        """是否对本地专家/技能做"市场收口"。
+
+        适用: 根 agent(parent 为空) 与 worker(owner_uid>0, 员工助手);
+        不适用: 委派/团队子代理(parent 非空且无 owner_uid), 它们按各自 config_dir 加载。
+        """
+        if _local_experts_mode() != "market":
+            return False
+        return self.parent_agent is None or getattr(self, "owner_uid", 0) > 0
+
     def _init_skills(self):
-        # 技能收口: market 模式下根 agent 不加载本地顶层技能(改由市场技能文本注入/委派);
+        # 技能收口: 根 agent / worker 不加载本地顶层技能(改由市场技能文本注入/委派);
         # 子代理(如保留团队)仍按各自 config_dir 加载。AGENT_LOCAL_EXPERTS_MODE=both|local 恢复。
-        if not self.parent_agent and _local_experts_mode() == "market":
+        if self._local_cutoff():
             logger.info("技能市场优先(AGENT_LOCAL_EXPERTS_MODE=market): 跳过本地顶层技能加载")
             return
         skills_dir = os.path.join(self.config_dir, "skills")
@@ -762,8 +772,8 @@ class Agent:
         if os.path.exists(agents_dir):
             self.subagent_manager = SubagentManager(agents_dir, parent_workspace=self.workspace)
             self.subagent_manager._parent_agent = self
-            # 专家收口: market 模式下根 agent 仅保留本地团队(白名单), 其余专家走市场(market_search/market_delegate)。
-            if not self.parent_agent and _local_experts_mode() == "market":
+            # 专家收口: 根 agent / worker 仅保留本地团队(白名单), 其余专家走市场(market_search/market_delegate)。
+            if self._local_cutoff():
                 templates = getattr(self.subagent_manager, "templates", {}) or {}
                 removed = [n for n in list(templates) if n not in _LOCAL_EXPERTS_KEEP]
                 for n in removed:
