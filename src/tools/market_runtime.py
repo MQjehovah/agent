@@ -128,6 +128,11 @@ class MarketRuntimeTool(BuiltinTool):
             payload = resp.json()
         except Exception:
             payload = {"raw": (resp.text or "")[:2000]}
+        # 市场 runtime 统一信封 {ok, action, capability, message, result}: 取内层 result，
+        # 使 tool/mcp/skill/agent 四类对模型呈现一致；无 result 键则原样返回(兼容)。
+        inner = payload.get("result") if isinstance(payload, dict) else None
+        if inner is None:
+            inner = payload
         out = {"ok": 200 <= resp.status_code < 300, "status_code": resp.status_code,
-               "result": payload}
+               "result": inner}
         return json.dumps(out, ensure_ascii=False)

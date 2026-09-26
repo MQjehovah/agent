@@ -108,13 +108,53 @@ class Settings:
         path = _os.path.join(self._config_dir, "config.json")
         if not _os.path.isfile(path):
             logger.info(f"未找到 {path}，使用默认配置")
-            return {}
-        try:
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"解析 config.json 失败: {e}，使用默认配置")
-            return {}
+            cfg: dict = {}
+        else:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"解析 config.json 失败: {e}，使用默认配置")
+                cfg = {}
+        return self._apply_env_overrides(cfg)
+
+    @staticmethod
+    def _apply_env_overrides(cfg: dict) -> dict:
+        """用环境变量注入/覆盖 LLM 端点（密钥不进 config.json）。
+
+        - LLM_ENDPOINTS_JSON：JSON 数组，整体替换 llm.endpoints（多端点/多密钥场景）。
+        - LLM_BASE_URL / LLM_API_KEY / LLM_MODEL：仅覆盖第 1 个端点（单端点常见场景）。
+        优先级：环境变量 > config.json > 默认值。
+        """
+        raw = _os.getenv("LLM_ENDPOINTS_JSON", "").strip()
+        if raw:
+            try:
+                eps = json.loads(raw)
+            except json.JSONDecodeError as e:
+                logger.warning("LLM_ENDPOINTS_JSON 解析失败: %s（忽略）", e)
+                eps = None
+            if isinstance(eps, list) and eps:
+                llm = {**(cfg.get("llm") or {}), "endpoints": eps}
+                logger.info("LLM 端点来自环境变量 LLM_ENDPOINTS_JSON（%d 个）", len(eps))
+                return {**cfg, "llm": llm}
+        base = _os.getenv("LLM_BASE_URL", "").strip()
+        key = _os.getenv("LLM_API_KEY", "").strip()
+        model = _os.getenv("LLM_MODEL", "").strip()
+        if base or key or model:
+            llm = dict(cfg.get("llm") or {})
+            eps = list(llm.get("endpoints") or [])
+            ep0 = dict(eps[0]) if eps else {}
+            if base:
+                ep0["base_url"] = base
+            if key:
+                ep0["api_key"] = key
+            if model:
+                ep0["model"] = model
+            eps = ([ep0] + eps[1:]) if eps else [ep0]
+            llm["endpoints"] = eps
+            logger.info("LLM 端点[0] 由环境变量覆盖（base_url/model/api_key 按需，密钥不落 config.json）")
+            return {**cfg, "llm": llm}
+        return cfg
 
     @staticmethod
     def _deep_merge(base: dict, override: dict) -> dict:

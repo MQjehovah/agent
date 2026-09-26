@@ -113,7 +113,11 @@ async def _fetch_mcp_tools(base: str, headers: dict, name: str, timeout: float) 
         if resp.status_code >= 400:
             return []
         data = resp.json()
-        raw = data.get("tools") if isinstance(data, dict) else None
+        # 市场 runtime 统一信封 {ok, action, capability, message, result}；兼容旧顶层 tools
+        res = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(res, dict):
+            res = data if isinstance(data, dict) else {}
+        raw = res.get("tools")
         names: list[str] = []
         if isinstance(raw, list):
             for t in raw:
