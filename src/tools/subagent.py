@@ -45,7 +45,7 @@ class SubagentTool(BuiltinTool):
                 },
                 "template": {
                     "type": "string",
-                    "description": "使用的模板名称，必须是以下之一：AI开发团队、代码审查、测试工程师、设备运维、售后客服、数字中台、IT运维。严禁编造不存在的名称！如果该模板的子代理已存在，会自动复用"
+                    "description": "使用的模板名称。**本地仅 `AI开发团队`**；其它专家（设备运维/售后客服/代码审查/测试工程师/数字中台/IT运维）已不在本地，请改用 market_delegate。严禁编造不存在的名称！"
                 },
                 "name": {
                     "type": "string",

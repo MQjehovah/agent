@@ -511,7 +511,8 @@ class SubagentManager:
         tools: list[str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         client=None,
-        parent_agent=None
+        parent_agent=None,
+        allow_dynamic: bool = False,
     ) -> tuple:
         """
         获取或创建子代理
@@ -572,16 +573,28 @@ class SubagentManager:
 
         # 创建新的子代理（不持锁，因为初始化耗时）
         template_data = self.templates.get(template_name)
+        _dynamic = False
         if not template_data:
-            available = list(self.templates.keys())
-            matches = difflib.get_close_matches(template_name, available, n=3, cutoff=0.4)
-            hint = ""
-            if matches:
-                hint = f"，最接近的名称: {', '.join(matches)}"
-            raise ValueError(
-                f"子代理模板 '{template_name}' 未找到{hint}，"
-                f"可用模板: {', '.join(available)}"
-            )
+            if allow_dynamic and system_prompt:
+                # 动态子代理(如能力市场专家): 空配置目录, 不加载本地 PROMPT/skills/mcp,
+                # 由调用方注入 system_prompt 作为人设。
+                import tempfile
+
+                _dynamic = True
+                template_data = {
+                    "workspace": self.parent_workspace or os.getcwd(),
+                    "config_dir": tempfile.mkdtemp(prefix="dyn-subagent-"),
+                }
+            else:
+                available = list(self.templates.keys())
+                matches = difflib.get_close_matches(template_name, available, n=3, cutoff=0.4)
+                hint = ""
+                if matches:
+                    hint = f"，最接近的名称: {', '.join(matches)}"
+                raise ValueError(
+                    f"子代理模板 '{template_name}' 未找到{hint}，"
+                    f"可用模板: {', '.join(available)}"
+                )
 
         workspace = template_data.get("workspace") or self.parent_workspace or os.getcwd()
         config_dir = template_data.get("config_dir", "")
@@ -600,9 +613,13 @@ class SubagentManager:
         await agent.initialize()
 
         # 设置名称和提示词
-        if not template_data:
-            agent.name = name
+        if _dynamic:
+            # 动态子代理(市场专家): 人设由调用方注入(普通模板来自 config_dir/PROMPT.md)
+            agent.name = name or template_name
             agent.system_prompt = system_prompt
+            agent.system_prompt_raw = system_prompt
+            agent.system_static = system_prompt
+            agent.system_dynamic = ""
 
         # 注入事件回调（用于 Web UI 展示工具调用和流式输出）
         self._forward_hooks(agent, template_name=template_name, agent_type="subagent")

@@ -13,7 +13,6 @@
 
 import json
 import logging
-import tempfile
 import time
 
 import httpx
@@ -129,34 +128,51 @@ async def _fetch_mcp_tools(base: str, headers: dict, name: str, timeout: float) 
         return []
 
 
-async def _run_transient(system_prompt: str, task: str) -> dict:
-    """以 agent 引擎起临时子代理执行(不加载本地 skill/mcp, 零文件落地)。"""
-    from agent.core import Agent, current_agent, current_run
+async def _run_transient(system_prompt: str, task: str, expert: str = "") -> dict:
+    """以**子代理**执行市场专家: 注入市场 PROMPT 为人设, 复用子代理的会话/钩子/流式。
+
+    不再自建临时 Agent —— 统一走 ``SubagentManager(allow_dynamic=True)``, 得到与本地
+    子代理一致的行为(SSE 事件、按对话复用上下文、标准工具集), 人设由 system_prompt 注入。
+    """
+    from agent.core import current_agent, current_run
 
     parent = current_agent()
     if parent is None:
         return {"ok": False, "error": "无法获取当前 agent 上下文"}
+    sm = getattr(parent, "subagent_manager", None)
+    if sm is None:
+        return {"ok": False, "error": "子代理管理器不可用"}
     rc = current_run()
-    tmpdir = tempfile.mkdtemp(prefix="expert-")
-    sub = Agent(
-        workspace=getattr(parent, "workspace", "") or "",
-        client=getattr(parent, "client", None),
-        parent_agent=parent,
-        config_dir=tmpdir,  # 空目录: 不加载本地 PROMPT/skills/mcp
-    )
-    sub.persist_session = False
-    sub.platform_mcp_enabled = False
+    label = (expert or "市场专家").strip()
+
+    # 对话内确定性子线程 id: <当前线程>#<专家>, 同对话内复用上下文
+    base = ""
+    sess = getattr(rc, "session", None)
+    if sess is not None and getattr(sess, "session_id", ""):
+        base = sess.session_id
+    elif getattr(rc, "conversation_id", ""):
+        base = rc.conversation_id
+    thread_id = f"{base}#{label}" if base else ""
+
+    hooks = getattr(parent, "hooks", None)
+    ev = getattr(parent, "_hook_event", None)
+    if hooks is not None and ev is not None:
+        await hooks.fire(ev.SUBAGENT_START, metadata={"name": label, "task": task[:200]})
+
     try:
-        await sub.initialize()
-        sub.system_prompt = system_prompt
-        sub.system_prompt_raw = system_prompt
-        # 人设需作为 static system 段注入消息列表(经 RunContext.system_static, 见 loop.run_impl);
-        # 仅设 system_prompt 时, 有 dynamic 段(用户画像)会走 else 分支而丢掉 static 前缀。
-        sub.system_static = system_prompt
-        sub.system_dynamic = ""
+        instance, _ = await sm.get_or_create_subagent(
+            template=label,
+            name=label,
+            session_id=thread_id,
+            system_prompt=system_prompt,
+            client=getattr(parent, "client", None),
+            parent_agent=parent,
+            allow_dynamic=True,
+        )
+        sub = instance.agent
         r = await sub.run(
             task,
-            session_id="",
+            session_id=instance.session_id,
             user_id=rc.user_id,
             user_name=rc.user_name,
             role=rc.role,
@@ -167,18 +183,18 @@ async def _run_transient(system_prompt: str, task: str) -> dict:
         if output is None:
             output = str(r)
         err = getattr(r, "error", "") or ""
+        if hooks is not None and ev is not None:
+            await hooks.fire(ev.SUBAGENT_RESULT, metadata={
+                "name": label,
+                "status": "completed" if (output and not err) else "failed",
+                "result": (output or "")[:3000],
+            })
         return {"ok": not err, "expert_output": output, "error": err}
     except Exception as exc:  # noqa: BLE001
+        if hooks is not None and ev is not None:
+            await hooks.fire(ev.SUBAGENT_RESULT, metadata={"name": label, "error": str(exc)})
         logger.warning("专家委派执行失败: %s", exc)
         return {"ok": False, "error": f"专家执行失败: {exc}"}
-    finally:
-        try:
-            mcp = getattr(sub, "mcp", None)
-            close = getattr(mcp, "close", None)
-            if close is not None:
-                await close()
-        except Exception:
-            pass
 
 
 class MarketDelegateTool(BuiltinTool):
@@ -280,7 +296,7 @@ class MarketDelegateTool(BuiltinTool):
         # 4) 组人设
         system_prompt = _compose_prompt(persona, deps, skill_texts, mcp_tools)
 
-        # 5) agent 引擎执行
-        result = await _run_transient(system_prompt, task)
+        # 5) 以子代理执行(注入市场人设)
+        result = await _run_transient(system_prompt, task, expert)
         result["expert"] = expert
         return json.dumps(result, ensure_ascii=False)

@@ -92,7 +92,7 @@ async def test_happy_path_composes_and_runs(monkeypatch):
     ]
     captured: dict = {}
 
-    async def fake_run(system_prompt, task):
+    async def fake_run(system_prompt, task, expert=""):
         captured["system_prompt"] = system_prompt
         captured["task"] = task
         return {"ok": True, "expert_output": "已处理", "error": ""}
@@ -120,7 +120,7 @@ async def test_rejects_local_mcp_dep(monkeypatch):
     _FakeClient.deps = [{"name": "gitlab-devops", "type": "mcp", "distribution": "local"}]
     called = {"run": False}
 
-    async def fake_run(system_prompt, task):
+    async def fake_run(system_prompt, task, expert=""):
         called["run"] = True
         return {"ok": True}
 
