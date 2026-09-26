@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api, del, patch, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarketCard from '../components/MarketCard.vue'
@@ -46,6 +46,28 @@ const loading = ref(false)
 const marketMissing = ref(false)
 
 const query = reactive({ q: '', type: '', category: '', page: 1, page_size: 12 })
+
+// 每页条数按实际列数动态对齐（列数 × 4 行），避免「一行 5 个却按 12 分页」
+const gridRef = ref<HTMLElement | null>(null)
+const CARD_MIN = 320
+const CARD_GAP = 14
+const ROWS_PER_PAGE = 4
+let resizeTimer: number | undefined
+function recomputePageSize() {
+  const w = gridRef.value?.clientWidth ?? 0
+  if (!w) return
+  const cols = Math.max(1, Math.floor((w + CARD_GAP) / (CARD_MIN + CARD_GAP)))
+  const size = cols * ROWS_PER_PAGE
+  if (query.page_size !== size) {
+    query.page_size = size
+    query.page = 1
+    void load()
+  }
+}
+function onGridResize() {
+  window.clearTimeout(resizeTimer)
+  resizeTimer = window.setTimeout(recomputePageSize, 200)
+}
 
 /** 市场分类表 {type: [category...]}（供分类筛选） */
 const categories = ref<Record<string, string[]>>({})
@@ -151,6 +173,7 @@ async function load() {
     }
   } finally {
     loading.value = false
+    void nextTick(recomputePageSize)
   }
 }
 
@@ -275,6 +298,11 @@ async function toggleEnabled(item: MarketItem, value: string | number | boolean)
 onMounted(() => {
   void loadCategories()
   void load()
+  window.addEventListener('resize', onGridResize)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onGridResize)
+  window.clearTimeout(resizeTimer)
 })
 </script>
 
@@ -305,7 +333,7 @@ onMounted(() => {
               title="能力市场未配置，请联系管理员" style="margin-bottom: 12px" />
 
     <div v-loading="loading">
-      <div v-if="!marketMissing && items.length" class="cards">
+      <div v-if="!marketMissing && items.length" ref="gridRef" class="cards">
         <MarketCard
           v-for="row in items"
           :key="row.id"
@@ -328,8 +356,8 @@ onMounted(() => {
 
       <div v-if="!marketMissing && total > 0" class="pager">
         <el-pagination v-model:current-page="query.page" v-model:page-size="query.page_size"
-                       :total="total" :page-sizes="[12, 24, 48]" layout="total, sizes, prev, pager, next"
-                       @current-change="load" @size-change="search" />
+                       :total="total" layout="total, prev, pager, next"
+                       @current-change="load" />
       </div>
     </div>
 
