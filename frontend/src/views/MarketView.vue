@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api, del, patch, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -37,7 +37,30 @@ const total = ref(0)
 const loading = ref(false)
 const marketMissing = ref(false)
 
-const query = reactive({ q: '', type: '', page: 1, page_size: 12 })
+const query = reactive({ q: '', type: '', category: '', page: 1, page_size: 12 })
+
+/** 市场分类表 {type: [category...]}（供分类筛选） */
+const categories = ref<Record<string, string[]>>({})
+/** 分类下拉选项：选了类型则只看该类型分类，否则合并去重 */
+const categoryOptions = computed(() => {
+  if (query.type) return categories.value[query.type] ?? []
+  const set = new Set<string>()
+  for (const arr of Object.values(categories.value)) for (const c of arr) set.add(c)
+  return Array.from(set).sort()
+})
+async function loadCategories() {
+  try {
+    categories.value = await api<Record<string, string[]>>('/api/market/categories')
+  } catch {
+    categories.value = {}
+  }
+}
+watch(
+  () => query.type,
+  () => {
+    if (query.category && !categoryOptions.value.includes(query.category)) query.category = ''
+  }
+)
 
 const typeOptions = [
   { value: '', label: '全部' },
@@ -100,6 +123,7 @@ async function load() {
     const qs = new URLSearchParams()
     if (query.q) qs.set('q', query.q)
     if (query.type) qs.set('type', query.type)
+    if (query.category) qs.set('category', query.category)
     qs.set('page', String(query.page))
     qs.set('page_size', String(query.page_size))
     const [browse, local] = await Promise.all([
@@ -130,6 +154,7 @@ function search() {
 function resetSearch() {
   query.q = ''
   query.type = ''
+  query.category = ''
   query.page = 1
   void load()
 }
@@ -239,7 +264,10 @@ async function toggleEnabled(item: MarketItem, value: string | number | boolean)
   await refreshAfterAction(item.id)
 }
 
-onMounted(load)
+onMounted(() => {
+  void loadCategories()
+  void load()
+})
 </script>
 
 <template>
@@ -256,6 +284,10 @@ onMounted(load)
                 @keyup.enter="search" />
       <el-select v-model="query.type" style="width: 140px" @change="search">
         <el-option v-for="opt in typeOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+      </el-select>
+      <el-select v-model="query.category" style="width: 160px" clearable placeholder="全部分类" @change="search">
+        <el-option label="全部分类" value="" />
+        <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c" />
       </el-select>
       <el-button type="primary" @click="search">搜索</el-button>
       <el-button @click="resetSearch">重置</el-button>

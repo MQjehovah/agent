@@ -52,6 +52,17 @@ const browseLoaded = ref(false)
 const browseError = ref('')
 const browse = ref<MarketCapabilityLite[]>([])
 
+// ---- 浏览页筛选(搜索 + 类型 + 分类) ----
+const q = ref('')
+const typeFilter = ref<'' | MarketCapabilityType>('')
+const categoryFilter = ref('')
+/** 分类选项：取自当前目录出现过的分类 */
+const categoryOptions = computed(() => {
+  const set = new Set<string>()
+  for (const c of browse.value) if (c.category) set.add(c.category)
+  return Array.from(set).sort()
+})
+
 // ---- 已安装页状态 ----
 const installedLoading = ref(false)
 const installedLoaded = ref(false)
@@ -223,7 +234,10 @@ function onTab(next: 'browse' | 'installed'): void {
 }
 
 const countText = computed(() => {
-  if (tab.value === 'browse') return browseLoaded.value ? `共 ${browse.value.length} 项` : ''
+  if (tab.value === 'browse') {
+    if (!browseLoaded.value) return ''
+    return hasBrowseFilter.value ? `筛选 ${cards.value.length} / ${browse.value.length} 项` : `共 ${browse.value.length} 项`
+  }
   return installedLoaded.value ? `已安装 ${installed.value.length} 项` : ''
 })
 
@@ -238,16 +252,36 @@ interface BrowseCard extends MarketCapabilityLite {
   installed: boolean
 }
 
-/** 浏览卡片 = 目录条目 + 订阅态(我的 id 集合对拍) + 本机已装态(已安装清单对拍) */
+/** 浏览卡片 = 目录条目(先按 搜索/类型/分类 过滤) + 订阅态 + 本机已装态 */
 const cards = computed<BrowseCard[]>(() => {
+  const kw = q.value.trim().toLowerCase()
+  const tf = typeFilter.value
+  const cf = categoryFilter.value
+  const filtered = browse.value.filter((c) => {
+    if (tf && c.type !== tf) return false
+    if (cf && c.category !== cf) return false
+    if (kw) {
+      const hay = `${c.name} ${c.description ?? ''} ${c.category ?? ''} ${c.author_name ?? ''}`.toLowerCase()
+      if (!hay.includes(kw)) return false
+    }
+    return true
+  })
   const mine = mineIds.value
   const instKeys = new Set(installed.value.map((it) => typeKey(it.type, it.name)))
-  return browse.value.map((c) => ({
+  return filtered.map((c) => ({
     ...c,
     mine: mine.has(c.id),
     installed: instKeys.has(typeKey(c.type, c.name))
   }))
 })
+
+/** 是否有生效的浏览筛选 */
+const hasBrowseFilter = computed(() => !!(q.value.trim() || typeFilter.value || categoryFilter.value))
+function resetBrowseFilter(): void {
+  q.value = ''
+  typeFilter.value = ''
+  categoryFilter.value = ''
+}
 
 async function subscribeCap(card: BrowseCard): Promise<void> {
   busySub.value = card.id
@@ -492,6 +526,35 @@ onMounted(() => {
     <!-- 浏览:市场目录卡片 -->
     <div v-else-if="tab === 'browse'" class="market-body">
       <section class="market-pane">
+        <div class="market-filters">
+          <el-input
+            v-model="q"
+            placeholder="搜索名称 / 描述 / 分类"
+            clearable
+            size="small"
+            style="width: 240px"
+          />
+          <el-select v-model="typeFilter" size="small" style="width: 130px">
+            <el-option label="全部类型" value="" />
+            <el-option label="智能体" value="agent" />
+            <el-option label="工具" value="tool" />
+            <el-option label="技能" value="skill" />
+            <el-option label="MCP" value="mcp" />
+          </el-select>
+          <el-select
+            v-model="categoryFilter"
+            size="small"
+            style="width: 160px"
+            placeholder="全部分类"
+            clearable
+          >
+            <el-option label="全部分类" value="" />
+            <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c" />
+          </el-select>
+          <el-button v-if="hasBrowseFilter" size="small" text @click="resetBrowseFilter">
+            重置
+          </el-button>
+        </div>
         <el-skeleton
           v-if="browseLoading && !browseLoaded"
           :rows="7"
@@ -505,7 +568,7 @@ onMounted(() => {
             </el-empty>
           </div>
           <div v-else-if="browseLoaded && cards.length === 0" class="market-state">
-            <el-empty description="市场还没有可显示内容" />
+            <el-empty :description="hasBrowseFilter ? '没有匹配的能力，试试清空筛选' : '市场还没有可显示内容'" />
           </div>
           <div v-else-if="browseLoaded" v-loading="browseLoading" class="market-grid">
             <article v-for="card in cards" :key="card.id" class="market-card">

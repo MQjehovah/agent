@@ -2263,6 +2263,14 @@ html.dark .composer {
   flex-direction: column;
 }
 
+.market-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
 .market-state {
   flex: 1;
   min-height: 300px;

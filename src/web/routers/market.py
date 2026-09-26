@@ -147,6 +147,24 @@ def build_market_router(server) -> APIRouter:
 
     # ---------------- 市场浏览/详情/加入/移出 ----------------
 
+    @router.get("/api/market/categories")
+    async def market_categories(request: Request):
+        """代理市场分类表(act-as 身份): {type: [category...]}，供前端分类筛选。"""
+        u, denied = _authz_or_401(request)
+        if denied:
+            return denied
+        uid = _uid(u)
+        act_as, act_denied = _require_act_as(uid)
+        if act_denied:
+            return act_denied
+        try:
+            status, payload = await _market_request("GET", "/api/meta/categories", act_as=act_as)
+        except (MarketUnavailableError, MarketUpstreamError) as e:
+            return _market_error(e)
+        if status >= 400:
+            return _forward(status, payload)
+        return payload if isinstance(payload, dict) else {}
+
     @router.get("/api/market/capabilities")
     async def market_capabilities(
         request: Request,
