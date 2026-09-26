@@ -100,7 +100,7 @@ const BASE_SYSTEM_PROMPT =
 
 /** 传给 loop 的上下文预算与轮数上限 */
 const MAX_CONTEXT_CHARS = 96_000
-const MAX_ROUNDS = 25
+const MAX_ROUNDS = 100
 
 /** registry 工具名前缀：MCP 工具（mcp.ts mcpToolName）与市场远程工具（market-tools.ts）的公共约定 */
 const MCP_TOOL_PREFIX = 'mcp__'

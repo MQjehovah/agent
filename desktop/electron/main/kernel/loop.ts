@@ -134,7 +134,7 @@ export interface LoopDeps {
   permissions: PermissionGateway
   /** 已由调用方拼好的系统提示词（基础 + 技能清单） */
   systemPrompt: string
-  /** LLM 请求总轮数上限（含最终作答轮），默认 25 */
+  /** LLM 请求总轮数上限（含最终作答轮），默认 100 */
   maxRounds?: number
   /** 每条新增消息实时落盘（调用方注入 session store） */
   persist: (msg: Omit<StoredMessage, 'ts'>) => void
@@ -228,7 +228,7 @@ interface RoundOutcome {
 }
 
 export async function runAgentTurn(deps: LoopDeps, input: RunTurnInput): Promise<void> {
-  const maxRounds = deps.maxRounds ?? 25
+  const maxRounds = deps.maxRounds ?? 100
   const messages: ChatMessage[] = [{ role: 'system', content: deps.systemPrompt }, ...input.history]
 
   // 入口处给 emit 包一层 safeEmit：UI 侧 emit 抛异常只告警，不得炸循环或穿透 error 分支
@@ -319,7 +319,7 @@ export async function runAgentTurn(deps: LoopDeps, input: RunTurnInput): Promise
       safeEmit({ type: 'done' })
       return
     }
-    safeEmit({ type: 'error', message: '已达最大工具调用轮数' })
+    safeEmit({ type: 'error', message: `已达最大工具调用轮数（${maxRounds}）` })
   } catch (err) {
     // streamRound / 工具执行之外的兜底（如 persist 抛错），保证事件流不被静默吞掉
     safeEmit({ type: 'error', message: `agent 循环异常: ${errMsg(err)}` })
