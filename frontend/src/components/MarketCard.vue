@@ -92,11 +92,11 @@ onMounted(() => emit('mounted', c.id))
           <el-button size="small" type="danger" plain @click="emit('uninstall')">卸载</el-button>
         </template>
         <template v-else>
+          <el-button v-if="canInstall && c.joined" size="small" type="primary" @click="emit('install')">
+            安装
+          </el-button>
           <el-button v-if="!c.joined" size="small" type="primary" @click="emit('join')">加入</el-button>
           <el-button v-else size="small" plain @click="emit('leave')">移出</el-button>
-          <el-button v-if="canInstall && c.joined" size="small" type="primary" @click="emit('install')">
-            安装（云端托管）
-          </el-button>
         </template>
       </div>
     </div>
