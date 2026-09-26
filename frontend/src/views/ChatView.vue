@@ -8,6 +8,7 @@ import MarkdownIt from 'markdown-it'
 import { CaretRight, Warning, ArrowRight, Plus, Microphone, MagicStick, Check, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import AttachmentImage from '../components/AttachmentImage.vue'
+import { compressImage } from '../utils/image'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
@@ -36,25 +37,18 @@ const filePicker = ref<HTMLInputElement | null>(null)
 function pickImage() {
   filePicker.value?.click()
 }
-function fileToDataUrl(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => resolve(String(r.result))
-    r.onerror = reject
-    r.readAsDataURL(f)
-  })
-}
 async function readImageFiles(files: FileList | File[] | null | undefined) {
   if (!files) return
   for (const f of Array.from(files)) {
     if (!f.type.startsWith('image/')) continue
     try {
-      const dataUrl = await fileToDataUrl(f)
+      // 客户端压缩（缩放 + JPEG 重编码，清 EXIF）后再上传
+      const img = await compressImage(f)
       const meta = await post<{ ref: string; name: string; url?: string }>('/api/attachments', {
-        name: f.name || 'image.png',
-        data_url: dataUrl
+        name: img.name,
+        data_url: img.dataUrl
       })
-      pendingAttachments.value.push({ ref: meta.ref, name: meta.name || f.name, url: meta.url || '' })
+      pendingAttachments.value.push({ ref: meta.ref, name: meta.name || img.name, url: meta.url || '' })
     } catch (e) {
       ElMessage.error(`图片上传失败：${(e as Error).message}`)
     }
