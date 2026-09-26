@@ -801,14 +801,52 @@ function onInputKeydown(e: KeyboardEvent) {
   }
 }
 
-watch(
-  () => [chat.messages.length, chat.messages[chat.messages.length - 1]?.content],
-  () => {
-    void nextTick(() => {
-      const el = scrollRef.value
-      if (el) el.scrollTop = el.scrollHeight
-    })
+// ---- 自动滚动到底 ----
+/** 是否贴底（用户上滚后暂停自动滚动，回到底部再恢复） */
+const pinned = ref(true)
+let contentMO: MutationObserver | undefined
+
+function isNearBottom(el: HTMLElement, threshold = 64): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
+}
+function onScroll(): void {
+  const el = scrollRef.value
+  if (el) pinned.value = isNearBottom(el)
+}
+function scrollToBottom(force = false): void {
+  const el = scrollRef.value
+  if (!el) return
+  if (force || pinned.value) el.scrollTop = el.scrollHeight
+}
+function scheduleScroll(force = false): void {
+  // nextTick + rAF：等 DOM 更新与布局完成再滚，避免停在旧高度
+  void nextTick(() => requestAnimationFrame(() => scrollToBottom(force)))
+}
+
+onMounted(() => {
+  // 监听内容变化（流式文本、工具/子代理块、图片与 markdown 异步渲染增高）→ 贴底时跟随
+  const el = scrollRef.value
+  if (el) {
+    contentMO = new MutationObserver(() => scrollToBottom())
+    contentMO.observe(el, { childList: true, subtree: true, characterData: true })
   }
+})
+onBeforeUnmount(() => {
+  contentMO?.disconnect()
+})
+
+// 打开/切换会话：恢复贴底并强制滚到底
+watch(
+  () => chat.sessionId,
+  () => {
+    pinned.value = true
+    scheduleScroll(true)
+  }
+)
+// 消息条数变化（新增 / 历史重载）：贴底时滚到底
+watch(
+  () => chat.messages.length,
+  () => scheduleScroll()
 )
 
 // 流式期间显示"工作中 Xs"
@@ -1078,7 +1116,7 @@ const isLocal = computed(() => chat.sessionMode === 'local')
       </div>
     </header>
 
-    <div ref="scrollRef" class="chat-scroll">
+    <div ref="scrollRef" class="chat-scroll" @scroll.passive="onScroll">
       <template v-if="chat.messages.length === 0">
         <div class="chat-empty">
           <template v-if="isLocal">
