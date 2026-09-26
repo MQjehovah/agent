@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, post, streamChat } from '../api'
 import { channelMeta, dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import MarkdownIt from 'markdown-it'
-import { CaretRight, Warning, ArrowRight, Plus, Microphone, MagicStick, Check } from '@element-plus/icons-vue'
+import { CaretRight, Warning, ArrowRight, Plus, Microphone, MagicStick, Check, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -28,6 +28,45 @@ const permMode = ref<'default' | 'smart' | 'auto'>('default')
 const permLabel = computed(() => PERM_MODES[permMode.value].label)
 const onlineModel = ref('')
 const plusOpen = ref(false)
+
+/** 待发送图片(data URL 数组，交由后端内联为多模态) */
+const pendingImages = ref<string[]>([])
+const filePicker = ref<HTMLInputElement | null>(null)
+function pickImage() {
+  filePicker.value?.click()
+}
+function readImageFiles(files: FileList | File[] | null | undefined) {
+  if (!files) return
+  for (const f of Array.from(files)) {
+    if (!f.type.startsWith('image/')) continue
+    const reader = new FileReader()
+    reader.onload = () => pendingImages.value.push(String(reader.result))
+    reader.readAsDataURL(f)
+  }
+}
+function onPickImage(e: Event) {
+  const el = e.target as HTMLInputElement
+  readImageFiles(el.files)
+  el.value = ''
+}
+function onPasteImage(e: ClipboardEvent) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  const files: File[] = []
+  for (const it of Array.from(items)) {
+    if (it.type.startsWith('image/')) {
+      const f = it.getAsFile()
+      if (f) files.push(f)
+    }
+  }
+  if (files.length) {
+    e.preventDefault()
+    readImageFiles(files)
+  }
+}
+function removeImage(i: number) {
+  pendingImages.value.splice(i, 1)
+}
 
 /** 入口: company=零号员工(企业单例) / personal=我的员工助手(个人实例) */
 const entryScope = ref<'company' | 'personal'>('company')
@@ -277,9 +316,12 @@ function newSession() {
 
 function send() {
   const text = input.value.trim()
-  if (!text || streaming.value || readonly.value) return
+  const imgs = pendingImages.value.slice()
+  if ((!text && imgs.length === 0) || streaming.value || readonly.value) return
   input.value = ''
-  messages.value.push({ role: 'user', content: text, reasoning: '', blocks: [], toolCount: 0, error: '' })
+  pendingImages.value = []
+  const shown = text || (imgs.length ? `[图片 ×${imgs.length}]` : '')
+  messages.value.push({ role: 'user', content: shown, reasoning: '', blocks: [], toolCount: 0, error: '' })
   const reply: Msg = emptyAssistant()
   messages.value.push(reply)
   streaming.value = true
@@ -288,7 +330,7 @@ function send() {
 
   abort = new AbortController()
   streamChat(
-    { message: text, session_id: sessionId.value || undefined, permission_mode: permMode.value, scope: entryScope.value },
+    { message: text, session_id: sessionId.value || undefined, permission_mode: permMode.value, scope: entryScope.value, attachments: imgs.length ? imgs : undefined },
     (ev) => {
       const data = (ev.data ?? {}) as Record<string, any>
       switch (ev.type) {
@@ -563,18 +605,36 @@ onBeforeUnmount(() => {
             <el-icon :size="14"><Warning /></el-icon>
             <span>该会话来自「{{ channelMeta(currentSession?.channel || '', currentSession?.id || '').label }}」渠道，仅支持查看历史，请在对应渠道继续对话。</span>
           </div>
+          <div v-if="pendingImages.length" class="pending-images">
+            <div v-for="(src, i) in pendingImages" :key="i" class="pending-thumb">
+              <img :src="src" alt="附件" />
+              <button class="thumb-x" title="移除" @click="removeImage(i)">×</button>
+            </div>
+          </div>
           <el-input
             v-model="input"
             type="textarea"
             :autosize="{ minRows: 3, maxRows: 12 }"
             :disabled="readonly"
-            :placeholder="readonly ? '该会话只读，不可发送消息' : '今天帮你做些什么？'"
+            :placeholder="readonly ? '该会话只读，不可发送消息' : '今天帮你做些什么？（可粘贴/上传图片）'"
             resize="none"
             class="composer-input"
             @keydown.enter.exact.prevent="send"
+            @paste="onPasteImage"
           />
           <div class="composer-bar">
             <div class="composer-left">
+              <input
+                ref="filePicker"
+                type="file"
+                accept="image/*"
+                multiple
+                style="display: none"
+                @change="onPickImage"
+              />
+              <button class="plus-btn" :disabled="streaming || readonly" title="添加图片" @click="pickImage">
+                <el-icon :size="15"><Picture /></el-icon>
+              </button>
               <el-popover v-model:visible="plusOpen" trigger="click" placement="top-start" :width="300" :show-arrow="false" popper-class="plus-popper">
                 <template #reference>
                   <button class="plus-btn" :disabled="streaming || readonly" title="添加">
@@ -586,7 +646,7 @@ onBeforeUnmount(() => {
                     <el-icon :size="14"><MagicStick /></el-icon>
                     <span class="plus-label">管理专家 / 技能 / 连接器</span>
                   </button>
-                  <p class="plus-empty">本地文件 / 人设 / 语音等请使用桌面端</p>
+                  <p class="plus-empty">人设 / 语音等请使用桌面端</p>
                 </div>
               </el-popover>
               <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
@@ -596,7 +656,7 @@ onBeforeUnmount(() => {
               <button class="icon-btn voice-btn" disabled title="语音输入需桌面端（ASR）">
                 <el-icon :size="15"><Microphone /></el-icon>
               </button>
-              <button v-if="!streaming" class="send-btn" :disabled="!input.trim() || readonly" title="发送" @click="send">
+              <button v-if="!streaming" class="send-btn" :disabled="(!input.trim() && !pendingImages.length) || readonly" title="发送" @click="send">
                 <el-icon :size="15"><CaretRight /></el-icon>
               </button>
               <button v-else class="send-btn stop" title="停止" @click="stop"><span class="stop-square" /></button>
@@ -740,4 +800,12 @@ onBeforeUnmount(() => {
   margin-top: 2px;
 }
 .proc-hint { color: var(--text-2, #555); font-size: 13px; margin-top: 4px; }
+.pending-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 8% 8px; }
+.pending-thumb { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border, #e5e7eb); }
+.pending-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pending-thumb .thumb-x {
+  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; line-height: 16px;
+  border: none; border-radius: 50%; cursor: pointer; font-size: 13px;
+  background: rgba(0, 0, 0, 0.55); color: #fff; padding: 0;
+}
 </style>

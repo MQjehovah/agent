@@ -1445,11 +1445,11 @@ class WebServer:
             # 服务身份由 RBAC 的 service 角色表达(无工具权限, 见 storage 种子),
             # _get_authz 已解析其权限, 此处无需再特判。
             data = await request.json()
-            if not data or not data.get("message"):
+            if not data or (not data.get("message") and not data.get("attachments")):
                 return JSONResponse({"error": "Missing message"}, status_code=400)
 
-            message = data["message"].strip()
-            if not message:
+            message = (data.get("message") or "").strip()
+            if not message and not data.get("attachments"):
                 return JSONResponse({"error": "Empty message"}, status_code=400)
 
             from channels import MessageRouter
@@ -1500,7 +1500,13 @@ class WebServer:
                     self._pool_run_started(rel_tag, session_id,
                                            chat_session.stream_started_at or "")
                     router = MessageRouter(agent)
-                    await router.route(message, channel="web", session_id=session_id,
+                    from agent.multimodal import build_user_content
+                    task = build_user_content(
+                        message,
+                        workspace=getattr(agent, "workspace", "") or "",
+                        data_urls=data.get("attachments"),
+                    )
+                    await router.route(task, channel="web", session_id=session_id,
                                        role=auth.get("role", "default"),
                                        user_role=auth.get("role", ""),
                                        user_department=auth.get("department", ""),
@@ -1522,10 +1528,10 @@ class WebServer:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
             # 服务身份由 RBAC 的 service 角色表达(同 /api/chat)。
             data = await request.json()
-            if not data or not data.get("message"):
+            if not data or (not data.get("message") and not data.get("attachments")):
                 return JSONResponse({"error": "Missing message"}, status_code=400)
 
-            message = data["message"].strip()
+            message = (data.get("message") or "").strip()
             from channels import MessageRouter
 
             uid = str(auth.get("uid", "anon"))
@@ -1575,6 +1581,14 @@ class WebServer:
                 chat_session.stop_stream()
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
             self._pool_run_started(rel_tag, session_id, chat_session.stream_started_at or "")
+
+            # 多模态：把消息里的图片引用(路径/data URL)内联成 content 数组，供视觉模型理解
+            from agent.multimodal import build_user_content
+            task = build_user_content(
+                message,
+                workspace=getattr(agent_ref, "workspace", "") or "",
+                data_urls=data.get("attachments"),
+            )
 
             async def event_stream():
                 from hooks import HookEvent
@@ -1708,7 +1722,7 @@ class WebServer:
 
                         router = MessageRouter(agent_ref)
                         result = await router.route(
-                            message, channel="web",
+                            task, channel="web",
                             session_id=session_id, run_id=stream_run_id,
                             user_id=web_user_id, user_name=web_user_name,
                             role=auth.get("role", "default"),

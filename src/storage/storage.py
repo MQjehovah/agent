@@ -72,6 +72,29 @@ def _session_channel(session_id: str) -> str:
     return sid.split(":", 1)[0] if ":" in sid else ""
 
 
+def _encode_content(content) -> str:
+    """消息 content 落库编码：多模态列表/dict → JSON 字符串；文本原样。
+
+    多模态用户消息的 content 为 [{type:text}, {type:image_url}]，sqlite 只能存 TEXT，
+    故在此统一序列化；读取侧 _decode_content 还原。
+    """
+    if isinstance(content, (list, dict)):
+        return json.dumps(content, ensure_ascii=False)
+    return content or ""
+
+
+def _decode_content(content):
+    """读取侧还原：以 '[' 开头且能解析为 list 的 JSON 视为多模态 content。"""
+    if isinstance(content, str) and content[:1] == "[":
+        try:
+            val = json.loads(content)
+            if isinstance(val, list):
+                return val
+        except (ValueError, TypeError):
+            return content
+    return content
+
+
 class Storage:
     """SQLite 存储管理器，使用连接池和批量写入"""
 
@@ -657,7 +680,7 @@ class Storage:
                     item['agent_id'],
                     item['session_id'],
                     item['role'],
-                    item['content'],
+                    _encode_content(item['content']),
                     json.dumps(item['tool_calls']) if item.get('tool_calls') else None,
                     item.get('tool_call_id', ''),
                     item.get('name', ''),
@@ -710,7 +733,7 @@ class Storage:
                 INSERT INTO messages (agent_id, session_id, role, content, tool_calls, tool_call_id, name, reasoning_content, user_id, channel, conversation_id, round_id, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                agent_id, session_id, role, content or "",
+                agent_id, session_id, role, _encode_content(content),
                 json.dumps(tool_calls) if tool_calls else None,
                 tool_call_id, name, reasoning_content or "",
                 user_id or "", channel or _session_channel(session_id),
@@ -741,7 +764,7 @@ class Storage:
 
         messages = []
         for row in rows:
-            msg = {"role": row["role"], "content": row["content"] or ""}
+            msg = {"role": row["role"], "content": _decode_content(row["content"])}
             if row["tool_calls"]:
                 msg["tool_calls"] = json.loads(row["tool_calls"])
             if row["tool_call_id"]:
@@ -771,6 +794,7 @@ class Storage:
         out = []
         for row in rows:
             m = dict(row)
+            m["content"] = _decode_content(m.get("content"))
             if m.get("tool_calls"):
                 try:
                     m["tool_calls"] = json.loads(m["tool_calls"])
