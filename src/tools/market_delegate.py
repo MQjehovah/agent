@@ -30,6 +30,10 @@ _SKILL_ACTIVATE_PATH = "/api/runtime/skills/{skill}/activate"
 _SKILL_CACHE: dict[str, tuple[str, float]] = {}
 _SKILL_TTL = 300.0
 
+# mcp 依赖工具清单缓存: name -> (tools, expires_at)
+_MCP_TOOLS_CACHE: dict[str, tuple[list[str], float]] = {}
+_MCP_TOOLS_TTL = 300.0
+
 
 def _err(msg: str) -> str:
     return json.dumps({"ok": False, "error": msg}, ensure_ascii=False)
@@ -65,7 +69,8 @@ async def _fetch_skill_text(base: str, headers: dict, name: str, timeout: float)
         return ""
 
 
-def _compose_prompt(persona: str, deps: list[dict], skill_texts: list[tuple[str, str]]) -> str:
+def _compose_prompt(persona: str, deps: list[dict], skill_texts: list[tuple[str, str]],
+                    mcp_tools: list[tuple[str, list[str]]]) -> str:
     parts = [persona.strip()]
     if skill_texts:
         blocks = [f"## {n}\n{t}" for n, t in skill_texts if t]
@@ -73,18 +78,55 @@ def _compose_prompt(persona: str, deps: list[dict], skill_texts: list[tuple[str,
             parts.append("# 可用技能(按以下说明执行)\n\n" + "\n\n".join(blocks))
     mcps = [str(d.get("name")) for d in deps if str(d.get("type")) == "mcp"]
     tools = [str(d.get("name")) for d in deps if str(d.get("type")) == "tool"]
-    lines = ["# 你的依赖（由能力市场平台执行）", "使用 market_runtime 工具调用下列依赖，不要臆造工具："]
+    lines = [
+        "# 你的依赖（由能力市场平台执行，必须经 market_runtime）",
+        "**重要**：下列连接器/工具均**未直连本机**，禁止直接调用其工具名；一律用 `market_runtime` 工具执行。",
+    ]
     if mcps:
-        lines.append(
-            "- 连接器(mcp)：market_runtime(kind='mcp', capability='<名称>', tool='<工具>', params={...})。可用：" + "、".join(mcps)
-        )
+        by_name = {n: ts for n, ts in mcp_tools}
+        for name in mcps:
+            tlist = "、".join(by_name.get(name) or []) or "(未能列出，可先试探调用)"
+            lines.append(
+                f"- 连接器 `{name}`：可用工具 [{tlist}]；"
+                f"调用 `market_runtime(kind='mcp', capability='{name}', tool='<工具>', params={{...}})`"
+            )
     if tools:
         lines.append(
-            "- 工具(tool)：market_runtime(kind='tool', capability='<名称>', tool='<工具>', params={...})。可用：" + "、".join(tools)
+            "- 工具(tool)：调用 `market_runtime(kind='tool', capability='<名称>', tool='<工具>', params={...})`。可用：" + "、".join(tools)
         )
     if mcps or tools:
         parts.append("\n".join(lines))
     return "\n\n".join(p for p in parts if p)
+
+
+async def _fetch_mcp_tools(base: str, headers: dict, name: str, timeout: float) -> list[str]:
+    """取某 mcp 能力暴露的工具名列表(经 /api/runtime/mcp/{name}/connect); 命中缓存直接返回。失败为空。"""
+    key = (name or "").strip()
+    if not key:
+        return []
+    now = time.time()
+    cached = _MCP_TOOLS_CACHE.get(key)
+    if cached and cached[1] > now:
+        return cached[0]
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(f"{base}/api/runtime/mcp/{key}/connect", headers=headers)
+        if resp.status_code >= 400:
+            return []
+        data = resp.json()
+        raw = data.get("tools") if isinstance(data, dict) else None
+        names: list[str] = []
+        if isinstance(raw, list):
+            for t in raw:
+                if isinstance(t, dict) and t.get("name"):
+                    names.append(str(t["name"]))
+                elif isinstance(t, str):
+                    names.append(t)
+        if names:
+            _MCP_TOOLS_CACHE[key] = (names, now + _MCP_TOOLS_TTL)
+        return names
+    except (httpx.HTTPError, ValueError):
+        return []
 
 
 async def _run_transient(system_prompt: str, task: str) -> dict:
@@ -217,8 +259,16 @@ class MarketDelegateTool(BuiltinTool):
                 if text:
                     skill_texts.append((name, text))
 
+        # 3.5) 连接器工具清单(供经 market_runtime 调用)
+        mcp_tools: list[tuple[str, list[str]]] = []
+        for d in deps:
+            if str(d.get("type")) == "mcp":
+                name = str(d.get("name") or "")
+                tools = await _fetch_mcp_tools(base, headers, name, timeout)
+                mcp_tools.append((name, tools))
+
         # 4) 组人设
-        system_prompt = _compose_prompt(persona, deps, skill_texts)
+        system_prompt = _compose_prompt(persona, deps, skill_texts, mcp_tools)
 
         # 5) agent 引擎执行
         result = await _run_transient(system_prompt, task)

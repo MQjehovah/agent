@@ -47,6 +47,8 @@ class _FakeClient:
 
     async def post(self, url, headers=None, json=None, **kwargs):
         _FakeClient.posts.append(url)
+        if "/runtime/mcp/" in url and url.endswith("/connect"):
+            return _FakeResp(200, {"tools": [{"name": "run_command"}, {"name": "open_session"}]})
         return _FakeResp(200, {"result": {"skill_md": "# 报销流程\n先填单再审批"}})
 
 
@@ -99,6 +101,8 @@ async def test_happy_path_composes_and_runs(monkeypatch):
     assert "报销流程" in captured["system_prompt"]
     assert "你是报销专家" in captured["system_prompt"]
     assert "gitlab-devops" in captured["system_prompt"]
+    assert "market_runtime" in captured["system_prompt"]
+    assert "run_command" in captured["system_prompt"]  # mcp 工具清单已列出
     assert captured["task"] == "帮我报销差旅"
     # 技能激活被调用
     assert any("/api/runtime/skills/reimburse/activate" in u for u in _FakeClient.posts)
