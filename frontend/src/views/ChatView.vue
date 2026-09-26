@@ -162,11 +162,33 @@ function flushMarkdown(blocks: MsgBlock[]) {
   }
 }
 
-function scrollBottom() {
-  void nextTick(() => {
+/** 是否贴底（用户上滚后暂停自动滚动） */
+const pinned = ref(true)
+let contentMO: MutationObserver | undefined
+
+function isNearBottom(el: HTMLElement, threshold = 64): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
+}
+function onScroll() {
+  const el = scrollRef.value
+  if (el) pinned.value = isNearBottom(el)
+}
+function scrollBottom(force = false) {
+  void nextTick(() => requestAnimationFrame(() => {
+    const el = scrollRef.value
+    if (el && (force || pinned.value)) el.scrollTop = el.scrollHeight
+  }))
+}
+/** 打开会话后短时反复强制落底：覆盖历史异步加载/图片与 markdown 增高 */
+function settleScrollBottom(ms = 1200) {
+  pinned.value = true
+  const t0 = Date.now()
+  const tick = () => {
     const el = scrollRef.value
     if (el) el.scrollTop = el.scrollHeight
-  })
+    if (Date.now() - t0 < ms) requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
 }
 
 function shortTime(t?: string): string {
@@ -322,7 +344,7 @@ async function openSession(row: SessionRow) {
       return a
     })
     for (const mm of messages.value) flushMarkdown(mm.blocks)
-    scrollBottom()
+    settleScrollBottom(1200)
   } catch (e) {
     console.error(e)
   }
@@ -522,6 +544,14 @@ onMounted(async () => {
   await loadSessions()
   await openFromQuery()
   pollTimer = window.setInterval(() => void loadSessions(), 15000)
+  // 内容变化（流式文本/工具/子代理/图片、markdown 异步渲染增高）→ 贴底时跟随
+  const el = scrollRef.value
+  if (el) {
+    contentMO = new MutationObserver(() => {
+      if (pinned.value) el.scrollTop = el.scrollHeight
+    })
+    contentMO.observe(el, { childList: true, subtree: true, characterData: true })
+  }
 })
 watch(
   () => route.query.session,
@@ -537,6 +567,7 @@ watch(
 onBeforeUnmount(() => {
   abort?.abort()
   if (pollTimer) window.clearInterval(pollTimer)
+  contentMO?.disconnect()
 })
 </script>
 
@@ -550,7 +581,7 @@ onBeforeUnmount(() => {
           <el-radio-button value="personal">员工助手</el-radio-button>
         </el-radio-group>
       </header>
-      <div ref="scrollRef" class="chat-scroll">
+      <div ref="scrollRef" class="chat-scroll" @scroll.passive="onScroll">
         <div v-if="messages.length === 0" class="chat-empty">
           <h1>你好，我是{{ entryLabel }}</h1>
           <p>{{ entryScope === 'personal' ? '你的专属工作助手' : '你的全能 AI 助手' }}</p>

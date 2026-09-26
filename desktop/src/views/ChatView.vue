@@ -827,6 +827,16 @@ function jumpToBottom(): void {
   pinned.value = true
   scheduleScroll(true)
 }
+/** 打开会话后短时反复强制落底：覆盖历史异步加载/图片与 markdown 增高 */
+function settleScrollToBottom(ms = 1200): void {
+  pinned.value = true
+  const t0 = Date.now()
+  const tick = (): void => {
+    scrollToBottom(true)
+    if (Date.now() - t0 < ms) requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
 
 onMounted(() => {
   // 监听内容变化（流式文本、工具/子代理块、图片与 markdown 异步渲染增高）→ 贴底时跟随
@@ -840,12 +850,12 @@ onBeforeUnmount(() => {
   contentMO?.disconnect()
 })
 
-// 打开/切换会话：恢复贴底并强制滚到底
+// 打开/切换会话：恢复贴底并强制滚到底（含短时反复落底，覆盖异步渲染）
 watch(
   () => chat.sessionId,
   () => {
     pinned.value = true
-    scheduleScroll(true)
+    settleScrollToBottom(1200)
   }
 )
 // 消息条数变化（新增 / 历史重载）：贴底时滚到底
