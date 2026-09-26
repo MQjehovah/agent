@@ -122,6 +122,17 @@ def current_run() -> RunContext:
     return _current_run.get() or _EMPTY_RUN
 
 
+# 当前 run 所属 Agent 实例(供工具在运行期取回当前 agent, 如市场专家委派)。
+_current_agent: contextvars.ContextVar["Agent | None"] = contextvars.ContextVar(
+    "agent_current_agent", default=None
+)
+
+
+def current_agent() -> "Agent | None":
+    """获取当前 run() 所属的 Agent 实例（并发安全）；run() 之外返回 None。"""
+    return _current_agent.get()
+
+
 class Agent:
     def __init__(
         self,
@@ -491,6 +502,7 @@ class Agent:
             return
         self.tool_registry.unregister_tool("market_runtime")
         self.tool_registry.unregister_tool("market_search")
+        self.tool_registry.unregister_tool("market_delegate")
 
     def _init_code_quality(self):
         """初始化代码质量相关模块"""
@@ -1211,6 +1223,7 @@ class Agent:
         elif not self.parent_agent:
             ctx.task_dir = self._init_task_dir(task)
         run_token = _current_run.set(ctx)
+        agent_token = _current_agent.set(self)
 
         # 渐进披露: 按本对话激活集刷新系统提示中的工具搜索说明(非渐进模式无操作)
         self._apply_progressive_hint(ctx)
@@ -1286,6 +1299,7 @@ class Agent:
             if hook_token is not None:
                 reset_run_id(hook_token)
             _current_run.reset(run_token)
+            _current_agent.reset(agent_token)
 
     def _finalize_sensitive_group_round(self, sess, marker: int,
                                         round_token: str, owner_tag: str) -> None:
