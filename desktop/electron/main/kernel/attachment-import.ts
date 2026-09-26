@@ -1,4 +1,4 @@
-import { constants, copyFileSync, mkdirSync, statSync } from 'node:fs'
+import { constants, copyFileSync, mkdirSync, statSync, unlinkSync } from 'node:fs'
 import { basename, extname } from 'node:path'
 import {
   attachmentTargetName,
@@ -19,6 +19,13 @@ export interface AttachmentImportResult {
   imported: { relPath: string; name: string }[]
   skipped: { path: string; reason: string }[]
 }
+
+/**
+ * 可选图片压缩回调（注入以保持本模块可在无 Electron 的 node 下单测）：
+ * 入参为已复制到 `.attachments/` 的绝对路径；返回新生成的压缩文件绝对路径（如转为 .jpg），
+ * 或 null 表示不压缩/无需压缩（保留原文件）。
+ */
+export type AttachmentCompressor = (absPath: string) => { path: string } | null
 
 /** 解析 attach:import 入参：只取 sessionId + token，其余字段（尤其 paths）一律丢弃 */
 export function parseAttachImportPayload(payload: unknown): { sessionId: string; token: string } {
@@ -62,7 +69,8 @@ function copyExclusive(src: string, dir: string, name: string): string {
 export function importAttachments(
   dir: string,
   paths: readonly unknown[],
-  baseTs: number = Date.now()
+  baseTs: number = Date.now(),
+  compress?: AttachmentCompressor
 ): AttachmentImportResult {
   mkdirSync(dir, { recursive: true })
   const imported: { relPath: string; name: string }[] = []
@@ -95,7 +103,26 @@ export function importAttachments(
       }
       // 同批用序号错开时间戳；若仍撞名由 copyExclusive 追加后缀
       const base = attachmentTargetName(original, baseTs + i)
-      const name = copyExclusive(src, dir, base)
+      let name = copyExclusive(src, dir, base)
+      // 图片压缩：生成更小的 .jpg 并替换（失败保留原图，不影响导入）
+      if (compress) {
+        try {
+          const out = compress(resolveWithin(dir, name))
+          if (out && out.path) {
+            const newName = basename(out.path)
+            if (newName !== name) {
+              try {
+                unlinkSync(resolveWithin(dir, name))
+              } catch {
+                /* 旧文件删不掉也无妨 */
+              }
+              name = newName
+            }
+          }
+        } catch {
+          /* 压缩异常保留原图 */
+        }
+      }
       imported.push({ relPath: `.attachments/${name}`, name })
     } catch (err) {
       skipped.push({ path: src, reason: err instanceof Error ? err.message : '复制失败' })

@@ -806,6 +806,38 @@ async function thumbForFile(filePath: string): Promise<string | undefined> {
  *     保证任何文件名都无法逃出 `<workspace>/.attachments/`；
  *   - 单个文件失败只记入 skipped，不中断整批。
  */
+/** 图片附件压缩：长边>1536px 或体积>500KB 时用 nativeImage 缩放并转 JPEG（顺带清元数据）；否则不动 */
+function compressAttachmentImage(absPath: string): { path: string } | null {
+  const ext = extname(absPath).toLowerCase()
+  if (!['.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext)) return null
+  try {
+    const size = statSync(absPath).size
+    const img = nativeImage.createFromPath(absPath)
+    if (img.isEmpty()) return null
+    const { width, height } = img.getSize()
+    const long = Math.max(width, height)
+    if (long <= 1536 && size <= 500 * 1024) return null
+    const scale = long > 1536 ? 1536 / long : 1
+    const resized =
+      scale < 1
+        ? img.resize({
+            width: Math.max(1, Math.round(width * scale)),
+            height: Math.max(1, Math.round(height * scale)),
+            quality: 'good'
+          })
+        : img
+    const jpeg = resized.toJPEG(82)
+    if (!jpeg || jpeg.length === 0) return null
+    if (jpeg.length >= size && scale >= 1) return null
+    const out = absPath.replace(/\.[^.]+$/, '') + '.jpg'
+    writeFileSync(out, jpeg)
+    return { path: out }
+  } catch (err) {
+    console.warn('[kernel] 附件压缩失败(保留原图):', (err as Error).message)
+    return null
+  }
+}
+
 async function handleAttachImport(
   _event: IpcMainInvokeEvent,
   payload?: unknown
@@ -818,7 +850,7 @@ async function handleAttachImport(
 
   const paths = resolvePickedPaths(pickedAttachmentPaths, token)
   const attachmentsDir = join(workspace, '.attachments')
-  const res = importAttachments(attachmentsDir, paths)
+  const res = importAttachments(attachmentsDir, paths, Date.now(), compressAttachmentImage)
   // 图片附件带 96px 缩略图(data URL), 便于待发 chip 预览
   const imported = await Promise.all(
     res.imported.map(async (item) => ({

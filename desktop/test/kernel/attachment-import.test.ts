@@ -97,3 +97,38 @@ test('attachment-import: 控制字符重组出的 .. 不进入目标名', () => 
   assert.equal(safe, 'b.txt')
   assert.ok(!safe.includes('..'))
 })
+
+test('attachment-import: 压缩回调把 png 换成 jpg 并删除原文件', () => {
+  const src = makeTemp()
+  const ws = makeTemp()
+  try {
+    writeFileSync(join(src, 'logo.png'), 'PNGDATA')
+    const dir = join(ws, '.attachments')
+    const compress = (abs: string): { path: string } => {
+      const out = abs.replace(/\.[^.]+$/, '') + '.jpg'
+      writeFileSync(out, 'JPEGDATA')
+      return { path: out }
+    }
+    const res = importAttachments(dir, [join(src, 'logo.png')], 2000, compress)
+    assert.equal(res.skipped.length, 0)
+    assert.equal(res.imported[0].name, '2000-logo.jpg')
+    assert.equal(existsSync(join(dir, '2000-logo.png')), false)
+    assert.equal(readFileSync(join(dir, '2000-logo.jpg'), 'utf8'), 'JPEGDATA')
+  } finally {
+    cleanup(src, ws)
+  }
+})
+
+test('attachment-import: 压缩回调返回 null → 保留原文件', () => {
+  const src = makeTemp()
+  const ws = makeTemp()
+  try {
+    writeFileSync(join(src, 'pic.png'), 'RAW')
+    const dir = join(ws, '.attachments')
+    const res = importAttachments(dir, [join(src, 'pic.png')], 3000, () => null)
+    assert.equal(res.imported[0].name, '3000-pic.png')
+    assert.equal(readFileSync(join(dir, '3000-pic.png'), 'utf8'), 'RAW')
+  } finally {
+    cleanup(src, ws)
+  }
+})
