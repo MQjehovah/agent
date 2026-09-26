@@ -34,6 +34,10 @@ const entryScope = ref<'company' | 'personal'>('company')
 watch(entryScope, () => {
   if (sessionId.value) newSession()
 })
+const entryLabel = computed(() => (entryScope.value === 'personal' ? '员工助手' : '零号员工'))
+function onEntry(c: 'company' | 'personal') {
+  entryScope.value = c
+}
 
 async function loadOnlineModel(): Promise<void> {
   try {
@@ -464,8 +468,8 @@ onBeforeUnmount(() => {
       </header>
       <div ref="scrollRef" class="chat-scroll">
         <div v-if="messages.length === 0" class="chat-empty">
-          <h1>你好，我是零号员工</h1>
-          <p>你的全能 AI 助手</p>
+          <h1>你好，我是{{ entryLabel }}</h1>
+          <p>{{ entryScope === 'personal' ? '你的专属工作助手' : '你的全能 AI 助手' }}</p>
           <div class="suggestions">
             <button v-for="s in suggestions" :key="s" class="suggestion" @click="input = s">{{ s }}</button>
           </div>
@@ -601,12 +605,12 @@ onBeforeUnmount(() => {
         </div>
         <div class="composer-foot">
           <div class="foot-left">
-            <el-dropdown trigger="click" :disabled="streaming">
-              <button class="foot-chip" :disabled="streaming">在线 · 零号员工<span class="foot-caret">▾</span></button>
+            <el-dropdown trigger="click" :disabled="streaming" @command="onEntry">
+              <button class="foot-chip" :disabled="streaming">在线 · {{ entryLabel }}<span class="foot-caret">▾</span></button>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item>在线 · 零号员工 <el-icon class="mode-check"><Check /></el-icon></el-dropdown-item>
-                  <el-dropdown-item disabled>本地模式（请使用桌面端）</el-dropdown-item>
+                  <el-dropdown-item command="company">在线 · 零号员工 <el-icon v-if="entryScope === 'company'" class="mode-check"><Check /></el-icon></el-dropdown-item>
+                  <el-dropdown-item command="personal">在线 · 员工助手 <el-icon v-if="entryScope === 'personal'" class="mode-check"><Check /></el-icon></el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -624,7 +628,7 @@ onBeforeUnmount(() => {
               </template>
             </el-dropdown>
           </div>
-          <span class="foot-hint">由零号员工云端执行</span>
+          <span class="foot-hint">由{{ entryLabel }}云端执行</span>
         </div>
       </footer>
     </div>
