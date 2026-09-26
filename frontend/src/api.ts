@@ -164,7 +164,7 @@ export function del<T = any>(path: string): Promise<T> {
 
 /** SSE 流式接口(POST):逐帧解析 data: JSON 并回调,done/error 时结束 */
 export async function streamChat(
-  body: { message: string; session_id?: string; permission_mode?: 'default' | 'smart' | 'auto'; scope?: 'company' | 'personal'; attachments?: string[] },
+  body: { message: string; session_id?: string; permission_mode?: 'default' | 'smart' | 'auto'; scope?: 'company' | 'personal'; attachments?: Array<{ ref: string; name?: string }> },
   onEvent: (event: { type: string; content?: string; data?: any }) => void,
   signal?: AbortSignal
 ): Promise<void> {

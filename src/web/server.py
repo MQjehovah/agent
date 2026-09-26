@@ -1435,6 +1435,46 @@ class WebServer:
             }
 
         @self._app.post("/api/chat")
+        @self._app.post("/api/attachments")
+        async def upload_attachment(request: Request):
+            """上传图片(web): 入对象存储, 返回引用; 消息里只带引用, 不带字节。"""
+            try:
+                await _get_authz(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            import base64
+
+            from agent import attachments
+
+            data = await request.json()
+            durl = (data or {}).get("data_url") or (data or {}).get("dataUrl") or ""
+            if not isinstance(durl, str) or not durl.startswith("data:image/"):
+                return JSONResponse({"error": "需要 data:image/... 的 data_url"}, status_code=400)
+            try:
+                raw = base64.b64decode(durl.split(",", 1)[1])
+            except Exception:
+                return JSONResponse({"error": "图片解码失败"}, status_code=400)
+            ws = getattr(self.agent, "workspace", "") or ""
+            meta = attachments.save_bytes(raw, str((data or {}).get("name") or "upload.png"), ws)
+            return JSONResponse(meta)
+
+        @self._app.get("/api/attachments/{ref:path}")
+        async def get_attachment(ref: str, request: Request):
+            """读取附件字节(鉴权), 供前端预览/历史渲染。"""
+            try:
+                await _get_authz(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            from fastapi.responses import Response
+
+            from agent import attachments
+
+            ws = getattr(self.agent, "workspace", "") or ""
+            blob = attachments.load_bytes(ref, ws)
+            if not blob:
+                return JSONResponse({"error": "Not found"}, status_code=404)
+            return Response(content=blob, media_type=attachments.mime_for(ref))
+
         async def chat(request: Request):
             if not self.agent:
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
@@ -1504,7 +1544,7 @@ class WebServer:
                     task = build_user_content(
                         message,
                         workspace=getattr(agent, "workspace", "") or "",
-                        data_urls=data.get("attachments"),
+                        refs=data.get("attachments"),
                     )
                     await router.route(task, channel="web", session_id=session_id,
                                        role=auth.get("role", "default"),
@@ -1587,7 +1627,7 @@ class WebServer:
             task = build_user_content(
                 message,
                 workspace=getattr(agent_ref, "workspace", "") or "",
-                data_urls=data.get("attachments"),
+                refs=data.get("attachments"),
             )
 
             async def event_stream():

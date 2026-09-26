@@ -390,6 +390,15 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                     await agent.hooks.fire(agent._hook_event.ROUND_START, metadata={"iteration": i + 1})
 
                 think_messages = session.messages
+                # 多模态：仅把最后一条含图用户消息的引用物化为图片（历史轮次降级为占位），
+                # 避免每轮重发像素；不改动会话/落库内容。
+                if session is not None:
+                    try:
+                        from agent.multimodal import materialize_messages
+                        think_messages = materialize_messages(
+                            think_messages, getattr(agent, "workspace", "") or "")
+                    except Exception as _mm_err:  # noqa: BLE001
+                        logger.debug("多模态物化跳过: %s", _mm_err)
                 _is_retry = bool(ctx.retry_context)
                 if ctx.retry_context:
                     think_messages = list(session.messages)

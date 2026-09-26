@@ -29,24 +29,39 @@ const permLabel = computed(() => PERM_MODES[permMode.value].label)
 const onlineModel = ref('')
 const plusOpen = ref(false)
 
-/** 待发送图片(data URL 数组，交由后端内联为多模态) */
-const pendingImages = ref<string[]>([])
+/** 待发送图片（先上传到附件库，拿到引用；消息只带引用，不带字节） */
+const pendingAttachments = ref<{ ref: string; name: string; url: string }[]>([])
 const filePicker = ref<HTMLInputElement | null>(null)
 function pickImage() {
   filePicker.value?.click()
 }
-function readImageFiles(files: FileList | File[] | null | undefined) {
+function fileToDataUrl(f: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(String(r.result))
+    r.onerror = reject
+    r.readAsDataURL(f)
+  })
+}
+async function readImageFiles(files: FileList | File[] | null | undefined) {
   if (!files) return
   for (const f of Array.from(files)) {
     if (!f.type.startsWith('image/')) continue
-    const reader = new FileReader()
-    reader.onload = () => pendingImages.value.push(String(reader.result))
-    reader.readAsDataURL(f)
+    try {
+      const dataUrl = await fileToDataUrl(f)
+      const meta = await post<{ ref: string; name: string; url?: string }>('/api/attachments', {
+        name: f.name || 'image.png',
+        data_url: dataUrl
+      })
+      pendingAttachments.value.push({ ref: meta.ref, name: meta.name || f.name, url: meta.url || '' })
+    } catch (e) {
+      ElMessage.error(`图片上传失败：${(e as Error).message}`)
+    }
   }
 }
 function onPickImage(e: Event) {
   const el = e.target as HTMLInputElement
-  readImageFiles(el.files)
+  void readImageFiles(el.files)
   el.value = ''
 }
 function onPasteImage(e: ClipboardEvent) {
@@ -61,11 +76,11 @@ function onPasteImage(e: ClipboardEvent) {
   }
   if (files.length) {
     e.preventDefault()
-    readImageFiles(files)
+    void readImageFiles(files)
   }
 }
-function removeImage(i: number) {
-  pendingImages.value.splice(i, 1)
+function removeAttachment(i: number) {
+  pendingAttachments.value.splice(i, 1)
 }
 
 /** 入口: company=零号员工(企业单例) / personal=我的员工助手(个人实例) */
@@ -286,11 +301,15 @@ async function openSession(row: SessionRow) {
     currentSession.value = row
     procTip.value = ''
     messages.value = msgs.map(m => {
+      const c: any = m.content
+      const text = Array.isArray(c)
+        ? c.map((p: any) => (p && p.type === 'text' ? p.text : (p && (p.type === 'image_ref' || p.type === 'image_url') ? `[图片${p.name ? '：' + p.name : ''}]` : ''))).join('')
+        : String(c ?? '')
       if (m.role === 'user') {
-        return { role: 'user' as const, content: m.content, reasoning: '', blocks: [], toolCount: 0, error: '' }
+        return { role: 'user' as const, content: text, reasoning: '', blocks: [], toolCount: 0, error: '' }
       }
       const a = emptyAssistant()
-      if (m.content) a.blocks.push({ kind: 'text', content: m.content, html: '' })
+      if (text) a.blocks.push({ kind: 'text', content: text, html: '' })
       return a
     })
     for (const mm of messages.value) flushMarkdown(mm.blocks)
@@ -316,10 +335,10 @@ function newSession() {
 
 function send() {
   const text = input.value.trim()
-  const imgs = pendingImages.value.slice()
+  const imgs = pendingAttachments.value.slice()
   if ((!text && imgs.length === 0) || streaming.value || readonly.value) return
   input.value = ''
-  pendingImages.value = []
+  pendingAttachments.value = []
   const shown = text || (imgs.length ? `[图片 ×${imgs.length}]` : '')
   messages.value.push({ role: 'user', content: shown, reasoning: '', blocks: [], toolCount: 0, error: '' })
   const reply: Msg = emptyAssistant()
@@ -330,7 +349,13 @@ function send() {
 
   abort = new AbortController()
   streamChat(
-    { message: text, session_id: sessionId.value || undefined, permission_mode: permMode.value, scope: entryScope.value, attachments: imgs.length ? imgs : undefined },
+    {
+      message: text,
+      session_id: sessionId.value || undefined,
+      permission_mode: permMode.value,
+      scope: entryScope.value,
+      attachments: imgs.length ? imgs.map((a) => ({ ref: a.ref, name: a.name })) : undefined
+    },
     (ev) => {
       const data = (ev.data ?? {}) as Record<string, any>
       switch (ev.type) {
@@ -605,11 +630,12 @@ onBeforeUnmount(() => {
             <el-icon :size="14"><Warning /></el-icon>
             <span>该会话来自「{{ channelMeta(currentSession?.channel || '', currentSession?.id || '').label }}」渠道，仅支持查看历史，请在对应渠道继续对话。</span>
           </div>
-          <div v-if="pendingImages.length" class="pending-images">
-            <div v-for="(src, i) in pendingImages" :key="i" class="pending-thumb">
-              <img :src="src" alt="附件" />
-              <button class="thumb-x" title="移除" @click="removeImage(i)">×</button>
-            </div>
+          <div v-if="pendingAttachments.length" class="pending-images">
+            <span v-for="(a, i) in pendingAttachments" :key="a.ref" class="pending-chip" :title="a.name">
+              <el-icon :size="12"><Picture /></el-icon>
+              <span class="chip-name">{{ a.name }}</span>
+              <button class="thumb-x" title="移除" @click="removeAttachment(i)">×</button>
+            </span>
           </div>
           <el-input
             v-model="input"
@@ -656,7 +682,7 @@ onBeforeUnmount(() => {
               <button class="icon-btn voice-btn" disabled title="语音输入需桌面端（ASR）">
                 <el-icon :size="15"><Microphone /></el-icon>
               </button>
-              <button v-if="!streaming" class="send-btn" :disabled="(!input.trim() && !pendingImages.length) || readonly" title="发送" @click="send">
+              <button v-if="!streaming" class="send-btn" :disabled="(!input.trim() && !pendingAttachments.length) || readonly" title="发送" @click="send">
                 <el-icon :size="15"><CaretRight /></el-icon>
               </button>
               <button v-else class="send-btn stop" title="停止" @click="stop"><span class="stop-square" /></button>
@@ -800,12 +826,17 @@ onBeforeUnmount(() => {
   margin-top: 2px;
 }
 .proc-hint { color: var(--text-2, #555); font-size: 13px; margin-top: 4px; }
-.pending-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 8% 8px; }
-.pending-thumb { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border, #e5e7eb); }
-.pending-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.pending-thumb .thumb-x {
-  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; line-height: 16px;
-  border: none; border-radius: 50%; cursor: pointer; font-size: 13px;
-  background: rgba(0, 0, 0, 0.55); color: #fff; padding: 0;
+.pending-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 8% 8px; }
+.pending-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
+  padding: 4px 8px; border-radius: 8px; font-size: 12px;
+  background: var(--el-fill-color-light, #f2f3f5); color: var(--text-1, #333);
+  border: 1px solid var(--border, #e5e7eb);
 }
+.pending-chip .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-chip .thumb-x {
+  border: none; background: transparent; cursor: pointer; font-size: 14px; line-height: 1;
+  color: var(--text-3, #999); padding: 0;
+}
+.pending-chip .thumb-x:hover { color: var(--el-color-danger, #e5534b); }
 </style>
