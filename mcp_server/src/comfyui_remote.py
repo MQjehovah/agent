@@ -4,6 +4,7 @@ ComfyUI Remote MCP Server - 远程 ComfyUI 调用
 通过 ComfyUI 原生 HTTP API (http://host:port) 远程驱动其它机器上的 ComfyUI：
 - 查询服务器状态 / 硬件 / 显存 / 队列
 - 列出模型、搜索节点、查看节点输入定义
+- 列出 / 读取 / 直接运行服务器**已保存的工作流**（前端「工作流」列表）
 - 上传输入图片
 - 提交工作流（API 格式或 UI 导出格式）、等待完成、取回输出文件与图片
 - 中断任务、清空队列、释放显存
@@ -15,11 +16,13 @@ ComfyUI Remote MCP Server - 远程 ComfyUI 调用
 """
 import os
 import io
+import copy
 import json
 import time
 import uuid
 import logging
 import mimetypes
+import urllib.parse
 from pathlib import Path
 from typing import Any, Optional, List, Dict, Union
 
@@ -157,9 +160,162 @@ def _node_widget_names(spec: Dict[str, Any], node: Dict[str, Any]) -> List[str]:
     return [n for n in names if n not in converted]
 
 
+def _norm_link(link: Any) -> Optional[list]:
+    """UI 图的 link 统一成 [id, origin_id, origin_slot, target_id, target_slot, type]。"""
+    if isinstance(link, list) and len(link) >= 5:
+        return [link[0], link[1], int(link[2] or 0), link[3], int(link[4] or 0),
+                link[5] if len(link) > 5 else "*"]
+    if isinstance(link, dict) and "id" in link:
+        return [link["id"], link.get("origin_id"), int(link.get("origin_slot") or 0),
+                link.get("target_id"), int(link.get("target_slot") or 0), link.get("type") or "*"]
+    return None
+
+
+def _expand_subgraphs(graph: Dict[str, Any], info: Dict[str, Any]) -> Dict[str, Any]:
+    """把 ComfyUI 新版「子图(subgraph)」工作流展开成扁平 UI 图（供 ui_graph_to_api 转换）。
+
+    子图定义在 ``definitions.subgraphs``，实例节点的 ``type`` 即子图 id；
+    展开时为内层节点加 ``"{实例id}:"`` 前缀避免碰撞，并把：
+    - 实例的**控件**输入值写入对应内层节点控件；
+    - 实例的**连线**输入接到内层消费节点；内层产出接到实例输出连线的下游；
+    最终去掉 inputNode/outputNode(-10/-20) 的伪连线。
+    """
+    subgraphs = {
+        s.get("id"): s
+        for s in ((graph.get("definitions") or {}).get("subgraphs") or [])
+        if isinstance(s, dict)
+    }
+    if not subgraphs:
+        return graph
+
+    for _ in range(5):  # 支持嵌套子图
+        nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
+        has_instance = any(
+            isinstance(n.get("type"), str) and n.get("type") in subgraphs for n in nodes
+        )
+        if not has_instance:
+            break
+        outer_links = [l for l in (_norm_link(x) for x in (graph.get("links") or [])) if l]
+        out_nodes: List[Dict[str, Any]] = []
+        out_links: List[list] = []
+
+        for node in nodes:
+            if not (isinstance(node.get("type"), str) and node["type"] in subgraphs):
+                out_nodes.append(node)
+                continue
+            sg = subgraphs[node["type"]]
+            inst_id = node.get("id")
+            prefix = f"{inst_id}:"
+            in_id = (sg.get("inputNode") or {}).get("id", -10)
+            out_id = (sg.get("outputNode") or {}).get("id", -20)
+            inner_nodes = [n for n in (sg.get("nodes") or []) if isinstance(n, dict)]
+            by_id = {n.get("id"): n for n in inner_nodes}
+            inner_links = {}
+            for raw in sg.get("links") or []:
+                nl = _norm_link(raw)
+                if nl:
+                    inner_links[nl[0]] = nl
+            widget_vals = node.get("widgets_values") or []
+
+            incoming = {}
+            for l in outer_links:
+                _lid, oid, oslot, tid, tslot, _typ = l
+                if tid == inst_id:
+                    incoming[int(tslot)] = (oid, oslot)
+
+            # 暴露输入 → 内层消费节点
+            for k, exposed in enumerate(sg.get("inputs") or []):
+                for lid in exposed.get("linkIds") or []:
+                    nl = inner_links.get(lid)
+                    if not nl:
+                        continue
+                    _lid, start, _sslot, tid, tslot, ltype = nl
+                    if start != in_id or tid in (in_id, out_id):
+                        continue
+                    if k in incoming:
+                        oid_ext, oslot_ext = incoming[k]
+                        out_links.append([f"{prefix}{lid}", oid_ext, oslot_ext, f"{prefix}{tid}", tslot, ltype])
+                    else:
+                        _set_inner_widget(by_id.get(tid), tslot, widget_vals[k] if k < len(widget_vals) else None, info)
+
+            # 内层产出 → 实例输出连线的下游
+            for m, exposed in enumerate(sg.get("outputs") or []):
+                for lid in exposed.get("linkIds") or []:
+                    nl = inner_links.get(lid)
+                    if not nl:
+                        continue
+                    _lid, oid, oslot, tid, _tslot, ltype = nl
+                    if tid != out_id or oid in (in_id, out_id):
+                        continue
+                    for l in outer_links:
+                        _olid, ol_oid, ol_oslot, ol_tid, ol_tslot, ol_typ = l
+                        if ol_oid == inst_id and int(ol_oslot) == m:
+                            out_links.append([_olid, f"{prefix}{oid}", oslot,
+                                              ol_tid, ol_tslot, ol_typ or ltype])
+
+            # 内层互相连接的线
+            for nl in inner_links.values():
+                lid, oid, oslot, tid, tslot, ltype = nl
+                if oid in (in_id, out_id) or tid in (in_id, out_id):
+                    continue
+                out_links.append([f"{prefix}{lid}", f"{prefix}{oid}", oslot, f"{prefix}{tid}", tslot, ltype])
+
+            # 内层节点（重写 id 与连线引用后并入）
+            for n in inner_nodes:
+                n2 = copy.deepcopy(n)
+                n2["id"] = f"{prefix}{n.get('id')}"
+                for slot in n2.get("inputs") or []:
+                    if isinstance(slot.get("link"), int):
+                        slot["link"] = f"{prefix}{slot['link']}"
+                for oslot in n2.get("outputs") or []:
+                    if isinstance(oslot.get("links"), list):
+                        oslot["links"] = [f"{prefix}{x}" for x in oslot["links"]]
+                out_nodes.append(n2)
+
+        # 其余不与实例相连的外层连线
+        inst_ids = {n.get("id") for n in nodes
+                    if isinstance(n.get("type"), str) and n.get("type") in subgraphs}
+        for l in outer_links:
+            _lid, oid, _oslot, tid, _tslot, _typ = l
+            if oid in inst_ids or tid in inst_ids:
+                continue
+            out_links.append(l)
+
+        graph = {"nodes": out_nodes, "links": out_links}
+
+    if isinstance(graph, dict):
+        graph.pop("definitions", None)
+    return graph
+
+
+def _set_inner_widget(node: Optional[Dict[str, Any]], slot_index: int, value: Any,
+                      info: Dict[str, Any]) -> None:
+    """把子图实例的控件值写回内层节点的输入槽（置空连线 + 覆盖 widgets_values）。"""
+    if node is None or value is None:
+        return
+    slots = node.get("inputs") or []
+    if slot_index < 0 or slot_index >= len(slots):
+        return
+    slot = slots[slot_index]
+    slot["link"] = None
+    name = slot.get("name")
+    spec = info.get(node.get("type"))
+    widget_names = _widget_input_names(spec) if spec else []
+    if name not in widget_names:
+        # 非控件输入无法以值注入，退回保留（可能缺值）
+        return
+    idx = widget_names.index(name)
+    values = list(node.get("widgets_values") or [])
+    while len(values) <= idx:
+        values.append(None)
+    values[idx] = value
+    node["widgets_values"] = values
+
+
 def ui_graph_to_api(graph: Dict[str, Any]) -> tuple:
     """把 ComfyUI 前端导出的 UI 格式转换为 /prompt 需要的 API 格式"""
     info = _object_info()
+    graph = _expand_subgraphs(graph, info)
     nodes = graph.get("nodes") or []
     links = graph.get("links") or []
 
@@ -201,18 +357,36 @@ def ui_graph_to_api(graph: Dict[str, Any]) -> tuple:
 
         values = node.get("widgets_values") or []
         cursor = 0
-        for widget_name in _node_widget_names(spec, node):
+        # 现代 UI 图：控件值按 object_info 声明的控件输入顺序存放在 widgets_values；
+        # 已在 inputs 里的（有连线的控件）保持连线优先，其余按顺序落值。
+        for widget_name in _widget_input_names(spec):
             if cursor >= len(values):
                 break
-            inputs[widget_name] = values[cursor]
+            value = values[cursor]
             cursor += 1
             if _has_control_after_generate(spec, widget_name):
                 cursor += 1
+            if widget_name not in inputs:
+                inputs[widget_name] = value
         if cursor < len(values):
             warnings.append(
                 f"节点 {node_id} ({class_type}) 有 {len(values) - cursor} 个控件值未能映射，"
                 f"请确认节点版本一致（必要时改用 API 格式工作流）"
             )
+
+        # 动态/嵌套输入：UI 里把 dict 型输入拆成 "values.a"，API 侧需还原成 {"values": {"a": ...}}
+        declared = set((spec.get("input") or {}).get("required") or {})
+        declared |= set((spec.get("input") or {}).get("optional") or {})
+        for dotted in [k for k in list(inputs) if "." in k]:
+            base, _sep, sub = dotted.partition(".")
+            if base not in declared or "." in base:
+                continue
+            value = inputs.pop(dotted)
+            bucket = inputs.get(base)
+            if not isinstance(bucket, dict):
+                bucket = {}
+            bucket[sub] = value
+            inputs[base] = bucket
 
         api[node_id] = {
             "class_type": class_type,
@@ -548,6 +722,206 @@ def validate_workflow(workflow: Optional[dict] = None, workflow_file: Optional[s
     return result
 
 
+# ----------------------------------------------------------------------------
+# 服务器已保存工作流（ComfyUI 前端「工作流」列表，userdata/workflows/*.json）
+# ----------------------------------------------------------------------------
+
+def _read_saved_workflow(name: str) -> dict:
+    rel = (name or "").strip().lstrip("/")
+    if not rel:
+        raise ComfyError("必须提供服务器保存的工作流名（见 list_saved_workflows）")
+    if not rel.lower().endswith(".json"):
+        rel += ".json"
+    # 文件相对 user 根目录，位于 workflows/ 子目录：斜杠需双重编码
+    # （aiohttp 路由先解码一次 → %2F，处理函数再 unquote 还原为 /）。
+    enc = urllib.parse.quote(urllib.parse.quote("workflows/" + rel, safe=""), safe="")
+    data = _request("GET", f"/userdata/{enc}", timeout=60).json()
+    if not isinstance(data, dict):
+        raise ComfyError(f"服务器工作流 {name} 内容不是 JSON 对象")
+    return data
+
+
+def _apply_overrides(api: dict, node_overrides, prompt, negative_prompt, seed, steps, cfg):
+    applied: List[str] = []
+
+    if node_overrides:
+        for node_id, fields in (node_overrides or {}).items():
+            node = api.get(str(node_id))
+            if not isinstance(node, dict):
+                applied.append(f"跳过不存在的节点 {node_id}")
+                continue
+            node.setdefault("inputs", {})
+            for key, value in (fields or {}).items():
+                node["inputs"][key] = value
+                applied.append(f"{node_id}.{key}")
+
+    def set_everywhere(key: str, value) -> None:
+        for nid, node in api.items():
+            inputs = node.get("inputs")
+            if isinstance(inputs, dict) and key in inputs:
+                inputs[key] = value
+                applied.append(f"{nid}.{key}")
+
+    # 文本：优先给带 text 且类名含 encode 的节点（第 1 个正向、第 2 个负向）
+    text_nodes = [
+        nid
+        for nid, node in api.items()
+        if isinstance(node.get("inputs"), dict)
+        and "text" in node["inputs"]
+        and "encode" in str(node.get("class_type", "")).lower()
+    ]
+    if prompt and text_nodes:
+        api[text_nodes[0]]["inputs"]["text"] = prompt
+        applied.append(f"{text_nodes[0]}.text")
+    if negative_prompt and len(text_nodes) > 1:
+        api[text_nodes[1]]["inputs"]["text"] = negative_prompt
+        applied.append(f"{text_nodes[1]}.text")
+
+    if seed is not None:
+        for key in ("seed", "noise_seed"):
+            set_everywhere(key, int(seed))
+    if steps is not None:
+        set_everywhere("steps", int(steps))
+    if cfg is not None:
+        set_everywhere("cfg", float(cfg))
+    return applied
+
+
+def _run_api(
+    api: dict,
+    warnings: List[str],
+    *,
+    wait: bool,
+    timeout: float,
+    download_dir: str,
+    include_images: bool,
+    max_inline_images: int,
+    extra: Optional[Dict[str, Any]] = None,
+):
+    check = validate_api_workflow(api)
+    if not check["valid"]:
+        return [{"error": "工作流校验失败，未提交", "validation": check, "warnings": warnings}]
+    resp = _request(
+        "POST",
+        "/prompt",
+        json={"prompt": api, "client_id": STATE["client_id"]},
+        timeout=300,
+    ).json()
+    if resp.get("node_errors"):
+        return [{"error": "ComfyUI 拒绝该工作流", "node_errors": resp["node_errors"], "warnings": warnings}]
+    prompt_id = resp.get("prompt_id")
+    if not wait:
+        return [{"prompt_id": prompt_id, "queued": True, "number": resp.get("number"),
+                 "warnings": warnings, **(extra or {})}]
+    result = _wait_for(prompt_id, timeout)
+    if result.get("status") != "success":
+        return [{"prompt_id": prompt_id, "warnings": warnings, **result, **(extra or {})}]
+    content = _collect(prompt_id, download_dir or None, include_images, max_inline_images)
+    if warnings:
+        content[0]["warnings"] = warnings
+    content[0]["status"] = "success"
+    if extra:
+        content[0].update(extra)
+    return content
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def list_saved_workflows(recurse: bool = True, full_info: bool = False):
+    """列出目标 ComfyUI 上**已保存的工作流**（前端「工作流」列表），可直接用 run_saved_workflow 运行。
+
+    Args:
+        recurse: 是否递归子目录，默认 True。
+        full_info: 是否返回详细信息（路径/大小/修改时间），默认 False 仅返回名称。
+    """
+    params: Dict[str, Any] = {"dir": "workflows"}
+    if recurse:
+        params["recurse"] = "true"
+    if full_info:
+        params["full_info"] = "true"
+    return {"workflows": _get_json("/userdata", **params)}
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def get_saved_workflow(name: str, include_full: bool = False):
+    """读取目标 ComfyUI 上某个已保存工作流：默认返回节点概览（便于确认提示词/参数节点），
+    需要完整 JSON 时传 include_full=True。
+
+    Args:
+        name: 工作流名（见 list_saved_workflows，可带子目录相对路径）。
+        include_full: 是否返回完整工作流 JSON（UI 导出格式），默认 False。
+    """
+    wf = _read_saved_workflow(name)
+    is_ui = _is_ui_graph(wf)
+    out: Dict[str, Any] = {
+        "name": name,
+        "format": "ui" if is_ui else "api",
+    }
+    if is_ui:
+        nodes = []
+        for node in wf.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            nodes.append({
+                "id": node.get("id"),
+                "type": node.get("type"),
+                "title": node.get("title"),
+                "widgets_values": node.get("widgets_values"),
+            })
+        out["node_count"] = len(nodes)
+        out["nodes"] = nodes[:120]
+    if include_full:
+        out["workflow"] = wf
+    return out
+
+
+@mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
+def run_saved_workflow(
+    name: str,
+    wait: bool = True,
+    timeout: float = 600.0,
+    download_dir: str = "",
+    include_images: bool = True,
+    max_inline_images: int = 6,
+    node_overrides: Optional[Dict[str, Any]] = None,
+    prompt: str = "",
+    negative_prompt: str = "",
+    seed: Optional[int] = None,
+    steps: Optional[int] = None,
+    cfg: Optional[float] = None,
+):
+    """直接运行目标 ComfyUI 上**已调好的工作流**（list_saved_workflows 里的名称），可选覆盖参数。
+
+    这正是「复用服务器上现成工作流」的入口：无需自己搭图，挑一个跑即可（支持 UI 导出格式自动转 API）。
+
+    Args:
+        name: 已保存工作流名（如「Qwen文生图.json」）。
+        wait: 是否阻塞等待完成，默认 True。
+        timeout: 等待超时秒数，默认 600。
+        download_dir: 输出下载目录；留空时若 include_images 会下载到临时目录以便内联。
+        include_images: 是否内联返回输出图片，默认 True。
+        max_inline_images: 最多内联图片数，默认 6。
+        node_overrides: 精确覆盖，形如 {"3": {"text": "新的提示词"}, "5": {"seed": 123}}（节点 id 见 get_saved_workflow）。
+        prompt: 覆盖文本编码节点的正向提示词（第 1 个 encode 类节点）。
+        negative_prompt: 覆盖负向提示词（第 2 个 encode 类节点）。
+        seed/steps/cfg: 覆盖工作流中同名输入（seed 同时覆盖 noise_seed）。
+    """
+    wf = _read_saved_workflow(name)
+    api, warnings = _load_workflow(wf, None)
+    applied = _apply_overrides(api, node_overrides, prompt, negative_prompt, seed, steps, cfg)
+    if applied:
+        warnings = warnings + [f"已覆盖: {', '.join(applied)}"]
+    return _run_api(
+        api,
+        warnings,
+        wait=wait,
+        timeout=timeout,
+        download_dir=download_dir,
+        include_images=include_images,
+        max_inline_images=max_inline_images,
+        extra={"saved_workflow": name},
+    )
+
+
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def upload_image(file_path: str, subfolder: str = "", overwrite: bool = True):
     """上传本地图片到远程 ComfyUI 的 input 目录，供 LoadImage 等节点使用。
@@ -597,31 +971,15 @@ def run_workflow(
         max_inline_images: 最多内联多少张图片，默认 6。
     """
     api, warnings = _load_workflow(workflow, workflow_file)
-    check = validate_api_workflow(api)
-    if not check["valid"]:
-        return [{"error": "工作流校验失败，未提交", "validation": check, "warnings": warnings}]
-
-    resp = _request(
-        "POST",
-        "/prompt",
-        json={"prompt": api, "client_id": STATE["client_id"]},
-        timeout=300,
-    ).json()
-    if resp.get("node_errors"):
-        return [{"error": "ComfyUI 拒绝该工作流", "node_errors": resp["node_errors"], "warnings": warnings}]
-    prompt_id = resp.get("prompt_id")
-    if not wait:
-        return [{"prompt_id": prompt_id, "queued": True, "number": resp.get("number"), "warnings": warnings}]
-
-    result = _wait_for(prompt_id, timeout)
-    if result.get("status") != "success":
-        return [{"prompt_id": prompt_id, "warnings": warnings, **result}]
-
-    content = _collect(prompt_id, download_dir or None, include_images, max_inline_images)
-    if warnings:
-        content[0]["warnings"] = warnings
-    content[0]["status"] = "success"
-    return content
+    return _run_api(
+        api,
+        warnings,
+        wait=wait,
+        timeout=timeout,
+        download_dir=download_dir,
+        include_images=include_images,
+        max_inline_images=max_inline_images,
+    )
 
 
 def _wait_for(prompt_id: str, timeout: float, interval: float = 1.5):
@@ -745,7 +1103,7 @@ def generate_image(
     """用内置的 SD 文生图工作流（CheckpointLoaderSimple + KSampler + SaveImage）快速出图。
 
     注意：需要目标 ComfyUI 上有可用的 SD/SDXL 类 checkpoint（用 list_models 查看）。
-    复杂需求请改用 run_workflow 提交完整工作流。
+    复用服务器上已调好的工作流请改用 run_saved_workflow；复杂需求用 run_workflow 提交完整工作流。
 
     Args:
         prompt: 正向提示词。
