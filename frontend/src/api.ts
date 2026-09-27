@@ -113,26 +113,30 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   if (options.body && typeof options.body === 'string') headers['Content-Type'] = 'application/json'
 
   const res = await fetch(apiUrl(path), { ...options, headers })
-  if (res.status === 401) {
-    const bare = path.split('?')[0]
-    // 登录/SSO 交换的 401 = 凭据错误 → 展示服务端消息, 不清会话、不跳转(落到下方通用错误处理)
-    const isLogin = bare === '/api/auth/login' || bare.startsWith('/api/auth/sso')
-    // 仅"会话探测"端点的 401 才判定会话过期并登出
-    const isSessionProbe = bare === '/api/auth/me' || bare === '/api/auth/logout'
-      || bare === '/api/auth/change-password'
-    if (!isLogin && isSessionProbe) {
-      clearToken()
-      location.hash = '#/login'
-      throw new ApiError(401, '登录已过期,请重新登录')
-    }
-    // 其它(登录失败/市场代理/上游) 401 → 不误伤会话, 由下方通用错误抛出服务端消息
-  }
   const text = await res.text()
   let data: unknown = null
   try {
     data = text ? JSON.parse(text) : null
   } catch {
     /* 非 JSON 按原文 */
+  }
+  if (res.status === 401) {
+    const bare = path.split('?')[0]
+    // 登录/SSO 交换的 401 = 凭据错误 → 展示服务端消息, 不清会话、不跳转(落到下方通用错误处理)
+    const isLogin = bare === '/api/auth/login' || bare.startsWith('/api/auth/sso')
+    // 会话探测端点(或鉴权中间件判定 token 失效)才判定会话过期并登出
+    const isSessionProbe = bare === '/api/auth/me' || bare === '/api/auth/logout'
+      || bare === '/api/auth/change-password'
+    const obj = data && typeof data === 'object' ? (data as Record<string, unknown>) : null
+    const errMsg = obj ? String(obj.error ?? obj.detail ?? '') : ''
+    // 服务端 _AuthMiddleware 对任意 /api/* 抛出的会话失效标识
+    const sessionExpired = /invalid or expired token/i.test(errMsg)
+    if (!isLogin && (isSessionProbe || sessionExpired)) {
+      clearToken()
+      location.hash = '#/login'
+      throw new ApiError(401, '登录已过期,请重新登录')
+    }
+    // 其它(登录失败/市场代理/上游) 401 → 不误伤会话, 由下方通用错误抛出服务端消息
   }
   if (!res.ok) {
     const obj = data && typeof data === 'object' ? (data as Record<string, unknown>) : null
