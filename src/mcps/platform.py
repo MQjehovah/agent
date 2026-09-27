@@ -163,6 +163,12 @@ def parse_sync_capabilities(payload: Any) -> list[dict[str, Any]]:
         name = str(item.get("name") or "").strip()
         if not name:
             continue
+        # 已弃用(deprecated)能力不再挂到平台轨: 弃用件的服务端/凭据通常已失效,
+        # 若仍暴露会让模型误选(实测 remote_operation 调设备云 403)。弃用期内仍可在
+        # 「我的能力」查看/使用, 但不再自动进入平台工具表。
+        status = str(item.get("status") or "").strip().lower()
+        if status and status != "published":
+            continue
         gateway = item.get("gateway")
         distribution = str(item.get("distribution") or "both").strip().lower()
         binding = str(item.get("binding") or "service").strip().lower()

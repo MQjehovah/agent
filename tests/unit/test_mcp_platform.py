@@ -86,6 +86,17 @@ def test_parse_sync_filters_type_and_distribution():
     assert caps[0]["status"] == ""  # 缺字段兜底空串
 
 
+def test_parse_sync_skips_deprecated_status():
+    """已弃用(deprecated)能力不再挂平台轨; 缺 status 字段按可用处理。"""
+    payload = [
+        {"name": "pub", "type": "mcp", "version": "1.0.0", "distribution": "remote", "status": "published"},
+        {"name": "dep", "type": "mcp", "version": "1.0.0", "distribution": "remote", "status": "deprecated"},
+        {"name": "nostatus", "type": "mcp", "version": "1.0.0", "distribution": "remote"},
+    ]
+    caps = platform.parse_sync_capabilities(payload)
+    assert [c["name"] for c in caps] == ["pub", "nostatus"]
+
+
 def test_parse_sync_non_list_returns_empty():
     assert platform.parse_sync_capabilities({"detail": "x"}) == []
     assert platform.parse_sync_capabilities(None) == []
