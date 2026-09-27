@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { streamRequest, ApiError } from '../../src/api/client'
-import { shouldNotifyStreamFinish } from '../../src/utils/stream'
+import { shouldNotifyStreamFinish, streamInterrupted } from '../../src/utils/stream'
 
 /**
  * client.ts 直接使用渲染层全局 window.desktop;此测试在 Node 下注入最小桥接。
@@ -181,4 +181,20 @@ test('stream-finish：中止 / 出错 / 空内容不发完成通知', () => {
 
 test('stream-finish：正常完成且有内容才发完成通知', () => {
   assert.equal(shouldNotifyStreamFinish({ aborted: false, error: '', content: '回答完成' }), true)
+})
+
+test('stream-interrupted：未到终态且未中止/无错误 → 判定为非预期中断', () => {
+  assert.equal(streamInterrupted({ aborted: false, terminal: false, error: '' }), true)
+})
+
+test('stream-interrupted：到达终态(done/error) 不算中断', () => {
+  assert.equal(streamInterrupted({ aborted: false, terminal: true, error: '' }), false)
+})
+
+test('stream-interrupted：用户中止不算中断', () => {
+  assert.equal(streamInterrupted({ aborted: true, terminal: false, error: '' }), false)
+})
+
+test('stream-interrupted：已有错误信息不算中断(错误已展示)', () => {
+  assert.equal(streamInterrupted({ aborted: false, terminal: false, error: '网络错误' }), false)
 })

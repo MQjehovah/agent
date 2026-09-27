@@ -9,7 +9,7 @@ import type {
 } from '../api/types'
 import { useSettingsStore } from './settings'
 import { useSessionsStore, channelKindFromId } from './sessions'
-import { shouldNotifyStreamFinish } from '../utils/stream'
+import { shouldNotifyStreamFinish, streamInterrupted } from '../utils/stream'
 
 export interface ToolTrace {
   name: string
@@ -29,6 +29,8 @@ export interface UiMessage {
   subagentRunning: boolean
   tools: ToolTrace[]
   error: string
+  /** 在线流非预期中断(连接掉线, 未收到 done/error): 用于展示「重试」入口 */
+  interrupted?: boolean
   ts: number
 }
 
@@ -366,7 +368,12 @@ export const useChatStore = defineStore('chat', {
       const reply = this.pushTurn(message)
       const controller = new AbortController()
       activeAbort = controller
-      const apply = (event: ChatStreamEvent) => this.applyEvent(reply, event)
+      // 到达终态(done/error 事件)后置位; 用于区分「正常结束」与「连接被掐断」
+      let terminal = false
+      const apply = (event: ChatStreamEvent) => {
+        if (event.type === 'done' || event.type === 'error') terminal = true
+        this.applyEvent(reply, event)
+      }
 
       let aborted = false
       try {
@@ -387,6 +394,21 @@ export const useChatStore = defineStore('chat', {
       } finally {
         this.streaming = false
         activeAbort = null
+        const hadOnlineAsk = this.pendingPermission?.mode === 'online'
+        // 非预期中断: 连接被掐断且未收到 done/error → 明确提示并给重试入口, 不再静默「卡住」
+        if (streamInterrupted({ aborted, terminal, error: reply.error })) {
+          reply.interrupted = true
+          reply.error = hadOnlineAsk
+            ? '连接中断，反问未送达；本轮已中止，可重试'
+            : '连接中断，回答未完成；可重试'
+          this.error = reply.error
+          console.warn('[chat] 在线流非预期中断', {
+            sessionId: this.sessionId,
+            aborted,
+            terminal,
+            hadOnlineAsk
+          })
+        }
         // 正常完成/出错/中止后, 残留的在线反问弹窗一并收起(避免回答后界面卡住)
         this.clearOnlinePendingPermission()
         // 流式结束的通知只在正常完成时触发(中止/出错/空内容不打扰)
@@ -394,6 +416,24 @@ export const useChatStore = defineStore('chat', {
           notifyStreamFinish(this.sessionId, reply.content)
         }
       }
+    },
+
+    /** 在线会话: 重试被中断的最后一轮(删除末尾助手占位后, 重发最后一条用户消息) */
+    async retryOnlineTurn() {
+      if (this.streaming || this.sessionMode === 'local') return
+      if (this.sessionId && this.currentChannelKind && this.currentChannelKind !== 'web') return
+      let lastUser = -1
+      for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+        if (this.messages[i].role === 'user') {
+          lastUser = i
+          break
+        }
+      }
+      if (lastUser < 0) return
+      const text = this.messages[lastUser].content
+      this.messages.splice(lastUser)
+      this.error = ''
+      await this.send(text)
     },
 
     /** 追加一轮用户消息与空的 assistant 回复,进入流式态 */

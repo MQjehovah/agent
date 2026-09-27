@@ -787,6 +787,16 @@ async function regenerate(): Promise<void> {
   await chat.regenerate()
 }
 
+/** 在线会话: 重试被中断的最后一轮(重发上一条用户消息) */
+async function retryInterrupted(): Promise<void> {
+  if (chat.streaming) return
+  try {
+    await chat.retryOnlineTurn()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+}
+
 function toggleTool(key: string) {
   const next = new Set(expandedTools.value)
   if (next.has(key)) next.delete(key)
@@ -1234,6 +1244,9 @@ const isLocal = computed(() => chat.sessionMode === 'local')
             </div>
 
             <el-alert v-if="msg.error" :title="msg.error" type="error" :closable="false" class="err" />
+            <div v-if="msg.interrupted && !chat.streaming" class="interrupted-actions">
+              <el-button size="small" type="primary" plain @click="retryInterrupted">重试本轮</el-button>
+            </div>
           </div>
           <!-- 悬浮操作条: 复制(纯文本) / 复制 Markdown 原文 / 重新生成(仅本地最后一条) -->
           <div v-if="!chat.streaming" class="msg-actions">
@@ -1670,6 +1683,7 @@ const isLocal = computed(() => chat.sessionMode === 'local')
 .msg.user .bubble { background: var(--el-color-primary); color: #fff; border: none; white-space: pre-wrap; }
 .msg .tools { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
 .msg .err { margin-top: 8px; }
+.interrupted-actions { margin-top: 8px; }
 
 /* 消息悬浮操作条(复制/编辑/重新生成): 默认视觉隐藏, 悬停或键盘聚焦时显示。
    用 opacity 而非 display:none/visibility:hidden, 保证按钮始终在 Tab 序列内(可达)。 */
