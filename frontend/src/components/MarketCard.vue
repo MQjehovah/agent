@@ -44,7 +44,8 @@ const attrTags = [
   ...(c.category ? [c.category] : []),
   ...(c.tags || []).filter((t) => t && t !== 'plugin-component')
 ]
-const subline = c.version ? `v${c.version}` : ''
+/** 第二行：能力名 · 版本号（与 market 卡片一致） */
+const subline = c.version ? `${c.name} · v${c.version}` : c.name
 
 // 让父级知道卡片已挂载(用于按需加载图标)
 onMounted(() => emit('mounted', c.id))

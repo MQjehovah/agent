@@ -122,6 +122,8 @@ export interface CapabilityRuntime {
 export interface MarketCapabilityLite {
   id: string
   name: string
+  /** 展示名（display_name 优先，空则回退 name） */
+  display_name?: string
   type: MarketCapabilityType
   version: string
   description?: string

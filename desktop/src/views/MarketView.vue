@@ -121,6 +121,8 @@ function mapLite(v: unknown): MarketCapabilityLite | null {
   if (!id || !name || !version) return null
   if (type !== 'agent' && type !== 'tool' && type !== 'skill' && type !== 'mcp') return null
   const out: MarketCapabilityLite = { id, name, type, version }
+  const displayName = typeof r.display_name === 'string' && r.display_name.trim() ? r.display_name.trim() : ''
+  if (displayName) out.display_name = displayName
   const desc = typeof r.description === 'string' && r.description ? r.description : ''
   if (desc) out.description = desc
   const author = typeof r.author_name === 'string' && r.author_name ? r.author_name : ''
@@ -260,6 +262,15 @@ function ratingText(c: MarketCapabilityLite): string {
   return avg ? `★ ${avg.toFixed(1)}(${count})` : `★(${count})`
 }
 
+/** 卡片第一行：展示名（display_name 优先，空回退能力名） */
+function cardTitle(c: MarketCapabilityLite): string {
+  return (c.display_name || '').trim() || c.name
+}
+/** 卡片第二行：能力名 · 版本号（与 market/web 一致） */
+function cardSub(c: MarketCapabilityLite): string {
+  return c.version ? `${c.name} · v${c.version}` : c.name
+}
+
 interface BrowseCard extends MarketCapabilityLite {
   mine: boolean
   installed: boolean
@@ -274,7 +285,7 @@ const cards = computed<BrowseCard[]>(() => {
     if (tf && c.type !== tf) return false
     if (cf && c.category !== cf) return false
     if (kw) {
-      const hay = `${c.name} ${c.description ?? ''} ${c.category ?? ''} ${c.author_name ?? ''}`.toLowerCase()
+      const hay = `${c.name} ${c.display_name ?? ''} ${c.description ?? ''} ${c.category ?? ''} ${c.author_name ?? ''}`.toLowerCase()
       if (!hay.includes(kw)) return false
     }
     return true
@@ -609,14 +620,14 @@ onMounted(() => {
                   v-if="iconOf(card.id)"
                   class="market-icon"
                   :src="iconOf(card.id)"
-                  :alt="card.name"
+                  :alt="cardTitle(card)"
                 />
                 <span v-else class="market-icon market-icon-ph" :style="iconPhStyle(card.type)">
-                  {{ (card.name || '?').slice(0, 1).toUpperCase() }}
+                  {{ cardTitle(card).slice(0, 1).toUpperCase() }}
                 </span>
                 <div class="market-head-text">
-                  <h3 class="market-name" :title="card.name">{{ card.name }}</h3>
-                  <div v-if="card.version" class="market-sub">v{{ card.version }}</div>
+                  <h3 class="market-name" :title="cardTitle(card)">{{ cardTitle(card) }}</h3>
+                  <div class="market-sub">{{ cardSub(card) }}</div>
                 </div>
                 <span class="market-type" :class="'t-' + card.type">{{ typeName(card.type) }}</span>
               </div>
