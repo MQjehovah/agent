@@ -1,8 +1,8 @@
 /**
  * 能力市场直连客户端(可注入工厂)：
  *   my/capabilities 订阅列表、订阅/取消订阅、按名称下载能力包。
- *   与 rag.ts 的 createRagSearcher 同构 —— URL 拼接、OIDC Bearer 注入、错误折叠
- *   收敛到这里；fetch 实现可注入便于单测。客户端网络错误统一抛中文 Error，
+ *   与 rag.ts 的 createRagSearcher 同构 —— URL 拼接、gateway 受众平台 token Bearer 注入、
+ *   错误折叠收敛到这里；fetch 实现可注入便于单测。客户端网络错误统一抛中文 Error，
  *   由上层(ipc)统一处理，不在此折叠成 ok:false。
  */
 
@@ -41,8 +41,8 @@ export interface MarketCapability {
 export interface MarketClientDeps {
   /** 市场服务地址(可带尾斜杠,内部去掉) */
   marketUrl: string
-  /** 取 OIDC access token;返回 null 表示尚未完成企业 SSO 登录 */
-  getToken: () => string | null
+  /** 取 gateway 受众平台 token(可异步,如 freshGatewayToken);返回 null 表示尚未完成企业 SSO 登录 */
+  getToken: () => string | null | Promise<string | null>
   /** 可注入的 fetch 实现,测试用 stub 替换;缺省用全局 fetch */
   fetchImpl?: typeof fetch
 }
@@ -94,7 +94,7 @@ export function createMarketClient(deps: MarketClientDeps): MarketClient {
    * 网络错误折叠(cause)→ 非 2xx 取 detail/error/message 后抛错。返回已 2xx 的 Response。
    */
   async function request(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<Response> {
-    const token = deps.getToken()
+    const token = await deps.getToken()
     if (!token) throw new Error('请先完成企业 SSO 登录(访问能力市场需要)')
     const url = `${base}${path.startsWith('/') ? path : `/${path}`}`
     const headers: Record<string, string> = {

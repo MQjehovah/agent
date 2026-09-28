@@ -105,8 +105,8 @@ function errorText(v: unknown): string {
 export interface MarketToolInvokerDeps {
   /** 市场服务地址(可带尾斜杠,内部去掉) */
   marketUrl: string
-  /** 取 OIDC access token;返回 null 表示尚未完成企业 SSO 登录 */
-  getToken: () => string | null
+  /** 取 gateway 受众平台 token(可异步,如 freshGatewayToken);返回 null 表示尚未完成企业 SSO 登录 */
+  getToken: () => string | null | Promise<string | null>
   /** 可注入的 fetch 实现,测试用 stub 替换;缺省用全局 fetch */
   fetchImpl?: typeof fetch
 }
@@ -121,7 +121,7 @@ export function createMarketToolInvoker(deps: MarketToolInvokerDeps): MarketTool
   const doFetch = deps.fetchImpl ?? fetch
   const base = deps.marketUrl.replace(/\/+$/, '')
   return async (name, params) => {
-    const token = deps.getToken()
+    const token = await deps.getToken()
     if (!token) throw new Error('请先完成企业 SSO 登录(调用市场远程工具需要)')
     const url = `${base}/api/runtime/tools/${encodeURIComponent(name)}/invoke`
     let res: Response

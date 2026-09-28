@@ -4,7 +4,7 @@ import { basename, extname, isAbsolute, join as pjoin2 } from 'node:path'
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { getConfig } from '../store'
-import { getIdentity, ensureGatewayKey, freshAgentJwt, freshOidcAccessToken } from '../identity'
+import { getIdentity, ensureGatewayKey, freshAgentJwt, freshGatewayToken, freshOidcAccessToken } from '../identity'
 import {
   createSessionStore,
   parseModelIds,
@@ -145,13 +145,13 @@ function ensureRegistry(): Registry {
   if (!registry) {
     const reg = createRegistry()
     for (const tool of builtinTools) reg.register(tool)
-    // kb_search 依赖注入：RAG 直连实现带 OIDC access token（语义同 upstream 的 authFor('rag')），
+    // kb_search 依赖注入：RAG 直连实现带 gateway 受众平台 token（语义同 upstream 的 authFor('rag')），
     // 由 rag.ts 的可注入工厂构造，fetch/token/地址都可测；tools.ts 保持不碰 identity/upstream 的纯度
     reg.register(
       kbSearchTool(
         createRagSearcher({
           ragUrl: getConfig().ragUrl,
-          getToken: () => getIdentity()?.oidc?.accessToken ?? null
+          getToken: () => freshGatewayToken()
         })
       )
     )
@@ -292,8 +292,8 @@ function requireSsoLogin(): void {
  * 仅用于旧 kind:'market-gateway' 条目（读取兼容），新安装的平台桥接走占位符解析。
  */
 async function resolveMarketGateway(name: string): Promise<McpGatewayTarget> {
-  const token = getIdentity()?.oidc?.accessToken
-  if (!token) throw new Error('请先完成企业 SSO 登录')
+  // market 资源轨受众已统一为 gateway：用平台受众 token（交换失败→抛可读错误，由 connectMcpServers 跳过该条目）
+  const token = await freshGatewayToken()
   const base = getConfig().marketUrl.replace(/\/$/, '')
   return {
     url: `${base}/api/mcp-gateway/relay/${encodeURIComponent(name)}/stream`,
@@ -305,29 +305,29 @@ async function resolveMarketGateway(name: string): Promise<McpGatewayTarget> {
  * MCP 配置占位符变量解析（仅注册这两个主进程变量，绝不读取 process.env，
  * 防 mcp.json 借 ${VAR} 占位符偷环境变量）：
  * - MARKET_URL：当前设置的市场地址（去尾斜杠）
- * - MARKET_TOKEN：当前企业身份的 access token（未登录返回 undefined，
- *   连接器会跳过该 server 并提示「请先完成企业 SSO 登录」）
+ * - MARKET_TOKEN：当前身份的 gateway 受众平台 token（id_token 经 RFC 8693 换取；
+ *   未登录/交换失败时抛可读错误，连接器会跳过该 server 并透出原因）
  * 未注册变量返回 undefined。
  */
-function resolveMcpVar(name: string): string | undefined {
+async function resolveMcpVar(name: string): Promise<string | undefined> {
   if (name === 'MARKET_URL') return getConfig().marketUrl.replace(/\/$/, '')
-  if (name === 'MARKET_TOKEN') return getIdentity()?.oidc?.accessToken
+  if (name === 'MARKET_TOKEN') return freshGatewayToken()
   return undefined
 }
 
-/** market 客户端：地址每次现读 getConfig（设置可运行期修改），token 每次取当前身份 */
+/** market 客户端：地址每次现读 getConfig（设置可运行期修改），token 每次按需交换/刷新 */
 function createMarketClientForIpc(): MarketClient {
   return createMarketClient({
     marketUrl: getConfig().marketUrl,
-    getToken: () => getIdentity()?.oidc?.accessToken ?? null
+    getToken: () => freshGatewayToken()
   })
 }
 
-/** 远程 tool 真实调用：同样每次现读地址与 token，注册时只记住名字不固化配置 */
+/** 远程 tool 真实调用：同样每次现读地址与按需取 token，注册时只记住名字不固化配置 */
 async function invokeMarketRemoteTool(name: string, params: unknown): Promise<unknown> {
   const invoke = createMarketToolInvoker({
     marketUrl: getConfig().marketUrl,
-    getToken: () => getIdentity()?.oidc?.accessToken ?? null
+    getToken: () => freshGatewayToken()
   })
   return invoke(name, params)
 }

@@ -342,27 +342,45 @@ type VarSubstitution = { value: string } | { missing: string; hint: string }
 
 /**
  * 替换字符串中的 ${VAR}：
- * - 已注册变量 → 运行时值；
+ * - 已注册变量 → 运行时值(解析器可同步或异步，如 MARKET_TOKEN 需按需交换平台 token)；
  * - 未注册（undefined）或解析器抛错 → 返回缺失变量，调用方跳过整个 server
  *   （绝不发出含字面 ${X} 的请求）；
  * - MARKET_TOKEN 缺失时附「请先完成企业 SSO 登录」提示（未登录的企业身份场景）。
  */
-function substituteVarString(value: string, resolveVars: (name: string) => string | undefined): VarSubstitution {
+async function substituteVarString(
+  value: string,
+  resolveVars: (name: string) => string | undefined | Promise<string | undefined>
+): Promise<VarSubstitution> {
   let missing = ''
   let hint = ''
-  const out = value.replace(MCP_VAR_RE, (literal, name: string) => {
-    if (missing) return literal
+  let out = ''
+  let cursor = 0
+  for (const match of value.matchAll(MCP_VAR_RE)) {
+    const at = match.index ?? 0
+    const literal = match[0]
+    const name = match[1]
+    out += value.slice(cursor, at)
+    cursor = at + literal.length
+    if (missing) {
+      out += literal
+      continue
+    }
     try {
-      const resolved = resolveVars(name)
-      if (resolved !== undefined) return resolved
-      missing = name
-      hint = name === 'MARKET_TOKEN' ? '请先完成企业 SSO 登录' : ''
+      const resolved = await resolveVars(name)
+      if (resolved !== undefined) {
+        out += resolved
+      } else {
+        missing = name
+        hint = name === 'MARKET_TOKEN' ? '请先完成企业 SSO 登录' : ''
+        out += literal
+      }
     } catch (e) {
       missing = name
       hint = e instanceof Error ? e.message : String(e)
+      out += literal
     }
-    return literal
-  })
+  }
+  out += value.slice(cursor)
   return missing ? { missing, hint } : { value: out }
 }
 
@@ -370,16 +388,16 @@ function substituteVarString(value: string, resolveVars: (name: string) => strin
  * 对单条 server 做占位符替换：仅 url 与 headers 值（command/args/env/cwd 绝不替换）。
  * 无 url/headers（如旧 kind:market-gateway 条目）不触碰；存在缺失变量时返回 missing。
  */
-function substituteServerVars(
+async function substituteServerVars(
   cfg: McpServerConfig,
-  resolveVars: (name: string) => string | undefined
-): { cfg: McpServerConfig } | { missing: string; hint: string } {
+  resolveVars: (name: string) => string | undefined | Promise<string | undefined>
+): Promise<{ cfg: McpServerConfig } | { missing: string; hint: string }> {
   if (cfg.url === undefined && cfg.headers === undefined) return { cfg }
   let missing = ''
   let hint = ''
-  const resolveValue = (value: string): string => {
+  const resolveValue = async (value: string): Promise<string> => {
     if (missing) return value
-    const sub = substituteVarString(value, resolveVars)
+    const sub = await substituteVarString(value, resolveVars)
     if ('missing' in sub) {
       missing = sub.missing
       hint = sub.hint
@@ -388,10 +406,10 @@ function substituteServerVars(
     return sub.value
   }
   const next: McpServerConfig = { ...cfg }
-  if (cfg.url !== undefined) next.url = resolveValue(cfg.url)
+  if (cfg.url !== undefined) next.url = await resolveValue(cfg.url)
   if (cfg.headers !== undefined) {
     const headers: Record<string, string> = {}
-    for (const [key, value] of Object.entries(cfg.headers)) headers[key] = resolveValue(value)
+    for (const [key, value] of Object.entries(cfg.headers)) headers[key] = await resolveValue(value)
     next.headers = headers
   }
   return missing ? { missing, hint } : { cfg: next }
@@ -416,8 +434,8 @@ export async function connectMcpServers(opts: {
   onStatus?: (msg: string) => void
   /** market-gateway 连接参数解析器（ipc 注入：marketUrl + SSO Bearer） */
   resolveGateway?: ResolveMcpGateway
-  /** 配置占位符变量解析器（ipc 注入：仅注册变量 MARKET_URL/MARKET_TOKEN）；未注册返回 undefined */
-  resolveVars?: (name: string) => string | undefined
+  /** 配置占位符变量解析器（ipc 注入：仅注册变量 MARKET_URL/MARKET_TOKEN，可异步）；未注册返回 undefined */
+  resolveVars?: (name: string) => string | undefined | Promise<string | undefined>
   /** 连接器启用偏好（ipc 注入：读 mcp-prefs 禁用名单）；返回 true 的服务端跳过，缺省全部启用 */
   isDisabled?: (name: string) => boolean
   /** 传输/客户端工厂；缺省动态加载 SDK 实现 */
@@ -458,7 +476,7 @@ export async function connectMcpServers(opts: {
       // 远程占位符：仅替换 url/headers 值，未注册/不可用变量 → 跳过该 server（不影响其它 server）
       let effective = cfg
       if (resolveVars) {
-        const sub = substituteServerVars(cfg, resolveVars)
+        const sub = await substituteServerVars(cfg, resolveVars)
         if ('missing' in sub) {
           const literal = '${' + sub.missing + '}'
           status(

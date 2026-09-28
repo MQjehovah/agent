@@ -1,13 +1,13 @@
 import { protocol, net } from 'electron'
 import { getConfig } from './store'
-import { freshOidcAccessToken } from './identity'
+import { freshGatewayToken } from './identity'
 
 /**
  * 知识库/对话里的图片媒体代理:
  *   渲染层 CSP 只允许 'self' data: blob:(+ 本 scheme), 外部图片(内网 MinIO 等)一律拦下,
  *   故把 <img src> 统一改写成 xzmedia://fetch?u=<原始地址>, 由主进程取回再交还给渲染层。
  *   主进程 fetch 默认不带 Referer, 顺带绕过 OSS 的防盗链; 相对路径(如 /api/upload/...)
- *   按 RAG 地址补全并注入 OIDC token。
+ *   按 RAG 地址补全并注入 gateway 受众平台 token(id_token 经 RFC 8693 换取)。
  */
 export const MEDIA_SCHEME = 'xzmedia'
 
@@ -27,7 +27,13 @@ async function resolveTarget(raw: string): Promise<{ url: string; headers: Recor
     return { url: raw, headers: {} }
   }
   const base = getConfig().ragUrl.replace(/\/+$/, '')
-  const token = await freshOidcAccessToken()
+  // gateway 受众平台 token:交换失败仍回退无鉴权(由上游 401 提示重新登录)
+  let token: string | null = null
+  try {
+    token = await freshGatewayToken()
+  } catch (err) {
+    console.warn('[media] rag 凭据获取失败:', (err as Error).message)
+  }
   return {
     url: `${base}${raw.startsWith('/') ? raw : `/${raw}`}`,
     headers: token ? { authorization: `Bearer ${token}` } : {}

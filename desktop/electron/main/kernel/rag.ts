@@ -1,8 +1,8 @@
 /**
  * RAG 直连调用(可注入工厂)：
- *   kb_search 等工具要直连公司知识库的 /api/search，须带 OIDC access token
- *   (语义同 upstream.ts 的 authFor('rag'))。把 URL 拼接、鉴权、错误折叠收敛到这里，
- *   fetch 实现可注入便于单测；错误一律折叠为带上下文的 Error。
+ *   kb_search 等工具要直连公司知识库的 /api/search，须带 gateway 受众平台 token
+ *   (id_token 经 RFC 8693 换取，语义同 upstream.ts 的 authFor('rag'))。把 URL 拼接、
+ *   鉴权、错误折叠收敛到这里，fetch 实现可注入便于单测；错误一律折叠为带上下文的 Error。
  */
 
 /** 非 2xx 正文里按优先级尝试取文案的字段 */
@@ -13,8 +13,8 @@ const RAW_BODY_LIMIT = 200
 export interface RagSearcherDeps {
   /** RAG 服务地址(可带尾斜杠,内部去掉) */
   ragUrl: string
-  /** 取 OIDC access token;返回 null 表示尚未完成企业 SSO 登录 */
-  getToken: () => string | null
+  /** 取 gateway 受众平台 token(可异步,如 freshGatewayToken);返回 null 表示尚未完成企业 SSO 登录 */
+  getToken: () => string | null | Promise<string | null>
   /** 可注入的 fetch 实现,测试用 stub 替换;缺省用全局 fetch */
   fetchImpl?: typeof fetch
 }
@@ -48,7 +48,7 @@ function toNetworkError(err: unknown): Error {
 export function createRagSearcher(deps: RagSearcherDeps): (path: string, body: unknown) => Promise<unknown> {
   const doFetch = deps.fetchImpl ?? fetch
   return async (path, body) => {
-    const token = deps.getToken()
+    const token = await deps.getToken()
     if (!token) throw new Error('请先完成企业 SSO 登录(知识库检索需要)')
     const base = deps.ragUrl.replace(/\/+$/, '')
     const url = `${base}${path.startsWith('/') ? path : `/${path}`}`
