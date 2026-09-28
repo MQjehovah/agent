@@ -47,7 +47,8 @@ def store(tmp_path, monkeypatch):
 def _user_row(store, uid):
     with store.get_connection() as conn:
         return conn.execute(
-            "SELECT id, name, display_name, department, role, status FROM rbac_users WHERE id=?",
+            "SELECT id, name, display_name, department, role, status, email "
+            "FROM rbac_users WHERE id=?",
             (uid,),
         ).fetchone()
 
@@ -263,6 +264,44 @@ def test_ensure_merge_prefers_claim_name(store):
     uid = rbac.create_user(name="季明清", display_name="旧显示名", role="admin")
     u = _sso_ensure_user("202202100024", dict(CLAIMS))
     assert u["id"] == uid and u["display_name"] == "季明清"
+
+
+# ---- _sso_ensure_user: 邮箱以 SSO 为权威源反写 ----
+
+def _set_email(store, uid, email):
+    with store.get_connection() as conn:
+        conn.execute("UPDATE rbac_users SET email=? WHERE id=?", (email, uid))
+        conn.commit()
+
+
+def test_ensure_syncs_changed_email(store):
+    """email 非空但不同 → 登录时按 claims.email 反写(归一化小写)。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="202202100024", department="研发部", role="default")
+    _set_email(store, uid, "old@x.com")
+    u = _sso_ensure_user("202202100024", dict(CLAIMS, email="Ji.MingQing@XZRobot.com"))
+    assert u["email"] == "ji.mingqing@xzrobot.com"
+    assert _user_row(store, uid)["email"] == "ji.mingqing@xzrobot.com"
+
+
+def test_ensure_empty_claim_email_keeps_existing(store):
+    """claims 缺/空 email → 保留现有邮箱, 不清空。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="202202100024", role="default")
+    _set_email(store, uid, "keep@x.com")
+    assert _sso_ensure_user("202202100024", dict(CLAIMS))["email"] == "keep@x.com"
+    assert _sso_ensure_user("202202100024", dict(CLAIMS, email="   "))["email"] == "keep@x.com"
+    assert _user_row(store, uid)["email"] == "keep@x.com"
+
+
+def test_ensure_merge_writes_back_email(store):
+    """老账号(中文名)合并后同样以 SSO 邮箱为权威源回写。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="季明清", display_name="季明清", role="admin")
+    _set_email(store, uid, "old@x.com")
+    u = _sso_ensure_user("202202100024", dict(CLAIMS, email="ji@xzrobot.com"))
+    assert u["id"] == uid and u["email"] == "ji@xzrobot.com"
+    assert _user_row(store, uid)["email"] == "ji@xzrobot.com"
 
 
 # ---- _sso_ensure_user: 老账号合并 ----

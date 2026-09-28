@@ -326,6 +326,26 @@ def _sso_sync_display_name(storage, uid: int, row, claims: dict):
         ).fetchone()
 
 
+def _sso_sync_email(storage, uid: int, row, claims: dict):
+    """SSO 为邮箱权威源: claims.email 非空且与当前不同则回写 rbac_users.email。
+
+    空/缺 email 一律保留现有值; 写入前归一化为小写(与邮箱优先匹配同口径)。
+    返回回写后的 rbac_users 行(无变化原样返回)。
+    """
+    claim_email = _sso_claim_email(claims)
+    if not claim_email or claim_email == (row["email"] or "").lower():
+        return row
+    with storage.get_connection() as conn:
+        conn.execute(
+            "UPDATE rbac_users SET email=?, updated_at=datetime('now') WHERE id=?",
+            (claim_email, uid),
+        )
+        conn.commit()
+        return conn.execute(
+            f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE id = ?", (uid,)
+        ).fetchone()
+
+
 def _sso_lookup_user(sub: str) -> dict | None:
     """按 SSO sub(工号) 查 rbac_users(name=sub), 返回 auth 形状; 不存在/禁用返回 None。"""
     from storage.storage import get_storage
@@ -350,9 +370,9 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
     2. 未命中 → 按 name=claims.name(老账号中文名) 找历史账号 → 把老账号 name
        改成 sub(工号)+ 补 display_name(保留 role/dept/status/钉钉绑定/历史) 后返回;
     3. 都未命中 → 新建 name=sub / display_name=claims.name 用户。
-    命中已有账号时以 SSO 为权威源: claims.name/claims.dept 非空且不同则回写(空值保留手工值);
-    非空 dept 在部门注册表缺失时自动建档。老账号(命中但)被禁用一律抛 403; 登录成功且
-    claims 含 dingtalk 时自动绑钉钉。
+    命中已有账号时以 SSO 为权威源: claims.name/claims.email/claims.dept 非空且不同则回写
+    (空值保留手工值); 非空 dept 在部门注册表缺失时自动建档。老账号(命中但)被禁用一律抛
+    403; 登录成功且 claims 含 dingtalk 时自动绑钉钉。
     """
     from security.rbac import RBACManager
     from storage.storage import get_storage
@@ -384,6 +404,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
             conn.commit()
             merged = _refresh(conn, uid)
         merged = _sso_sync_department(storage, uid, merged, claims)
+        merged = _sso_sync_email(storage, uid, merged, claims)
         _sso_bind_dingtalk(storage, uid, claims)
         return _sso_user_payload(merged)
 
@@ -414,6 +435,8 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
                     )
                 conn.commit()
                 email_row = _refresh(conn, uid)
+            email_row = _sso_sync_display_name(storage, uid, email_row, claims)
+            email_row = _sso_sync_email(storage, uid, email_row, claims)
             email_row = _sso_sync_department(storage, uid, email_row, claims)
             _sso_bind_dingtalk(storage, uid, claims)
             return _sso_user_payload(email_row)
@@ -424,15 +447,8 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
         if row["status"] != "active":
             raise HTTPException(status_code=403, detail="账号已被禁用")
         uid = row["id"]
-        if claim_email and not row["email"]:
-            with storage.get_connection() as conn:
-                conn.execute(
-                    "UPDATE rbac_users SET email=?, updated_at=datetime('now') WHERE id=?",
-                    (claim_email, uid),
-                )
-                conn.commit()
-                row = _refresh(conn, uid)
         row = _sso_sync_display_name(storage, uid, row, claims)
+        row = _sso_sync_email(storage, uid, row, claims)
         row = _sso_sync_department(storage, uid, row, claims)
         _sso_bind_dingtalk(storage, uid, claims)
         return _sso_user_payload(row)
