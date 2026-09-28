@@ -366,11 +366,13 @@ class Storage:
                     ON capability_installations(user_id, enabled);
 
                 -- 用户 SSO token 托管(web OBO 代换): id_token(约10分钟)+refresh_token, 按需刷新/交换
+                -- client_id 记录 token 来源客户端(web=agent / 桌面=dashboard-gateway), 刷新/交换按它执行
                 CREATE TABLE IF NOT EXISTS sso_tokens (
                     user_id INTEGER PRIMARY KEY,
                     id_token TEXT NOT NULL DEFAULT '',
                     refresh_token TEXT NOT NULL DEFAULT '',
                     id_expires_at REAL NOT NULL DEFAULT 0,
+                    client_id TEXT NOT NULL DEFAULT 'agent',
                     updated_at TEXT
                 );
 
@@ -506,6 +508,8 @@ class Storage:
             # 用户字段扩展: phone(手机号, SSO claims.mobile 回写), dingtalk_id(钉钉 userId 冗余映射)
             _add_col("rbac_users", "phone TEXT DEFAULT ''")
             _add_col("rbac_users", "dingtalk_id TEXT DEFAULT ''")
+            # 老库升级: sso_tokens 增加 client_id(token 来源客户端; 老行缺省 agent)
+            _add_col("sso_tokens", "client_id TEXT DEFAULT 'agent'")
             with suppress(sqlite3.OperationalError):
                 # 一次性回填(幂等, 仅 dingtalk_id 为空的行): 从 identities 取钉钉 platform_uid
                 conn.execute("""
@@ -1985,32 +1989,39 @@ class Storage:
             rows = conn.execute(sql, (user_id,)).fetchall()
         return {str(r[0]).strip() for r in rows if str(r[0]).strip()}
 
-    def save_sso_tokens(self, user_id: int, id_token: str, refresh_token: str, id_expires_at: float) -> None:
-        """保存/覆盖用户 SSO token 托管(登录或刷新后回存)。"""
+    def save_sso_tokens(self, user_id: int, id_token: str, refresh_token: str, id_expires_at: float,
+                        client_id: str = "agent") -> None:
+        """保存/覆盖用户 SSO token 托管(登录或刷新后回存); client_id 记录来源客户端。"""
+        cid = str(client_id or "agent").strip() or "agent"
         with self._write_lock, self._get_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO sso_tokens (user_id, id_token, refresh_token, id_expires_at, updated_at)
-                VALUES (?,?,?,?,?)
+                INSERT INTO sso_tokens (user_id, id_token, refresh_token, id_expires_at, client_id, updated_at)
+                VALUES (?,?,?,?,?,?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     id_token = excluded.id_token,
                     refresh_token = excluded.refresh_token,
                     id_expires_at = excluded.id_expires_at,
+                    client_id = excluded.client_id,
                     updated_at = excluded.updated_at
                 """,
-                (user_id, id_token, refresh_token, float(id_expires_at), datetime.now().isoformat()),
+                (user_id, id_token, refresh_token, float(id_expires_at), cid, datetime.now().isoformat()),
             )
             conn.commit()
 
     def get_sso_tokens(self, user_id: int) -> dict[str, Any] | None:
-        """读取用户 SSO token 托管; 不存在返回 None。"""
+        """读取用户 SSO token 托管; 不存在返回 None(client_id 缺省回退 'agent')。"""
         with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT user_id, id_token, refresh_token, id_expires_at, updated_at "
+                "SELECT user_id, id_token, refresh_token, id_expires_at, client_id, updated_at "
                 "FROM sso_tokens WHERE user_id=?",
                 (user_id,),
             ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        out = dict(row)
+        out["client_id"] = str(out.get("client_id") or "agent")
+        return out
 
     def delete_sso_tokens(self, user_id: int) -> None:
         with self._write_lock, self._get_connection() as conn:

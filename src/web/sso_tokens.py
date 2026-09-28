@@ -36,20 +36,34 @@ def _forget_locked(uid: int) -> None:
         _cache.pop(key, None)
 
 
+def _client_creds(row: dict) -> tuple[str, str | None]:
+    """按托管行来源客户端返回 (client_id, client_secret)。
+
+    仅本 agent 客户端带配置的 secret; 其它客户端(桌面 dashboard-gateway 等 public
+    客户端)显式传空串 = 不带 secret。返回 None 表示交给 sso_auth 用默认配置(agent)。
+    """
+    cid = str(row.get("client_id") or "agent").strip() or "agent"
+    return cid, None if cid == sso_auth.sso_client_id() else ""
+
+
 def save_user_tokens(uid: int, tokens: dict) -> bool:
-    """SSO 回调: 保存 id_token/refresh_token(幂等覆盖), 失败返回 False(不阻断登录)。"""
+    """SSO 回调/桌面托管: 保存 id_token/refresh_token(幂等覆盖), 失败返回 False(不阻断登录)。
+
+    tokens.client_id 记录来源客户端(缺省 agent); 后续刷新/交换按它执行。
+    """
     if uid <= 0 or not isinstance(tokens, dict):
         return False
     id_token = str(tokens.get("id_token") or "")
     if not id_token:
         return False
     refresh_token = str(tokens.get("refresh_token") or "")
+    client_id = str(tokens.get("client_id") or "agent").strip() or "agent"
     exp = float(sso_auth.token_exp(id_token) or 0)
     storage = _storage()
     if storage is None:
         return False
     try:
-        storage.save_sso_tokens(uid, id_token, refresh_token, exp)
+        storage.save_sso_tokens(uid, id_token, refresh_token, exp, client_id)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"保存用户 {uid} SSO token 失败: {e}")
         return False
@@ -70,34 +84,40 @@ def clear_user_tokens(uid: int) -> None:
         _forget_locked(uid)
 
 
-def _fresh_id_token(storage, uid: int) -> str:
-    """取新鲜 id_token: 未到期直接用; 临近/已过期用 refresh_token 刷新并回存。"""
+def _fresh_id_token(storage, uid: int) -> tuple[str, str, str | None]:
+    """取新鲜 id_token: 未到期直接用; 临近/已过期用来源客户端的 refresh_token 刷新并回存。
+
+    返回 (id_token, client_id, client_secret); 取不到时 id_token 为空串。
+    """
     row = storage.get_sso_tokens(uid)
     if not row:
-        return ""
+        return "", "", None
     id_token = str(row.get("id_token") or "")
     refresh_token = str(row.get("refresh_token") or "")
     exp = float(row.get("id_expires_at") or 0)
+    client_id, client_secret = _client_creds(row)
     if id_token and exp - time.time() > _REFRESH_MARGIN_SECONDS:
-        return id_token
+        return id_token, client_id, client_secret
     if not refresh_token:
-        return ""
+        return "", client_id, client_secret
     try:
-        refreshed = sso_auth.refresh_token_grant(refresh_token)
+        refreshed = sso_auth.refresh_token_grant(
+            refresh_token, client_id=client_id, client_secret=client_secret
+        )
     except sso_auth.SsoAuthError as e:
         logger.info(f"用户 {uid} SSO refresh 失败, 清空托管: {e}")
         storage.delete_sso_tokens(uid)
-        return ""
+        return "", "", None
     new_id = str(refreshed.get("id_token") or "")
     if not new_id:
-        return ""
+        return "", client_id, client_secret
     new_exp = float(sso_auth.token_exp(new_id) or 0)
     new_refresh = str(refreshed.get("refresh_token") or "") or refresh_token
     try:
-        storage.save_sso_tokens(uid, new_id, new_refresh, new_exp)
+        storage.save_sso_tokens(uid, new_id, new_refresh, new_exp, client_id)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"用户 {uid} 刷新后回存失败: {e}")
-    return new_id
+    return new_id, client_id, client_secret
 
 
 def get_downstream_token(uid: int, audience: str = "", *, force: bool = False) -> str:
@@ -121,12 +141,14 @@ def get_downstream_token(uid: int, audience: str = "", *, force: bool = False) -
         return ""
     # 低并发场景: 单锁串行刷新/交换, 避免 per-uid 锁复杂度
     with _lock:
-        id_token = _fresh_id_token(storage, uid)
+        id_token, client_id, client_secret = _fresh_id_token(storage, uid)
         if not id_token:
             _forget_locked(uid)
             return ""
         try:
-            token = sso_auth.exchange_token(id_token, aud)
+            token = sso_auth.exchange_token(
+                id_token, aud, client_id=client_id, client_secret=client_secret
+            )
         except sso_auth.SsoAuthError as e:
             logger.info(f"用户 {uid} SSO 交换({aud})失败: {e}")
             return ""

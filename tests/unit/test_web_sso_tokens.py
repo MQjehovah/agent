@@ -1,4 +1,4 @@
-"""web OBO: 用户 SSO token 托管/刷新/交换/缓存(_web/sso_tokens)。"""
+"""web OBO: 用户 SSO token 托管/刷新/交换/缓存(_web/sso_tokens); 来源 client 决定刷新/交换身份。"""
 import os
 import sys
 import time
@@ -14,9 +14,9 @@ class _FakeStorage:
     def __init__(self):
         self.rows: dict[int, dict] = {}
 
-    def save_sso_tokens(self, uid, id_token, refresh_token, id_expires_at):
-        self.rows[uid] = {"user_id": uid, "id_token": id_token,
-                          "refresh_token": refresh_token, "id_expires_at": id_expires_at}
+    def save_sso_tokens(self, uid, id_token, refresh_token, id_expires_at, client_id="agent"):
+        self.rows[uid] = {"user_id": uid, "id_token": id_token, "refresh_token": refresh_token,
+                          "id_expires_at": id_expires_at, "client_id": client_id}
 
     def get_sso_tokens(self, uid):
         return self.rows.get(uid)
@@ -44,9 +44,9 @@ def test_fresh_id_token_exchanges_and_caches(fakes, monkeypatch):
                      "id_expires_at": _exp(600)}
     calls: list[str] = []
     monkeypatch.setattr(sso_auth, "refresh_token_grant",
-                        lambda rt: pytest.fail("未过期不应刷新"))
+                        lambda rt, **kw: pytest.fail("未过期不应刷新"))
     monkeypatch.setattr(sso_auth, "exchange_token",
-                        lambda tok, aud: calls.append(f"{tok}:{aud}") or "down-1")
+                        lambda tok, aud, **kw: calls.append(f"{tok}:{aud}") or "down-1")
     monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(3600))
 
     assert sso_tokens.get_downstream_token(7) == "down-1"
@@ -60,9 +60,9 @@ def test_near_expiry_refreshes_and_persists_rotation(fakes, monkeypatch):
     store.rows[7] = {"user_id": 7, "id_token": "old", "refresh_token": "rt-1",
                      "id_expires_at": _exp(10)}  # 低于刷新余量
     monkeypatch.setattr(sso_auth, "refresh_token_grant",
-                        lambda rt: {"id_token": "new-id", "refresh_token": "rt-2"})
+                        lambda rt, **kw: {"id_token": "new-id", "refresh_token": "rt-2"})
     monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(600))
-    monkeypatch.setattr(sso_auth, "exchange_token", lambda tok, aud: "down-2")
+    monkeypatch.setattr(sso_auth, "exchange_token", lambda tok, aud, **kw: "down-2")
 
     assert sso_tokens.get_downstream_token(7) == "down-2"
     assert store.rows[7]["id_token"] == "new-id"
@@ -74,7 +74,7 @@ def test_refresh_failure_clears_tokens(fakes, monkeypatch):
     store.rows[7] = {"user_id": 7, "id_token": "old", "refresh_token": "rt-dead",
                      "id_expires_at": _exp(0)}
 
-    def _boom(rt):
+    def _boom(rt, **kw):
         raise sso_auth.SsoAuthError("invalid_grant")
 
     monkeypatch.setattr(sso_auth, "refresh_token_grant", _boom)
@@ -92,7 +92,7 @@ def test_force_skips_cache(fakes, monkeypatch):
     store.rows[7] = {"user_id": 7, "id_token": "id-1", "refresh_token": "rt",
                      "id_expires_at": _exp(600)}
     seq = iter(["down-a", "down-b"])
-    monkeypatch.setattr(sso_auth, "exchange_token", lambda tok, aud: next(seq))
+    monkeypatch.setattr(sso_auth, "exchange_token", lambda tok, aud, **kw: next(seq))
     monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(3600))
 
     assert sso_tokens.get_downstream_token(7) == "down-a"
@@ -106,3 +106,62 @@ def test_save_and_clear(fakes, monkeypatch):
     assert store.rows[5]["id_token"] == "id" and store.rows[5]["refresh_token"] == "rt"
     sso_tokens.clear_user_tokens(5)
     assert 5 not in store.rows
+
+
+def test_row_client_id_drives_refresh_and_exchange(fakes, monkeypatch):
+    """托管行来源 client=dashboard-gateway: 刷新/交换均按它执行且不带 secret。"""
+    store = fakes
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
+    monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "s3cr3t")
+    store.rows[7] = {"user_id": 7, "id_token": "old", "refresh_token": "rt-1",
+                     "id_expires_at": _exp(10),  # 低于刷新余量
+                     "client_id": "dashboard-gateway"}
+    refresh_calls: list[dict] = []
+    exchange_calls: list[dict] = []
+
+    def _refresh(rt, **kw):
+        refresh_calls.append({"rt": rt, **kw})
+        return {"id_token": "new-id", "refresh_token": "rt-2"}
+
+    def _exchange(tok, aud, **kw):
+        exchange_calls.append({"tok": tok, "aud": aud, **kw})
+        return "down-1"
+
+    monkeypatch.setattr(sso_auth, "refresh_token_grant", _refresh)
+    monkeypatch.setattr(sso_auth, "exchange_token", _exchange)
+    monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(600))
+
+    assert sso_tokens.get_downstream_token(7) == "down-1"
+    assert refresh_calls == [{"rt": "rt-1", "client_id": "dashboard-gateway", "client_secret": ""}]
+    assert exchange_calls == [
+        {"tok": "new-id", "aud": "dashboard-gateway",
+         "client_id": "dashboard-gateway", "client_secret": ""}
+    ]
+    assert store.rows[7]["client_id"] == "dashboard-gateway"  # 回存保留来源 client
+
+
+def test_default_agent_row_defers_to_agent_config(fakes, monkeypatch):
+    """老行/agent 行: 客户端取 agent, secret=None(由 sso_auth 用自身配置), 默认路径零漂移。"""
+    store = fakes
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
+    monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "s3cr3t")
+    store.rows[7] = {"user_id": 7, "id_token": "id-1", "refresh_token": "rt",
+                     "id_expires_at": _exp(600)}  # 无 client_id(老行)
+    monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(3600))
+    calls: list[dict] = []
+    monkeypatch.setattr(sso_auth, "exchange_token",
+                        lambda tok, aud, **kw: calls.append(kw) or "down-1")
+
+    assert sso_tokens.get_downstream_token(7) == "down-1"
+    assert calls == [{"client_id": "agent", "client_secret": None}]
+
+
+def test_save_user_tokens_persists_client_id(fakes, monkeypatch):
+    store = fakes
+    monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(600))
+    assert sso_tokens.save_user_tokens(
+        5, {"id_token": "id", "refresh_token": "rt", "client_id": "dashboard-gateway"}
+    ) is True
+    assert store.rows[5]["client_id"] == "dashboard-gateway"
+    assert sso_tokens.save_user_tokens(6, {"id_token": "id", "refresh_token": "rt"}) is True
+    assert store.rows[6]["client_id"] == "agent"  # 缺省 agent(web 回调路径)

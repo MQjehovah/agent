@@ -6,6 +6,7 @@
 依赖: pyjwt(自签 RS256)、python-jose[cryptography](验签), 均已安装。
 """
 
+import base64
 import json
 import os
 import sys
@@ -346,3 +347,82 @@ def test_exchange_token_requires_subject_and_audience(monkeypatch):
         sso_auth.exchange_token("", "market")
     with pytest.raises(SsoAuthError):
         sso_auth.exchange_token("subject-abc", "")
+
+
+# ---- 客户端覆盖(桌面 dashboard-gateway 等 public 客户端) ----
+
+
+def test_exchange_token_client_override_public_client_no_secret(monkeypatch):
+    """显式 client_id + 空 secret(public 客户端): 表单只带 client_id, 无 secret/Basic。"""
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=10):
+        captured["data"] = req.data
+        captured["auth"] = req.get_header("Authorization")
+        return _FakeResp(b'{"access_token":"downstream-token"}')
+
+    monkeypatch.setattr(sso_auth.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sso_auth, "sso_issuer", lambda: "https://sso.example.com")
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
+    monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "s3cr3t")
+
+    out = sso_auth.exchange_token(
+        "subject-abc", "gateway", client_id="dashboard-gateway", client_secret=""
+    )
+    assert out == "downstream-token"
+    body = captured["data"].decode("utf-8")
+    assert "client_id=dashboard-gateway" in body
+    assert "client_secret" not in body
+    assert captured["auth"] is None
+
+
+def test_refresh_token_grant_default_keeps_agent_secret(monkeypatch):
+    """默认路径零漂移: refresh 仍用 agent + secret(表单与 Basic 双注入)。"""
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=10):
+        captured["url"] = req.full_url
+        captured["data"] = req.data
+        captured["auth"] = req.get_header("Authorization")
+        return _FakeResp(b'{"id_token":"new-id","refresh_token":"rt-2"}')
+
+    monkeypatch.setattr(sso_auth.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sso_auth, "sso_issuer", lambda: "https://sso.example.com")
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
+    monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "s3cr3t")
+
+    out = sso_auth.refresh_token_grant("rt-1")
+    assert out["id_token"] == "new-id"
+    body = captured["data"].decode("utf-8")
+    assert "grant_type=refresh_token" in body
+    assert "refresh_token=rt-1" in body
+    assert "client_id=agent" in body
+    assert "client_secret=s3cr3t" in body
+    assert captured["url"] == "https://sso.example.com/token"
+    basic = captured["auth"]
+    assert basic.startswith("Basic ")
+    assert base64.b64decode(basic[6:]).decode("utf-8") == "agent:s3cr3t"
+
+
+def test_refresh_token_grant_client_override_public_client_no_secret(monkeypatch):
+    """显式 client_id + 空 secret: 表单只带 client_id, 无 secret/Basic。"""
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=10):
+        captured["data"] = req.data
+        captured["auth"] = req.get_header("Authorization")
+        return _FakeResp(b'{"id_token":"new-id"}')
+
+    monkeypatch.setattr(sso_auth.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sso_auth, "sso_issuer", lambda: "https://sso.example.com")
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
+    monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "s3cr3t")
+
+    out = sso_auth.refresh_token_grant(
+        "rt-1", client_id="dashboard-gateway", client_secret=""
+    )
+    assert out["id_token"] == "new-id"
+    body = captured["data"].decode("utf-8")
+    assert "client_id=dashboard-gateway" in body
+    assert "client_secret" not in body
+    assert captured["auth"] is None

@@ -222,19 +222,25 @@ def build_authorize_url(state: str) -> str:
     return issuer.rstrip("/") + "/authorize?" + urllib.parse.urlencode(params)
 
 
-def _post_token_form(form: dict) -> dict:
-    """POST issuer/token(表单); 同时携带 client_secret_basic 与 client_secret_post, 兼容两种支持方式。"""
+def _post_token_form(form: dict, *, client_id: str | None = None, client_secret: str | None = None) -> dict:
+    """POST issuer/token(表单); 同时携带 client_secret_basic 与 client_secret_post, 兼容两种支持方式。
+
+    缺省用 agent 客户端配置; client_id/client_secret 显式传入时覆盖, secret 为空则
+    不带(public 客户端, 如桌面 dashboard-gateway)。client_id 统一在此写入表单。
+    """
     issuer = sso_issuer()
     if not issuer:
         raise SsoAuthError("SSO not configured")
+    cid = (client_id or sso_client_id()).strip()
+    secret = sso_client_secret() if client_secret is None else client_secret
     payload_form = dict(form)
-    secret = sso_client_secret()
+    payload_form["client_id"] = cid
     if secret:
         payload_form["client_secret"] = secret
     data = urllib.parse.urlencode(payload_form).encode("utf-8")
     req = urllib.request.Request(issuer.rstrip("/") + "/token", data=data, method="POST")
     if secret:
-        token = base64.b64encode(f"{sso_client_id()}:{secret}".encode()).decode("ascii")
+        token = base64.b64encode(f"{cid}:{secret}".encode()).decode("ascii")
         req.add_header("Authorization", "Basic " + token)
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
@@ -255,23 +261,27 @@ def exchange_code(code: str) -> dict:
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": sso_redirect_uri(),
-        "client_id": sso_client_id(),
     })
     if not payload.get("id_token"):
         raise SsoAuthError("SSO token 响应缺少 id_token")
     return payload
 
 
-def refresh_token_grant(refresh_token: str) -> dict:
-    """refresh_token grant: 刷新并轮换, 返回新 token 组 dict(缺 id_token 抛错)。"""
+def refresh_token_grant(refresh_token: str, *, client_id: str | None = None,
+                        client_secret: str | None = None) -> dict:
+    """refresh_token grant: 刷新并轮换, 返回新 token 组 dict(缺 id_token 抛错)。
+
+    client_id/client_secret 缺省为 agent 客户端配置; 桌面托管行传
+    dashboard-gateway + 空 secret(public 客户端, 不带 secret)。
+    """
     token = (refresh_token or "").strip()
     if not token:
         raise SsoAuthError("refresh_token 为空")
-    payload = _post_token_form({
-        "grant_type": "refresh_token",
-        "refresh_token": token,
-        "client_id": sso_client_id(),
-    })
+    payload = _post_token_form(
+        {"grant_type": "refresh_token", "refresh_token": token},
+        client_id=client_id,
+        client_secret=client_secret,
+    )
     if not payload.get("id_token"):
         raise SsoAuthError("SSO refresh 响应缺少 id_token")
     return payload
@@ -293,14 +303,17 @@ TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
 TOKEN_TYPE_ID = "urn:ietf:params:oauth:token-type:id_token"
 
 
-def exchange_token(subject_token: str, audience: str) -> str:
+def exchange_token(subject_token: str, audience: str, *, client_id: str | None = None,
+                   client_secret: str | None = None) -> str:
     """RFC 8693 token exchange: 本客户端持有的 subject_token → 目标受众 access_token。
 
     零号员工代授权用: 把提问者的 SSO token(受众=本客户端) 换成 rag/market 等下游
     受众的短期令牌, 由下游按 subject 权限求交(而非以零号员工服务身份放大)。
 
-    前置(SSO 侧强制): ``subject_token.aud`` 必须等于本客户端 ``sso_client_id``, 且
-    ``audience`` 在该客户端的 ``allowed_audiences`` 白名单内。返回 access_token;
+    前置(SSO 侧强制): ``subject_token.aud`` 必须等于发起交换的客户端 ``client_id``, 且
+    ``audience`` 在该客户端的 ``allowed_audiences`` 白名单内。client_id/client_secret
+    缺省为 agent 客户端配置; 托管行按来源客户端覆盖(如桌面 dashboard-gateway,
+    public 客户端无 secret, 传空串则不带)。返回 access_token;
     未配置/缺参/交换失败抛 ``SsoAuthError``。
     """
     issuer = sso_issuer()
@@ -310,21 +323,22 @@ def exchange_token(subject_token: str, audience: str) -> str:
     aud = (audience or "").strip()
     if not sub or not aud:
         raise SsoAuthError("token exchange 缺少 subject_token 或 audience")
+    cid = (client_id or sso_client_id()).strip()
+    secret = sso_client_secret() if client_secret is None else client_secret
     form = {
         "grant_type": TOKEN_EXCHANGE_GRANT,
         "subject_token": sub,
         "subject_token_type": TOKEN_TYPE_ID,
         "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
         "audience": aud,
-        "client_id": sso_client_id(),
+        "client_id": cid,
     }
-    secret = sso_client_secret()
     if secret:
         form["client_secret"] = secret
     data = urllib.parse.urlencode(form).encode("utf-8")
     req = urllib.request.Request(issuer.rstrip("/") + "/token", data=data, method="POST")
     if secret:
-        basic = base64.b64encode(f"{sso_client_id()}:{secret}".encode()).decode("ascii")
+        basic = base64.b64encode(f"{cid}:{secret}".encode()).decode("ascii")
         req.add_header("Authorization", "Basic " + basic)
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:

@@ -118,6 +118,12 @@ def _row(storage: Storage, uid: int) -> dict | None:
     return dict(r) if r else None
 
 
+def _client_id(storage: Storage, uid: int) -> str:
+    with storage.get_connection() as conn:
+        r = conn.execute("SELECT client_id FROM sso_tokens WHERE user_id=?", (uid,)).fetchone()
+    return str(r["client_id"]) if r else ""
+
+
 def test_host_tokens_saves_current_user_tokens(env):
     s, client, key = env
     id_token = sign_token(id_claims("10086"), key)
@@ -129,6 +135,47 @@ def test_host_tokens_saves_current_user_tokens(env):
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"ok": True}
     assert _row(s, 7) == {"id_token": id_token, "refresh_token": "ref-7"}
+    assert _client_id(s, 7) == "agent"  # 缺省来源客户端
+
+
+def test_host_tokens_stores_client_id(env):
+    """桌面轨: client_id=dashboard-gateway 存入托管行。"""
+    s, client, key = env
+    id_token = sign_token(id_claims("10086"), key)
+    resp = client.post(
+        "/api/auth/sso-tokens",
+        json={"id_token": id_token, "refresh_token": "ref-7", "client_id": "dashboard-gateway"},
+        headers=_auth(7, "10086"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert _row(s, 7) == {"id_token": id_token, "refresh_token": "ref-7"}
+    assert _client_id(s, 7) == "dashboard-gateway"
+
+
+@pytest.mark.parametrize("client_id", ["evil", "", "DASHBOARD-GATEWAY", 123, ["agent"]])
+def test_host_tokens_rejects_invalid_client_id(env, client_id):
+    s, client, key = env
+    id_token = sign_token(id_claims("10086"), key)
+    resp = client.post(
+        "/api/auth/sso-tokens",
+        json={"id_token": id_token, "refresh_token": "ref-7", "client_id": client_id},
+        headers=_auth(7, "10086"),
+    )
+    assert resp.status_code == 400, resp.text
+    assert _row(s, 7) is None
+
+
+def test_host_tokens_normalizes_client_id_whitespace(env):
+    """两侧空白归一后再比对白名单(client_id 大小写敏感)。"""
+    s, client, key = env
+    id_token = sign_token(id_claims("10086"), key)
+    resp = client.post(
+        "/api/auth/sso-tokens",
+        json={"id_token": id_token, "refresh_token": "ref-7", "client_id": " dashboard-gateway "},
+        headers=_auth(7, "10086"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert _client_id(s, 7) == "dashboard-gateway"
 
 
 def test_host_tokens_overwrite_is_idempotent(env):
