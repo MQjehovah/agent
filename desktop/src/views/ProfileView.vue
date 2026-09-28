@@ -163,6 +163,7 @@ onMounted(() => {
     </header>
 
     <!-- 账号信息(原侧栏「个人中心」弹窗内容) -->
+    <div class="profile-section-title top">账号信息</div>
     <el-card class="profile-card" shadow="never">
       <div class="profile-grid">
         <div class="profile-item">
@@ -188,7 +189,7 @@ onMounted(() => {
       </div>
     </el-card>
 
-    <div class="profile-section-title">用量</div>
+    <div class="profile-section-title">用量信息</div>
 
     <div v-loading="loading" class="usage-body">
       <!-- 未登录:先完成企业 SSO 登录 -->
@@ -318,11 +319,20 @@ onMounted(() => {
     display: flex;
     flex-direction: column;
     height: 100%;
+    overflow-y: auto; /* 整页滚动: 账号信息 / 用量信息 一起滚 */
+  }
+
+  /* 顶部标题栏固定(不随内容滚动) */
+  .view-header {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--el-bg-color-page);
   }
 
   .profile-card {
     flex: none;
-    margin-bottom: 12px;
+    margin: 0 18px 12px;
     border-radius: 12px;
   }
 
@@ -359,10 +369,14 @@ onMounted(() => {
 
   .profile-section-title {
     flex: none;
-    margin: 2px 0 10px;
+    margin: 0 18px 10px;
     font-size: 14px;
     font-weight: 600;
     color: var(--el-text-color-primary);
+  }
+
+  .profile-section-title.top {
+    margin-top: 12px;
   }
 
 
@@ -372,9 +386,9 @@ onMounted(() => {
 }
 
 .usage-body {
-  flex: 1;
+  flex: none;
   min-height: 0;
-  overflow-y: auto;
+  overflow: visible;
 }
 
 .usage-state {

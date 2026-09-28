@@ -3124,6 +3124,10 @@ class WebServer:
         from web.routers.knowledge import build_knowledge_router
         self._app.include_router(build_knowledge_router(self))
 
+        # ===== 算力网关用量代理 Router（个人中心读本人算力用量, 用户 OBO）=====
+        from web.routers.gateway_usage import build_gateway_usage_router
+        self._app.include_router(build_gateway_usage_router(self))
+
         # ===== 工作区文件列表（服务端共享目录，需工作区权限）=====
         @self._app.get("/api/workspace/files")
         async def workspace_files(request: Request):
