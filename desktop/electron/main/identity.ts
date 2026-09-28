@@ -16,7 +16,7 @@ import { createGatewayCredentials } from './gateway-credentials'
  *   - gateway access_token:用 id_token 走 RFC 8693 token-exchange 换取(供 /api/me/* 调用)
  *   - gateway apikey:用 gateway access_token 调 gateway admin /api/me/key 自取(sk-,供 gateway/agent)
  *   - agent JWT:按工号 JIT 开号换取
- *   - rag/market 复用 OIDC access_token;agent 用 agent JWT;gateway 用 apikey
+ *   - rag/market 用 gateway 受众平台 token(id_token 经 RFC 8693 换取,不再复用 OIDC access_token);agent 用 agent JWT;gateway 用 apikey
  * 全部凭据只在主进程内存与加密落盘,渲染层永远拿不到。
  */
 
@@ -133,8 +133,9 @@ async function ensureFreshOidc(): Promise<void> {
 
 /**
  * 取当前可用的 OIDC access_token:临近过期(60s 内)自动用 refresh_token 续期。
- * 供上游代理在每次请求前调用 —— access_token 只有 1 小时,长驻进程不能只在启动刷一次。
- * 刷新失败不抛异常(返回现有 token 或 null),由上游 401 走「重新登录」提示。
+ * 保留原因:仍供 RAG 媒体代理(media.ts)与本地会话的 SSO 续期检测(kernel/ipc.ts)使用;
+ * rag/market 上游代理已改用 gateway 受众平台 token(freshGatewayToken),不再走本函数。
+ * 刷新失败不抛异常(返回现有 token 或 null),由调用方按 401/降级自行处理。
  */
 export async function freshOidcAccessToken(): Promise<string | null> {
   try {

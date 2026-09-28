@@ -90,8 +90,8 @@ Dashboard 是零号员工平台的**第五个子系统:统一接入层与员工�
 Electron 主进程 upstream.ts
    │  解析上游地址 + 注入凭证(authFor)
    ├─→ agent  http://<host>:8080   Authorization: Bearer <agent JWT>
-   ├─→ rag    http://<host>:8092   Authorization: Bearer <OIDC access_token>
-   ├─→ market http://<host>:8093   Authorization: Bearer <OIDC access_token>
+   ├─→ rag    http://<host>:8092   Authorization: Bearer <gateway 受众平台 token(id_token 换取)>
+   ├─→ market http://<host>:8093   Authorization: Bearer <gateway 受众平台 token(id_token 换取)>
    └─→ router http://<host>:3100   Authorization: Bearer <router apikey>
 ```
 
@@ -108,14 +108,14 @@ Electron 主进程 upstream.ts
 Electron 主进程 ── identity.ts ── ① OIDC 授权码 + JWKS 验签 → id/access/refresh token
                                   │ ② 身份映射:sub(工号) JIT 开通 agent 账号 → agent JWT(agent-jit.ts)
                                   │ ③ router apikey:用 id_token 向 router admin /internal/sso/exchange 换取
-                                  └ rag/market 复用 OIDC access_token
+                                  └ rag/market 用 id_token 经 RFC 8693 换取 gateway 受众平台 token
 ```
 
 关键设计:
 
 - **凭证不出主进程**:OIDC token / agent JWT / router apikey 只存在于主进程内存,并以 `credstore.ts` 加密落盘(`identity.json`,应用重启免登录);渲染层仅通过 `auth:me` 拿到用户信息;
 - **agent JWT 不下发**:`agent-jit.ts` 按工号 JIT 开通/换取 agent 账号,仅用于对 agent 上游注入;
-- **按服务注入**:`upstream.ts` 的 `authFor()` 决定 agent→agent JWT、router→apikey、rag/market→OIDC access_token;
+- **按服务注入**:`upstream.ts` 的 `authFor()` 决定 agent→agent JWT、gateway→apikey、rag/market→gateway 受众平台 token(id_token 经 RFC 8693 换取);
 - **OIDC 参数可分发**:`oidc-config.ts` 解析 issuer/client/secret(环境变量优先,其次配置文件,无内置兜底);
 - **登录策略可扩展**:以 OIDC 为唯一入口,钉钉等渠道由上游 OIDC Provider 承担,桌面端零改动;
 - 已知限制:agent 的 kanban / scheduler / todos 等仍是全局共享,按人隔离需 agent 侧配合(P1);market / rag 自有账号体系的映射逐步接入。

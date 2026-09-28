@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { getConfig } from './store'
-import { freshAgentJwt, freshOidcAccessToken, getIdentity, ensureGatewayKey } from './identity'
+import { freshAgentJwt, freshGatewayToken, getIdentity, ensureGatewayKey } from './identity'
 
 /**
  * 上游代理(IPC 直达,无本地 HTTP):
  *   渲染层 invoke('upstream:request'|'upstream:stream:start') → 主进程注入凭证 → fetch 上游。
- *   凭证策略:agent → agent JWT;gateway → apikey;rag/market → OIDC access_token。
+ *   凭证策略:agent → agent JWT;gateway → apikey;rag/market → gateway 受众平台 token(由 id_token 经 RFC 8693 换取)。
  *   SSE 流以 streamId 为键,经 'upstream:event' 通道推送原始文本块,abort 通道可中断。
  */
 
@@ -33,8 +33,14 @@ async function authFor(service: ServiceName): Promise<string | null> {
       return null
     }
   }
-  // rag/market 走 OIDC access_token:请求前按需刷新(refresh_token 12h,access_token 1h)
-  return freshOidcAccessToken()
+  // rag/market 走 gateway 受众平台 token:由 id_token 经 RFC 8693 换取(带缓存/过期前刷新);
+  // 交换失败仍回退无鉴权(由上游 401 提示重新登录)
+  try {
+    return await freshGatewayToken()
+  } catch (err) {
+    console.warn('[upstream] rag/market 凭据获取失败:', (err as Error).message)
+    return null
+  }
 }
 
 function upstreamUrl(service: ServiceName, path: string): string | null {
