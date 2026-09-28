@@ -30,7 +30,7 @@ def fakes(monkeypatch):
     store = _FakeStorage()
     monkeypatch.setattr(sso_tokens, "_storage", lambda: store)
     monkeypatch.setattr(sso_tokens, "_cache", {})
-    monkeypatch.setattr(sso_auth, "sso_downstream_audience", lambda: "dashboard-gateway")
+    monkeypatch.setattr(sso_auth, "sso_downstream_audience", lambda: "gateway")
     return store
 
 
@@ -50,9 +50,9 @@ def test_fresh_id_token_exchanges_and_caches(fakes, monkeypatch):
     monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(3600))
 
     assert sso_tokens.get_downstream_token(7) == "down-1"
-    assert calls == ["id-1:dashboard-gateway"]
+    assert calls == ["id-1:gateway"]
     assert sso_tokens.get_downstream_token(7) == "down-1"  # 命中缓存, 不再交换
-    assert calls == ["id-1:dashboard-gateway"]
+    assert calls == ["id-1:gateway"]
 
 
 def test_near_expiry_refreshes_and_persists_rotation(fakes, monkeypatch):
@@ -134,7 +134,7 @@ def test_row_client_id_drives_refresh_and_exchange(fakes, monkeypatch):
     assert sso_tokens.get_downstream_token(7) == "down-1"
     assert refresh_calls == [{"rt": "rt-1", "client_id": "dashboard-gateway", "client_secret": ""}]
     assert exchange_calls == [
-        {"tok": "new-id", "aud": "dashboard-gateway",
+        {"tok": "new-id", "aud": "gateway",
          "client_id": "dashboard-gateway", "client_secret": ""}
     ]
     assert store.rows[7]["client_id"] == "dashboard-gateway"  # 回存保留来源 client

@@ -8,7 +8,7 @@
 - 需要 fail-closed 的调用方用 ``require_user_token``: 无托管 token 时抛
   ``UserTokenUnavailable``(统一引导登录文案), 不得回退服务身份。
 
-受众默认 ``dashboard-gateway``(rag/market 资源轨均接受), 可用
+受众默认 ``gateway``(内部用户 token 统一受众; market/rag/网关资源轨均接受), 可用
 ``SSO_DOWNSTREAM_AUDIENCE`` / config.json ``sso.downstream_audience`` 覆盖。
 """
 

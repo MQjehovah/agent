@@ -80,8 +80,12 @@ def sso_redirect_target() -> str:
 
 
 def sso_downstream_audience() -> str:
-    """web OBO 交换的目标受众(下游资源服务器接受的 audience; rag/market 均为 dashboard-gateway)。"""
-    return _cfg("SSO_DOWNSTREAM_AUDIENCE", "sso.downstream_audience", "dashboard-gateway")
+    """web OBO 交换的目标受众(下游资源服务器接受的 audience; 内部用户 token 统一 gateway)。
+
+    下游(market/rag/网关)资源轨均已接受 ``gateway``; 可用 ``SSO_DOWNSTREAM_AUDIENCE``
+    / config.json ``sso.downstream_audience`` 覆盖。
+    """
+    return _cfg("SSO_DOWNSTREAM_AUDIENCE", "sso.downstream_audience", "gateway")
 
 
 def is_configured() -> bool:

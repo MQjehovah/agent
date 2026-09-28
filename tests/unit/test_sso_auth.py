@@ -349,6 +349,20 @@ def test_exchange_token_requires_subject_and_audience(monkeypatch):
         sso_auth.exchange_token("subject-abc", "")
 
 
+# ---- 下游受众(内部用户 token 统一 gateway) ----
+
+
+def test_sso_downstream_audience_defaults_to_gateway(monkeypatch):
+    """受众统一: 未配置 env/config 时默认 gateway(market/rag/网关资源轨均接受)。"""
+    monkeypatch.delenv("SSO_DOWNSTREAM_AUDIENCE", raising=False)
+    assert sso_auth.sso_downstream_audience() == "gateway"
+
+
+def test_sso_downstream_audience_env_override(monkeypatch):
+    monkeypatch.setenv("SSO_DOWNSTREAM_AUDIENCE", "gateway-canary")
+    assert sso_auth.sso_downstream_audience() == "gateway-canary"
+
+
 # ---- 客户端覆盖(桌面 dashboard-gateway 等 public 客户端) ----
 
 
