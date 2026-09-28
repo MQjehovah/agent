@@ -184,3 +184,21 @@ def test_chat_still_accepts_web_session_write_shape(env):
     r = client.post("/api/chat", json={
         "message": "继续", "session_id": "web:7:a1"}, headers=_token(9))
     assert r.status_code == 404
+
+
+def test_chat_stream_emits_session_id_for_new_session(env):
+    """新建会话(不带 session_id)首帧必须回传 session_id, 前端据此续聊(否则每轮新会话→无上下文)。"""
+    w, st, client = env
+    _make_agent_for(w)
+    w.agent.workspace = ""
+
+    with client.stream("POST", "/api/chat/stream",
+                       json={"message": "你好"}, headers=_token(7)) as r:
+        assert r.status_code == 200, r.read()
+        first = ""
+        for line in r.iter_lines():
+            if line.startswith("data:"):
+                first = line
+                break
+    assert '"type": "session"' in first, first
+    assert '"session_id": "web:7:' in first, first

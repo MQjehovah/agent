@@ -1310,8 +1310,8 @@ class WebServer:
             if not sso_auth.validate_state(state):
                 return _sso_login_redirect("SSO 登录状态已失效,请重试")
             try:
-                id_token = sso_auth.exchange_code(code)
-                claims = sso_auth.verify_sso_token(id_token)
+                tokens = sso_auth.exchange_code(code)
+                claims = sso_auth.verify_sso_token(str(tokens.get("id_token") or ""))
             except sso_auth.SsoAuthError as e:
                 return _sso_login_redirect(f"SSO 登录失败: {e}")
             sub = (claims.get("sub") or "").strip()
@@ -1321,6 +1321,12 @@ class WebServer:
                 user = _sso_ensure_user(sub, claims)
             except HTTPException as e:
                 return _sso_login_redirect(str(e.detail))
+            # web OBO: 托管用户 SSO token(id/refresh), 供下游按用户身份交换; 失败不阻断登录
+            try:
+                from web.sso_tokens import save_user_tokens
+                save_user_tokens(int(user.get("id") or 0), tokens)
+            except Exception:  # noqa: BLE001
+                pass
             token = create_jwt(user)
             target = sso_auth.sso_redirect_target()
             sep = "&" if "?" in target else "?"
@@ -1641,6 +1647,8 @@ class WebServer:
 
             async def event_stream():
                 from hooks import HookEvent
+                # 首帧回传会话 ID: 前端首条消息不带 session_id 时靠它续聊(否则每轮都新建会话→无上下文)
+                yield _sse({"type": "session", "session_id": session_id})
                 q: asyncio.Queue = asyncio.Queue()
                 full_response: list[str] = []
                 agent_task: asyncio.Task | None = None
@@ -1829,7 +1837,7 @@ class WebServer:
                             yield _sse({"type": et, "data": payload})
                         elif event_type == "done":
                             chat_session.add_message("assistant", content)
-                            yield _sse({"type": "done", "content": content})
+                            yield _sse({"type": "done", "content": content, "session_id": session_id})
                             break
                         elif event_type == "error":
                             chat_session.add_message("assistant", f"Error: {content}")

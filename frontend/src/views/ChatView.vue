@@ -398,6 +398,10 @@ function send() {
     (ev) => {
       const data = (ev.data ?? {}) as Record<string, any>
       switch (ev.type) {
+        case 'session':
+          // 服务端首帧回传会话 ID: 新建会话的后续消息挂到同一会话(上下文续聊)
+          if (ev.session_id) sessionId.value = String(ev.session_id)
+          break
         case 'token':
           appendText(reply.blocks, ev.content ?? '')
           procTip.value = ''
@@ -465,6 +469,7 @@ function send() {
           break
         }
         case 'done':
+          if (ev.session_id && !sessionId.value) sessionId.value = String(ev.session_id)
           // 正文 token 已实时入 blocks；若流内无正文(如 ask/纯工具兜底)，用 done 内容补齐
           if (ev.content && reply.blocks.length === 0) reply.blocks.push({ kind: 'text', content: ev.content, html: '' })
           flushMarkdown(reply.blocks)
