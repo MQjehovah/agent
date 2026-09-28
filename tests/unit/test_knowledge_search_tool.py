@@ -3,7 +3,7 @@
 覆盖:
 - 逐请求携带用户 token(Bearer)调 RAG POST /api/search, 不再服务账号登录;
 - 无托管 token / uid 解析失败 fail-closed 返回统一引导登录文案且不发请求;
-- RAG 401 → 引导重新登录授权;
+- RAG 401 → force 通道强换一次重试; 仍 401 → 引导重新登录授权;
 - token 解析经 asyncio.to_thread(不在事件循环线程执行同步 SSO/SQLite IO)。
 """
 import json
@@ -33,7 +33,9 @@ class _FakeResp:
 
 class _FakeClient:
     captured: dict = {}
+    calls: list = []
     response: tuple = (200, {})
+    responses: list = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -46,14 +48,20 @@ class _FakeClient:
 
     async def post(self, url, headers=None, json=None, **kwargs):
         _FakeClient.captured = {"url": url, "headers": headers, "json": json}
-        status, payload = _FakeClient.response
+        _FakeClient.calls.append(_FakeClient.captured)
+        if _FakeClient.responses:
+            status, payload = _FakeClient.responses.pop(0)
+        else:
+            status, payload = _FakeClient.response
         return _FakeResp(status, payload)
 
 
 @pytest.fixture(autouse=True)
 def _reset_fakes():
     _FakeClient.captured = {}
+    _FakeClient.calls = []
     _FakeClient.response = (200, {})
+    _FakeClient.responses = []
     yield
 
 
@@ -115,13 +123,63 @@ async def test_knowledge_search_unavailable_token_returns_hint(monkeypatch):
     assert _FakeClient.captured == {}
 
 
-async def test_knowledge_search_401_returns_login_hint(monkeypatch):
+async def test_knowledge_search_401_forces_fresh_token_and_retries(monkeypatch):
+    """RAG 401 → force 通道强换一次 → 新 token 重发一次; 成功返回结果。"""
     monkeypatch.setattr("retrieval.httpx.AsyncClient", _FakeClient)
-    monkeypatch.setattr(sso_tokens, "require_user_token", lambda uid, audience="": "ut")
-    _FakeClient.response = (401, {"detail": "expired"})
+    token_calls: list[tuple] = []
+
+    def fake_token(uid, audience="", *, force=False):
+        token_calls.append((uid, audience, force))
+        return "t2" if force else "t1"
+
+    monkeypatch.setattr(sso_tokens, "get_downstream_token", fake_token)
+    _FakeClient.responses = [
+        (401, {"detail": "expired"}),
+        (200, {"results": [{"title": "T"}], "graph_expanded": 0}),
+    ]
+    out = await _run_with("web:7", lambda: _tool().execute(query="报销"))
+    payload = json.loads(out)
+    assert payload["success"] is True and payload["count"] == 1
+    assert token_calls == [(7, "gateway", False), (7, "gateway", True)]  # force 通道被用
+    assert len(_FakeClient.calls) == 2                                   # 发出两次请求
+    assert _FakeClient.calls[0]["headers"]["Authorization"] == "Bearer t1"
+    assert _FakeClient.calls[1]["headers"]["Authorization"] == "Bearer t2"
+
+
+async def test_knowledge_search_401_after_force_returns_login_hint(monkeypatch):
+    """强换重试后仍 401 → 引导重新登录授权(不再重发第三次)。"""
+    monkeypatch.setattr("retrieval.httpx.AsyncClient", _FakeClient)
+    token_calls: list[tuple] = []
+
+    def fake_token(uid, audience="", *, force=False):
+        token_calls.append((uid, audience, force))
+        return "t2" if force else "t1"
+
+    monkeypatch.setattr(sso_tokens, "get_downstream_token", fake_token)
+    _FakeClient.responses = [(401, {"detail": "expired"}), (401, {"detail": "expired"})]
     out = await _run_with("web:7", lambda: _tool().execute(query="报销"))
     payload = json.loads(out)
     assert payload["success"] is False and payload["error"] == _HINT
+    assert token_calls == [(7, "gateway", False), (7, "gateway", True)]
+    assert len(_FakeClient.calls) == 2
+
+
+async def test_knowledge_search_401_hint_when_force_token_unavailable(monkeypatch):
+    """401 后强换也取不到新 token → 直接引导文案, 不重发。"""
+    monkeypatch.setattr("retrieval.httpx.AsyncClient", _FakeClient)
+    token_calls: list[tuple] = []
+
+    def fake_token(uid, audience="", *, force=False):
+        token_calls.append((uid, audience, force))
+        return "" if force else "t1"
+
+    monkeypatch.setattr(sso_tokens, "get_downstream_token", fake_token)
+    _FakeClient.responses = [(401, {"detail": "expired"})]
+    out = await _run_with("web:7", lambda: _tool().execute(query="报销"))
+    payload = json.loads(out)
+    assert payload["success"] is False and payload["error"] == _HINT
+    assert token_calls == [(7, "gateway", False), (7, "gateway", True)]
+    assert len(_FakeClient.calls) == 1  # 无新 token, 不重发
 
 
 async def test_knowledge_search_disabled_without_config(monkeypatch):

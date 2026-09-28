@@ -95,6 +95,17 @@ def test_resolve_user_token_fail_closed_on_empty_token(monkeypatch):
     assert _in_run_ctx("web:7", user_token.resolve_user_token_or_hint) == ("", sso_tokens.USER_TOKEN_HINT)
 
 
+def test_resolve_user_token_force_uses_forced_exchange(monkeypatch):
+    """force=True 走强换通道(get_downstream_token force=True), 不经 require_user_token。"""
+    monkeypatch.setattr(sso_tokens, "require_user_token",
+                        lambda uid, audience="": pytest.fail("force 通道不应调用 require_user_token"))
+    calls: list[tuple] = []
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", *, force=False: calls.append((uid, audience, force)) or "tok-f")
+    assert _in_run_ctx("web:7", lambda: user_token.resolve_user_token_or_hint(force=True)) == ("tok-f", None)
+    assert calls == [(7, "gateway", True)]
+
+
 def test_resolve_user_token_fail_closed_on_unexpected_error(monkeypatch):
     """意外异常(刷新/交换/DB 等) 同样 fail-closed 并返回引导文案, 不外漏原生异常。"""
     def fake_require(uid, audience=""):

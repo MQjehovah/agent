@@ -3,7 +3,8 @@
 所有渠道的知识检索都逐请求解析当前 run 提问者(RunContext.user_id tag)的数字 uid, 经
 ``require_user_token(uid, "gateway")`` 取下游 token(Bearer); RAG 按用户视角过滤可见性。
 无托管 token / uid 不可解析一律 fail-closed 返回统一引导文案(USER_TOKEN_HINT), 不再使用
-服务账号(RAG_USERNAME/RAG_PASSWORD)登录。
+服务账号(RAG_USERNAME/RAG_PASSWORD)登录。下游 401 时经 force 通道强换一次重试, 仍 401 才
+引导重新登录(与 web 知识代理一致)。
 
 tokens 解析含同步阻塞(SSO 刷新/交换 + SQLite), 经 ``asyncio.to_thread`` 执行, 不卡事件循环。
 """
@@ -74,19 +75,27 @@ class RetrievalTool(BuiltinTool):
         if hint:
             return json.dumps({"success": False, "error": hint}, ensure_ascii=False)
 
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {user_token}",
-        }
         payload = {"query": query, "top_k": top_k}
 
         logger.info(f"[知识库检索] query={query[:80]}, top_k={top_k}")
 
-        try:
+        async def _post(token: str):
             async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{self._base_url}/api/search", json=payload, headers=headers
+                return await client.post(
+                    f"{self._base_url}/api/search", json=payload,
+                    headers={"Content-Type": "application/json",
+                             "Authorization": f"Bearer {token}"},
                 )
+
+        try:
+            resp = await _post(user_token)
+            if resp.status_code == 401:
+                # 与 web 代理一致: 下游 401 → 强换一次(force)后重试; 仍失败才引导登录
+                logger.info("[知识库检索] 用户 token 被 RAG 拒绝(401), 强换重试一次")
+                fresh, hint = await asyncio.to_thread(resolve_user_token_or_hint, force=True)
+                if hint:
+                    return json.dumps({"success": False, "error": hint}, ensure_ascii=False)
+                resp = await _post(fresh)
         except httpx.TimeoutException:
             logger.error("[知识库检索] 请求超时")
             return json.dumps({"success": False, "error": "知识库检索超时"}, ensure_ascii=False)
@@ -100,7 +109,7 @@ class RetrievalTool(BuiltinTool):
         if resp.status_code == 401:
             from web.sso_tokens import USER_TOKEN_HINT
 
-            logger.info("[知识库检索] 用户 token 被 RAG 拒绝(401), 引导重新登录授权")
+            logger.info("[知识库检索] 强换后仍 401, 引导重新登录授权")
             return json.dumps({"success": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
         if resp.status_code >= 400:
             logger.error(f"[知识库检索] HTTP 错误: {resp.status_code}")

@@ -68,8 +68,8 @@ async def _market_request(method: str, path: str, *, user_uid: int = 0,
                           params: dict | None = None, json_body: Any = None):
     """代理市场 HTTP; 返回 (status_code, payload)。
 
-    逐请求携带当前用户的 SSO 交换 token(Bearer; 401 自动重换重试一次); 无用户 token
-    抛 UserTokenRequiredError(fail-closed, 不回退服务令牌)。市场未配置抛
+    逐请求携带当前用户的 SSO 交换 token(Bearer; 401 自动强换重试一次, 仍 401 按无用户
+    token fail-closed 503 引导登录, 不回退服务令牌)。市场未配置抛
     MarketUnavailableError; 网络异常抛 MarketUpstreamError。
     """
     cfg = PlatformMCPConfig.from_env()
@@ -94,6 +94,9 @@ async def _market_request(method: str, path: str, *, user_uid: int = 0,
             fresh = _user_downstream_token(user_uid, force=True)
             if fresh:
                 resp = await _send(fresh)
+        if resp.status_code == 401:
+            # 强换后仍被下游拒绝 → 统一按「无用户 token」映射 503 + 引导登录
+            raise UserTokenRequiredError()
     except httpx.HTTPError as e:
         raise MarketUpstreamError(f"能力市场请求失败: {e}") from e
     try:
@@ -125,6 +128,9 @@ async def _market_request_raw(method: str, path: str, *, user_uid: int = 0,
             fresh = _user_downstream_token(user_uid, force=True)
             if fresh:
                 resp = await _send(fresh)
+        if resp.status_code == 401:
+            # 强换后仍被下游拒绝 → 统一按「无用户 token」映射 503 + 引导登录
+            raise UserTokenRequiredError()
         return resp
     except httpx.HTTPError as e:
         raise MarketUpstreamError(f"能力市场请求失败: {e}") from e

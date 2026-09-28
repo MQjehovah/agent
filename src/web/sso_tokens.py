@@ -4,7 +4,8 @@
 
 - id_token 临近过期时用 refresh_token 刷新(轮换后回存), 刷新失败清空托管;
 - 按受众交换下游 token(默认 1 小时), 进程内按 (uid, audience) 缓存;
-- 用户未走 SSO(如本地密码登录)或托管缺失时返回空串, 由调用方回退服务身份;
+- 用户未走 SSO(如本地密码登录)或托管缺失时返回空串, 由调用方 fail-closed 处理
+  (统一引导登录, 不回退服务身份);
 - 需要 fail-closed 的调用方用 ``require_user_token``: 无托管 token 时抛
   ``UserTokenUnavailable``(统一引导登录文案), 不得回退服务身份。
 
@@ -162,7 +163,7 @@ def get_downstream_token(uid: int, audience: str = "", *, force: bool = False) -
         return token
 
 
-# 用户下游 token 不可用时的统一引导文案(市场工具 fail-closed 共用; 知识库接入在后续任务)
+# 用户下游 token 不可用时的统一引导文案(市场/知识库工具与 web 代理 fail-closed 共用)
 USER_TOKEN_HINT = "请先登录一次 AI 平台(https://ai.xzrobot.com)完成身份授权，后再使用市场/知识库能力。"
 
 

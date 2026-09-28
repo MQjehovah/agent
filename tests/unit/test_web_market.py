@@ -223,6 +223,48 @@ def test_join_and_leave_forward_market_errors(env):
     assert market["calls"][1]["method"] == "DELETE"
 
 
+async def test_market_request_401_after_force_maps_to_503_hint(env, monkeypatch):
+    """强换一次后仍 401 → 抛 UserTokenRequiredError, 统一映射 503 + USER_TOKEN_HINT。"""
+    server, store, client, market, uid = env
+    monkeypatch.setenv("MARKET_BASE_URL", "http://market.local")
+    monkeypatch.setenv("MARKET_SERVICE_TOKEN", "svc-token")
+    force_calls: list[bool] = []
+
+    def fake_token(user_uid, force=False):
+        force_calls.append(force)
+        return "ut"
+
+    monkeypatch.setattr(market_mod, "_user_downstream_token", fake_token)
+
+    class _Resp401:
+        status_code = 401
+        text = '{"detail": "expired"}'
+
+        def json(self):
+            return {"detail": "expired"}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def request(self, *args, **kwargs):
+            return _Resp401()
+
+    monkeypatch.setattr(market_mod.httpx, "AsyncClient", _Client)
+    with pytest.raises(market_mod.UserTokenRequiredError):
+        await market["real"]("GET", "/api/capabilities", user_uid=uid)
+    assert force_calls == [False, True]                    # 首次解析 + 强换一次
+    mapped = market_mod._market_error(market_mod.UserTokenRequiredError())
+    assert mapped.status_code == 503
+    assert json.loads(mapped.body)["error"] == market_mod.USER_TOKEN_HINT
+
+
 # ===== 2. 安装校验 / 幂等 / 刷新 =====
 
 def test_install_rejects_non_mcp_local_and_not_joined(env):
