@@ -127,7 +127,7 @@ def _fresh_id_token(storage, uid: int) -> tuple[str, str, str | None]:
 
 
 def get_downstream_token(uid: int, audience: str = "", *, force: bool = False) -> str:
-    """用户身份的下游 token; 无 SSO 会话/刷新或交换失败返回空串(调用方回退服务身份)。
+    """用户身份的下游 token; 无 SSO 会话/刷新或交换失败返回空串(fail-closed 由调用方引导登录)。
 
     force=True 时跳过缓存(下游返回 401 时重换一次)。
     """
