@@ -14,7 +14,8 @@ export class AuthError extends Error {
 
 let adminJwtCache: { jwt: string; expiresAt: number } | null = null
 
-function agentBase(): string {
+/** agent 服务基址(统一在此取, 供同主进程其它模块复用) */
+export function agentBase(): string {
   return getConfig().agentUrl.replace(/\/+$/, '')
 }
 

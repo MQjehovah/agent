@@ -6,7 +6,7 @@ import { createRemoteJWKSet, jwtVerify } from 'jose'
 import { getConfig } from './store'
 import { resolveOidcIssuer, resolveOidcClientId, resolveOidcClientSecret } from './oidc-config'
 import { createSsoFlow } from './sso-flow'
-import { ensureAgentJwt } from './agent-jit'
+import { ensureAgentJwt, agentBase } from './agent-jit'
 import { encrypt, decrypt } from './credstore'
 import { createGatewayCredentials } from './gateway-credentials'
 
@@ -176,10 +176,34 @@ export async function freshAgentJwt(): Promise<string | null> {
       current.agentJwt = next
       saveIdentity(current)
     }
+    await hostSsoTokens()
     return next
   } catch (err) {
     console.warn('[identity] agent JWT 续期失败:', (err as Error).message)
     return jwt || null
+  }
+}
+
+/**
+ * 把 SSO 的 id_token/refresh_token 托管给 agent(供服务端按用户 OBO 交换, 幂等覆盖)。
+ * 需 agent JWT 就绪; 失败仅告警, 不阻断登录/续期。
+ */
+async function hostSsoTokens(): Promise<void> {
+  const identity = current
+  const oidc = identity?.oidc
+  if (!identity?.agentJwt || !oidc?.idToken) return
+  try {
+    const res = await fetch(`${agentBase()}/api/auth/sso-tokens`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${identity.agentJwt}`
+      },
+      body: JSON.stringify({ id_token: oidc.idToken, refresh_token: oidc.refreshToken })
+    })
+    if (!res.ok) console.warn(`[identity] SSO token 托管失败(HTTP ${res.status})`)
+  } catch (err) {
+    console.warn('[identity] SSO token 托管失败:', (err as Error).message)
   }
 }
 
@@ -304,6 +328,8 @@ export async function startSsoLogin(timeoutMs = 5 * 60_000): Promise<IdentityUse
   try {
     identity.agentJwt = await ensureAgentJwt(sub, name, 'active', roles, user.department ?? '')
     saveIdentity(identity)
+    // 登录成功即托管 SSO token(失败仅告警): 桌面用户从此可走 agent OBO 交换
+    await hostSsoTokens()
   } catch (err) {
     console.warn('[identity] agent JIT 降级(无 agent JWT):', (err as Error).message)
   }
