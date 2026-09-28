@@ -4,6 +4,7 @@ import {
   bindAutoUpdater,
   formatUpdateStatus,
   normalizeUpdateFeedUrl,
+  pickAutoUpdater,
   UPDATE_ERROR_MAX,
   type AutoUpdaterLike,
   type UpdateStatusSnapshot
@@ -231,4 +232,16 @@ test('updater: 重复绑定清空旧监听,不重复回推状态', () => {
   bindAutoUpdater(fake.updater, options)
   assert.equal(fake.listenerCount('checking-for-update'), 1)
   assert.equal(fake.listenerCount('update-downloaded'), 1)
+})
+
+test('updater: 解析 electron-updater 模块形状(具名与 CJS default 两种)', () => {
+  const updater = fakeUpdater().updater
+  // electron-updater 实际形态:autoUpdater 是 defineProperty getter,ESM 具名解析拿不到,值在 default 上
+  assert.equal(pickAutoUpdater({ default: { autoUpdater: updater } }), updater)
+  // 兼容其他打包形态的具名导出
+  assert.equal(pickAutoUpdater({ autoUpdater: updater }), updater)
+  // 具名优先
+  assert.equal(pickAutoUpdater({ autoUpdater: updater, default: { autoUpdater: fakeUpdater().updater } }), updater)
+  assert.equal(pickAutoUpdater({}), undefined)
+  assert.equal(pickAutoUpdater(undefined), undefined)
 })

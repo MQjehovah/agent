@@ -230,6 +230,19 @@ export interface InitAutoUpdaterOptions {
   onStatus(snapshot: UpdateStatusSnapshot): void
 }
 
+/**
+ * 解析动态 import('electron-updater') 的模块形状:
+ * electron-updater 用 defineProperty getter 导出 autoUpdater, ESM 具名解析拿不到,
+ * 实际值挂在 CJS 互操作的 default 上(置 default 兜底);两种形状都兼容。
+ */
+export function pickAutoUpdater(moduleLike: unknown): AutoUpdaterLike | undefined {
+  const mod = (moduleLike ?? {}) as {
+    autoUpdater?: AutoUpdaterLike
+    default?: { autoUpdater?: AutoUpdaterLike }
+  }
+  return mod.autoUpdater ?? mod.default?.autoUpdater
+}
+
 let boundHandle: UpdaterHandle | null = null
 let lastStatus: UpdateStatusSnapshot = snapshot('unconfigured')
 
@@ -259,7 +272,11 @@ export function initAutoUpdater(options: InitAutoUpdaterOptions): void {
 
   void import('electron-updater')
     .then((module) => {
-      const autoUpdater = (module as unknown as { autoUpdater: AutoUpdaterLike }).autoUpdater
+      const autoUpdater = pickAutoUpdater(module)
+      if (!autoUpdater) {
+        publish(snapshot('error', { message: 'electron-updater 未导出 autoUpdater(模块形态异常)' }))
+        return
+      }
       boundHandle = bindAutoUpdater(autoUpdater, {
         feedUrl,
         autoCheck: options.autoCheck,
