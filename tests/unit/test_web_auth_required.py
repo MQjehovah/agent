@@ -114,7 +114,7 @@ def test_chat_stream_with_valid_jwt_enters(env, monkeypatch):
     w, st, client, created = env
     monkeypatch.setattr("channels.MessageRouter", _FakeRouter, raising=False)
 
-    async def _agent_for_web(auth):
+    async def _agent_for_web(auth, scope=""):
         return SimpleNamespace(hooks=_FakeHooks(), _permission_config=None), ""
 
     monkeypatch.setattr(w, "_agent_for_web", _agent_for_web)
@@ -156,7 +156,7 @@ def test_chat_stream_service_token_uses_minimal_role(env, monkeypatch):
 
     monkeypatch.setattr("channels.MessageRouter", _CaptureRouter, raising=False)
 
-    async def _agent_for_web(auth):
+    async def _agent_for_web(auth, scope=""):
         return SimpleNamespace(hooks=_FakeHooks(), _permission_config=None), ""
 
     monkeypatch.setattr(w, "_agent_for_web", _agent_for_web)

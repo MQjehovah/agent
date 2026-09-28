@@ -1449,7 +1449,6 @@ class WebServer:
                 "panel": panel_stats,
             }
 
-        @self._app.post("/api/chat")
         @self._app.post("/api/attachments")
         async def upload_attachment(request: Request):
             """上传图片(web): 入对象存储, 返回引用; 消息里只带引用, 不带字节。"""
@@ -1490,6 +1489,7 @@ class WebServer:
                 return JSONResponse({"error": "Not found"}, status_code=404)
             return Response(content=blob, media_type=attachments.mime_for(ref))
 
+        @self._app.post("/api/chat")
         async def chat(request: Request):
             if not self.agent:
                 return JSONResponse({"error": "Agent not initialized"}, status_code=503)
