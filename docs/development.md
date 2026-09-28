@@ -376,8 +376,8 @@ class BasePlugin(ABC):
 ```
 RetrievalTool (knowledge_search)
   ├─ 连接外部 RAG 服务 (config.json: rag.base_url)
-  ├─ Token 认证缓存
-  ├─ /api/search 查询
+  ├─ 用户 token 轨: require_user_token(uid, "gateway")(无托管 fail-closed 引导登录)
+  ├─ /api/search 查询 (Authorization: Bearer <user_token>)
   └─ 返回: [{title, content, score, source}, ...]
 ```
 

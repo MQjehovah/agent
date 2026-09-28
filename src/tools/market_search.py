@@ -13,7 +13,8 @@ import logging
 import httpx
 
 from . import BuiltinTool
-from .market_common import market_config, resolve_user_token_or_hint
+from .market_common import market_config
+from .user_token import resolve_user_token_or_hint
 
 logger = logging.getLogger("agent.tools")
 

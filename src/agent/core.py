@@ -490,14 +490,9 @@ class Agent:
 
         from retrieval import RetrievalTool
         tool = RetrievalTool()
-        tool.configure(
-            base_url=rag_url,
-            username=settings.env_str("rag.username", "RAG_USERNAME", ""),
-            password=settings.env_str("rag.password", "RAG_PASSWORD", ""),
-            token=settings.env_str("rag.token", "RAG_TOKEN", ""),
-        )
+        tool.configure(base_url=rag_url)  # 用户 token 轨: 不再配置服务账号(RAG_USERNAME/RAG_PASSWORD)
         self.tool_registry.register_tool(tool)
-        logger.info(f"Agent [{self.name}] RAG 知识库已接入: {rag_url}")
+        logger.info(f"Agent [{self.name}] RAG 知识库已接入(用户 token): {rag_url}")
 
     def _init_market_runtime(self):
         """市场工具(用户身份): 仅市场配置齐备时保留。

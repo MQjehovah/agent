@@ -1,6 +1,7 @@
 """P4 能力市场代理 + 用户级云端托管安装 + 管理端本地 MCP 配置测试。
 
-- 浏览/详情: 代理市场并 merge joined(act-as 已加入)/installed(本地表);
+- 浏览/详情: 代理市场(用户 token 轨)并 merge joined(市场已加入)/installed(本地表);
+- 无用户 token(无 SSO 会话/服务身份) → 503 + 统一引导文案, 不发起下游请求;
 - join/leave 透传(含市场 403 文案); 市场未配置 503;
 - install 校验(type=mcp / 非 local / 已加入)与幂等, 写表后刷新 worker;
 - 启停/卸载 表变化 + 刷新; 不存在 404;
@@ -63,8 +64,8 @@ def env(tmp_path, monkeypatch):
 
     market = {"calls": [], "routes": {}, "real": market_mod._market_request}
 
-    async def fake_market(method, path, *, act_as="", user_uid=0, params=None, json_body=None):
-        market["calls"].append({"method": method, "path": path, "act_as": act_as,
+    async def fake_market(method, path, *, user_uid=0, params=None, json_body=None):
+        market["calls"].append({"method": method, "path": path,
                                 "user_uid": user_uid,
                                 "params": params, "json": json_body})
         resp = market["routes"].get((method, path))
@@ -75,6 +76,8 @@ def env(tmp_path, monkeypatch):
         return resp
 
     monkeypatch.setattr(market_mod, "_market_request", fake_market)
+    monkeypatch.setattr(market_mod, "_user_downstream_token",
+                        lambda uid, force=False: f"ut-{uid}" if uid > 0 else "")
     monkeypatch.setattr(security, "get_authz", lambda request: {
         "uid": uid, "role": "admin", "permissions": ["*"],
         "data_scope": "all", "department": ""})
@@ -104,10 +107,10 @@ def test_browse_merges_joined_and_installed(env):
     first, second = market["calls"]
     assert first["path"] == "/api/capabilities"
     assert first["params"]["q"] == "x" and first["params"]["type"] == "mcp"
-    assert first["act_as"] == MARKET_WORKID            # 浏览也带 act-as
+    assert first["user_uid"] == uid                  # 用户轨: 带 uid, 不带 act-as
     assert second["path"] == "/api/my/capabilities"
     assert second["params"] == {"scope": "added"}
-    assert second["act_as"] == MARKET_WORKID           # 已加入清单用 act-as
+    assert second["user_uid"] == uid
 
 
 def test_detail_merges_statuses_without_extra_components_call(env):
@@ -124,7 +127,7 @@ def test_detail_merges_statuses_without_extra_components_call(env):
     assert data["components"] == [{"name": "comp"}]    # 详情自带, 不再辅助调用
     assert [c["path"] for c in market["calls"]] == ["/api/capabilities/c1",
                                                     "/api/my/capabilities"]
-    assert all(c["act_as"] == MARKET_WORKID for c in market["calls"])
+    assert all(c["user_uid"] == uid and "act_as" not in c for c in market["calls"])
 
 
 def test_browse_passes_through_runtime(env):
@@ -152,13 +155,16 @@ def test_browse_503_when_market_not_configured(env, monkeypatch):
     assert r.json()["error"] == "能力市场未配置"
 
 
-# ===== 1b. C1: act-as 解析失败 fail-closed(禁止静默降级服务身份) =====
+# ===== 1b. 无用户 token fail-closed(去 act-as: 不得静默降级服务身份) =====
 
-def test_user_endpoints_fail_closed_when_act_as_unresolved(env, monkeypatch):
+def test_user_endpoints_fail_closed_503_when_no_user_token(env, monkeypatch):
+    """无 SSO 会话(本地密码/服务身份) → 503 + 统一引导文案, 未发任何下游请求。"""
     server, store, client, market, uid = env
-    monkeypatch.setattr(security, "resolve_market_act_as", lambda owner: "")
+    monkeypatch.setattr(market_mod, "_user_downstream_token", lambda u, force=False: "")
     cases = [
+        ("get", "/api/market/categories", None),
         ("get", "/api/market/capabilities", None),
+        ("get", "/api/market/capabilities/c1/icon", None),
         ("get", "/api/market/capabilities/c1", None),
         ("post", "/api/market/capabilities/c1/join", {}),
         ("post", "/api/market/capabilities/c1/leave", {}),
@@ -170,33 +176,33 @@ def test_user_endpoints_fail_closed_when_act_as_unresolved(env, monkeypatch):
     for method, path, body in cases:
         fn = getattr(client, method)
         r = fn(path, json=body) if body is not None else fn(path)
-        assert r.status_code == 403, (method, path)
-        assert "市场用户身份" in r.json()["error"], (method, path)
+        assert r.status_code == 503, (method, path)
+        assert r.json()["error"] == market_mod.USER_TOKEN_HINT, (method, path)
     assert market["calls"] == []          # 未发出任何市场请求
 
 
-def test_service_identity_uid0_rejected_for_user_endpoints(env, monkeypatch):
+def test_service_identity_uid0_denied_with_hint(env, monkeypatch):
+    """服务身份(uid=0)无用户 token → 503 引导登录, 不串服务账号的市场视角。"""
     server, store, client, market, uid = env
     monkeypatch.setattr(security, "get_authz", lambda request: {
         "uid": 0, "role": "admin", "permissions": ["*"], "data_scope": "all"})
-    assert client.get("/api/market/capabilities").status_code == 403
-    assert client.get("/api/market/installations").status_code == 403
+    r = client.get("/api/market/capabilities")
+    assert r.status_code == 503 and r.json()["error"] == market_mod.USER_TOKEN_HINT
+    r = client.get("/api/market/installations")
+    assert r.status_code == 503 and r.json()["error"] == market_mod.USER_TOKEN_HINT
     assert market["calls"] == []
 
 
-def test_user_track_uses_sso_token_without_act_as(env, monkeypatch):
-    """有 SSO 交换 token 时走用户轨: 不解析 act-as, 调用携带 user_uid。"""
+def test_user_track_carries_user_uid_without_act_as(env, monkeypatch):
+    """用户轨: 逐请求携带 user_uid; 不解析/不发送 act-as。"""
     server, store, client, market, uid = env
-    monkeypatch.setattr(market_mod, "_user_downstream_token",
-                        lambda u, force=False: "user-token" if u == uid else "")
-    monkeypatch.setattr(security, "resolve_market_act_as", lambda owner: "")
     market["routes"][("GET", "/api/capabilities")] = (200, {"items": [], "total": 0})
     market["routes"][("GET", "/api/my/capabilities")] = (200, [])
 
     r = client.get("/api/market/capabilities")
     assert r.status_code == 200
     assert market["calls"], "应发出市场请求"
-    assert all(c["user_uid"] == uid and c["act_as"] == "" for c in market["calls"])
+    assert all(c["user_uid"] == uid and "act_as" not in c for c in market["calls"])
 
 
 def test_join_and_leave_forward_market_errors(env):
@@ -206,7 +212,7 @@ def test_join_and_leave_forward_market_errors(env):
     r = client.post("/api/market/capabilities/c1/join")
     assert r.status_code == 403
     assert "没有加入权限" in r.text
-    assert market["calls"][0]["act_as"] == MARKET_WORKID
+    assert market["calls"][0]["user_uid"] == uid
     assert market["calls"][0]["json"] == {"capability_id": "c1"}
 
     market["routes"][("DELETE", "/api/my/capabilities/c1")] = (

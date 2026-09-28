@@ -1,7 +1,8 @@
 """知识库(RAG)代理 Router。
 
-Web 端(员工端)只持有 agent 凭据、无权直连 RAG; 本路由优先按当前用户做 SSO token 交换
-(RFC 8693, 以用户身份访问, 权限/可见性随用户), 无 SSO 会话时回退 agent 服务账号。
+Web 端(员工端)只持有 agent 凭据、无权直连 RAG; 本路由逐请求按当前用户做 SSO token
+交换(RFC 8693, 受众默认 gateway, 以用户身份访问, 权限/可见性随用户), 无 SSO 会话
+(本地密码登录/服务身份)一律 fail-closed 503 + 统一引导登录文案, 不再回退服务账号。
 
 - GET /api/knowledge/status          —— RAG 是否已配置
 - GET /api/knowledge/spaces          —— 空间列表(卡片入口)
@@ -13,19 +14,19 @@ Web 端(员工端)只持有 agent 凭据、无权直连 RAG; 本路由优先按�
 """
 
 import logging
-import time
 
 import requests
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from web.security import get_authz
+from web.sso_tokens import USER_TOKEN_HINT
 
 logger = logging.getLogger("agent.web.knowledge")
 
 
 def _direct_request(method: str, url: str, token: str, *, params=None, json_body=None):
-    """以指定 Bearer token 直连 RAG(用户 OBO 轨); 网络异常返回 None(由调用方回退)。"""
+    """以用户 OBO Bearer token 直连 RAG; 网络异常返回 None(由调用方报错)。"""
     try:
         return requests.request(
             method, url,
@@ -37,15 +38,11 @@ def _direct_request(method: str, url: str, token: str, *, params=None, json_body
         return None
 
 
-class _RagClient:
-    """RAG 客户端:懒加载配置 + token 缓存/续期。"""
+class _RagConfig:
+    """RAG 连接配置(base_url): 懒加载; 不再保存服务账号凭据(用户 token 轨)。"""
 
     def __init__(self) -> None:
         self._base = ""
-        self._username = ""
-        self._password = ""
-        self._token = ""
-        self._expires = 0.0
         self._loaded = False
 
     def configure(self) -> str:
@@ -53,12 +50,6 @@ class _RagClient:
 
         s = get_settings()
         self._base = (s.env_str("rag.base_url", "RAG_BASE_URL", "") or "").rstrip("/")
-        self._username = s.env_str("rag.username", "RAG_USERNAME", "") or ""
-        self._password = s.env_str("rag.password", "RAG_PASSWORD", "") or ""
-        token = s.env_str("rag.token", "RAG_TOKEN", "") or ""
-        if token:
-            self._token = token
-            self._expires = time.time() + 86400 * 30
         self._loaded = True
         return self._base
 
@@ -67,55 +58,10 @@ class _RagClient:
             self.configure()
         return bool(self._base)
 
-    def _ensure_token(self) -> bool:
-        if self._token and time.time() < self._expires:
-            return True
-        if not (self._username and self._password):
-            return bool(self._token)
-        try:
-            resp = requests.post(
-                f"{self._base}/api/auth/login",
-                json={"username": self._username, "password": self._password},
-                headers={"Content-Type": "application/json"},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            self._token = resp.json()["token"]
-            self._expires = time.time() + 86400
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.error("[知识库代理] 登录失败: %s", exc)
-            return False
-
-    def _headers(self) -> dict:
-        return {"Content-Type": "application/json", "Authorization": f"Bearer {self._token}"}
-
-    def request(self, method: str, path: str, *, params=None, json_body=None):
-        """返回 (response, error)；401 自动重登重试一次。"""
-        if not self._ensure_token():
-            return None, "rag 认证失败，请检查 RAG_USERNAME/RAG_PASSWORD"
-        try:
-            resp = requests.request(
-                method, f"{self._base}{path}", headers=self._headers(),
-                params=params, json=json_body, timeout=30,
-            )
-            if resp.status_code == 401 and self._username:
-                self._token = ""
-                self._expires = 0.0
-                if self._ensure_token():
-                    resp = requests.request(
-                        method, f"{self._base}{path}", headers=self._headers(),
-                        params=params, json=json_body, timeout=30,
-                    )
-            return resp, None
-        except Exception as exc:  # noqa: BLE001
-            logger.error("[知识库代理] 请求失败 %s %s: %s", method, path, exc)
-            return None, f"无法连接知识库服务: {self._base}"
-
 
 def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 router 签名一致)
     router = APIRouter()
-    client = _RagClient()
+    client = _RagConfig()
 
     def _authz(request: Request):
         """取当前用户鉴权信息(请求内缓存, 避免重复 DB 解析)。"""
@@ -134,27 +80,33 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
         return None
 
     def _rag_call(request: Request, method: str, path: str, *, params=None, json_body=None):
-        """优先按当前用户做 SSO 交换(用户身份), 无会话/失败回退服务账号; 401 重换一次。"""
+        """以当前用户的 SSO 交换 token 直连 RAG; 401 强制重换重试一次。
+
+        无用户 token(无 SSO 会话/交换失败)一律 fail-closed: 返回 (None, 引导文案, 503),
+        不回退服务账号。返回 (response, error, status_code)。
+        """
         base = client.configure()
         try:
             uid = int((_authz(request) or {}).get("uid") or 0)
         except Exception:  # noqa: BLE001
             uid = 0
-        if uid and base:
-            from web.sso_tokens import get_downstream_token
+        if not (uid and base):
+            return None, USER_TOKEN_HINT, 503
+        from web.sso_tokens import get_downstream_token
 
-            for attempt in (0, 1):
-                token = get_downstream_token(uid, force=bool(attempt))
-                if not token:
-                    break
-                resp = _direct_request(
-                    method, f"{base}{path}", token, params=params, json_body=json_body
-                )
-                if resp is not None and resp.status_code != 401:
-                    return resp, None
-                logger.info("[知识库代理] 用户 %s 下游令牌失效(401), 重换重试", uid)
-            logger.warning("[知识库代理] 用户 %s 无 SSO 会话或交换失败, 回退服务账号", uid)
-        return client.request(method, path, params=params, json_body=json_body)
+        for attempt in (0, 1):
+            token = get_downstream_token(uid, force=bool(attempt))
+            if not token:
+                return None, USER_TOKEN_HINT, 503
+            resp = _direct_request(
+                method, f"{base}{path}", token, params=params, json_body=json_body
+            )
+            if resp is not None and resp.status_code != 401:
+                return resp, None, 200
+            if resp is None:
+                return None, f"无法连接知识库服务: {base}", 502
+            logger.info("[知识库代理] 用户 %s 下游令牌失效(401), 重换重试", uid)
+        return None, USER_TOKEN_HINT, 503
 
     def _unavailable():
         return JSONResponse({"error": "RAG 知识库未配置 (RAG_BASE_URL)"}, status_code=503)
@@ -171,9 +123,9 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
             return bad
         if not client.enabled():
             return _unavailable()
-        resp, err = _rag_call(request, "GET", "/api/wiki/spaces")
+        resp, err, code = _rag_call(request, "GET", "/api/wiki/spaces")
         if resp is None:
-            return JSONResponse({"error": err}, status_code=502)
+            return JSONResponse({"error": err}, status_code=code)
         return JSONResponse(resp.json(), status_code=resp.status_code)
 
     @router.get("/api/knowledge/wiki")
@@ -183,9 +135,9 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
         if not client.enabled():
             return _unavailable()
         params = {"space_id": space_id} if space_id else None
-        resp, err = _rag_call(request, "GET", "/api/wiki", params=params)
+        resp, err, code = _rag_call(request, "GET", "/api/wiki", params=params)
         if resp is None:
-            return JSONResponse({"error": err}, status_code=502)
+            return JSONResponse({"error": err}, status_code=code)
         return JSONResponse(resp.json(), status_code=resp.status_code)
 
     @router.get("/api/knowledge/wiki/{page_id}")
@@ -194,9 +146,9 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
             return bad
         if not client.enabled():
             return _unavailable()
-        resp, err = _rag_call(request, "GET", f"/api/wiki/{page_id}")
+        resp, err, code = _rag_call(request, "GET", f"/api/wiki/{page_id}")
         if resp is None:
-            return JSONResponse({"error": err}, status_code=502)
+            return JSONResponse({"error": err}, status_code=code)
         return JSONResponse(resp.json(), status_code=resp.status_code)
 
     @router.get("/api/knowledge/search")
@@ -208,12 +160,12 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
         query = (q or "").strip()
         if not query:
             return JSONResponse({"results": [], "total": 0}, status_code=200)
-        resp, err = _rag_call(
+        resp, err, code = _rag_call(
             request, "POST", "/api/search",
             json_body={"query": query, "top_k": max(1, min(int(top_k or 5), 20))},
         )
         if resp is None:
-            return JSONResponse({"error": err}, status_code=502)
+            return JSONResponse({"error": err}, status_code=code)
         return JSONResponse(resp.json(), status_code=resp.status_code)
 
     return router
