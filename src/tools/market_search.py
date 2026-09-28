@@ -6,6 +6,7 @@
 fail-closed 并引导用户先登录完成身份授权。
 """
 
+import asyncio
 import json
 import logging
 
@@ -71,8 +72,9 @@ class MarketSearchTool(BuiltinTool):
         if not (base and token):
             return json.dumps({"ok": False, "error": "能力市场未配置"}, ensure_ascii=False)
 
-        # 用户身份调用: 无托管 token 一律 fail-closed(不得回退服务令牌全量视角), 并引导登录
-        user_token, hint = resolve_user_token_or_hint()
+        # 用户身份调用: 无托管 token 一律 fail-closed(不得回退服务令牌全量视角), 并引导登录;
+        # token 解析含同步阻塞(SSO 刷新/交换 + SQLite), 经线程池执行避免卡事件循环
+        user_token, hint = await asyncio.to_thread(resolve_user_token_or_hint)
         if hint:
             return json.dumps({"ok": False, "error": hint}, ensure_ascii=False)
 

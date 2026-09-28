@@ -508,7 +508,7 @@ class Agent:
         """
         from mcps.platform import PlatformMCPConfig
         if PlatformMCPConfig.from_env().enabled:
-            logger.info("市场工具已启用: market_search(检索) + market_runtime(执行, 用户 token)")
+            logger.info("市场工具已启用: market_search(检索) + market_runtime(执行) + market_delegate(委派, 用户 token)")
             return
         self.tool_registry.unregister_tool("market_runtime")
         self.tool_registry.unregister_tool("market_search")

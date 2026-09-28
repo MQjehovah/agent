@@ -10,6 +10,7 @@
 MARKET_SERVICE_TOKEN 仅作启用门禁, 调用不再使用(逐请求携带用户 token)。
 """
 
+import asyncio
 import json
 import logging
 
@@ -88,8 +89,9 @@ class MarketRuntimeTool(BuiltinTool):
             return json.dumps({"ok": False, "error": "能力市场未配置"},
                               ensure_ascii=False)
 
-        # 用户身份调用: 无托管 token 一律 fail-closed(不得以服务身份越权执行), 并引导登录
-        user_token, hint = resolve_user_token_or_hint()
+        # 用户身份调用: 无托管 token 一律 fail-closed(不得以服务身份越权执行), 并引导登录;
+        # token 解析含同步阻塞(SSO 刷新/交换 + SQLite), 经线程池执行避免卡事件循环
+        user_token, hint = await asyncio.to_thread(resolve_user_token_or_hint)
         if hint:
             return json.dumps({"ok": False, "error": hint}, ensure_ascii=False)
 

@@ -1,8 +1,10 @@
-"""web OBO fail-closed 入口(sso_tokens.require_user_token)单测。
+"""web OBO fail-closed 入口(sso_tokens.require_user_token)与市场公共解析单测。
 
 覆盖:
-- 无托管 token → 抛 UserTokenUnavailable, 文案含统一引导(「登录一次」);
-- 有托管 token(mock get_downstream_token) → 原样返回。
+- 无托管 token → 抛 UserTokenUnavailable, 文案为统一引导(USER_TOKEN_HINT);
+- 有托管 token(mock get_downstream_token) → 原样返回;
+- market_common.resolve_user_token_or_hint: uid 解析 + audience 恒为 gateway,
+  无托管/意外异常一律 fail-closed 返回引导文案。
 """
 import os
 import sys
@@ -11,6 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import pytest  # noqa: E402
 
+from agent.core import RunContext, _current_run  # noqa: E402
+from tools import market_common  # noqa: E402
 from web import sso_auth, sso_tokens  # noqa: E402
 
 
@@ -50,3 +54,52 @@ def test_require_user_token_returns_hosted_token(monkeypatch):
                         lambda uid, audience="": calls.append((uid, audience)) or "tok-1")
     assert sso_tokens.require_user_token(7, "gateway") == "tok-1"
     assert calls == [(7, "gateway")]
+
+
+# ---- market_common.resolve_user_token_or_hint(市场工具公共解析) ----
+
+
+def _in_run_ctx(user_id: str, func):
+    rc = RunContext(user_id=user_id, role="default")
+    token = _current_run.set(rc)
+    try:
+        return func()
+    finally:
+        _current_run.reset(token)
+
+
+def test_resolve_user_token_parses_uid_and_keeps_gateway_audience(monkeypatch):
+    """防回归: 必须按 tag 数字 uid 调用, audience 恒为 gateway(不得回退默认受众)。"""
+    calls: list[tuple[int, str]] = []
+
+    def fake_require(uid, audience=""):
+        calls.append((uid, audience))
+        return "tok-7"
+
+    monkeypatch.setattr(sso_tokens, "require_user_token", fake_require)
+    assert _in_run_ctx("web:7", market_common.resolve_user_token_or_hint) == ("tok-7", None)
+    assert calls == [(7, "gateway")]
+
+
+def test_resolve_user_token_fail_closed_on_unavailable_token(monkeypatch):
+    def fake_require(uid, audience=""):
+        raise sso_tokens.UserTokenUnavailable(sso_tokens.USER_TOKEN_HINT)
+
+    monkeypatch.setattr(sso_tokens, "require_user_token", fake_require)
+    assert _in_run_ctx("web:7", market_common.resolve_user_token_or_hint) == ("", sso_tokens.USER_TOKEN_HINT)
+
+
+def test_resolve_user_token_fail_closed_on_unexpected_error(monkeypatch):
+    """意外异常(刷新/交换/DB 等) 同样 fail-closed 并返回引导文案, 不外漏原生异常。"""
+    def fake_require(uid, audience=""):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sso_tokens, "require_user_token", fake_require)
+    assert _in_run_ctx("web:7", market_common.resolve_user_token_or_hint) == ("", sso_tokens.USER_TOKEN_HINT)
+
+
+def test_resolve_user_token_fail_closed_on_unparsable_uid(monkeypatch):
+    monkeypatch.setattr(sso_tokens, "require_user_token",
+                        lambda uid, audience="": pytest.fail("uid 不可解析时不应调用 require_user_token"))
+    for user_id in ("", "web:朱尚荣"):
+        assert _in_run_ctx(user_id, market_common.resolve_user_token_or_hint) == ("", sso_tokens.USER_TOKEN_HINT)

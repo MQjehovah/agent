@@ -57,7 +57,7 @@ class _FakeClient:
         })
 
     async def post(self, url, headers=None, json=None, **kwargs):
-        _FakeClient.posts.append(url)
+        _FakeClient.posts.append({"url": url, "headers": headers})
         if "/runtime/mcp/" in url and url.endswith("/connect"):
             return _FakeResp(200, {"tools": [{"name": "run_command"}, {"name": "open_session"}]})
         return _FakeResp(200, {"result": {"skill_md": "# 报销流程\n先填单再审批"}})
@@ -71,6 +71,7 @@ def _env(monkeypatch):
     _FakeClient.posts = []
     _FakeClient.captured = {}
     md._SKILL_CACHE.clear()
+    md._MCP_TOOLS_CACHE.clear()
     yield
 
 
@@ -131,8 +132,37 @@ async def test_happy_path_composes_and_runs(monkeypatch, hosted_token):
     assert "market_runtime" in captured["system_prompt"]
     assert "run_command" in captured["system_prompt"]  # mcp 工具清单已列出
     assert captured["task"] == "帮我报销差旅"
-    # 技能激活被调用
-    assert any("/api/runtime/skills/reimburse/activate" in u for u in _FakeClient.posts)
+    # 技能激活 / 连接器 connect 均逐请求携带用户 token, 不带服务令牌 / X-Act-As-Sub
+    assert any("/api/runtime/skills/reimburse/activate" in p["url"] for p in _FakeClient.posts)
+    assert any("/api/runtime/mcp/gitlab-devops/connect" in p["url"] for p in _FakeClient.posts)
+    for p in _FakeClient.posts:
+        assert p["headers"]["Authorization"] == "Bearer user-tok-7"
+        assert "X-Act-As-Sub" not in p["headers"]
+
+
+async def test_caches_scoped_per_user(monkeypatch, hosted_token):
+    """技能/连接器清单缓存按 (uid, name) 隔离: 同用户命中, 换用户必须重新拉取。"""
+    monkeypatch.setattr(md.httpx, "AsyncClient", _FakeClient)
+    _FakeClient.deps = [
+        {"name": "reimburse", "type": "skill", "distribution": "remote"},
+        {"name": "gitlab-devops", "type": "mcp", "distribution": "remote"},
+    ]
+
+    async def fake_run(system_prompt, task, expert=""):
+        return {"ok": True, "expert_output": "", "error": ""}
+
+    monkeypatch.setattr(md, "_run_transient", fake_run)
+    tool = MarketDelegateTool()
+
+    await _run_with("web:7", lambda: tool.execute(expert="e", task="t"))
+    first = len(_FakeClient.posts)
+    assert first == 2  # skill activate + mcp connect
+
+    await _run_with("web:7", lambda: tool.execute(expert="e", task="t"))
+    assert len(_FakeClient.posts) == first  # 同用户命中缓存, 不再请求
+
+    await _run_with("web:8", lambda: tool.execute(expert="e", task="t"))
+    assert len(_FakeClient.posts) == first + 2  # 换用户不得复用他人缓存
 
 
 async def test_rejects_local_mcp_dep(monkeypatch, hosted_token):
@@ -161,6 +191,7 @@ async def test_fail_closed_without_user_token(monkeypatch):
         assert payload["ok"] is False
         assert payload["error"] == _HINT
     assert _FakeClient.captured == {}
+    assert _FakeClient.posts == []
 
 
 async def test_requires_hosted_token(monkeypatch):
@@ -174,6 +205,7 @@ async def test_requires_hosted_token(monkeypatch):
     assert payload["ok"] is False
     assert payload["error"] == _HINT
     assert _FakeClient.captured == {}
+    assert _FakeClient.posts == []
 
 
 async def test_disabled_without_config(monkeypatch):
@@ -184,6 +216,7 @@ async def test_disabled_without_config(monkeypatch):
     assert payload["ok"] is False
     assert "未配置" in payload["error"]
     assert _FakeClient.captured == {}
+    assert _FakeClient.posts == []
 
 
 async def test_market_delegate_run_on_main_loop_flag():

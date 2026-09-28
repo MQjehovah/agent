@@ -11,6 +11,7 @@
 仅当市场配置齐备时可用; 无用户托管 token(或 uid 解析失败)一律 fail-closed 并引导登录。
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -25,32 +26,50 @@ logger = logging.getLogger("agent.tools")
 _PERSONA_PATH = "/api/runtime/agents/{expert}/persona"
 _SKILL_ACTIVATE_PATH = "/api/runtime/skills/{skill}/activate"
 
-# 技能文本缓存: name -> (text, expires_at)
-_SKILL_CACHE: dict[str, tuple[str, float]] = {}
+# 技能文本缓存: (uid, name) -> (text, expires_at); 按提问者隔离, 防跨用户回放
+_SKILL_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
 _SKILL_TTL = 300.0
 
-# mcp 依赖工具清单缓存: name -> (tools, expires_at)
-_MCP_TOOLS_CACHE: dict[str, tuple[list[str], float]] = {}
+# mcp 依赖工具清单缓存: (uid, name) -> (tools, expires_at); 按提问者隔离
+_MCP_TOOLS_CACHE: dict[tuple[str, str], tuple[list[str], float]] = {}
 _MCP_TOOLS_TTL = 300.0
+
+
+def _cache_get(cache: dict, key: tuple[str, str], now: float):
+    """缓存命中且未过期返回值; 过期项顺手清除。"""
+    hit = cache.get(key)
+    if not hit:
+        return None
+    if hit[1] > now:
+        return hit[0]
+    cache.pop(key, None)
+    return None
+
+
+def _cache_put(cache: dict, key: tuple[str, str], value, expires_at: float, now: float) -> None:
+    """写入缓存并清理已过期项(跨用户键防无限积压)。"""
+    for k in [k for k, v in cache.items() if v[1] <= now]:
+        cache.pop(k, None)
+    cache[key] = (value, expires_at)
 
 
 def _err(msg: str) -> str:
     return json.dumps({"ok": False, "error": msg}, ensure_ascii=False)
 
 
-async def _fetch_skill_text(base: str, headers: dict, name: str, timeout: float) -> str:
-    """取技能文本(SKILL.md); 命中内存缓存则直接返回。失败返回空串。"""
-    key = (name or "").strip()
-    if not key:
+async def _fetch_skill_text(base: str, headers: dict, name: str, timeout: float, uid: str = "") -> str:
+    """取技能文本(SKILL.md); 按 (uid, name) 缓存命中则直接返回。失败返回空串。"""
+    key = ((uid or "").strip(), (name or "").strip())
+    if not key[1]:
         return ""
-    cached = _SKILL_CACHE.get(key)
     now = time.time()
-    if cached and cached[1] > now:
-        return cached[0]
+    cached = _cache_get(_SKILL_CACHE, key, now)
+    if cached:
+        return cached
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
-                f"{base}{_SKILL_ACTIVATE_PATH.format(skill=key)}", headers=headers, json={"context": ""}
+                f"{base}{_SKILL_ACTIVATE_PATH.format(skill=key[1])}", headers=headers, json={"context": ""}
             )
         if resp.status_code >= 400:
             return ""
@@ -62,7 +81,7 @@ async def _fetch_skill_text(base: str, headers: dict, name: str, timeout: float)
         if not text and isinstance(data, dict):
             text = str(data.get("skill_md") or "")
         if text:
-            _SKILL_CACHE[key] = (text, now + _SKILL_TTL)
+            _cache_put(_SKILL_CACHE, key, text, now + _SKILL_TTL, now)
         return text
     except (httpx.HTTPError, ValueError):
         return ""
@@ -98,18 +117,18 @@ def _compose_prompt(persona: str, deps: list[dict], skill_texts: list[tuple[str,
     return "\n\n".join(p for p in parts if p)
 
 
-async def _fetch_mcp_tools(base: str, headers: dict, name: str, timeout: float) -> list[str]:
-    """取某 mcp 能力暴露的工具名列表(经 /api/runtime/mcp/{name}/connect); 命中缓存直接返回。失败为空。"""
-    key = (name or "").strip()
-    if not key:
+async def _fetch_mcp_tools(base: str, headers: dict, name: str, timeout: float, uid: str = "") -> list[str]:
+    """取某 mcp 能力暴露的工具名列表(经 /api/runtime/mcp/{name}/connect); 按 (uid, name) 缓存。失败为空。"""
+    key = ((uid or "").strip(), (name or "").strip())
+    if not key[1]:
         return []
     now = time.time()
-    cached = _MCP_TOOLS_CACHE.get(key)
-    if cached and cached[1] > now:
-        return cached[0]
+    cached = _cache_get(_MCP_TOOLS_CACHE, key, now)
+    if cached is not None:
+        return cached
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(f"{base}/api/runtime/mcp/{key}/connect", headers=headers)
+            resp = await client.post(f"{base}/api/runtime/mcp/{key[1]}/connect", headers=headers)
         if resp.status_code >= 400:
             return []
         data = resp.json()
@@ -126,7 +145,7 @@ async def _fetch_mcp_tools(base: str, headers: dict, name: str, timeout: float) 
                 elif isinstance(t, str):
                     names.append(t)
         if names:
-            _MCP_TOOLS_CACHE[key] = (names, now + _MCP_TOOLS_TTL)
+            _cache_put(_MCP_TOOLS_CACHE, key, names, now + _MCP_TOOLS_TTL, now)
         return names
     except (httpx.HTTPError, ValueError):
         return []
@@ -243,10 +262,17 @@ class MarketDelegateTool(BuiltinTool):
         if not (base and token):
             return _err("能力市场未配置")
 
-        # 用户身份调用: 无托管 token 一律 fail-closed(不得以服务身份越权委派), 并引导登录
-        user_token, hint = resolve_user_token_or_hint()
+        # 用户身份调用: 无托管 token 一律 fail-closed(不得以服务身份越权委派), 并引导登录;
+        # token 解析含同步阻塞(SSO 刷新/交换 + SQLite), 经线程池执行避免卡事件循环
+        user_token, hint = await asyncio.to_thread(resolve_user_token_or_hint)
         if hint:
             return _err(hint)
+
+        # 请求与缓存均按当前提问者隔离(防 A 用户的授权清单回放给 B)
+        from agent.core import current_run
+        from agent.user_profile import uid_from_tag
+
+        uid = uid_from_tag(getattr(current_run(), "user_id", "") or "")
 
         headers = {
             "Authorization": f"Bearer {user_token}",
@@ -290,7 +316,7 @@ class MarketDelegateTool(BuiltinTool):
         for d in deps:
             if str(d.get("type")) == "skill":
                 name = str(d.get("name") or "")
-                text = await _fetch_skill_text(base, headers, name, timeout)
+                text = await _fetch_skill_text(base, headers, name, timeout, uid)
                 if text:
                     skill_texts.append((name, text))
 
@@ -299,7 +325,7 @@ class MarketDelegateTool(BuiltinTool):
         for d in deps:
             if str(d.get("type")) == "mcp":
                 name = str(d.get("name") or "")
-                tools = await _fetch_mcp_tools(base, headers, name, timeout)
+                tools = await _fetch_mcp_tools(base, headers, name, timeout, uid)
                 mcp_tools.append((name, tools))
 
         # 4) 组人设
