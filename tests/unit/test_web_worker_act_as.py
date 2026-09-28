@@ -141,6 +141,24 @@ def test_resolve_act_as_non_numeric_does_not_touch_storage(monkeypatch):
     assert resolve_market_act_as("web:s_software") == "s_software"
 
 
+def test_resolve_act_as_non_ascii_name_warns_and_returns_empty(store, caplog):
+    """钉钉/LDAP 老账号 name 尚为中文(未并到工号): 不可作市场用户名(HTTP 头需 ASCII)。
+
+    原样透传会让 X-Act-As-Sub 在 httpx 头编码处抛 UnicodeEncodeError(钉钉群实测),
+    按解析失败处理: 空串 fail-closed + WARNING。
+    """
+    uid = _make_user(store, name="朱尚荣")
+    with caplog.at_level(logging.WARNING, logger="agent.web.security"):
+        assert resolve_market_act_as(f"dingtalk:{uid}") == ""
+    assert any("朱尚荣" in r.getMessage() for r in caplog.records
+               if r.levelno == logging.WARNING)
+
+
+def test_resolve_act_as_non_ascii_passthrough_rejected(store):
+    """非数字分支若本身非 ASCII(异常形态)同样 fail-closed 空串。"""
+    assert resolve_market_act_as("web:朱尚荣") == ""
+
+
 def test_resolve_act_as_service_sentinel_silent(store, caplog):
     """uid=0(X-Service-Token 服务身份)必然查不到: 静默返回空串, 不打 WARNING。"""
     with caplog.at_level(logging.WARNING, logger="agent.web.security"):

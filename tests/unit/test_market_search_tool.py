@@ -134,6 +134,17 @@ async def test_market_search_tool_disabled_without_config(monkeypatch):
     assert "未配置" in payload["error"]
 
 
+async def test_market_search_tool_rejects_non_ascii_subject(monkeypatch):
+    """中文 subject(钉钉老账号名) 不能进 X-Act-As-Sub: fail-closed 友好错误, 不崩溃。"""
+    monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
+    tool = MarketSearchTool()
+    out = await _run_with("web:朱尚荣", lambda: tool.execute(query="报销"))
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "市场身份" in payload["error"]
+    assert _FakeClient.captured == {}
+
+
 # ---- joined 标记: 已开通优先 + 未开通 note(方案A) ----
 
 async def test_market_search_marks_joined_and_notes_locked(monkeypatch):

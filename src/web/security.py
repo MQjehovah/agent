@@ -38,13 +38,29 @@ def market_act_as_enabled(env: Mapping[str, str] | None = None) -> bool:
     return False
 
 
+def _safe_market_username(value: str) -> str:
+    """市场用户名(工号/SSO sub/LDAP 账号)净化: 必须是可安全放入 HTTP 头的可见 ASCII。
+
+    钉钉/LDAP 老账号的 ``rbac_users.name`` 可能是中文姓名(未并到工号), 若原样用作
+    ``X-Act-As-Sub``(市场工具/平台轨), httpx 头部按 ascii 编码会抛
+    ``UnicodeEncodeError``(钉钉群实测: 'ascii' codec can't encode characters
+    in position 0-2)。非 ASCII/含空白/控制字符一律视为解析失败(fail-closed)。
+    """
+    text = str(value or "").strip()
+    if text and text.isascii() and text.isprintable() and " " not in text:
+        return text
+    return ""
+
+
 def resolve_market_act_as(owner: str) -> str:
     """归属 tag/uid → market 用户名(= rbac 工号); 解析失败返回空串(回退见下)。
 
     - ``web:{uid}``: ``"0"``(X-Service-Token 服务身份)无对应市场用户, 静默返回空串;
       数字 uid(rbac_users.id) → 查表取 name(= 工号/SSO sub), 查不到/存储不可用 →
       空串 + WARNING(该 worker 回退服务令牌全量视角, 日志须可见);
-    - 非数字(本身已是工号/SSO sub) → 原样使用, 不查库。
+    - 非数字(本身已是工号/SSO sub) → 原样使用, 不查库;
+    - 结果必须是可见 ASCII(见 ``_safe_market_username``): 中文 name(钉钉/LDAP 老账号
+      尚未并到工号)按解析失败处理, 空串 + WARNING, 不让非 ASCII 进 HTTP 头。
 
     回退有意非对称: 数字 uid 解析失败=回退服务令牌全量视角(功能可用但粒度变粗);
     非数字直传若 market 侧不存在则 403/空工具集(fail-closed, 不放宽权限)。
@@ -58,7 +74,12 @@ def resolve_market_act_as(owner: str) -> str:
     if uid == "0":
         return ""  # 服务身份哨兵: 必然查不到, 静默不解析(不打 WARNING)
     if not uid.isdigit():
-        return uid  # 已是工号(SSO sub), 直接作为 market 用户名
+        # 已是工号(SSO sub), 直接作为 market 用户名; 但异常形态(如中文名)必须拒绝
+        name = _safe_market_username(uid)
+        if not name:
+            logger.warning(f"MARKET_ACT_AS: owner={raw!r} 非可见 ASCII 工号/账号, "
+                           "不可作为市场用户名(fail-closed 按未解析处理)")
+        return name
     try:
         from storage.storage import get_storage  # noqa: PLC0415 — 避免循环导入/启动期依赖
         storage = get_storage()
@@ -67,10 +88,15 @@ def resolve_market_act_as(owner: str) -> str:
             return ""
         with storage.get_connection() as conn:
             row = conn.execute("SELECT name FROM rbac_users WHERE id = ?", (int(uid),)).fetchone()
-        name = str(row["name"]).strip() if row else ""
+        raw_name = str(row["name"]).strip() if row else ""
+        name = _safe_market_username(raw_name)
         if not name:
-            logger.warning(f"MARKET_ACT_AS: 未找到 uid={uid} 对应的市场用户名"
-                           "(该 worker 回退服务令牌视角)")
+            if raw_name:
+                logger.warning(f"MARKET_ACT_AS: uid={uid} 的 name={raw_name!r} 非可见 ASCII "
+                               "市场用户名(钉钉/LDAP 老账号未并到工号?), 按未解析处理(回退服务令牌视角)")
+            else:
+                logger.warning(f"MARKET_ACT_AS: 未找到 uid={uid} 对应的市场用户名"
+                               "(该 worker 回退服务令牌视角)")
             return ""
         return name
     except Exception as e:
