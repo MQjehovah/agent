@@ -43,6 +43,43 @@
   --sidebar-w: 236px;
   --sidebar-collapsed: 58px;
   --topbar-h: 52px;
+
+  /* 浅色主题精调: 柔和中性灰, 层级更细腻(深色由 html.dark 覆盖, 不受影响) */
+  --el-bg-color-page: #f4f6f9;
+  --el-text-color-primary: #1d2333;
+  --el-text-color-regular: #3f4657;
+  --el-text-color-secondary: #667085;
+  --el-text-color-placeholder: #98a2b3;
+  --el-border-color: #e5e8ef;
+  --el-border-color-light: #eaedf3;
+  --el-border-color-lighter: #eff1f6;
+  --el-fill-color-light: #f1f4f9;
+  --el-fill-color-lighter: #f6f8fb;
+  --el-fill-color-darker: #e5ebf5;
+  --app-code-bg: #f2f4f8;
+  /* 浅色信息色随品牌蓝(深色在 html.dark 覆盖) */
+  --app-info-text: #2f6bff;
+  --app-info-bg: #eef3ff;
+}
+
+/* 浅色主题: 品牌蓝(深色保持 EP 蓝不变) + 卡片轻投影 + 侧栏选中主色染底 */
+html.light {
+  --el-color-primary: #2f6bff;
+  --el-color-primary-light-3: #6b95ff;
+  --el-color-primary-light-5: #97b6ff;
+  --el-color-primary-light-7: #c3d4ff;
+  --el-color-primary-light-8: #d9e4ff;
+  --el-color-primary-light-9: #eef3ff;
+  --el-color-primary-dark-2: #2557d6;
+}
+html.light .card,
+html.light .stat-card,
+html.light .quick-item {
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.03);
+}
+html.light .sider nav a.router-link-active {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
 }
 
 /* 浅色为默认(:root),无需 html.light 覆盖 */

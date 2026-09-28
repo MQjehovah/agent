@@ -48,6 +48,9 @@ const roleLabel = computed(() => {
 
 const models = computed(() => summary.value?.models ?? [])
 const monthTotal = computed(() => models.value.reduce((sum, m) => sum + (m.month.tokens || 0), 0))
+const todayTotal = computed(() => models.value.reduce((sum, m) => sum + (m.today.tokens || 0), 0))
+/** 模型列表有数据但全为 0 时也给空态, 避免空白坐标轴 */
+const hasModelUsage = computed(() => monthTotal.value > 0 || todayTotal.value > 0)
 
 /** 主题相关图表配色(与桌面端一致) */
 const chartTheme = computed(() => {
@@ -233,7 +236,7 @@ onMounted(load)
         </div>
       </div>
 
-      <div v-if="!models.length" class="card usage-state">
+      <div v-if="!hasModelUsage" class="card usage-state">
         <el-empty description="暂无模型用量数据" />
       </div>
       <template v-else>
@@ -260,9 +263,15 @@ onMounted(load)
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .usage-updated { font-size: 12.5px; color: var(--text-3); }
 .usage-state { padding: 20px; }
-.usage-note { font-size: 12.5px; color: var(--text-2); padding: 10px 14px; }
+.usage-note {
+  font-size: 12.5px;
+  color: var(--app-info-text);
+  background: var(--app-info-bg);
+  border: none;
+  padding: 10px 14px;
+}
 .stat-card.no-link { cursor: default; }
-.stat-card .cost { margin-top: 6px; font-size: 12.5px; font-weight: 600; color: #10b981; }
+.stat-card .cost { margin-top: 6px; font-size: 12.5px; font-weight: 600; color: var(--app-ok-text); }
 .stat-card .unit { margin-left: 4px; font-size: 12px; font-weight: 400; color: var(--text-3); }
 .profile-card { display: flex; flex-wrap: wrap; gap: 8px 40px; padding: 14px 18px; }
 .profile-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--text); }
