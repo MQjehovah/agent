@@ -1,10 +1,10 @@
-"""能力市场云端运行时工具(代授权/OBO): 按当前提问者(subject)身份调用市场能力。
+"""能力市场云端运行时工具(用户身份): 按当前提问者的用户 token 调用市场能力。
 
 与平台 MCP 轨(mcps/platform.py)的区别:
 - 平台 MCP 轨是**持久会话**连接, act-as 每 worker 恒定(无法逐请求变化), 适合服务面/全局能力;
-- 本工具走市场 ``/api/runtime/*`` **逐请求** HTTP, 携带 ``X-Act-As-Sub`` = 当前 run 的真实用户,
-  市场侧按 actor ∩ subject 求交(见 market 的 require_runtime_access_obo), 归因与审计落到 subject。
-  适合"零号员工"等全局单例为不同提问者执行**用户级**能力。
+- 本工具走市场 ``/api/runtime/*`` **逐请求** HTTP, 携带当前提问者的**用户 token**
+  (Bearer, audience=gateway), 由市场按用户身份鉴权与归因; 适合"零号员工"等全局单例
+  为不同提问者执行**用户级**能力。无托管 token 时 fail-closed 并引导用户先登录授权。
 
 仅当市场配置齐备(MARKET_BASE_URL + MARKET_SERVICE_TOKEN)时保留, 见 Agent._init_market_runtime。
 """
@@ -15,7 +15,7 @@ import logging
 import httpx
 
 from . import BuiltinTool
-from .market_common import market_config, resolve_subject
+from .market_common import market_config
 
 logger = logging.getLogger("agent.tools")
 
@@ -82,18 +82,23 @@ class MarketRuntimeTool(BuiltinTool):
             return json.dumps({"ok": False, "error": "缺少 capability"},
                               ensure_ascii=False)
 
-        # 用户级代授权: 无 subject 一律 fail-closed(不得以服务身份越权执行)
-        subject = resolve_subject()
-        if not subject:
-            return json.dumps(
-                {"ok": False, "error": "无法解析当前用户的市场身份，已拒绝代授权调用"},
-                ensure_ascii=False,
-            )
-
         base, token, timeout = market_config()
         if not (base and token):
             return json.dumps({"ok": False, "error": "能力市场未配置"},
                               ensure_ascii=False)
+
+        # 用户身份调用: 无托管 token 一律 fail-closed(不得以服务身份越权执行), 并引导登录
+        from agent.core import current_run
+        from agent.user_profile import uid_from_tag
+        from web.sso_tokens import USER_TOKEN_HINT, UserTokenUnavailable, require_user_token
+
+        uid = uid_from_tag(getattr(current_run(), "user_id", "") or "")
+        if not uid:
+            return json.dumps({"ok": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
+        try:
+            user_token = require_user_token(int(uid), "gateway")
+        except UserTokenUnavailable:
+            return json.dumps({"ok": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
 
         if kind == "agent":
             path = _AGENT_TASK_PATH.format(capability=capability)
@@ -109,8 +114,7 @@ class MarketRuntimeTool(BuiltinTool):
             body = {"tool": tool or "", "params": params or {}}
 
         headers = {
-            "Authorization": f"Bearer {token}",
-            "X-Act-As-Sub": subject,
+            "Authorization": f"Bearer {user_token}",
             "Content-Type": "application/json",
         }
         url = f"{base}{path}"

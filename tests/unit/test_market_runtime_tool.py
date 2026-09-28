@@ -1,9 +1,9 @@
-"""市场运行时工具(代授权/OBO)单测。
+"""市场运行时工具(用户身份)单测。
 
 覆盖:
-- 逐请求携带 X-Act-As-Sub = 当前 run 的 subject(市场用户名), 并走 /api/runtime/tools/.../invoke;
-- 无 subject 时 fail-closed(不以服务身份越权);
-- 市场未配置时返回错误。
+- 逐请求携带用户 token(Bearer, aud=gateway)调用 /api/runtime/*, 不再带服务令牌 / X-Act-As-Sub;
+- tool/mcp/skill/agent 四类端点与请求体;
+- 无托管 token / uid 解析失败时 fail-closed 并返回统一引导登录文案; 市场未配置时返回错误。
 """
 import json
 import os
@@ -16,6 +16,7 @@ import pytest  # noqa: E402
 from agent.core import RunContext, _current_run  # noqa: E402
 from tools import market_runtime as mrt  # noqa: E402
 from tools.market_runtime import MarketRuntimeTool  # noqa: E402
+from web.sso_tokens import USER_TOKEN_HINT as _HINT  # noqa: E402
 
 
 class _FakeResp:
@@ -53,6 +54,16 @@ def _market_env(monkeypatch):
     yield
 
 
+@pytest.fixture
+def hosted_token(monkeypatch):
+    """托管用户 token(按 uid 派生), 供断言 Bearer 头。"""
+    from web import sso_tokens
+
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: f"user-tok-{uid}")
+    return "user-tok-7"
+
+
 def test_market_runtime_tool_schema_is_object():
     """回归: 工具 parameters 必须是完整 JSON Schema(type=object/properties/required)。
 
@@ -77,12 +88,11 @@ async def _run_with(user_id: str, coro_factory):
         _current_run.reset(token)
 
 
-async def test_market_runtime_tool_sends_subject(monkeypatch):
+async def test_market_runtime_tool_sends_user_token(monkeypatch, hosted_token):
     monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
     tool = MarketRuntimeTool()
-    # 非数字 subject(避免查库): web:jimingqing → 市场用户名 jimingqing
     out = await _run_with(
-        "web:jimingqing",
+        "web:7",
         lambda: tool.execute(capability="某工具", kind="tool", tool="t", params={"a": 1}),
     )
     payload = json.loads(out)
@@ -90,16 +100,16 @@ async def test_market_runtime_tool_sends_subject(monkeypatch):
 
     cap = _FakeClient.captured
     assert cap["url"] == "http://market.local/api/runtime/tools/某工具/invoke"
-    assert cap["headers"]["Authorization"] == "Bearer svc-token"
-    assert cap["headers"]["X-Act-As-Sub"] == "jimingqing"
+    assert cap["headers"]["Authorization"] == "Bearer user-tok-7"
+    assert "X-Act-As-Sub" not in cap["headers"]
     assert cap["json"] == {"tool": "t", "params": {"a": 1}}
 
 
-async def test_market_runtime_tool_agent_mode(monkeypatch):
+async def test_market_runtime_tool_agent_mode(monkeypatch, hosted_token):
     monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
     tool = MarketRuntimeTool()
     await _run_with(
-        "web:jimingqing",
+        "web:7",
         lambda: tool.execute(capability="某专家", kind="agent", task="帮我看看"),
     )
     cap = _FakeClient.captured
@@ -107,11 +117,11 @@ async def test_market_runtime_tool_agent_mode(monkeypatch):
     assert cap["json"] == {"task": "帮我看看"}
 
 
-async def test_market_runtime_tool_mcp_mode(monkeypatch):
+async def test_market_runtime_tool_mcp_mode(monkeypatch, hosted_token):
     monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
     tool = MarketRuntimeTool()
     await _run_with(
-        "web:jimingqing",
+        "web:7",
         lambda: tool.execute(capability="某连接器", kind="mcp", tool="t", params={"x": 2}),
     )
     cap = _FakeClient.captured
@@ -119,11 +129,11 @@ async def test_market_runtime_tool_mcp_mode(monkeypatch):
     assert cap["json"] == {"tool": "t", "params": {"x": 2}}
 
 
-async def test_market_runtime_tool_skill_mode(monkeypatch):
+async def test_market_runtime_tool_skill_mode(monkeypatch, hosted_token):
     monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
     tool = MarketRuntimeTool()
     await _run_with(
-        "web:jimingqing",
+        "web:7",
         lambda: tool.execute(capability="某技能", kind="skill", task="写周报"),
     )
     cap = _FakeClient.captured
@@ -131,16 +141,34 @@ async def test_market_runtime_tool_skill_mode(monkeypatch):
     assert cap["json"] == {"context": "写周报"}
 
 
-async def test_market_runtime_tool_requires_subject(monkeypatch):
+async def test_market_runtime_tool_requires_numeric_uid(monkeypatch):
+    """uid 解析失败(空/中文旧账号名) → fail-closed 统一引导登录, 不发请求。"""
     monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
     tool = MarketRuntimeTool()
+    for user_id in ("", "web:朱尚荣"):
+        out = await _run_with(
+            user_id, lambda: tool.execute(capability="某工具", kind="tool", tool="t")
+        )
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert payload["error"] == _HINT
+    assert _FakeClient.captured == {}
+
+
+async def test_market_runtime_tool_requires_hosted_token(monkeypatch):
+    from web import sso_tokens
+
+    monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: "")
+    tool = MarketRuntimeTool()
     out = await _run_with(
-        "", lambda: tool.execute(capability="某工具", kind="tool", tool="t")
+        "web:7", lambda: tool.execute(capability="某工具", kind="tool", tool="t")
     )
     payload = json.loads(out)
     assert payload["ok"] is False
-    assert "市场身份" in payload["error"]
-    assert _FakeClient.captured == {}  # 未发起任何请求
+    assert payload["error"] == _HINT
+    assert _FakeClient.captured == {}
 
 
 async def test_market_runtime_tool_disabled_without_config(monkeypatch):
@@ -148,9 +176,10 @@ async def test_market_runtime_tool_disabled_without_config(monkeypatch):
     monkeypatch.delenv("MARKET_SERVICE_TOKEN", raising=False)
     tool = MarketRuntimeTool()
     out = await _run_with(
-        "web:jimingqing",
+        "web:7",
         lambda: tool.execute(capability="某工具", kind="tool", tool="t"),
     )
     payload = json.loads(out)
     assert payload["ok"] is False
     assert "未配置" in payload["error"]
+    assert _FakeClient.captured == {}

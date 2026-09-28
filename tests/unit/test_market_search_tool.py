@@ -1,9 +1,10 @@
-"""市场目录检索工具(代授权/OBO)单测。
+"""市场目录检索工具(用户身份)单测。
 
 覆盖:
-- 逐请求携带 X-Act-As-Sub 并走 GET /api/capabilities/task-search;
+- 逐请求携带用户 token(Bearer, aud=gateway)并走 GET /api/capabilities/task-search,
+  不再带服务令牌 / X-Act-As-Sub;
 - 命中分组(agents/skills/mcps/tools)与 total;
-- 无 subject 时 fail-closed; 市场未配置时返回错误;
+- 无托管 token / uid 解析失败时 fail-closed 并返回统一引导登录文案; 市场未配置时返回错误;
 - joined 标记: 已开通优先 + 未开通 note 提示(方案A: 发现保留, 不误调未开通能力)。
 """
 
@@ -18,6 +19,7 @@ import pytest  # noqa: E402
 from agent.core import RunContext, _current_run  # noqa: E402
 from tools import market_search as ms  # noqa: E402
 from tools.market_search import MarketSearchTool  # noqa: E402
+from web.sso_tokens import USER_TOKEN_HINT as _HINT  # noqa: E402
 
 _DEFAULT_PAYLOAD = {
     "q": "报销",
@@ -67,6 +69,16 @@ def _market_env(monkeypatch):
     yield
 
 
+@pytest.fixture
+def hosted_token(monkeypatch):
+    """托管用户 token(按 uid 派生), 供断言 Bearer 头。"""
+    from web import sso_tokens
+
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: f"user-tok-{uid}")
+    return "user-tok-7"
+
+
 def test_market_search_tool_schema_is_object():
     tool = MarketSearchTool()
     params = tool.parameters
@@ -85,10 +97,10 @@ async def _run_with(user_id: str, coro_factory):
         _current_run.reset(token)
 
 
-async def test_market_search_tool_sends_subject_and_groups(monkeypatch):
+async def test_market_search_tool_sends_user_token_and_groups(monkeypatch, hosted_token):
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     tool = MarketSearchTool()
-    out = await _run_with("web:jimingqing", lambda: tool.execute(query="报销", limit=5))
+    out = await _run_with("web:7", lambda: tool.execute(query="报销", limit=5))
     payload = json.loads(out)
     assert payload["ok"] is True
     assert payload["total"] == 2
@@ -97,15 +109,15 @@ async def test_market_search_tool_sends_subject_and_groups(monkeypatch):
 
     cap = _FakeClient.captured
     assert cap["url"] == "http://market.local/api/capabilities/task-search"
-    assert cap["headers"]["Authorization"] == "Bearer svc-token"
-    assert cap["headers"]["X-Act-As-Sub"] == "jimingqing"
+    assert cap["headers"]["Authorization"] == "Bearer user-tok-7"
+    assert "X-Act-As-Sub" not in cap["headers"]
     assert cap["params"] == {"q": "报销"}
 
 
-async def test_market_search_tool_kind_filter(monkeypatch):
+async def test_market_search_tool_kind_filter(monkeypatch, hosted_token):
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     tool = MarketSearchTool()
-    out = await _run_with("web:jimingqing", lambda: tool.execute(query="报销", kind="agent"))
+    out = await _run_with("web:7", lambda: tool.execute(query="报销", kind="agent"))
     payload = json.loads(out)
     assert payload["ok"] is True
     assert payload["kind"] == "agent"
@@ -114,40 +126,45 @@ async def test_market_search_tool_kind_filter(monkeypatch):
     assert "skills" not in payload
 
 
-async def test_market_search_tool_requires_subject(monkeypatch):
+async def test_market_search_tool_requires_numeric_uid(monkeypatch):
+    """uid 解析失败(空/中文旧账号名) → fail-closed 统一引导登录, 不崩溃、不发请求。"""
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     tool = MarketSearchTool()
-    out = await _run_with("", lambda: tool.execute(query="报销"))
-    payload = json.loads(out)
-    assert payload["ok"] is False
-    assert "市场身份" in payload["error"]
+    for user_id in ("", "web:朱尚荣"):
+        out = await _run_with(user_id, lambda: tool.execute(query="报销"))
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert payload["error"] == _HINT
     assert _FakeClient.captured == {}
 
 
-async def test_market_search_tool_disabled_without_config(monkeypatch):
+async def test_market_search_tool_requires_hosted_token(monkeypatch):
+    from web import sso_tokens
+
+    monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: "")
+    tool = MarketSearchTool()
+    out = await _run_with("web:7", lambda: tool.execute(query="报销"))
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"] == _HINT
+    assert _FakeClient.captured == {}
+
+
+async def test_market_search_tool_disabled_without_config(monkeypatch, hosted_token):
     monkeypatch.delenv("MARKET_BASE_URL", raising=False)
     monkeypatch.delenv("MARKET_SERVICE_TOKEN", raising=False)
     tool = MarketSearchTool()
-    out = await _run_with("web:jimingqing", lambda: tool.execute(query="报销"))
+    out = await _run_with("web:7", lambda: tool.execute(query="报销"))
     payload = json.loads(out)
     assert payload["ok"] is False
     assert "未配置" in payload["error"]
 
 
-async def test_market_search_tool_rejects_non_ascii_subject(monkeypatch):
-    """中文 subject(钉钉老账号名) 不能进 X-Act-As-Sub: fail-closed 友好错误, 不崩溃。"""
-    monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
-    tool = MarketSearchTool()
-    out = await _run_with("web:朱尚荣", lambda: tool.execute(query="报销"))
-    payload = json.loads(out)
-    assert payload["ok"] is False
-    assert "市场身份" in payload["error"]
-    assert _FakeClient.captured == {}
-
-
 # ---- joined 标记: 已开通优先 + 未开通 note(方案A) ----
 
-async def test_market_search_marks_joined_and_notes_locked(monkeypatch):
+async def test_market_search_marks_joined_and_notes_locked(monkeypatch, hosted_token):
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     _FakeClient.payload = {
         "q": "发货", "terms": ["发货"],
@@ -156,17 +173,17 @@ async def test_market_search_marks_joined_and_notes_locked(monkeypatch):
         "mcps": [], "others": [], "plugins": [],
     }
     tool = MarketSearchTool()
-    out = await _run_with("web:jimingqing", lambda: tool.execute(query="发货"))
+    out = await _run_with("web:7", lambda: tool.execute(query="发货"))
     payload = json.loads(out)
     assert payload["ok"] is True
     assert _FakeClient.captured["url"] == "http://market.local/api/capabilities/task-search"
-    assert _FakeClient.captured["headers"]["X-Act-As-Sub"] == "jimingqing"
+    assert _FakeClient.captured["headers"]["Authorization"] == "Bearer user-tok-7"
     assert payload["agents"][0]["joined"] is False
     assert payload["skills"][0]["joined"] is True
     assert "未开通" in payload["note"] and "数字中台" in payload["note"]
 
 
-async def test_market_search_joined_first_sort(monkeypatch):
+async def test_market_search_joined_first_sort(monkeypatch, hosted_token):
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     _FakeClient.payload = {
         "q": "x", "terms": [],
@@ -177,12 +194,12 @@ async def test_market_search_joined_first_sort(monkeypatch):
         ],
     }
     out = json.loads(await _run_with(
-        "web:jimingqing", lambda: MarketSearchTool().execute(query="x", kind="skill")))
+        "web:7", lambda: MarketSearchTool().execute(query="x", kind="skill")))
     assert [i["name"] for i in out["skills"]] == ["b", "a"]
     assert "note" in out
 
 
-async def test_market_search_no_note_when_all_joined(monkeypatch):
+async def test_market_search_no_note_when_all_joined(monkeypatch, hosted_token):
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     _FakeClient.payload = {
         "q": "x", "terms": [],
@@ -190,5 +207,5 @@ async def test_market_search_no_note_when_all_joined(monkeypatch):
         "skills": [], "mcps": [], "others": [], "plugins": [],
     }
     out = json.loads(await _run_with(
-        "web:jimingqing", lambda: MarketSearchTool().execute(query="x")))
+        "web:7", lambda: MarketSearchTool().execute(query="x")))
     assert "note" not in out

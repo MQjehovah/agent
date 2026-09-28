@@ -4,7 +4,9 @@
 
 - id_token 临近过期时用 refresh_token 刷新(轮换后回存), 刷新失败清空托管;
 - 按受众交换下游 token(默认 1 小时), 进程内按 (uid, audience) 缓存;
-- 用户未走 SSO(如本地密码登录)或托管缺失时返回空串, 由调用方回退服务身份。
+- 用户未走 SSO(如本地密码登录)或托管缺失时返回空串, 由调用方回退服务身份;
+- 需要 fail-closed 的调用方用 ``require_user_token``: 无托管 token 时抛
+  ``UserTokenUnavailable``(统一引导登录文案), 不得回退服务身份。
 
 受众默认 ``dashboard-gateway``(rag/market 资源轨均接受), 可用
 ``SSO_DOWNSTREAM_AUDIENCE`` / config.json ``sso.downstream_audience`` 覆盖。
@@ -158,3 +160,23 @@ def get_downstream_token(uid: int, audience: str = "", *, force: bool = False) -
         exp = float(sso_auth.token_exp(token) or 0) or (time.time() + 3300.0)
         _cache[key] = (token, exp)
         return token
+
+
+# 用户下游 token 不可用时的统一引导文案(市场/知识库能力 fail-closed 共用)
+USER_TOKEN_HINT = "请先登录一次 AI 平台(https://ai.xzrobot.com)完成身份授权，后再使用市场/知识库能力。"
+
+
+# 异常名与调用方约定固定为 UserTokenUnavailable(不带 Error 后缀), 豁免 N818
+class UserTokenUnavailable(Exception):  # noqa: N818
+    """用户下游 token 不可用(无 SSO 托管, 或刷新/交换失败); 调用方应 fail-closed。"""
+
+
+def require_user_token(uid: int, audience: str = "") -> str:
+    """取用户下游 token; 无托管/刷新失败 -> raise UserTokenUnavailable(固定引导文案)。
+
+    audience 缺省取 ``sso_auth.sso_downstream_audience()``(与 get_downstream_token 一致)。
+    """
+    token = get_downstream_token(uid, audience)
+    if not token:
+        raise UserTokenUnavailable(USER_TOKEN_HINT)
+    return token

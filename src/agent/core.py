@@ -499,15 +499,15 @@ class Agent:
         logger.info(f"Agent [{self.name}] RAG 知识库已接入: {rag_url}")
 
     def _init_market_runtime(self):
-        """市场工具(代授权/OBO): 仅市场配置齐备时保留。
+        """市场工具(用户身份): 仅市场配置齐备时保留。
 
-        - ``market_search``: 按 subject 视角检索市场目录(发现层);
-        - ``market_runtime``: 按 subject 调用 /api/runtime/*(执行层)。
-        两者逐请求携带 ``X-Act-As-Sub``, 由市场 actor ∩ subject 求交; 未配置市场时移除。
+        - ``market_search``: 按用户视角检索市场目录(发现层);
+        - ``market_runtime``: 按用户 token 调用 /api/runtime/*(执行层)。
+        两者逐请求携带当前用户的下游 token(aud=gateway), 无托管时 fail-closed 并引导登录; 未配置市场时移除。
         """
         from mcps.platform import PlatformMCPConfig
         if PlatformMCPConfig.from_env().enabled:
-            logger.info("市场工具已启用: market_search(检索) + market_runtime(执行, 逐请求代授权)")
+            logger.info("市场工具已启用: market_search(检索) + market_runtime(执行, 用户 token)")
             return
         self.tool_registry.unregister_tool("market_runtime")
         self.tool_registry.unregister_tool("market_search")

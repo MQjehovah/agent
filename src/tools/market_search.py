@@ -1,8 +1,9 @@
-"""能力市场目录检索工具(代授权/OBO): 零号员工"全能"的发现层。
+"""能力市场目录检索工具(用户身份): 零号员工"全能"的发现层。
 
 按要办的事(task/关键词)在市场检索可用能力(agent/skill/mcp/tool/workflow),
-逐请求携带 ``X-Act-As-Sub`` = 当前提问者, 由市场按 **subject 视角**过滤可见性;
-命中后可用 ``market_runtime`` 执行。
+逐请求携带当前提问者的**用户 token**(Bearer, audience=gateway), 由市场按用户
+视角过滤可见性与归因; 命中后可用 ``market_runtime`` 执行。无托管 token 时
+fail-closed 并引导用户先登录完成身份授权。
 """
 
 import json
@@ -11,11 +12,11 @@ import logging
 import httpx
 
 from . import BuiltinTool
-from .market_common import market_config, resolve_subject
+from .market_common import market_config
 
 logger = logging.getLogger("agent.tools")
 
-# 市场目录检索端点(portal /api/capabilities/task-search, 支持 X-Act-As-Sub)
+# 市场目录检索端点(portal /api/capabilities/task-search, 支持用户 token)
 _TASK_SEARCH_PATH = "/api/capabilities/task-search"
 
 
@@ -70,18 +71,20 @@ class MarketSearchTool(BuiltinTool):
         if not (base and token):
             return json.dumps({"ok": False, "error": "能力市场未配置"}, ensure_ascii=False)
 
-        # 逐请求代授权: 无 subject 时以服务令牌检索会把"全量"能力暴露给提问者, 故 fail-closed
-        subject = resolve_subject()
-        if not subject:
-            return json.dumps(
-                {"ok": False, "error": "无法解析当前用户的市场身份，已拒绝检索"},
-                ensure_ascii=False,
-            )
+        # 用户身份调用: 无托管 token 一律 fail-closed(不得回退服务令牌全量视角), 并引导登录
+        from agent.core import current_run
+        from agent.user_profile import uid_from_tag
+        from web.sso_tokens import USER_TOKEN_HINT, UserTokenUnavailable, require_user_token
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "X-Act-As-Sub": subject,
-        }
+        uid = uid_from_tag(getattr(current_run(), "user_id", "") or "")
+        if not uid:
+            return json.dumps({"ok": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
+        try:
+            user_token = require_user_token(int(uid), "gateway")
+        except UserTokenUnavailable:
+            return json.dumps({"ok": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
+
+        headers = {"Authorization": f"Bearer {user_token}"}
         url = f"{base}{_TASK_SEARCH_PATH}"
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
