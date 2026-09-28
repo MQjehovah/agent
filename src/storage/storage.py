@@ -365,6 +365,15 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_cap_install_user_enabled
                     ON capability_installations(user_id, enabled);
 
+                -- 用户 SSO token 托管(web OBO 代换): id_token(约10分钟)+refresh_token, 按需刷新/交换
+                CREATE TABLE IF NOT EXISTS sso_tokens (
+                    user_id INTEGER PRIMARY KEY,
+                    id_token TEXT NOT NULL DEFAULT '',
+                    refresh_token TEXT NOT NULL DEFAULT '',
+                    id_expires_at REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS usage_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL DEFAULT 'system',
@@ -1935,6 +1944,38 @@ class Storage:
         with self._get_connection() as conn:
             rows = conn.execute(sql, (user_id,)).fetchall()
         return {str(r[0]).strip() for r in rows if str(r[0]).strip()}
+
+    def save_sso_tokens(self, user_id: int, id_token: str, refresh_token: str, id_expires_at: float) -> None:
+        """保存/覆盖用户 SSO token 托管(登录或刷新后回存)。"""
+        with self._write_lock, self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO sso_tokens (user_id, id_token, refresh_token, id_expires_at, updated_at)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    id_token = excluded.id_token,
+                    refresh_token = excluded.refresh_token,
+                    id_expires_at = excluded.id_expires_at,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, id_token, refresh_token, float(id_expires_at), datetime.now().isoformat()),
+            )
+            conn.commit()
+
+    def get_sso_tokens(self, user_id: int) -> dict[str, Any] | None:
+        """读取用户 SSO token 托管; 不存在返回 None。"""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT user_id, id_token, refresh_token, id_expires_at, updated_at "
+                "FROM sso_tokens WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_sso_tokens(self, user_id: int) -> None:
+        with self._write_lock, self._get_connection() as conn:
+            conn.execute("DELETE FROM sso_tokens WHERE user_id=?", (user_id,))
+            conn.commit()
 
     def set_user_password(self, user_id: int, password: str):
         import base64

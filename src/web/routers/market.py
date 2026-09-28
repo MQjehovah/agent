@@ -1,10 +1,10 @@
 """能力市场 + 云端托管安装 Router(P4) + 管理端本地 MCP 配置。
 
-市场调用矩阵(agent 不持有用户 SSO token, 统一服务令牌 + 按需 X-Act-As-Sub):
-- 浏览/详情: 服务令牌 `GET /api/capabilities`、`GET /api/capabilities/{id}`
+市场调用矩阵(web 用户轨优先 RFC 8693 用户 token, 无 SSO 会话回退服务令牌 + X-Act-As-Sub):
+- 浏览/详情: `GET /api/capabilities`、`GET /api/capabilities/{id}`
   (详情 schema `CapabilityOut.components` 已含 plugin 已发布子能力, 无需额外辅助调用);
-- 已加入清单: act-as `GET /api/my/capabilities?scope=added`(name 集合);
-- 加入/移出: act-as `POST /api/my/capabilities` / `DELETE /api/my/capabilities/{id}`。
+- 已加入清单: `GET /api/my/capabilities?scope=added`(name 集合);
+- 加入/移出: `POST /api/my/capabilities` / `DELETE /api/my/capabilities/{id}`。
 
 安装是用户级「本地各记」(`capability_installations`), 仅支持 `type=mcp` 且
 `distribution != local`; 校验通过后写表并刷新该用户已存在 worker 的平台工具集。
@@ -41,22 +41,55 @@ class MarketUpstreamError(Exception):
     """市场请求失败(网络/超时等)。"""
 
 
-async def _market_request(method: str, path: str, *, act_as: str = "",
+def _user_downstream_token(uid: int, *, force: bool = False) -> str:
+    """按用户取 SSO 交换 token(市场受众); 无会话/失败返回空串(调用方回退服务身份)。"""
+    if uid <= 0:
+        return ""
+    try:
+        from web.sso_tokens import get_downstream_token
+
+        return get_downstream_token(uid, force=force)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"用户 {uid} 获取下游 token 失败(回退服务身份): {e}")
+        return ""
+
+
+async def _market_request(method: str, path: str, *, act_as: str = "", user_uid: int = 0,
                           params: dict | None = None, json_body: Any = None):
     """代理市场 HTTP; 返回 (status_code, payload)。
 
-    市场未配置抛 MarketUnavailable; 网络异常抛 MarketUpstreamError。
+    身份轨: user_uid>0 且可取到 SSO 交换 token → 用户 Bearer(401 自动重换重试一次);
+    否则回退 服务令牌 + X-Act-As-Sub(act_as)。市场未配置抛 MarketUnavailable;
+    网络异常抛 MarketUpstreamError。
     """
     cfg = PlatformMCPConfig.from_env()
     if not cfg.enabled:
         raise MarketUnavailableError()
-    headers = {"Authorization": f"Bearer {cfg.service_token}"}
-    if act_as:
-        headers["X-Act-As-Sub"] = act_as
-    try:
+    token = _user_downstream_token(user_uid) if user_uid > 0 else ""
+    if user_uid > 0 and not token:
+        logger.warning(f"用户 {user_uid} 下游 token 不可用, 回退服务令牌调用 {path}")
+
+    def _headers(tok: str, *, user_track: bool) -> dict:
+        headers = {"Authorization": f"Bearer {tok}"}
+        if not user_track and act_as:
+            headers["X-Act-As-Sub"] = act_as
+        return headers
+
+    async def _send(tok: str, *, user_track: bool):
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            resp = await client.request(method, f"{cfg.base_url}{path}",
-                                        headers=headers, params=params, json=json_body)
+            return await client.request(method, f"{cfg.base_url}{path}",
+                                        headers=_headers(tok, user_track=user_track),
+                                        params=params, json=json_body)
+
+    try:
+        if token:
+            resp = await _send(token, user_track=True)
+            if resp.status_code == 401:
+                fresh = _user_downstream_token(user_uid, force=True)
+                if fresh:
+                    resp = await _send(fresh, user_track=True)
+        else:
+            resp = await _send(cfg.service_token, user_track=False)
     except httpx.HTTPError as e:
         raise MarketUpstreamError(f"能力市场请求失败: {e}") from e
     try:
@@ -66,19 +99,35 @@ async def _market_request(method: str, path: str, *, act_as: str = "",
     return resp.status_code, payload
 
 
-async def _market_request_raw(method: str, path: str, *, act_as: str = "",
+async def _market_request_raw(method: str, path: str, *, act_as: str = "", user_uid: int = 0,
                               params: dict | None = None):
-    """代理市场 HTTP 并返回原始响应(用于二进制, 如图标)。"""
+    """代理市场 HTTP 并返回原始响应(用于二进制, 如图标); 身份轨同 _market_request。"""
     cfg = PlatformMCPConfig.from_env()
     if not cfg.enabled:
         raise MarketUnavailableError()
-    headers = {"Authorization": f"Bearer {cfg.service_token}"}
-    if act_as:
-        headers["X-Act-As-Sub"] = act_as
-    try:
+    token = _user_downstream_token(user_uid) if user_uid > 0 else ""
+
+    def _headers(tok: str, *, user_track: bool) -> dict:
+        headers = {"Authorization": f"Bearer {tok}"}
+        if not user_track and act_as:
+            headers["X-Act-As-Sub"] = act_as
+        return headers
+
+    async def _send(tok: str, *, user_track: bool):
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
             return await client.request(method, f"{cfg.base_url}{path}",
-                                        headers=headers, params=params)
+                                        headers=_headers(tok, user_track=user_track),
+                                        params=params)
+
+    try:
+        if token:
+            resp = await _send(token, user_track=True)
+            if resp.status_code == 401:
+                fresh = _user_downstream_token(user_uid, force=True)
+                if fresh:
+                    resp = await _send(fresh, user_track=True)
+            return resp
+        return await _send(cfg.service_token, user_track=False)
     except httpx.HTTPError as e:
         raise MarketUpstreamError(f"能力市场请求失败: {e}") from e
 
@@ -128,6 +177,18 @@ def build_market_router(server) -> APIRouter:
                 status_code=403)
         return act_as, None
 
+    def _auth_for(uid: int):
+        """用户级调用身份: 优先 SSO 交换 token(用户轨); 无会话回退 act-as(不可解析 403)。
+
+        返回 (act_as, denied): denied 非空即响应; 用户轨命中时 act_as 为空。
+        """
+        if uid > 0 and _user_downstream_token(uid):
+            return "", None
+        act_as, denied = _require_act_as(uid)
+        if denied:
+            return "", denied
+        return act_as, None
+
     def _storage():
         from storage.storage import get_storage
         return get_storage()
@@ -142,9 +203,9 @@ def build_market_router(server) -> APIRouter:
             logger.warning(f"读取本地安装失败(按空集处理): {e}")
             return set()
 
-    async def _joined_names(act_as: str) -> set[str]:
+    async def _joined_names(uid: int, act_as: str) -> set[str]:
         status, payload = await _market_request(
-            "GET", "/api/my/capabilities", act_as=act_as,
+            "GET", "/api/my/capabilities", act_as=act_as, user_uid=uid,
             params={"scope": "added"})
         if status >= 400 or not isinstance(payload, list):
             logger.warning(f"读取市场已加入清单失败(status={status}), joined 按空集")
@@ -171,11 +232,12 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        act_as, act_denied = _require_act_as(uid)
-        if act_denied:
-            return act_denied
+        act_as, denied = _auth_for(uid)
+        if denied:
+            return denied
         try:
-            status, payload = await _market_request("GET", "/api/meta/categories", act_as=act_as)
+            status, payload = await _market_request("GET", "/api/meta/categories",
+                                                    act_as=act_as, user_uid=uid)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         if status >= 400:
@@ -196,12 +258,12 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        act_as, act_denied = _require_act_as(uid)
-        if act_denied:
-            return act_denied
+        act_as, denied = _auth_for(uid)
+        if denied:
+            return denied
         try:
             status, payload = await _market_request(
-                "GET", "/api/capabilities", act_as=act_as,
+                "GET", "/api/capabilities", act_as=act_as, user_uid=uid,
                 params={"page": page, "page_size": page_size,
                         "q": q, "type": type, "category": category})
         except (MarketUnavailableError, MarketUpstreamError) as e:
@@ -212,7 +274,7 @@ def build_market_router(server) -> APIRouter:
         if not isinstance(items, list):
             items = []
         try:
-            joined = await _joined_names(act_as)
+            joined = await _joined_names(uid, act_as)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             logger.warning(f"joined 查询失败(按空集处理): {e}")
             joined = set()
@@ -237,12 +299,12 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        act_as, act_denied = _require_act_as(uid)
-        if act_denied:
-            return act_denied
+        act_as, denied = _auth_for(uid)
+        if denied:
+            return denied
         try:
             resp = await _market_request_raw(
-                "GET", f"/api/capabilities/{cap_id}/icon", act_as=act_as)
+                "GET", f"/api/capabilities/{cap_id}/icon", act_as=act_as, user_uid=uid)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         if resp.status_code >= 400:
@@ -264,12 +326,12 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        act_as, act_denied = _require_act_as(uid)
-        if act_denied:
-            return act_denied
+        act_as, denied = _auth_for(uid)
+        if denied:
+            return denied
         try:
             status, payload = await _market_request(
-                "GET", f"/api/capabilities/{cap_id}", act_as=act_as)
+                "GET", f"/api/capabilities/{cap_id}", act_as=act_as, user_uid=uid)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         if status >= 400:
@@ -277,7 +339,7 @@ def build_market_router(server) -> APIRouter:
         if isinstance(payload, dict):
             name = str(payload.get("name") or "")
             try:
-                payload["joined"] = name in await _joined_names(act_as)
+                payload["joined"] = name in await _joined_names(uid, act_as)
             except (MarketUnavailableError, MarketUpstreamError) as e:
                 logger.warning(f"joined 查询失败(按空集处理): {e}")
                 payload["joined"] = False
@@ -290,12 +352,13 @@ def build_market_router(server) -> APIRouter:
         u, denied = _authz_or_401(request)
         if denied:
             return denied
-        act_as, act_denied = _require_act_as(_uid(u))
-        if act_denied:
-            return act_denied
+        uid = _uid(u)
+        act_as, denied = _auth_for(uid)
+        if denied:
+            return denied
         try:
             status, payload = await _market_request(
-                "POST", "/api/my/capabilities", act_as=act_as,
+                "POST", "/api/my/capabilities", act_as=act_as, user_uid=uid,
                 json_body={"capability_id": cap_id})
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
@@ -307,12 +370,13 @@ def build_market_router(server) -> APIRouter:
         u, denied = _authz_or_401(request)
         if denied:
             return denied
-        act_as, act_denied = _require_act_as(_uid(u))
-        if act_denied:
-            return act_denied
+        uid = _uid(u)
+        act_as, denied = _auth_for(uid)
+        if denied:
+            return denied
         try:
             status, payload = await _market_request(
-                "DELETE", f"/api/my/capabilities/{cap_id}", act_as=act_as)
+                "DELETE", f"/api/my/capabilities/{cap_id}", act_as=act_as, user_uid=uid)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         return _forward(status, payload)
@@ -326,9 +390,9 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        _, act_denied = _require_act_as(uid)
-        if act_denied:
-            return act_denied
+        _, denied = _auth_for(uid)
+        if denied:
+            return denied
         storage = _storage()
         rows = storage.list_installations(uid) if storage is not None else []
         return {"installations": rows}
@@ -340,9 +404,9 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        act_as, act_denied = _require_act_as(uid)
-        if act_denied:
-            return act_denied
+        act_as, denied = _auth_for(uid)
+        if denied:
+            return denied
         try:
             data = await request.json()
         except Exception:
@@ -353,7 +417,7 @@ def build_market_router(server) -> APIRouter:
 
         try:
             status, payload = await _market_request(
-                "GET", f"/api/capabilities/{capability_id}", act_as=act_as)
+                "GET", f"/api/capabilities/{capability_id}", act_as=act_as, user_uid=uid)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         if status >= 400:
@@ -376,7 +440,7 @@ def build_market_router(server) -> APIRouter:
                 status_code=422)
         name = str(detail.get("name") or (data or {}).get("capability_name") or capability_id)
         try:
-            joined = await _joined_names(act_as)
+            joined = await _joined_names(uid, act_as)
         except (MarketUnavailableError, MarketUpstreamError) as e:
             return _market_error(e)
         if name not in joined:
@@ -400,9 +464,9 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        _, act_denied = _require_act_as(uid)
-        if act_denied:
-            return act_denied
+        _, denied = _auth_for(uid)
+        if denied:
+            return denied
         try:
             data = await request.json()
         except Exception:
@@ -425,9 +489,9 @@ def build_market_router(server) -> APIRouter:
         if denied:
             return denied
         uid = _uid(u)
-        _, act_denied = _require_act_as(uid)
-        if act_denied:
-            return act_denied
+        _, denied = _auth_for(uid)
+        if denied:
+            return denied
         storage = _storage()
         okay = bool(storage and storage.remove_installation(uid, capability_id))
         if not okay:

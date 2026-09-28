@@ -171,6 +171,7 @@ def test_build_authorize_url_contains_required_params(sso_env):
     assert "client_id=agent" in url
     assert "state=sT4t3" in url
     assert "scope=openid+profile" in url
+    assert "offline_access" in url
 
 
 def test_build_authorize_url_disabled_without_issuer(monkeypatch):

@@ -63,8 +63,9 @@ def env(tmp_path, monkeypatch):
 
     market = {"calls": [], "routes": {}, "real": market_mod._market_request}
 
-    async def fake_market(method, path, *, act_as="", params=None, json_body=None):
+    async def fake_market(method, path, *, act_as="", user_uid=0, params=None, json_body=None):
         market["calls"].append({"method": method, "path": path, "act_as": act_as,
+                                "user_uid": user_uid,
                                 "params": params, "json": json_body})
         resp = market["routes"].get((method, path))
         if resp is None:
@@ -181,6 +182,21 @@ def test_service_identity_uid0_rejected_for_user_endpoints(env, monkeypatch):
     assert client.get("/api/market/capabilities").status_code == 403
     assert client.get("/api/market/installations").status_code == 403
     assert market["calls"] == []
+
+
+def test_user_track_uses_sso_token_without_act_as(env, monkeypatch):
+    """有 SSO 交换 token 时走用户轨: 不解析 act-as, 调用携带 user_uid。"""
+    server, store, client, market, uid = env
+    monkeypatch.setattr(market_mod, "_user_downstream_token",
+                        lambda u, force=False: "user-token" if u == uid else "")
+    monkeypatch.setattr(security, "resolve_market_act_as", lambda owner: "")
+    market["routes"][("GET", "/api/capabilities")] = (200, {"items": [], "total": 0})
+    market["routes"][("GET", "/api/my/capabilities")] = (200, [])
+
+    r = client.get("/api/market/capabilities")
+    assert r.status_code == 200
+    assert market["calls"], "应发出市场请求"
+    assert all(c["user_uid"] == uid and c["act_as"] == "" for c in market["calls"])
 
 
 def test_join_and_leave_forward_market_errors(env):

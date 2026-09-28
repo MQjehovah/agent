@@ -79,6 +79,11 @@ def sso_redirect_target() -> str:
     return _cfg("SSO_REDIRECT_TARGET", "sso.redirect_target", "/#/login")
 
 
+def sso_downstream_audience() -> str:
+    """web OBO 交换的目标受众(下游资源服务器接受的 audience; rag/market 均为 dashboard-gateway)。"""
+    return _cfg("SSO_DOWNSTREAM_AUDIENCE", "sso.downstream_audience", "dashboard-gateway")
+
+
 def is_configured() -> bool:
     return bool(sso_issuer())
 
@@ -202,30 +207,21 @@ def build_authorize_url(state: str) -> str:
         "client_id": sso_client_id(),
         "redirect_uri": sso_redirect_uri(),
         "state": state,
-        "scope": "openid profile",
+        "scope": "openid profile offline_access",
     }
     return issuer.rstrip("/") + "/authorize?" + urllib.parse.urlencode(params)
 
 
-def exchange_code(code: str) -> str:
-    """authorization_code → token 交换, 返回 id_token 字符串。
-
-    同时携带 client_secret_basic(Authorization 头) 与 client_secret_post(client_secret 字段),
-    兼容两种支持方式。缺 id_token 抛 SsoAuthError。
-    """
+def _post_token_form(form: dict) -> dict:
+    """POST issuer/token(表单); 同时携带 client_secret_basic 与 client_secret_post, 兼容两种支持方式。"""
     issuer = sso_issuer()
     if not issuer:
         raise SsoAuthError("SSO not configured")
-    form = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": sso_redirect_uri(),
-        "client_id": sso_client_id(),
-    }
+    payload_form = dict(form)
     secret = sso_client_secret()
     if secret:
-        form["client_secret"] = secret
-    data = urllib.parse.urlencode(form).encode("utf-8")
+        payload_form["client_secret"] = secret
+    data = urllib.parse.urlencode(payload_form).encode("utf-8")
     req = urllib.request.Request(issuer.rstrip("/") + "/token", data=data, method="POST")
     if secret:
         token = base64.b64encode(f"{sso_client_id()}:{secret}".encode()).decode("ascii")
@@ -233,18 +229,58 @@ def exchange_code(code: str) -> str:
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8"))
     except (OSError, ValueError) as e:
-        raise SsoAuthError(f"SSO token 交换失败: {e}") from e
-    id_token = payload.get("id_token")
-    if not id_token:
+        raise SsoAuthError(f"SSO token 请求失败: {e}") from e
+
+
+def exchange_code(code: str) -> dict:
+    """authorization_code → token 交换, 返回完整 token 组 dict。
+
+    键: id_token(必有) / access_token / refresh_token / expires_in。
+    命令式调用方可只用 id_token; web OBO 需保存 refresh_token 供后续刷新与交换。
+    缺 id_token 抛 SsoAuthError。
+    """
+    payload = _post_token_form({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": sso_redirect_uri(),
+        "client_id": sso_client_id(),
+    })
+    if not payload.get("id_token"):
         raise SsoAuthError("SSO token 响应缺少 id_token")
-    return id_token
+    return payload
+
+
+def refresh_token_grant(refresh_token: str) -> dict:
+    """refresh_token grant: 刷新并轮换, 返回新 token 组 dict(缺 id_token 抛错)。"""
+    token = (refresh_token or "").strip()
+    if not token:
+        raise SsoAuthError("refresh_token 为空")
+    payload = _post_token_form({
+        "grant_type": "refresh_token",
+        "refresh_token": token,
+        "client_id": sso_client_id(),
+    })
+    if not payload.get("id_token"):
+        raise SsoAuthError("SSO refresh 响应缺少 id_token")
+    return payload
+
+
+def token_exp(token: str) -> float:
+    """不验签解析 JWT exp(秒); 失败返回 0。仅用于本地过期判断/缓存, 不用于鉴权。"""
+    try:
+        part = token.split(".")[1]
+        part += "=" * (-len(part) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(part.encode("ascii")))
+        return float(payload.get("exp") or 0)
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 # RFC 8693 token exchange 常量
 TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
-TOKEN_TYPE_ACCESS = "urn:ietf:params:oauth:token-type:access_token"
+TOKEN_TYPE_ID = "urn:ietf:params:oauth:token-type:id_token"
 
 
 def exchange_token(subject_token: str, audience: str) -> str:
@@ -267,8 +303,8 @@ def exchange_token(subject_token: str, audience: str) -> str:
     form = {
         "grant_type": TOKEN_EXCHANGE_GRANT,
         "subject_token": sub,
-        "subject_token_type": TOKEN_TYPE_ACCESS,
-        "requested_token_type": TOKEN_TYPE_ACCESS,
+        "subject_token_type": TOKEN_TYPE_ID,
+        "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
         "audience": aud,
         "client_id": sso_client_id(),
     }

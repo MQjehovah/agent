@@ -1,7 +1,7 @@
 """知识库(RAG)代理 Router。
 
-Web 端(员工端)只持有 agent 凭据、无权直连 RAG;本路由用 agent 侧 RAG_* 配置登录取 token,
-代理由此暴露只读接口给前端:
+Web 端(员工端)只持有 agent 凭据、无权直连 RAG; 本路由优先按当前用户做 SSO token 交换
+(RFC 8693, 以用户身份访问, 权限/可见性随用户), 无 SSO 会话时回退 agent 服务账号。
 
 - GET /api/knowledge/status          —— RAG 是否已配置
 - GET /api/knowledge/spaces          —— 空间列表(卡片入口)
@@ -22,6 +22,19 @@ from fastapi.responses import JSONResponse
 from web.security import get_authz
 
 logger = logging.getLogger("agent.web.knowledge")
+
+
+def _direct_request(method: str, url: str, token: str, *, params=None, json_body=None):
+    """以指定 Bearer token 直连 RAG(用户 OBO 轨); 网络异常返回 None(由调用方回退)。"""
+    try:
+        return requests.request(
+            method, url,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            params=params, json=json_body, timeout=30,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[知识库代理] 用户轨请求失败 %s %s: %s", method, url, exc)
+        return None
 
 
 class _RagClient:
@@ -104,13 +117,44 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
     router = APIRouter()
     client = _RagClient()
 
+    def _authz(request: Request):
+        """取当前用户鉴权信息(请求内缓存, 避免重复 DB 解析)。"""
+        cached = getattr(request.state, "kb_authz", None)
+        if cached is None:
+            cached = get_authz(request)
+            request.state.kb_authz = cached
+        return cached
+
     def _guard(request: Request):
         """未登录返回 401 响应, 否则返回 None。"""
         try:
-            get_authz(request)
+            _authz(request)
         except Exception:  # noqa: BLE001
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         return None
+
+    def _rag_call(request: Request, method: str, path: str, *, params=None, json_body=None):
+        """优先按当前用户做 SSO 交换(用户身份), 无会话/失败回退服务账号; 401 重换一次。"""
+        base = client.configure()
+        try:
+            uid = int((_authz(request) or {}).get("uid") or 0)
+        except Exception:  # noqa: BLE001
+            uid = 0
+        if uid and base:
+            from web.sso_tokens import get_downstream_token
+
+            for attempt in (0, 1):
+                token = get_downstream_token(uid, force=bool(attempt))
+                if not token:
+                    break
+                resp = _direct_request(
+                    method, f"{base}{path}", token, params=params, json_body=json_body
+                )
+                if resp is not None and resp.status_code != 401:
+                    return resp, None
+                logger.info("[知识库代理] 用户 %s 下游令牌失效(401), 重换重试", uid)
+            logger.warning("[知识库代理] 用户 %s 无 SSO 会话或交换失败, 回退服务账号", uid)
+        return client.request(method, path, params=params, json_body=json_body)
 
     def _unavailable():
         return JSONResponse({"error": "RAG 知识库未配置 (RAG_BASE_URL)"}, status_code=503)
@@ -127,7 +171,7 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
             return bad
         if not client.enabled():
             return _unavailable()
-        resp, err = client.request("GET", "/api/wiki/spaces")
+        resp, err = _rag_call(request, "GET", "/api/wiki/spaces")
         if resp is None:
             return JSONResponse({"error": err}, status_code=502)
         return JSONResponse(resp.json(), status_code=resp.status_code)
@@ -139,7 +183,7 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
         if not client.enabled():
             return _unavailable()
         params = {"space_id": space_id} if space_id else None
-        resp, err = client.request("GET", "/api/wiki", params=params)
+        resp, err = _rag_call(request, "GET", "/api/wiki", params=params)
         if resp is None:
             return JSONResponse({"error": err}, status_code=502)
         return JSONResponse(resp.json(), status_code=resp.status_code)
@@ -150,7 +194,7 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
             return bad
         if not client.enabled():
             return _unavailable()
-        resp, err = client.request("GET", f"/api/wiki/{page_id}")
+        resp, err = _rag_call(request, "GET", f"/api/wiki/{page_id}")
         if resp is None:
             return JSONResponse({"error": err}, status_code=502)
         return JSONResponse(resp.json(), status_code=resp.status_code)
@@ -164,8 +208,9 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
         query = (q or "").strip()
         if not query:
             return JSONResponse({"results": [], "total": 0}, status_code=200)
-        resp, err = client.request(
-            "POST", "/api/search", json_body={"query": query, "top_k": max(1, min(int(top_k or 5), 20))}
+        resp, err = _rag_call(
+            request, "POST", "/api/search",
+            json_body={"query": query, "top_k": max(1, min(int(top_k or 5), 20))},
         )
         if resp is None:
             return JSONResponse({"error": err}, status_code=502)
