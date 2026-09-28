@@ -204,6 +204,10 @@ async def _run_transient(system_prompt: str, task: str, expert: str = "") -> dic
 class MarketDelegateTool(BuiltinTool):
     """把任务委派给能力市场里的专家(agent)，由本机 agent 引擎以该专家身份执行。"""
 
+    # 委派会访问主循环上创建的子代理管理器(其 asyncio.Lock 绑定主循环);
+    # 若经工具线程池的临时事件循环执行会抛 "bound to a different event loop"。
+    run_on_main_loop = True
+
     @property
     def name(self) -> str:
         return "market_delegate"

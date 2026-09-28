@@ -147,3 +147,44 @@ async def test_disabled_without_config(monkeypatch):
     payload = json.loads(out)
     assert payload["ok"] is False
     assert "未配置" in payload["error"]
+
+
+async def test_market_delegate_run_on_main_loop_flag():
+    """market_delegate 必须标记主循环内联执行: 其访问的子代理管理器 asyncio.Lock
+    绑定主循环, 经工具线程池(独立临时 loop)执行会抛 'bound to a different event loop'。"""
+    tool = MarketDelegateTool()
+    assert tool.run_on_main_loop is True
+
+
+async def test_registry_inlines_main_loop_tools_only():
+    """ToolRegistry: 标记 run_on_main_loop 的工具在主循环执行, 其余仍走线程池。"""
+    import asyncio
+
+    from tools import BuiltinTool, ToolRegistry
+
+    class _Probe(BuiltinTool):
+        def __init__(self, probe_name: str, inline: bool):
+            self._probe_name = probe_name
+            self.run_on_main_loop = inline
+
+        @property
+        def name(self) -> str:
+            return self._probe_name
+
+        @property
+        def description(self) -> str:
+            return "loop probe"
+
+        @property
+        def parameters(self) -> dict:
+            return {}
+
+        async def execute(self, **kwargs) -> str:
+            return str(id(asyncio.get_running_loop()))
+
+    reg = ToolRegistry()
+    reg.register_tool(_Probe("probe_inline", True))
+    reg.register_tool(_Probe("probe_worker", False))
+    outer = str(id(asyncio.get_running_loop()))
+    assert await reg.execute("probe_inline", {}) == outer
+    assert await reg.execute("probe_worker", {}) != outer
