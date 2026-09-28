@@ -57,7 +57,7 @@ function setup(opts: { feedUrl?: string; autoCheck?: boolean; checkImpl?: () => 
   const timers: Array<() => void> = []
   const warns: string[] = []
   const handle = bindAutoUpdater(fake.updater, {
-    feedUrl: opts.feedUrl ?? 'https://ai.xzrobot.com/updates/dashboard',
+    feedUrl: opts.feedUrl ?? 'https://ai.xzrobot.com/agent/updates/desktop',
     autoCheck: opts.autoCheck ?? false,
     notify: (payload) => notifications.push(payload),
     onStatus: (status) => statuses.push(status),
@@ -118,7 +118,7 @@ test('updater: updateFeedUrl 为空/纯空白 → 不启用,不设置源,不排�
 })
 
 test('updater: normalizeUpdateFeedUrl 只接受可解析的 http/https 绝对地址', () => {
-  assert.equal(normalizeUpdateFeedUrl('https://ai.xzrobot.com/updates/dashboard'), 'https://ai.xzrobot.com/updates/dashboard')
+  assert.equal(normalizeUpdateFeedUrl('https://ai.xzrobot.com/agent/updates/desktop'), 'https://ai.xzrobot.com/agent/updates/desktop')
   assert.equal(normalizeUpdateFeedUrl('  http://10.0.0.8:8080/updates  '), 'http://10.0.0.8:8080/updates')
   assert.equal(normalizeUpdateFeedUrl(''), null)
   assert.equal(normalizeUpdateFeedUrl('   '), null)
@@ -146,9 +146,9 @@ test('updater: 更新源地址非法 → 不启用、不设置源、不排检查
 })
 
 test('updater: updateFeedUrl 有值 → generic 源 + autoDownload,autoCheck 延迟静默检查', async () => {
-  const ctx = setup({ feedUrl: '  https://ai.xzrobot.com/updates/dashboard  ', autoCheck: true })
+  const ctx = setup({ feedUrl: '  https://ai.xzrobot.com/agent/updates/desktop  ', autoCheck: true })
   assert.equal(ctx.handle.enabled, true)
-  assert.deepEqual(ctx.calls.feedUrls, [{ provider: 'generic', url: 'https://ai.xzrobot.com/updates/dashboard' }])
+  assert.deepEqual(ctx.calls.feedUrls, [{ provider: 'generic', url: 'https://ai.xzrobot.com/agent/updates/desktop' }])
   assert.equal(ctx.updater.autoDownload, true)
   // 禁止退出时静默安装:安装只经 quitAndInstall(「点击重启安装」)
   assert.equal(ctx.updater.autoInstallOnAppQuit, false)
@@ -222,7 +222,7 @@ test('updater: 检查被拒绝/开发模式跳过 → not-available,不卡在检
 test('updater: 重复绑定清空旧监听,不重复回推状态', () => {
   const fake = fakeUpdater()
   const options = {
-    feedUrl: 'https://ai.xzrobot.com/updates/dashboard',
+    feedUrl: 'https://ai.xzrobot.com/agent/updates/desktop',
     autoCheck: false,
     notify: () => {},
     onStatus: () => {}

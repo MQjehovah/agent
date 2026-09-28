@@ -26,6 +26,6 @@ nsis:
 # 运行期由 enterprise.json 注入的 updateFeedUrl 覆盖(setFeedURL)
 publish:
   - provider: generic
-    url: https://updates.invalid/desktop
+    url: https://ai.xzrobot.com/agent/updates/desktop
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

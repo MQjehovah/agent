@@ -220,7 +220,7 @@ Port 8081 is exposed (for plugins/webhook). Default CMD runs `python src/main.py
 - **`config/memory/` and `config/sessions/` are gitignored** — they contain runtime state
 - **`docs/plans/` is gitignored** — design docs live there but are not tracked
 - **Sub-agent names are Chinese** (e.g. `设备运维`) — this is intentional, not a mistake
-- **LLM 端点以 `config/config.json` 的 `llm.endpoints` 为准** — 每项含 `model`/`base_url`/`api_key`(支持多端点); 生产统一指向 router 公网入口(`https://ai.rosiwit.com/v1` → router 网关), 其它环境改 config.json 即可(不再依赖 OPENAI_BASE_URL/DashScope 默认值)
+- **LLM 端点以 `config/config.json` 的 `llm.endpoints` 为准** — 每项含 `model`/`base_url`/`api_key`(支持多端点); 生产统一指向 router 公网入口(`https://ai.xzrobot.com/gateway/api/v1` → 网关), 其它环境改 config.json 即可(不再依赖 OPENAI_BASE_URL/DashScope 默认值)
 - **`max_retries=0` on OpenAI client** — all retries are handled by our application-level retry logic in `LLMClient`, not by the httpx SDK
 - **LLM timeout is configurable**: `LLM_TIMEOUT` (default 300s, read timeout) and `LLM_CONNECT_TIMEOUT` (default 30s, connection timeout)
 - **MCP SDK v2(Python)** — 已迁 `mcp>=2.2,<3`(客户端与自研 server 同步)：`FastMCP`→`MCPServer`(`from mcp.server.mcpserver import MCPServer`)、协议字段 snake_case(`input_schema/is_error/structured_content`)、**同步 handler 跑 anyio worker 线程**(涉及事件循环或共享可变状态的工具必须 `async def` 或加锁)、SDK 网络改用 `httpx2`(日志记录器 `httpx2`/`httpcore2`)、`nest_asyncio` 已移除、**stdio 关闭语义**: 先关 stdin 等优雅退出再升级杀进程树(POSIX 优雅退出不杀孙进程, 超时对新进程组 SIGTERM→SIGKILL; Windows Job Object 直接终止进程树), **客户端连接/收尾走专属连接任务**(anyio cancel scope 进出同任务, 关闭 shielded 等待不被取消打断)

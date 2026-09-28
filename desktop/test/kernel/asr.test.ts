@@ -46,8 +46,8 @@ function hangingFetch() {
 test('asr: 端点解析兼容 base 与完整端点两种配置', () => {
   assert.equal(resolveAsrEndpoint(''), '')
   assert.equal(resolveAsrEndpoint('   '), '')
-  assert.equal(resolveAsrEndpoint('https://ai.xzrobot.com/router/v1'), 'https://ai.xzrobot.com/router/v1/audio/transcriptions')
-  assert.equal(resolveAsrEndpoint('https://ai.xzrobot.com/router/v1/'), 'https://ai.xzrobot.com/router/v1/audio/transcriptions')
+  assert.equal(resolveAsrEndpoint('https://ai.xzrobot.com/gateway/api/v1'), 'https://ai.xzrobot.com/gateway/api/v1/audio/transcriptions')
+  assert.equal(resolveAsrEndpoint('https://ai.xzrobot.com/gateway/api/v1/'), 'https://ai.xzrobot.com/gateway/api/v1/audio/transcriptions')
   assert.equal(
     resolveAsrEndpoint('https://asr.example.com/v1/audio/transcriptions'),
     'https://asr.example.com/v1/audio/transcriptions'
@@ -79,7 +79,7 @@ test('asr: 未配置地址时不发请求, 返回可读降级', async () => {
 test('asr: 正常路径 POST 到解析后的端点, 带 Bearer、multipart 表单与中止信号', async () => {
   const { calls, impl } = fakeFetch({ ok: true, body: '{"text":" 你好世界 "}' })
   const deps: AsrCallDeps = {
-    asrUrl: 'https://ai.xzrobot.com/router/v1/',
+    asrUrl: 'https://ai.xzrobot.com/gateway/api/v1/',
     apiKey: 'router-key',
     audio: AUDIO,
     filename: 'voice-1.webm',
@@ -90,7 +90,7 @@ test('asr: 正常路径 POST 到解析后的端点, 带 Bearer、multipart 表�
   assert.deepEqual(res, { ok: true, text: '你好世界' })
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].url, 'https://ai.xzrobot.com/router/v1/audio/transcriptions')
+  assert.equal(calls[0].url, 'https://ai.xzrobot.com/gateway/api/v1/audio/transcriptions')
   assert.equal(calls[0].init?.method, 'POST')
   assert.ok(calls[0].init?.signal, '必须传 AbortSignal(超时兜底)')
   const headers = calls[0].init?.headers as Record<string, string>

@@ -31,6 +31,10 @@ logger = logging.getLogger("agent.web")
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+# 桌面端自动更新源目录(公开静态文件: latest.yml + 安装包, 容器内 /app/updates/desktop)
+UPDATES_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "updates", "desktop")
+
 # ---- JWT Secret（持久化，重启不失效）----
 _jwt_secret: str = ""
 def _load_jwt_secret() -> str:
@@ -1374,6 +1378,11 @@ class WebServer:
             logger.info("Web UI:Vue3 SPA(static_vue)")
         else:
             logger.info("Web UI:旧版单页(static)- 未发现 Vue 构建产物")
+
+        # 桌面端自动更新源(公开, 不鉴权): electron-updater 拉取 latest.yml/安装包
+        if os.path.isdir(UPDATES_DIR):
+            self._app.mount("/updates/desktop", StaticFiles(directory=UPDATES_DIR), name="desktop-updates")
+            logger.info("桌面端更新源:/updates/desktop")
 
         # ===== 旧版单页(回退用)=====
         _index_cache: dict = {}

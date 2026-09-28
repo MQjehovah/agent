@@ -77,10 +77,10 @@ test('desktop-config：自动更新配置写入后可读回(roundtrip)', () => {
   const { store } = memoryStore(buildDefaultConfig(CTX))
   assert.equal(store.get().autoCheckUpdate, true)
 
-  store.update({ autoCheckUpdate: false, updateFeedUrl: 'https://ai.xzrobot.com/updates/dashboard' })
+  store.update({ autoCheckUpdate: false, updateFeedUrl: 'https://ai.xzrobot.com/agent/updates/desktop' })
 
   assert.equal(store.get().autoCheckUpdate, false)
-  assert.equal(store.get().updateFeedUrl, 'https://ai.xzrobot.com/updates/dashboard')
+  assert.equal(store.get().updateFeedUrl, 'https://ai.xzrobot.com/agent/updates/desktop')
 })
 
 test('desktop-config：config:set 键白名单只放行用户偏好键,企业/敏感字段忽略并记录', () => {
@@ -137,8 +137,8 @@ test('desktop-config：白名单覆盖全部用户偏好键,空补丁安全', ()
 
 test('desktop-config：主进程内部 updateConfig 直写企业字段不受渲染层白名单影响', () => {
   const { store } = memoryStore(buildDefaultConfig(CTX))
-  store.update({ updateFeedUrl: 'https://ai.xzrobot.com/updates/dashboard', oidcClientSecret: 'seed-secret' })
-  assert.equal(store.get().updateFeedUrl, 'https://ai.xzrobot.com/updates/dashboard')
+  store.update({ updateFeedUrl: 'https://ai.xzrobot.com/agent/updates/desktop', oidcClientSecret: 'seed-secret' })
+  assert.equal(store.get().updateFeedUrl, 'https://ai.xzrobot.com/agent/updates/desktop')
   assert.equal(store.get().oidcClientSecret, 'seed-secret')
 })
 

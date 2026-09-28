@@ -63,3 +63,6 @@ desktop/data/
 desktop/*.tsbuildinfo
 desktop/build/enterprise.json
 !desktop/build/
+
+# 桌面端安装包更新源(发布产物, 由构建机放置到 updates/desktop)
+updates/

@@ -50,7 +50,7 @@ export function parseUsageSummary(raw: unknown): UsageSummary {
 }
 
 export interface UsageFetchContext {
-  /** router admin 根地址(如 https://ai.xzrobot.com/router) */
+  /** router admin 根地址(如 https://ai.xzrobot.com/gateway) */
   baseUrl: string
   /** 取 router Bearer token(内部含刷新与单飞) */
   token: () => Promise<string>

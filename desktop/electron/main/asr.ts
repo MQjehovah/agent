@@ -12,7 +12,7 @@ export const ASR_TIMEOUT_ERROR = '语音转写超时'
 export const ASR_CANCELED_ERROR = '语音转写已取消'
 
 export interface AsrCallDeps {
-  /** 企业配置的 ASR 地址（OpenAI 兼容 base，如 https://ai.xzrobot.com/router/v1） */
+  /** 企业配置的 ASR 地址（OpenAI 兼容 base，如 https://ai.xzrobot.com/gateway/api/v1） */
   asrUrl: string
   /** Bearer token（ensureRouterKey 结果）；空串时仍可请求未鉴权的内网端点 */
   apiKey?: string
