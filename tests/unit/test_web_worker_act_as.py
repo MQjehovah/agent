@@ -1,10 +1,11 @@
-"""P6 worker 平台轨按用户身份(act-as): uid → market 用户名解析 + worker 透传。
+"""P6 worker 平台轨按用户身份: 用户 token provider 注入 + uid → market 解析件回归。
 
 - `web.security.market_act_as_enabled`: MARKET_ACT_AS=1/true/yes 开, 缺省/其它关;
-- `web.security.resolve_market_act_as`: 数字 uid(rbac_users.id)→name(工号);
-  非数字(已是工号/SSO sub)→原样; 查不到/存储不可用→空串 + WARNING(回退服务视角);
-- `WebUserWorkerPool._create_worker`: 开关 + 平台轨齐备时给 worker 设 platform_act_as;
-  开关关闭/平台轨关闭/无 worker 池(root 保持服务令牌全量)时为空。
+- `web.security.resolve_market_act_as`: 数字 uid(rbac_users.id)→work_id(工号);
+  非数字(已是工号/SSO sub)→原样; 查不到/存储不可用→空串 + WARNING(供 web 市场代理);
+- `WebUserWorkerPool._create_worker`: 开关 + 平台轨齐备时给 worker 注入
+  `platform_token_provider`(该用户 get_downstream_token(uid, "gateway")); 开关关闭/
+  平台轨关闭/无 worker 池(root 保持服务令牌)时为 None; 取不到 token 由平台轨置空(空串)。
 """
 
 import asyncio
@@ -58,8 +59,8 @@ class _FakeWorker:
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
-        self.platform_act_as = None
-        self.act_as_at_init = None
+        self.platform_token_provider = None
+        self.provider_at_init = None
         self.owner_tag = None
         self.owner_uid = None
         self.owner_at_init = None
@@ -67,7 +68,7 @@ class _FakeWorker:
 
     async def initialize(self):
         # 捕获初始化时刻的身份: 证明写入发生在 initialize(建平台连接)之前
-        self.act_as_at_init = self.platform_act_as
+        self.provider_at_init = self.platform_token_provider
         self.owner_at_init = (self.owner_tag, self.owner_uid)
         self.initialized = True
 
@@ -179,55 +180,64 @@ def test_resolve_act_as_empty_input_returns_empty(store):
     assert resolve_market_act_as("web:") == ""
 
 
-# ---------------- worker 透传(每 worker 恒定 act-as) ----------------
+# ---------------- worker 透传(每 worker 恒定用户 token provider) ----------------
 
 def _pool(tmp_path) -> WebUserWorkerPool:
     return WebUserWorkerPool(root_agent=_DummyRoot(tmp_path), max_workers=1)
 
 
-def test_create_worker_sets_act_as_when_switch_and_platform_on(
+def test_create_worker_sets_user_token_provider_when_switch_and_platform_on(
         store, monkeypatch, tmp_path, fake_agent):
     _enable_market(monkeypatch)
     uid = _make_user(store)
-    pool = _pool(tmp_path)
+    calls = []
+    from web import sso_tokens
 
-    worker = asyncio.run(pool._create_worker(f"web:{uid}", str(tmp_path / "ws")))
+    def _fake_token(user_uid, audience=""):
+        calls.append((user_uid, audience))
+        return f"utok-{user_uid}"
 
-    assert worker.platform_act_as == WORKID
+    monkeypatch.setattr(sso_tokens, "get_downstream_token", _fake_token)
+
+    worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
+
+    assert callable(worker.platform_token_provider)
     assert worker.platform_mcp_enabled is True
     assert worker.initialized is True
-    assert worker.act_as_at_init == WORKID  # 时序: initialize(建平台连接)时已写入
+    assert worker.provider_at_init is worker.platform_token_provider  # 时序: initialize 前注入
+    assert worker.platform_token_provider() == f"utok-{uid}"
+    assert calls == [(uid, "gateway")]  # audience 恒为 gateway
 
 
-def test_create_worker_act_as_empty_when_switch_off(store, monkeypatch, tmp_path, fake_agent):
-    """MARKET_ACT_AS 未开(默认): 不解析, worker 保持服务令牌全量视角。"""
+def test_create_worker_provider_none_when_switch_off(store, monkeypatch, tmp_path, fake_agent):
+    """MARKET_ACT_AS 未开(默认): 不注入 provider, worker 保持服务令牌视角。"""
     _enable_market(monkeypatch, act_as=None)
     uid = _make_user(store)
     worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
-    assert worker.platform_act_as == ""
-    assert worker.act_as_at_init == ""
+    assert worker.platform_token_provider is None
+    assert worker.provider_at_init is None
 
 
-def test_create_worker_act_as_empty_when_platform_disabled(store, monkeypatch, tmp_path, fake_agent):
-    """开关开了但平台轨未配置: 无平台连接可言, 不解析(空)。"""
+def test_create_worker_provider_none_when_platform_disabled(store, monkeypatch, tmp_path, fake_agent):
+    """开关开了但平台轨未配置: 无平台连接可言, 不注入 provider。"""
     _enable_market(monkeypatch)
     monkeypatch.delenv("MARKET_BASE_URL", raising=False)
     monkeypatch.delenv("MARKET_SERVICE_TOKEN", raising=False)
     uid = _make_user(store)
     worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
-    assert worker.platform_act_as == ""
+    assert worker.platform_token_provider is None
 
 
-def test_create_worker_act_as_falls_back_when_user_missing(
-        store, monkeypatch, tmp_path, fake_agent, caplog):
-    """数字 uid 无对应用户 → 空串回退服务视角 + WARNING。"""
+def test_create_worker_provider_returns_empty_when_token_missing(
+        store, monkeypatch, tmp_path, fake_agent):
+    """开关开但该用户无托管 token: provider 注入且返回空串(由平台轨 fail-closed 置空)。"""
     _enable_market(monkeypatch)
-    pool = _pool(tmp_path)
-    with caplog.at_level(logging.WARNING, logger="agent.web.security"):
-        worker = asyncio.run(pool._create_worker("web:999999", str(tmp_path / "ws")))
-    assert worker.platform_act_as == ""
-    assert any("999999" in r.getMessage() and r.levelno == logging.WARNING
-               for r in caplog.records)
+    from web import sso_tokens
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda user_uid, audience="": "")
+    worker = asyncio.run(_pool(tmp_path)._create_worker("web:999999", str(tmp_path / "ws")))
+    assert callable(worker.platform_token_provider)
+    assert worker.platform_token_provider() == ""
 
 
 # ---------------- worker 归属身份(用户级云托管安装过滤) ----------------

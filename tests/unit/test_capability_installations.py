@@ -20,7 +20,6 @@ from agent.core import Agent  # noqa: E402
 from storage.storage import Storage  # noqa: E402
 
 UID = 7
-WORKID = "202202100024"
 
 
 @pytest.fixture
@@ -101,13 +100,13 @@ def test_installed_capability_names_filters_empty_and_disabled(store):
 # ===== 2. Agent 过滤闭包 =====
 
 def test_platform_install_filter_root_vs_worker(tmp_path):
-    """过滤仅由 owner_uid 决定(与 MARKET_ACT_AS/platform_act_as 解耦)。"""
+    """过滤仅由 owner_uid 决定(与 MARKET_ACT_AS/platform_token_provider 解耦)。"""
     agent = _agent(tmp_path)
     assert agent._platform_install_filter() is None          # root 默认
     agent.owner_uid = UID
-    assert agent._platform_install_filter() is not None      # act_as 未开仍注入(解耦)
+    assert agent._platform_install_filter() is not None      # 未注入 provider 仍过滤(解耦)
     agent.owner_uid = 0
-    agent.platform_act_as = WORKID
+    agent.platform_token_provider = lambda: "utok"
     assert agent._platform_install_filter() is None          # root 仍不过滤
 
 
@@ -118,7 +117,7 @@ def test_platform_install_filter_reads_enabled_installations(store, tmp_path):
 
     agent = _agent(tmp_path)
     agent.owner_tag = f"web:{UID}"
-    agent.owner_uid = UID                                    # 不设 platform_act_as
+    agent.owner_uid = UID                                    # 不注入 provider
     loader = agent._platform_install_filter()
     assert callable(loader)
     assert loader() == {"天气"}                              # 停用/空名不出
@@ -130,7 +129,7 @@ def test_platform_install_filter_storage_error_fail_closed(monkeypatch, tmp_path
 
     monkeypatch.setattr(storage_mod, "get_storage", _boom)
     agent = _agent(tmp_path)
-    agent.platform_act_as = WORKID
+    agent.platform_token_provider = lambda: "utok"
     agent.owner_uid = UID
     assert agent._platform_install_filter()() == set()
 
@@ -143,8 +142,8 @@ def _fake_platform_client(monkeypatch):
     captured = {}
 
     class _FakePlatformClient:
-        def __init__(self, config, *, act_as="", install_filter=None):
-            captured["act_as"] = act_as
+        def __init__(self, config, *, token_provider=None, install_filter=None):
+            captured["token_provider"] = token_provider
             captured["install_filter"] = install_filter
             self.tool_defs = []
 
@@ -165,13 +164,14 @@ async def test_worker_platform_client_gets_install_filter(store, monkeypatch, tm
 
     agent = _agent(tmp_path)
     monkeypatch.setattr(agent, "_read_mcp_config_file", lambda: [])
-    agent.platform_act_as = WORKID
+    provider = lambda: "utok"  # noqa: E731 — 测试透传身份即可
+    agent.platform_token_provider = provider
     agent.owner_tag = f"web:{UID}"
     agent.owner_uid = UID
     await agent._load_mcp_servers()
     agent.mcp.stop_health_check()
 
-    assert captured["act_as"] == WORKID
+    assert captured["token_provider"] is provider
     assert captured["install_filter"] is not None
     assert captured["install_filter"]() == {"天气"}
 

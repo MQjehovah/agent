@@ -183,9 +183,10 @@ class Agent:
         # 平台 MCP 轨(市场能力)标记: 顶层运行 agent(root)默认开放; 子代理关闭避免重复建连;
         # worker 池的用户 worker 建好后显式置 True(Web 用户同样可用市场连接器)
         self.platform_mcp_enabled = parent_agent is None
-        # 平台轨代表用户身份(市场用户名=工号, 运行时注入): 默认空=服务令牌全量视角;
-        # worker 池按 MARKET_ACT_AS 在 initialize 前设置(每 worker 恒定 act-as 该用户)
-        self.platform_act_as = ""
+        # 平台轨连接身份 token provider(同步函数, 运行时注入, initialize 前设置):
+        # 默认 None=服务令牌身份(root/群共享); worker 池按 MARKET_ACT_AS 为每个
+        # 用户 worker 注入其用户 token provider(sync/relay 以用户 token 鉴权)
+        self.platform_token_provider = None
         # 归属身份(worker 池在 initialize 前注入): root 保持空/0, 用于用户级
         # 「云端托管安装」过滤(平台轨只为该用户出已安装且启用的能力)
         self.owner_tag: str = ""
@@ -660,7 +661,7 @@ class Agent:
         if use_platform:
             from mcps.platform import PlatformMCPClient
             platform_client = PlatformMCPClient(
-                platform_config, act_as=self.platform_act_as,
+                platform_config, token_provider=self.platform_token_provider,
                 install_filter=self._platform_install_filter())
             self.mcp.attach_platform(platform_client)
             platform_client.start()
@@ -729,8 +730,8 @@ class Agent:
     def _platform_install_filter(self):
         """用户级「云端托管安装」过滤闭包; root(owner_uid=0)返回 None(服务全量)。
 
-        仅 worker(owner_uid>0)启用, 与 MARKET_ACT_AS/platform_act_as 解耦:
-        即便 act-as 未开(服务令牌视角), 用户级安装过滤仍生效; 读取该用户
+        仅 worker(owner_uid>0)启用, 与 MARKET_ACT_AS/platform_token_provider 解耦:
+        即便未注入用户 token(服务令牌视角), 用户级安装过滤仍生效; 读取该用户
         「已安装且启用」的能力名(存储异常按空集 fail-closed)。
         """
         try:

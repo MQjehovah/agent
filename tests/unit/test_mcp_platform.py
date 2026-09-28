@@ -275,12 +275,12 @@ def _session_opener(sessions, entered, exited, failing=frozenset(), *,
 
 def _make_client(caps, sessions, entered, exited, failing=frozenset(), timeout=60.0, *,
                  refresh_seconds=300.0, now=None, sleeper=None, attempts=None, active=None,
-                 act_as="", install_filter=None):
+                 token_provider=None, install_filter=None):
     stub = _SyncStub(caps)
     client = platform.PlatformMCPClient(
         platform.PlatformMCPConfig(base_url="http://market.test", service_token="svc-token",
                                    refresh_seconds=refresh_seconds, timeout=timeout),
-        act_as=act_as,
+        token_provider=token_provider,
         transport=stub.transport(),
         session_opener=_session_opener(sessions, entered, exited, failing,
                                        attempts=attempts, active=active),
@@ -330,35 +330,107 @@ async def _drain(rounds: int = 40) -> None:
         await asyncio.sleep(0)
 
 
-def test_auth_headers_without_act_as_has_only_bearer():
+def test_auth_headers_use_explicit_bearer_only():
+    """请求头只含 Bearer(不再发送 X-Act-As-Sub; 连接身份完全由 token 决定)。"""
     cfg = platform.PlatformMCPConfig(base_url="http://m", service_token="tok")
     client = platform.PlatformMCPClient(cfg)
-    assert client._auth_headers() == {"Authorization": "Bearer tok"}
+    assert client._auth_headers("tok") == {"Authorization": "Bearer tok"}
+    assert client._auth_headers("user-tok") == {"Authorization": "Bearer user-tok"}
 
 
-def test_auth_headers_with_act_as_appends_header():
-    """act_as 非空时每个请求追加 X-Act-As-Sub(市场侧服务令牌代表用户视角)。"""
-    cfg = platform.PlatformMCPConfig(base_url="http://m", service_token="tok")
-    client = platform.PlatformMCPClient(cfg, act_as=" 202202100024 ")
-    assert client._auth_headers() == {
-        "Authorization": "Bearer tok", "X-Act-As-Sub": "202202100024"}
-    # 空白 act_as 等同未设置(不追加空头)
-    blank = platform.PlatformMCPClient(cfg, act_as="   ")
-    assert blank._auth_headers() == {"Authorization": "Bearer tok"}
-
-
-async def test_act_as_header_flows_to_sync_and_relay_session():
-    """act-as 头同时作用于目录 sync 与 relay 建会话(同一 _auth_headers)。"""
+async def test_user_token_flows_to_sync_and_relay_session():
+    """provider 注入时 sync 与 relay 建会话均以用户 token 为 Bearer, 且无 X-Act-As-Sub。"""
     calls = []
     sessions = {"cap-a": _FakeSession([_tool("t", read_only=True)], calls)}
     entered, exited = [], []
     client, stub = _make_client([_cap("cap-a")], sessions, entered, exited,
-                                act_as="202202100024")
+                                token_provider=lambda: "user-tok")
     try:
         assert await client.refresh_once() is True
-        assert stub.requests[0].headers["x-act-as-sub"] == "202202100024"
-        assert entered[0][1]["X-Act-As-Sub"] == "202202100024"
-        assert entered[0][1]["Authorization"] == "Bearer svc-token"
+        assert stub.requests[0].headers["authorization"] == "Bearer user-tok"
+        assert "x-act-as-sub" not in stub.requests[0].headers
+        assert entered[0][1] == {"Authorization": "Bearer user-tok"}
+    finally:
+        await client.close()
+
+
+async def test_token_rotation_triggers_reconnect():
+    """用户 token 变化(过期重换) → 关闭旧会话并以新 token 重连(会话身份 connect 时写死)。"""
+    calls = []
+    sessions = {"cap-a": _FakeSession([_tool("t", read_only=True)], calls)}
+    entered, exited = [], []
+    token = ["utok-1"]
+    client, _ = _make_client([_cap("cap-a")], sessions, entered, exited,
+                             token_provider=lambda: token[0])
+    try:
+        assert await client.refresh_once() is True
+        assert entered == [("cap-a", {"Authorization": "Bearer utok-1"})]
+        token[0] = "utok-2"
+        assert await client.refresh_once() is True
+        assert exited == ["cap-a"]                                    # 旧会话关闭
+        assert entered[-1] == ("cap-a", {"Authorization": "Bearer utok-2"})
+        assert client.has_tool("platform__cap-a__t")                  # 新会话工具照常
+    finally:
+        await client.close()
+
+
+async def test_missing_user_token_drops_capabilities_and_skips_network(caplog):
+    """provider 返回空串: 平台能力置空 + WARNING, 不发任何请求(不回退服务令牌)。"""
+    import logging
+
+    calls = []
+    sessions = {"cap-a": _FakeSession([_tool("t", read_only=True)], calls)}
+    entered, exited = [], []
+    token = [""]
+    client, stub = _make_client([_cap("cap-a")], sessions, entered, exited,
+                                token_provider=lambda: token[0])
+    try:
+        with caplog.at_level(logging.WARNING, logger="agent.mcps.platform"):
+            assert await client.refresh_once() is False
+        assert stub.requests == []                        # 无网络请求(不回落服务令牌)
+        assert client._caps == {} and client.tool_defs == []
+        assert "用户 token 不可用" in client.status()["last_error"]
+        assert any("用户 token 不可用" in r.getMessage() for r in caplog.records)
+
+        token[0] = "utok-1"                               # provider 恢复: 下轮自动重建
+        assert await client.refresh_once() is True
+        assert stub.requests[0].headers["authorization"] == "Bearer utok-1"
+        assert client.has_tool("platform__cap-a__t")
+    finally:
+        await client.close()
+
+
+async def test_token_invalidation_closes_existing_connections(caplog):
+    """已有连接后 provider 变空: 旧会话关闭且工具表清空(fail-closed)。"""
+    import logging
+
+    calls = []
+    sessions = {"cap-a": _FakeSession([_tool("t", read_only=True)], calls)}
+    entered, exited = [], []
+    token = ["utok-1"]
+    client, _ = _make_client([_cap("cap-a")], sessions, entered, exited,
+                             token_provider=lambda: token[0])
+    try:
+        assert await client.refresh_once() is True
+        assert client.has_tool("platform__cap-a__t")
+        token[0] = ""
+        with caplog.at_level(logging.WARNING, logger="agent.mcps.platform"):
+            assert await client.refresh_once() is False
+        assert exited == ["cap-a"]
+        assert client._caps == {} and client.tool_defs == []
+    finally:
+        await client.close()
+
+
+async def test_start_warns_when_no_token_provider(caplog):
+    """root(未注入 provider)启动时明确告警: 使用服务令牌身份。"""
+    import logging
+
+    client, _ = _make_client([], {}, [], [])
+    with caplog.at_level(logging.WARNING, logger="agent.mcps.platform"):
+        client.start()
+    try:
+        assert any("服务令牌身份" in r.getMessage() for r in caplog.records)
     finally:
         await client.close()
 
@@ -954,16 +1026,17 @@ async def test_load_mcp_servers_local_configs_still_connect(monkeypatch):
     assert calls[0][1].enabled is False  # 子代理不启用平台轨
 
 
-async def test_connect_mcp_servers_passes_platform_act_as(monkeypatch):
-    """Agent._connect_mcp_servers 把实例级 platform_act_as 透传给 PlatformMCPClient。"""
+async def test_connect_mcp_servers_passes_platform_token_provider(monkeypatch):
+    """Agent._connect_mcp_servers 把实例级 platform_token_provider 透传给 PlatformMCPClient。"""
     import mcps as mcps_pkg
 
     captured = {}
+    provider = lambda: "user-tok"  # noqa: E731 — 测试透传身份即可
 
     class _FakePlatformClient:
-        def __init__(self, config, *, act_as="", install_filter=None):
+        def __init__(self, config, *, token_provider=None, install_filter=None):
             captured["config_enabled"] = config.enabled
-            captured["act_as"] = act_as
+            captured["token_provider"] = token_provider
             captured["install_filter"] = install_filter
 
         def start(self):
@@ -989,7 +1062,7 @@ async def test_connect_mcp_servers_passes_platform_act_as(monkeypatch):
 
     agent = Agent.__new__(Agent)
     agent.mcp_configs = []
-    agent.platform_act_as = "202202100024"
+    agent.platform_token_provider = provider
     agent.owner_uid = 0                       # 未注入归属身份(非 worker): 不过滤
     agent.name = "test"
     agent.tool_registry = None
@@ -1001,7 +1074,8 @@ async def test_connect_mcp_servers_passes_platform_act_as(monkeypatch):
         subagent=False,
         platform_config=platform.PlatformMCPConfig(base_url="http://m", service_token="t"),
     )
-    assert captured["act_as"] == "202202100024"
+    assert captured["token_provider"] is provider
+    assert captured["token_provider"]() == "user-tok"
     assert captured["install_filter"] is None
     assert captured["config_enabled"] is True
     assert captured["started"] is True and captured["health"] is True

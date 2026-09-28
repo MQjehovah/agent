@@ -10,8 +10,9 @@
 - worker.parent_agent = root：继承 root 的 storage/LLM 客户端/插件管理器，
   但不继承上下文；persist_session=True 使 worker 保留会话历史跨轮次
 - 平台轨按用户身份（MARKET_ACT_AS=1 且平台轨启用）：
-  worker.platform_act_as = 市场用户名（= rbac 工号），平台 MCP 连接以该用户视角
-  （sync 只回其可见能力，relay 按其门禁/限流/密钥注入）；解析失败回退服务令牌并告警
+  worker.platform_token_provider = lambda: get_downstream_token(uid, "gateway")，
+  平台 MCP 的 sync/relay 均以该用户 token 鉴权（aud=gateway）；未托管/刷新失败时
+  该用户平台能力为空（fail-closed，不回退服务令牌）
 
 容量与回收：
 - max_workers = env AGENT_WEB_POOL_SIZE（0 表示不启用，退化为 root 单实例）
@@ -24,6 +25,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
 
 logger = logging.getLogger("agent.web.pool")
 
@@ -218,9 +220,11 @@ class WebUserWorkerPool:
         owner_uid = tag.split(":", 1)[1] if ":" in tag else tag
         worker.owner_tag = tag
         worker.owner_uid = int(owner_uid) if owner_uid.isdigit() else 0
-        # 平台轨按用户身份(MARKET_ACT_AS=1 且平台轨启用): 每 worker 恒定 act-as 该用户
-        # (须在 initialize 之前写入, 平台连接在其中建立); 未启用时为服务令牌全量视角
-        worker.platform_act_as = self._resolve_platform_act_as(tag)
+        # 平台轨按用户身份 token(MARKET_ACT_AS=1 且平台轨启用): 每 worker 注入该用户的
+        # token provider(须在 initialize 之前写入, 平台连接在其中建立); 开关关闭=None
+        # (服务令牌全量视角); 开关开启但取不到 token → provider 返回空串, 由平台轨
+        # fail-closed 置空 + WARNING(不回退服务令牌)
+        worker.platform_token_provider = self._resolve_platform_token_provider(worker.owner_uid)
         worker.plugin_manager = getattr(self.root, "plugin_manager", None)
         if getattr(self.root, "name", ""):
             worker.name = self.root.name
@@ -244,15 +248,25 @@ class WebUserWorkerPool:
             pass
         return worker
 
-    def _resolve_platform_act_as(self, tag: str) -> str:
-        """解析该用户 worker 的平台 act-as 用户名; 开关/平台轨未开或解析失败返回空串。"""
-        from web.security import market_act_as_enabled, resolve_market_act_as
+    def _resolve_platform_token_provider(self, owner_uid: int) -> Callable[[], str] | None:
+        """按用户身份 token provider: 开关/平台轨开时注入, 否则 None(服务令牌身份)。
+
+        provider 为同步函数(get_downstream_token 读 sqlite/urllib, 有 (uid,aud) 缓存),
+        由 PlatformMCPClient 经 asyncio.to_thread 调用; uid≤0 或未托管/刷新失败返回
+        空串, 由平台轨 fail-closed 置空该 worker 的平台能力。
+        """
+        from web.security import market_act_as_enabled
         if not market_act_as_enabled():
-            return ""
+            return None
         from mcps.platform import PlatformMCPConfig
         if not PlatformMCPConfig.from_env().enabled:
-            return ""
-        return resolve_market_act_as(tag)
+            return None
+
+        def _provider() -> str:
+            from web import sso_tokens
+            return sso_tokens.get_downstream_token(owner_uid, "gateway")
+
+        return _provider
 
     def _evict_one_idle_locked(self):
         """容量不足时回收最久未使用的空闲 worker；无空闲则返回 False。"""

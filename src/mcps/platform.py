@@ -5,13 +5,19 @@
 由 ``MCPManager.attach_platform`` 组合后统一供 LLM 工具表、权限风险解析与 mcp_calls 审计。
 
 契约(市场生产已验证):
-- 目录: ``GET {MARKET_BASE_URL}/api/capabilities/sync`` (Bearer=市场服务令牌) → 数组;
+- 目录: ``GET {MARKET_BASE_URL}/api/capabilities/sync`` (Bearer=用户 token 或服务令牌,
+  见下「身份」) → 数组;
   仅接 ``type=="mcp"`` 且可云端托管的能力(优先消费 ``runtime.cloud``，缺失回退
   ``distribution in (remote,both)``；local 分发会 403);
 - 能力级网关: ``/api/mcp-gateway/relay/{name}/stream`` (Streamable HTTP, 同 Bearer),
   name 支持 ``name@version`` 钉版本; gateway 为 null 时同样可按名路由。
-- 代表用户: 构造参数 ``act_as``(市场用户名=工号) 非空时, sync 与 relay 请求额外带
-  ``X-Act-As-Sub``(仅服务令牌身份生效; worker 池按 MARKET_ACT_AS 逐 worker 注入)。
+- 身份: 构造参数 ``token_provider``(同步取 token, 客户端经 ``asyncio.to_thread`` 调用)
+  非 None 时, sync 与 relay 均以用户 token 为 Bearer; 为 None(root/群共享)时用服务令牌
+  并在 ``start()`` 打 WARNING。请求不再发送 ``X-Act-As-Sub``。
+- 身份轮换: MCP 会话身份在 connect 时写死, 而用户 token 约 1h 过期; 每次周期刷新比对
+  「当前 token vs 连接时 token」(``_CapabilityState.connect_token``), 变化即关闭旧会话、
+  以新 token 重连。provider 取不到 token(未托管/刷新失败) → 平台能力整体置空 +
+  WARNING(fail-closed, 不回退服务令牌)。
 
 可用性: ``MARKET_BASE_URL`` 与 ``MARKET_SERVICE_TOKEN`` 齐备才启用; sync 失败仅告警并
 保留既有连接; 单个能力连接/调用失败互不影响(连接分小批推进, 失败项快速退避重试);
@@ -235,10 +241,11 @@ async def default_session_opener(url: str, headers: dict[str, str]):
 class _CapabilityState:
     """单个平台能力的运行状态(会话/工具/最近错误/最近刷新)。"""
 
-    def __init__(self, name: str, version: str, url: str):
+    def __init__(self, name: str, version: str, url: str, connect_token: str = ""):
         self.name = name
         self.version = version
         self.url = url
+        self.connect_token = connect_token  # 连接身份 token(用户 token 轮换比对基准)
         self.session: Any = None
         self.tools: list[Any] = []
         self.connected = False
@@ -261,16 +268,17 @@ class _CapabilityState:
 class PlatformMCPClient:
     """平台 MCP 能力集合(接口与 MCPManager 对齐, 供其组合; 单实例=单 Agent 轨)。"""
 
-    def __init__(self, config: PlatformMCPConfig, *, act_as: str = "",
+    def __init__(self, config: PlatformMCPConfig, *, token_provider: Callable[[], str] | None = None,
                  transport: httpx.AsyncBaseTransport | None = None,
                  session_opener: Callable[[str, dict[str, str]], AbstractAsyncContextManager[Any]] | None = None,
                  now: Callable[[], float] | None = None,
                  sleeper: Callable[[float], Awaitable[None]] | None = None,
                  install_filter: Callable[[], set[str]] | None = None):
         self.config = config
-        # 运行时代表用户身份(市场用户名=工号): 非空时所有请求带 X-Act-As-Sub;
-        # 不进 from_env(同一份 env 下每个 worker 身份不同, 只能实例级注入)
-        self._act_as = str(act_as or "").strip()
+        # 运行时用户 token provider(同步函数, 客户端经 asyncio.to_thread 调用):
+        # 非 None 时 sync/relay 以用户 token 鉴权(取不到即 fail-closed 置空);
+        # None=服务令牌身份(root/群共享)。不进 from_env(同一份 env 下每个 worker 身份不同)
+        self._token_provider = token_provider
         # 用户级「云端托管安装」过滤(worker 注入): sync 后仅保留集合内能力;
         # 返回空集=不出任何平台能力; root 不传(None)=服务令牌全量视角
         self._install_filter = install_filter
@@ -303,10 +311,14 @@ class PlatformMCPClient:
             return
         try:
             self._refresh_task = asyncio.get_running_loop().create_task(self._refresh_loop())
-            scope = f", act-as={self._act_as}" if self._act_as else ""
+            if self._token_provider is None:
+                logger.warning("平台 MCP 轨使用服务令牌身份(root/群共享未注入用户 token)")
+                identity = "服务令牌身份"
+            else:
+                identity = "用户 token 身份"
             logger.info(
                 f"平台 MCP 轨已启动: {self.config.base_url}"
-                f"(每 {self.config.refresh_seconds:g}s 刷新{scope})")
+                f"(每 {self.config.refresh_seconds:g}s 刷新, {identity})")
         except RuntimeError:
             logger.warning("平台 MCP 轨启动失败: start() 需在事件循环内调用")
 
@@ -367,8 +379,14 @@ class PlatformMCPClient:
         async with self._refresh_lock:
             if self._closing:
                 return False
+            token = await self._resolve_token()
+            if self._token_provider is not None and not token:
+                # 用户 token 不可用(未托管/刷新失败): 平台能力整体置空 + WARNING,
+                # 不回退服务令牌; provider 恢复后下轮刷新自动重建
+                await self._drop_capabilities_for_missing_token()
+                return False
             try:
-                caps = await self._fetch_sync()
+                caps = await self._fetch_sync(token)
             except Exception as e:
                 self.last_error = format_market_error("目录同步失败", e)
                 logger.warning(f"平台 MCP {self.last_error}(保留既有连接)")
@@ -381,7 +399,7 @@ class PlatformMCPClient:
             for start in range(0, len(items), MARKET_CONNECT_BATCH_SIZE):
                 batch = items[start:start + MARKET_CONNECT_BATCH_SIZE]
                 results = await asyncio.gather(
-                    *(self._ensure_capability(item) for item in batch),
+                    *(self._ensure_capability(item, token) for item in batch),
                     return_exceptions=True,
                 )
                 for result in results:
@@ -395,14 +413,36 @@ class PlatformMCPClient:
             self._retry_wake.set()
             return True
 
-    async def _fetch_sync(self) -> list[dict[str, Any]]:
+    async def _drop_capabilities_for_missing_token(self) -> None:
+        """用户 token 不可用: 关闭全部平台会话并告警(fail-closed, 每刷新周期一条)。"""
+        had_caps = bool(self._caps)
+        for name in list(self._caps):
+            await self._close_capability(name)
+        if had_caps:
+            self._rebuild_tools()
+        self.last_error = "用户 token 不可用(未托管或刷新失败)"
+        logger.warning(
+            "平台 MCP 用户 token 不可用(未托管或刷新失败): 平台能力置空, 不回退服务令牌")
+
+    async def _resolve_token(self) -> str:
+        """当前连接身份 token: provider 注入时取用户 token(同步调用经线程池), 否则服务令牌。"""
+        provider = self._token_provider
+        if provider is None:
+            return self.config.service_token
+        try:
+            return str(await asyncio.to_thread(provider) or "").strip()
+        except Exception as e:
+            logger.warning(f"平台 MCP 用户 token 获取异常(按不可用处理): {e}")
+            return ""
+
+    async def _fetch_sync(self, token: str) -> list[dict[str, Any]]:
         client = self._sync_client
         if client is None:
             client = httpx.AsyncClient(transport=self._transport, timeout=self.config.timeout)
             self._sync_client = client
         response = await client.get(
             f"{self.config.base_url}/api/capabilities/sync",
-            headers=self._auth_headers(),
+            headers=self._auth_headers(token),
         )
         response.raise_for_status()
         caps = parse_sync_capabilities(response.json())
@@ -417,12 +457,13 @@ class PlatformMCPClient:
             caps = [c for c in caps if c["name"] in allowed]
         return caps
 
-    async def _ensure_capability(self, item: dict[str, Any]) -> None:
-        """确保能力已连接; 版本变化重建连接; 失败保留状态并交给快速重试队列。"""
+    async def _ensure_capability(self, item: dict[str, Any], token: str) -> None:
+        """确保能力已连接; 版本或连接身份 token 变化重建连接; 失败保留状态并交给快速重试队列。"""
         name = item["name"]
         version = item.get("version", "")
         cap = self._caps.get(name)
-        if cap is not None and cap.version != version:
+        if cap is not None and (cap.version != version or cap.connect_token != token):
+            # 版本变化或用户 token 轮换: MCP 会话身份在 connect 时写死, 必须关闭旧会话重连
             await self._close_capability(name)
             cap = None
         if cap is None:
@@ -430,6 +471,7 @@ class PlatformMCPClient:
                 name=name, version=version,
                 url=relay_stream_url(self.config.base_url, name, version=version,
                                      gateway=item.get("gateway")),
+                connect_token=token,
             )
             self._caps[name] = cap
         if cap.connected or (cap._conn_task is not None and not cap._conn_task.done()):
@@ -487,12 +529,20 @@ class PlatformMCPClient:
                    if not cap.connected and 0 < cap.retry_at <= now]
             changed = False
             busy = False
+            cur_token: str | None = None
+            if due and self._token_provider is not None:
+                cur_token = await self._resolve_token()
             for cap in due:
                 if self._closing:
                     break
                 if cap._conn_task is not None and not cap._conn_task.done():
                     busy = True  # 刷新正在连它: 稍后再看, 避免空转
                     continue
+                if self._token_provider is not None:
+                    if not cur_token:
+                        cap.retry_at = 0.0  # token 不可用: 停止重试, 等下轮刷新统一置空
+                        continue
+                    cap.connect_token = cur_token  # 轮换后按最新 token 重连
                 await self._connect_capability(cap)
                 changed = True
             if changed:
@@ -516,7 +566,7 @@ class PlatformMCPClient:
                 try:
                     async with asyncio.timeout(self.config.timeout):
                         session = await stack.enter_async_context(
-                            self._session_opener(cap.url, self._auth_headers()))
+                            self._session_opener(cap.url, self._auth_headers(cap.connect_token)))
                         mcp_tools = await session.list_tools()
                 except asyncio.CancelledError:
                     if ready is not None and not ready.done():
@@ -579,12 +629,9 @@ class PlatformMCPClient:
         cap.session = None
         cap.connected = False
 
-    def _auth_headers(self) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {self.config.service_token}"}
-        if self._act_as:
-            # 市场侧仅对服务令牌生效: sync/relay 按目标用户过滤与门禁
-            headers["X-Act-As-Sub"] = self._act_as
-        return headers
+    def _auth_headers(self, bearer_token: str) -> dict[str, str]:
+        """请求头: 仅 Bearer(身份由 token 决定, 不再发送 X-Act-As-Sub)。"""
+        return {"Authorization": f"Bearer {bearer_token}"}
 
     # ---------- 工具表 / 映射 / 调用(与 MCPManager 同接口) ----------
 
