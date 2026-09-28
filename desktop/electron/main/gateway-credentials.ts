@@ -10,7 +10,7 @@ export interface GatewayCredentialIdentity {
   oidc: { idToken: string } | null
   /** gateway apikey(sk-),供 gateway 调用与本地 agent 使用 */
   gatewayKey: string
-  /** gateway access_token,仅供 gateway admin /api/me/* 的 Bearer 使用 */
+  /** gateway 受众平台 token(id_token 换取):用于 /api/me/* 与 rag/market 直连(upstream/media/kb_search/mcp) */
   gatewayToken?: string
   /** gatewayToken 过期时间戳(ms) */
   gatewayTokenExpiresAt?: number

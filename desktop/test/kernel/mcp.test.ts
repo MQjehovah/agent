@@ -442,6 +442,74 @@ test('mcp: connectMcpServers 注入 resolveVars 时替换 url/headers 占位符�
   assert.ok(onDisk.includes('${MARKET_URL}') && onDisk.includes('${MARKET_TOKEN}'), '磁盘配置保留占位符')
 })
 
+test('mcp: connectMcpServers 支持异步 resolveVars（等待解析完成再连接）', async (t) => {
+  const { dir, configPath } = writeMcpConfig([
+    {
+      name: 'time',
+      transport: 'http',
+      url: '${MARKET_URL}/api/mcp-gateway/relay/time/stream',
+      headers: { Authorization: 'Bearer ${MARKET_TOKEN}' }
+    }
+  ])
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registry = createRegistry()
+  const seen: McpServerConfig[] = []
+  const handles = await connectMcpServers({
+    registry,
+    configPath,
+    connector: {
+      connect: async (cfg) => {
+        seen.push(cfg)
+        return fakeClient([{ name: 'time_now' }]).client
+      }
+    },
+    resolveVars: async (name) =>
+      name === 'MARKET_URL' ? 'https://market.example' : name === 'MARKET_TOKEN' ? 'tok-async' : undefined
+  })
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].url, 'https://market.example/api/mcp-gateway/relay/time/stream')
+  assert.deepEqual(seen[0].headers, { Authorization: 'Bearer tok-async' })
+  assert.ok(registry.get('mcp__time__time_now'))
+  assert.equal(handles.length, 1)
+})
+
+test('mcp: connectMcpServers 异步 resolveVars 抛错时按 missing+hint 跳过且不影响其它 server', async (t) => {
+  const { dir, configPath } = writeMcpConfig([
+    {
+      name: 'time',
+      transport: 'http',
+      url: '${MARKET_URL}/api/mcp-gateway/relay/time/stream',
+      headers: { Authorization: 'Bearer ${MARKET_TOKEN}' }
+    },
+    { name: 'plain', command: 'node' }
+  ])
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registry = createRegistry()
+  const seen: McpServerConfig[] = []
+  const statuses: string[] = []
+  const handles = await connectMcpServers({
+    registry,
+    configPath,
+    connector: {
+      connect: async (cfg) => {
+        seen.push(cfg)
+        return fakeClient([{ name: 'run' }]).client
+      }
+    },
+    resolveVars: async (name) => {
+      if (name === 'MARKET_URL') return 'https://market.example'
+      throw new Error('x')
+    },
+    onStatus: (m) => statuses.push(m)
+  })
+  assert.deepEqual(seen.map((c) => c.name), ['plain'])
+  assert.equal(handles.length, 1)
+  assert.ok(
+    statuses.some((s) => s.includes('time') && s.includes('${MARKET_TOKEN}') && s.includes('（x）')),
+    statuses.join('|')
+  )
+})
+
 test('mcp: connectMcpServers 未注册变量跳过该 server 且不触达 connector（不影响其它 server）', async (t) => {
   const { dir, configPath } = writeMcpConfig([
     { name: 'bad-var', transport: 'http', url: 'https://${PRIVATE_HOST}/stream' },

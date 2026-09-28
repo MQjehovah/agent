@@ -13,7 +13,7 @@ import { createGatewayCredentials } from './gateway-credentials'
 /**
  * 身份与凭据管理(仅主进程):
  *   - OIDC SSO 登录(系统浏览器 + loopback 回调),持有 id/access/refresh token
- *   - gateway access_token:用 id_token 走 RFC 8693 token-exchange 换取(供 /api/me/* 调用)
+ *   - gateway access_token:用 id_token 走 RFC 8693 token-exchange 换取(供 /api/me/* 与 rag/market 直连等调用)
  *   - gateway apikey:用 gateway access_token 调 gateway admin /api/me/key 自取(sk-,供 gateway/agent)
  *   - agent JWT:按工号 JIT 开号换取
  *   - rag/market 用 gateway 受众平台 token(id_token 经 RFC 8693 换取,不再复用 OIDC access_token);agent 用 agent JWT;gateway 用 apikey
@@ -43,7 +43,7 @@ export interface Identity {
   oidc: OidcTokens | null
   /** gateway apikey(sk-),供 gateway 调用与本地 agent 使用 */
   gatewayKey: string
-  /** gateway access_token,仅供 gateway admin /api/me/* 的 Bearer 使用 */
+  /** gateway 受众平台 token(id_token 换取):用于 /api/me/* 与 rag/market 直连(upstream/media/kb_search/mcp) */
   gatewayToken?: string
   /** gatewayToken 过期时间戳(ms) */
   gatewayTokenExpiresAt?: number
@@ -133,8 +133,8 @@ async function ensureFreshOidc(): Promise<void> {
 
 /**
  * 取当前可用的 OIDC access_token:临近过期(60s 内)自动用 refresh_token 续期。
- * 保留原因:仍供 RAG 媒体代理(media.ts)与本地会话的 SSO 续期检测(kernel/ipc.ts)使用;
- * rag/market 上游代理已改用 gateway 受众平台 token(freshGatewayToken),不再走本函数。
+ * 保留原因:本地会话的 SSO 续期/轮换检测(kernel/ipc.ts)仍用它触发刷新;
+ * rag/market 等外发点(upstream/media/kb_search/market)均已改用 gateway 受众平台 token。
  * 刷新失败不抛异常(返回现有 token 或 null),由调用方按 401/降级自行处理。
  */
 export async function freshOidcAccessToken(): Promise<string | null> {

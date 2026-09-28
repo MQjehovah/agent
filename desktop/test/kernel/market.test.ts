@@ -74,6 +74,18 @@ test('market client listMy 请求我的能力并映射最小字段、丢弃不�
   })
 })
 
+test('market client await 异步 getToken 后再注入 header(不落 [object Promise])', async () => {
+  const calls: CapturedCall[] = []
+  const client = createMarketClient({
+    marketUrl: 'http://market.test',
+    getToken: async () => 'tk',
+    fetchImpl: stubFetch(calls, () => new Response('[]', { status: 200 }))
+  })
+  await client.listMy()
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].init.headers, { authorization: 'Bearer tk', 'content-type': 'application/json' })
+})
+
 test('market client listMy 映射 runtime（只收 cloud/local/recommended，非法/空对象丢弃）', async () => {
   const calls: CapturedCall[] = []
   const raw = [

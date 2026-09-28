@@ -4,7 +4,7 @@ import { basename, extname, isAbsolute, join as pjoin2 } from 'node:path'
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { getConfig } from '../store'
-import { getIdentity, ensureGatewayKey, freshAgentJwt, freshGatewayToken, freshOidcAccessToken } from '../identity'
+import { getIdentity, ensureGatewayKey, freshAgentJwt, freshGatewayToken, freshOidcAccessToken, renewGatewayToken } from '../identity'
 import {
   createSessionStore,
   parseModelIds,
@@ -1111,12 +1111,18 @@ async function executeLocalTurn(
   const reg = ensureRegistry()
   // MCP 工具注册进 registry 后再开跑（首次 chat 时才真正连接）
   // 连接前先续期 SSO access_token(仅剩 <60s 才真刷新);令牌轮换则失效旧连接,
-  // 避免平台桥接拿着过期 MARKET_TOKEN 收到 401「登录状态无效或已过期」
+  // 避免平台桥接拿着过期 MARKET_TOKEN 收到 401「登录状态无效或已过期」;
+  // 重连前强换 gateway 受众平台 token,确保新 session 拿到新 token(而非复用旧缓存)
   const tokenBefore = getIdentity()?.oidc?.accessToken ?? ''
   await freshOidcAccessToken()
   const tokenAfter = getIdentity()?.oidc?.accessToken ?? ''
   if (tokenBefore && tokenAfter && tokenBefore !== tokenAfter) {
     await invalidateMcpConnections()
+    try {
+      await renewGatewayToken()
+    } catch (err) {
+      console.warn('[kernel] gateway token 强换失败(重连时按需自愈):', (err as Error).message)
+    }
   }
   await ensureMcp(reg)
 

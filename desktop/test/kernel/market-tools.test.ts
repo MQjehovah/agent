@@ -118,6 +118,23 @@ test('market-tool invoker: 成功调用 POST /api/runtime/tools/<name>/invoke �
   assert.equal((out as { output?: string }).output, '检查通过')
 })
 
+test('market-tool invoker: await 异步 getToken 后再注入 header(不落 [object Promise])', async () => {
+  const calls: Call[] = []
+  const invoke = createMarketToolInvoker({
+    marketUrl: 'http://market.test',
+    getToken: async () => 'tk',
+    fetchImpl: stubFetch(calls, () =>
+      new Response(JSON.stringify({ result: { tool: 'x', status: 'ok' } }), { status: 200 })
+    )
+  })
+  await invoke('x', {})
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].init.headers, {
+    authorization: 'Bearer tk',
+    'content-type': 'application/json'
+  })
+})
+
 test('market-tool invoker: HTTP 非 2xx 抛中文错误并带 detail', async () => {
   const invoke = createMarketToolInvoker({
     marketUrl: 'http://market.test',

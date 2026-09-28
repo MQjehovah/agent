@@ -182,7 +182,7 @@ export function formatKbResults(payload: unknown): string {
   return truncate(blocks.join('\n\n'), KB_RESULT_MAX)
 }
 
-/** 构造 kb_search 工具；callRag 由 ipc 层注入（直连 RAG 并带 OIDC token），tools 不碰身份逻辑 */
+/** 构造 kb_search 工具；callRag 由 ipc 层注入（直连 RAG 并带 gateway 受众平台 token），tools 不碰身份逻辑 */
 export function kbSearchTool(callRag: (path: string, body: unknown) => Promise<unknown>): ToolDefinition {
   return {
     name: 'kb_search',

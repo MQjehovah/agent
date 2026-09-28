@@ -432,7 +432,7 @@ export async function connectMcpServers(opts: {
   /** mcp.json 路径，不存在视为空配置 */
   configPath: string
   onStatus?: (msg: string) => void
-  /** market-gateway 连接参数解析器（ipc 注入：marketUrl + SSO Bearer） */
+  /** market-gateway 连接参数解析器（ipc 注入：marketUrl + gateway 受众平台 token Bearer） */
   resolveGateway?: ResolveMcpGateway
   /** 配置占位符变量解析器（ipc 注入：仅注册变量 MARKET_URL/MARKET_TOKEN，可异步）；未注册返回 undefined */
   resolveVars?: (name: string) => string | undefined | Promise<string | undefined>

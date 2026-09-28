@@ -30,6 +30,24 @@ test('rag search posts JSON to ragUrl/api/search with bearer token and returns p
   assert.deepEqual(payload, { results: [{ id: '1', title: '报销制度' }], total: 1 })
 })
 
+test('rag search awaits async getToken before building the bearer header', async () => {
+  const calls: CapturedCall[] = []
+  const search = createRagSearcher({
+    ragUrl: 'http://rag.test/',
+    getToken: async () => 'tk',
+    fetchImpl: async (input, init) => {
+      calls.push({ input: String(input), init: init ?? {} })
+      return new Response('{}', { status: 200 })
+    }
+  })
+  await search('/api/search', { query: 'q' })
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].init.headers, {
+    authorization: 'Bearer tk',
+    'content-type': 'application/json'
+  })
+})
+
 test('rag search rejects with SSO hint when token is missing without calling fetch', async () => {
   let called = false
   const search = createRagSearcher({
