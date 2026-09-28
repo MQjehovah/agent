@@ -269,18 +269,56 @@ def _sso_bind_dingtalk(storage, uid: int, claims: dict):
         logger.warning(f"[sso] 自动绑定钉钉失败(uid={uid}, dingtalk={dt}): {e}")
 
 
+def _sso_ensure_department_registered(storage, dept: str):
+    """部门注册表(rbac_departments)兜底建档: SSO 登录带来的部门缺失时自动创建(幂等)。
+
+    已存在则保留原描述/主管(INSERT OR IGNORE); 建档失败仅告警, 不影响登录。
+    """
+    if not dept:
+        return
+    try:
+        from security.rbac import RBACManager
+        RBACManager(storage).create_department(dept)
+    except Exception as e:
+        logger.warning(f"[sso] 部门注册表建档失败(dept={dept}): {e}")
+
+
 def _sso_sync_department(storage, uid: int, row, claims: dict):
     """SSO 为部门权威源: claims.dept 非空且与当前不同则回写(与 market 侧登录同语义)。
 
+    非空 dept 同时确保部门注册表存在(缺失自动建档, 幂等);
     空/缺 dept 一律保留管理员手工填写的值; 返回回写后的 rbac_users 行(无变化原样返回)。
     """
     dept = sso_auth.sso_user_department(claims)
-    if not dept or (row["department"] or "") == dept:
+    if not dept:
+        return row
+    _sso_ensure_department_registered(storage, dept)
+    if (row["department"] or "") == dept:
         return row
     with storage.get_connection() as conn:
         conn.execute(
             "UPDATE rbac_users SET department=?, updated_at=datetime('now') WHERE id=?",
             (dept, uid),
+        )
+        conn.commit()
+        return conn.execute(
+            f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE id = ?", (uid,)
+        ).fetchone()
+
+
+def _sso_sync_display_name(storage, uid: int, row, claims: dict):
+    """SSO 为姓名权威源: claims.name 非空且与当前不同则回写 display_name。
+
+    空/缺 name 一律保留现有 display_name(不清空、不覆盖为工号);
+    返回回写后的 rbac_users 行(无变化原样返回)。
+    """
+    claim_name = _sso_claim_name(claims)
+    if not claim_name or claim_name == (row["display_name"] or ""):
+        return row
+    with storage.get_connection() as conn:
+        conn.execute(
+            "UPDATE rbac_users SET display_name=?, updated_at=datetime('now') WHERE id=?",
+            (claim_name, uid),
         )
         conn.commit()
         return conn.execute(
@@ -308,12 +346,13 @@ def _sso_lookup_user(sub: str) -> dict | None:
 def _sso_ensure_user(sub: str, claims: dict) -> dict:
     """SSO 登录: 保证 name=sub(工号) 的用户存在并返回。
 
-    1. 按 name=sub 命中 → 直接返回(display_name 为空则顺手补 claims.name);
+    1. 按 name=sub 命中 → 直接返回(姓名/部门按 SSO 权威源回写);
     2. 未命中 → 按 name=claims.name(老账号中文名) 找历史账号 → 把老账号 name
        改成 sub(工号)+ 补 display_name(保留 role/dept/status/钉钉绑定/历史) 后返回;
     3. 都未命中 → 新建 name=sub / display_name=claims.name 用户。
-    命中已有账号时以 SSO 为部门权威源: claims.dept 非空且不同则回写(空值保留手工值)。
-    老账号(命中但)被禁用一律抛 403；登录成功且 claims 含 dingtalk 时自动绑钉钉。
+    命中已有账号时以 SSO 为权威源: claims.name/claims.dept 非空且不同则回写(空值保留手工值);
+    非空 dept 在部门注册表缺失时自动建档。老账号(命中但)被禁用一律抛 403; 登录成功且
+    claims 含 dingtalk 时自动绑钉钉。
     """
     from security.rbac import RBACManager
     from storage.storage import get_storage
@@ -337,7 +376,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
         """老账号(name=中文) → 改名工号 + 补 display_name(保留其余列)。"""
         uid = old_row["id"]
         with storage.get_connection() as conn:
-            new_display = old_row["display_name"] or display
+            new_display = display or old_row["display_name"]
             conn.execute(
                 "UPDATE rbac_users SET name=?, display_name=?, updated_at=datetime('now') WHERE id=?",
                 (new_name, new_display, uid),
@@ -366,7 +405,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
                     conn.execute(
                         "UPDATE rbac_users SET name=?, display_name=?, email=?, "
                         "updated_at=datetime('now') WHERE id=?",
-                        (sub, email_row["display_name"] or claim_name or sub, claim_email, uid),
+                        (sub, claim_name or email_row["display_name"] or sub, claim_email, uid),
                     )
                 elif not email_row["email"]:
                     conn.execute(
@@ -393,14 +432,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
                 )
                 conn.commit()
                 row = _refresh(conn, uid)
-        if not row["display_name"] and claim_name and claim_name != sub:
-            with storage.get_connection() as conn:
-                conn.execute(
-                    "UPDATE rbac_users SET display_name=?, updated_at=datetime('now') WHERE id=?",
-                    (claim_name, uid),
-                )
-                conn.commit()
-                row = _refresh(conn, uid)
+        row = _sso_sync_display_name(storage, uid, row, claims)
         row = _sso_sync_department(storage, uid, row, claims)
         _sso_bind_dingtalk(storage, uid, claims)
         return _sso_user_payload(row)
@@ -419,6 +451,7 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
     role = sso_auth.sso_user_role(claims)
     rbac = RBACManager(storage)
     uid = rbac.create_user(name=sub, department=dept, role=role, display_name=claim_name)
+    _sso_ensure_department_registered(storage, dept)
     # 随机不可登录密码(SSO 用户不走密码登录)
     import secrets as _secrets
     storage.set_user_password(uid, _secrets.token_urlsafe(24))

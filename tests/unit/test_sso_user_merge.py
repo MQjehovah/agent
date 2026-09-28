@@ -203,6 +203,68 @@ def test_ensure_merge_writes_back_department(store):
     assert _user_row(store, uid)["department"] == "研发部"
 
 
+# ---- _sso_ensure_user: 部门注册表缺失自动建档 ----
+
+def test_ensure_auto_registers_missing_department(store):
+    """登录带来的部门在 rbac_departments 缺失 → 自动建档(幂等)。"""
+    u = _sso_ensure_user("202202100024", dict(CLAIMS))
+    rbac = RBACManager(store)
+    d = rbac.get_department("研发部")
+    assert d is not None and d["name"] == "研发部"
+    # 再次登录不报错/不重复
+    _sso_ensure_user("202202100024", dict(CLAIMS))
+    assert rbac.get_department("研发部") is not None
+    assert _user_row(store, u["id"])["department"] == "研发部"
+
+
+def test_ensure_department_registration_keeps_existing_meta(store):
+    """已建档部门(有描述)不被登录建档覆盖。"""
+    rbac = RBACManager(store)
+    rbac.create_department("研发部", description="原描述")
+    _sso_ensure_user("202202100024", dict(CLAIMS))
+    d = rbac.get_department("研发部")
+    assert d["description"] == "原描述"
+
+
+def test_ensure_registers_department_even_when_user_dept_unchanged(store):
+    """用户部门已一致但注册表缺失 → 登录时也补建档。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="202202100024", department="研发部", role="default")
+    assert rbac.get_department("研发部") is None
+    _sso_ensure_user("202202100024", dict(CLAIMS))
+    assert rbac.get_department("研发部") is not None
+    assert _user_row(store, uid)["department"] == "研发部"
+
+
+# ---- _sso_ensure_user: 姓名以 SSO 为权威源反写 ----
+
+def test_ensure_syncs_changed_display_name(store):
+    """display_name 非空但不同 → 登录时按 claims.name 反写(旧名不保留)。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="202202100024", department="研发部",
+                           role="default", display_name="旧显示名")
+    u = _sso_ensure_user("202202100024", dict(CLAIMS))
+    assert u["id"] == uid and u["display_name"] == "季明清"
+    assert _user_row(store, uid)["display_name"] == "季明清"
+
+
+def test_ensure_empty_claim_name_keeps_display_name(store):
+    """claims 缺 name → 保留现有 display_name, 不清空。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="202202100024", display_name="手工名", role="default")
+    without = {k: v for k, v in CLAIMS.items() if k != "name"}
+    assert _sso_ensure_user("202202100024", without)["display_name"] == "手工名"
+    assert _user_row(store, uid)["display_name"] == "手工名"
+
+
+def test_ensure_merge_prefers_claim_name(store):
+    """老账号合并: display_name 以 claims.name 为准(不同也反写)。"""
+    rbac = RBACManager(store)
+    uid = rbac.create_user(name="季明清", display_name="旧显示名", role="admin")
+    u = _sso_ensure_user("202202100024", dict(CLAIMS))
+    assert u["id"] == uid and u["display_name"] == "季明清"
+
+
 # ---- _sso_ensure_user: 老账号合并 ----
 
 def test_ensure_merges_old_zh_name_account(store):
