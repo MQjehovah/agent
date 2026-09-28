@@ -159,9 +159,40 @@ def test_default_agent_row_defers_to_agent_config(fakes, monkeypatch):
 def test_save_user_tokens_persists_client_id(fakes, monkeypatch):
     store = fakes
     monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(600))
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
     assert sso_tokens.save_user_tokens(
         5, {"id_token": "id", "refresh_token": "rt", "client_id": "dashboard-gateway"}
     ) is True
     assert store.rows[5]["client_id"] == "dashboard-gateway"
     assert sso_tokens.save_user_tokens(6, {"id_token": "id", "refresh_token": "rt"}) is True
-    assert store.rows[6]["client_id"] == "agent"  # 缺省 agent(web 回调路径)
+    assert store.rows[6]["client_id"] == "agent"  # 缺省=配置客户端(web 回调路径)
+
+
+def test_save_user_tokens_default_client_follows_config(fakes, monkeypatch):
+    """写入缺省跟随 SSO_CLIENT_ID 配置(自定义部署读写一致)。"""
+    store = fakes
+    monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(600))
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "xyz")
+    assert sso_tokens.save_user_tokens(5, {"id_token": "id", "refresh_token": "rt"}) is True
+    assert store.rows[5]["client_id"] == "xyz"
+
+
+def test_client_creds_follow_config_for_legacy_agent_rows(fakes, monkeypatch):
+    """自定义 SSO_CLIENT_ID=xyz: 配置行与遗留 agent 行都解析为配置客户端(用配置 secret);
+    dashboard-gateway 行按 public 不带 secret。"""
+    store = fakes
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "xyz")
+    monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "s3cr3t")
+    monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(3600))
+    calls: list[dict] = []
+    monkeypatch.setattr(sso_auth, "exchange_token",
+                        lambda tok, aud, **kw: calls.append(kw) or "down")
+    for uid, cid in ((7, "xyz"), (8, "agent"), (9, "dashboard-gateway")):
+        store.rows[uid] = {"user_id": uid, "id_token": f"id-{uid}", "refresh_token": "rt",
+                           "id_expires_at": _exp(600), "client_id": cid}
+        assert sso_tokens.get_downstream_token(uid) == "down"
+    assert calls == [
+        {"client_id": "xyz", "client_secret": None},  # 配置行: 交配置(secret 用配置值)
+        {"client_id": "xyz", "client_secret": None},  # 遗留 agent 行: 同样解析为配置客户端
+        {"client_id": "dashboard-gateway", "client_secret": ""},  # public: 不带 secret
+    ]

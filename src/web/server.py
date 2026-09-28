@@ -222,10 +222,6 @@ def _sso_claim_email(claims: dict) -> str:
 
 _SSO_USER_COLS = "id, name, work_id, department, role, status, email, phone, dingtalk_id"
 
-# 托管 SSO token 允许的来源客户端: agent(web 登录轨, 带 secret) / dashboard-gateway(桌面轨, public 无 secret)。
-# 来源决定 agent 侧刷新与 RFC 8693 交换所用的客户端身份。
-SSO_HOST_CLIENTS = ("agent", "dashboard-gateway")
-
 
 def _sso_claim_mobile(claims: dict) -> str:
     """SSO claims 里的手机号(mobile); 缺失/非法返回空串。"""
@@ -1441,7 +1437,8 @@ class WebServer:
             仅允许写登录态本人(uid 取自鉴权, 不信 body); 幂等覆盖。
             id_token 强制验签 + iss(桌面 aud/TTL 与 agent 不同故跳过 aud/exp),
             并要求 sub 与登录态 work_id 一致, 防止托管他人 token。
-            可选 client_id(白名单, 缺省 agent)记录来源客户端, 供 OBO 按来源刷新/交换。
+            可选 client_id(白名单=本部署 SSO_CLIENT_ID + dashboard-gateway, 缺省取本部署 client)
+            记录来源客户端, 供 OBO 按来源刷新/交换; id_token.aud 须包含该 client。
             """
             u = await _get_authz(request)
             uid = int(u.get("uid") or 0)
@@ -1461,8 +1458,11 @@ class WebServer:
                 return JSONResponse({"error": "refresh_token must be a string"}, status_code=400)
             raw_client = data.get("client_id")
             if raw_client is None:
-                client_id = "agent"
-            elif not isinstance(raw_client, str) or raw_client.strip() not in SSO_HOST_CLIENTS:
+                # 缺省取本部署 client(自定义 SSO_CLIENT_ID 时写读一致)
+                client_id = sso_auth.sso_client_id()
+            elif not isinstance(raw_client, str) or raw_client.strip() not in {
+                sso_auth.sso_client_id(), "dashboard-gateway"
+            }:
                 return JSONResponse({"error": "unsupported client_id"}, status_code=400)
             else:
                 client_id = raw_client.strip()
@@ -1476,6 +1476,11 @@ class WebServer:
             if not work_id or str(claims.get("sub") or "").strip() != work_id:
                 logger.warning(f"SSO token 托管 sub 不匹配: uid={uid}")
                 return JSONResponse({"error": "id_token subject mismatch"}, status_code=403)
+            aud_claim = claims.get("aud")
+            aud_list = aud_claim if isinstance(aud_claim, list) else [aud_claim]
+            if client_id not in {str(a).strip() for a in aud_list if a}:
+                logger.warning(f"SSO token 托管 aud 与 client_id 不匹配: uid={uid} client_id={client_id}")
+                return JSONResponse({"error": "id_token audience mismatch"}, status_code=400)
             from web.sso_tokens import save_user_tokens
             if not save_user_tokens(uid, {"id_token": id_token, "refresh_token": refresh_token,
                                           "client_id": client_id}):

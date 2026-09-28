@@ -45,7 +45,7 @@ def sign_token(claims, key, kid="k1"):
     return pyjwt.encode(claims, key, algorithm="RS256", headers={"kid": kid} if kid else None)
 
 
-def id_claims(sub: str = "10086", *, aud: str = DESKTOP_AUDIENCE, exp_delta: int = 600) -> dict:
+def id_claims(sub: str = "10086", *, aud: str | list[str] = AGENT_AUDIENCE, exp_delta: int = 600) -> dict:
     now = int(time.time())
     return {"sub": sub, "iss": ISSUER, "aud": aud, "iat": now, "exp": now + exp_delta, "name": "张三"}
 
@@ -139,9 +139,9 @@ def test_host_tokens_saves_current_user_tokens(env):
 
 
 def test_host_tokens_stores_client_id(env):
-    """桌面轨: client_id=dashboard-gateway 存入托管行。"""
+    """桌面轨: client_id=dashboard-gateway + aud 含该 client 才存入托管行。"""
     s, client, key = env
-    id_token = sign_token(id_claims("10086"), key)
+    id_token = sign_token(id_claims("10086", aud=DESKTOP_AUDIENCE), key)
     resp = client.post(
         "/api/auth/sso-tokens",
         json={"id_token": id_token, "refresh_token": "ref-7", "client_id": "dashboard-gateway"},
@@ -149,6 +149,46 @@ def test_host_tokens_stores_client_id(env):
     )
     assert resp.status_code == 200, resp.text
     assert _row(s, 7) == {"id_token": id_token, "refresh_token": "ref-7"}
+    assert _client_id(s, 7) == "dashboard-gateway"
+
+
+def test_host_tokens_default_client_follows_config(env, monkeypatch):
+    """自定义 SSO_CLIENT_ID=xyz: 缺省写入跟随配置(读写一致), 不是字面 agent。"""
+    s, client, key = env
+    monkeypatch.setenv("SSO_CLIENT_ID", "xyz")
+    id_token = sign_token(id_claims("10086", aud="xyz"), key)
+    resp = client.post(
+        "/api/auth/sso-tokens",
+        json={"id_token": id_token, "refresh_token": "ref-7"},
+        headers=_auth(7, "10086"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert _client_id(s, 7) == "xyz"
+
+
+def test_host_tokens_rejects_aud_client_mismatch(env):
+    """aud 不含本次 client_id(agent token 想托管为桌面 client) → 400, 不落库。"""
+    s, client, key = env
+    id_token = sign_token(id_claims("10086", aud=AGENT_AUDIENCE), key)
+    resp = client.post(
+        "/api/auth/sso-tokens",
+        json={"id_token": id_token, "refresh_token": "ref-7", "client_id": "dashboard-gateway"},
+        headers=_auth(7, "10086"),
+    )
+    assert resp.status_code == 400, resp.text
+    assert _row(s, 7) is None
+
+
+def test_host_tokens_accepts_list_audience_containing_client(env):
+    """aud 为列表时只要包含本次 client_id 即通过。"""
+    s, client, key = env
+    id_token = sign_token(id_claims("10086", aud=[DESKTOP_AUDIENCE, "other"]), key)
+    resp = client.post(
+        "/api/auth/sso-tokens",
+        json={"id_token": id_token, "refresh_token": "ref-7", "client_id": "dashboard-gateway"},
+        headers=_auth(7, "10086"),
+    )
+    assert resp.status_code == 200, resp.text
     assert _client_id(s, 7) == "dashboard-gateway"
 
 
@@ -168,7 +208,7 @@ def test_host_tokens_rejects_invalid_client_id(env, client_id):
 def test_host_tokens_normalizes_client_id_whitespace(env):
     """两侧空白归一后再比对白名单(client_id 大小写敏感)。"""
     s, client, key = env
-    id_token = sign_token(id_claims("10086"), key)
+    id_token = sign_token(id_claims("10086", aud=DESKTOP_AUDIENCE), key)
     resp = client.post(
         "/api/auth/sso-tokens",
         json={"id_token": id_token, "refresh_token": "ref-7", "client_id": " dashboard-gateway "},
@@ -269,7 +309,9 @@ def test_host_tokens_accepts_desktop_audience_and_expired_token(env):
     s, client, key = env
     id_token = sign_token(id_claims("10086", aud=DESKTOP_AUDIENCE, exp_delta=-60), key)
     resp = client.post(
-        "/api/auth/sso-tokens", json={"id_token": id_token, "refresh_token": "ref-7"}, headers=_auth(7)
+        "/api/auth/sso-tokens",
+        json={"id_token": id_token, "refresh_token": "ref-7", "client_id": "dashboard-gateway"},
+        headers=_auth(7),
     )
     assert resp.status_code == 200, resp.text
     assert _row(s, 7) == {"id_token": id_token, "refresh_token": "ref-7"}

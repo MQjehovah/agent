@@ -225,8 +225,9 @@ def build_authorize_url(state: str) -> str:
 def _post_token_form(form: dict, *, client_id: str | None = None, client_secret: str | None = None) -> dict:
     """POST issuer/token(表单); 同时携带 client_secret_basic 与 client_secret_post, 兼容两种支持方式。
 
-    缺省用 agent 客户端配置; client_id/client_secret 显式传入时覆盖, secret 为空则
-    不带(public 客户端, 如桌面 dashboard-gateway)。client_id 统一在此写入表单。
+    缺省用 agent 客户端配置; client_id 传空串视为缺省(不覆盖, 与 None 同义),
+    client_secret 传空串=显式不带 secret(public 客户端, 如桌面 dashboard-gateway),
+    传 None=用配置值。client_id 统一在此写入表单。
     """
     issuer = sso_issuer()
     if not issuer:

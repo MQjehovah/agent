@@ -37,19 +37,22 @@ def _forget_locked(uid: int) -> None:
 
 
 def _client_creds(row: dict) -> tuple[str, str | None]:
-    """按托管行来源客户端返回 (client_id, client_secret)。
+    """按托管行来源客户端返回实际执行用的 (client_id, client_secret)。
 
-    仅本 agent 客户端带配置的 secret; 其它客户端(桌面 dashboard-gateway 等 public
-    客户端)显式传空串 = 不带 secret。返回 None 表示交给 sso_auth 用默认配置(agent)。
+    自家客户端(配置的 sso_client_id, 或旧实现遗留的字面 'agent')统一解析为配置值并
+    交默认 secret(自定义 SSO_CLIENT_ID 部署下遗留行也能按配置客户端执行);
+    其它客户端(桌面 dashboard-gateway 等 public 客户端)按原值且不带 secret。
     """
     cid = str(row.get("client_id") or "agent").strip() or "agent"
-    return cid, None if cid == sso_auth.sso_client_id() else ""
+    if cid == sso_auth.sso_client_id() or cid == "agent":
+        return sso_auth.sso_client_id(), None
+    return cid, ""
 
 
 def save_user_tokens(uid: int, tokens: dict) -> bool:
     """SSO 回调/桌面托管: 保存 id_token/refresh_token(幂等覆盖), 失败返回 False(不阻断登录)。
 
-    tokens.client_id 记录来源客户端(缺省 agent); 后续刷新/交换按它执行。
+    tokens.client_id 记录来源客户端(缺省取本部署 sso_client_id); 后续刷新/交换按它执行。
     """
     if uid <= 0 or not isinstance(tokens, dict):
         return False
@@ -57,7 +60,7 @@ def save_user_tokens(uid: int, tokens: dict) -> bool:
     if not id_token:
         return False
     refresh_token = str(tokens.get("refresh_token") or "")
-    client_id = str(tokens.get("client_id") or "agent").strip() or "agent"
+    client_id = str(tokens.get("client_id") or "").strip() or sso_auth.sso_client_id()
     exp = float(sso_auth.token_exp(id_token) or 0)
     storage = _storage()
     if storage is None:
