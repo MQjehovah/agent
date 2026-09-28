@@ -11,97 +11,11 @@
 
 import logging
 import os
-from collections.abc import Mapping
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("agent.web.security")
-
-# 平台轨按用户身份开关 MARKET_ACT_AS: 1/true/yes 开, 0/false/no/off 关(大小写不敏感);
-# 缺省/空白按关(静默); 其它非空值告警后按关(对齐既有 env 非法值回退风格)
-_MARKET_ACT_AS_TRUE = frozenset({"1", "true", "yes"})
-_MARKET_ACT_AS_FALSE = frozenset({"0", "false", "no", "off"})
-
-
-def market_act_as_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """MARKET_ACT_AS 开关: 仅 1/true/yes 为开; 0/false/no 与缺省为关; 非法非空值告警后关。"""
-    source = os.environ if env is None else env
-    value = source.get("MARKET_ACT_AS")
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return False
-    if raw in _MARKET_ACT_AS_TRUE:
-        return True
-    if raw not in _MARKET_ACT_AS_FALSE:
-        logger.warning(f"MARKET_ACT_AS={value!r} 非法, 按关闭处理(仅 1/true/yes 开启)")
-    return False
-
-
-def _safe_market_username(value: str) -> str:
-    """市场用户名(工号/SSO sub/LDAP 账号)净化: 必须是可安全放入 HTTP 头的可见 ASCII。
-
-    工号来自 ``rbac_users.work_id``(姓名/工号分离后的独立身份列), 异常形态若含非 ASCII
-    会经 ``X-Act-As-Sub``(市场工具/平台轨)在 httpx 头部按 ascii 编码抛
-    ``UnicodeEncodeError``(钉钉群实测: 'ascii' codec can't encode characters
-    in position 0-2)。非 ASCII/含空白/控制字符一律视为解析失败(fail-closed)。
-    """
-    text = str(value or "").strip()
-    if text and text.isascii() and text.isprintable() and " " not in text:
-        return text
-    return ""
-
-
-def resolve_market_act_as(owner: str) -> str:
-    """归属 tag/uid → market 用户名(= 工号, rbac_users.work_id); 解析失败返回空串(回退见下)。
-
-    - ``web:{uid}``: ``"0"``(X-Service-Token 服务身份)无对应市场用户, 静默返回空串;
-      数字 uid(rbac_users.id) → 查表取 work_id(= 工号/SSO sub), 查不到/存储不可用 →
-      空串 + WARNING(该 worker 回退服务令牌全量视角, 日志须可见);
-    - 非数字(本身已是工号/SSO sub) → 原样使用, 不查库;
-    - 结果必须是可见 ASCII(见 ``_safe_market_username``): 异常形态按解析失败处理,
-      空串 + WARNING, 不让非 ASCII 进 HTTP 头。
-
-    回退有意非对称: 数字 uid 解析失败=回退服务令牌全量视角(功能可用但粒度变粗);
-    非数字直传若 market 侧不存在则 403/空工具集(fail-closed, 不放宽权限)。
-    """
-    raw = str(owner or "").strip()
-    if not raw:
-        return ""
-    uid = raw.split(":", 1)[1] if ":" in raw else raw
-    if not uid:
-        return ""
-    if uid == "0":
-        return ""  # 服务身份哨兵: 必然查不到, 静默不解析(不打 WARNING)
-    if not uid.isdigit():
-        # 已是工号(SSO sub), 直接作为 market 用户名; 但异常形态(如中文名)必须拒绝
-        name = _safe_market_username(uid)
-        if not name:
-            logger.warning(f"MARKET_ACT_AS: owner={raw!r} 非可见 ASCII 工号/账号, "
-                           "不可作为市场用户名(fail-closed 按未解析处理)")
-        return name
-    try:
-        from storage.storage import get_storage  # noqa: PLC0415 — 避免循环导入/启动期依赖
-        storage = get_storage()
-        if not storage:
-            logger.warning(f"MARKET_ACT_AS: 存储不可用, 无法解析 uid={uid} 的市场用户名(回退服务令牌)")
-            return ""
-        with storage.get_connection() as conn:
-            row = conn.execute("SELECT work_id FROM rbac_users WHERE id = ?", (int(uid),)).fetchone()
-        raw_wid = str(row["work_id"]).strip() if row else ""
-        wid = _safe_market_username(raw_wid)
-        if not wid:
-            if raw_wid:
-                logger.warning(f"MARKET_ACT_AS: uid={uid} 的 work_id={raw_wid!r} 非可见 ASCII "
-                               "市场用户名, 按未解析处理(回退服务令牌视角)")
-            else:
-                logger.warning(f"MARKET_ACT_AS: 未找到 uid={uid} 对应的工号(市场用户名)"
-                               "(该 worker 回退服务令牌视角)")
-            return ""
-        return wid
-    except Exception as e:
-        logger.warning(f"MARKET_ACT_AS: 解析 uid={uid} 的市场用户名失败(回退服务令牌视角): {e}")
-        return ""
 
 
 def _decode_bearer(request: Request):

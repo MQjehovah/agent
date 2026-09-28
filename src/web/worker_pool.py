@@ -9,10 +9,11 @@
 - 同一用户多会话由该用户 worker 顺序/并发承担；不同用户之间实例互不可见
 - worker.parent_agent = root：继承 root 的 storage/LLM 客户端/插件管理器，
   但不继承上下文；persist_session=True 使 worker 保留会话历史跨轮次
-- 平台轨按用户身份（MARKET_ACT_AS=1 且平台轨启用）：
+- 平台轨按用户身份（无需开关，平台轨启用即注入）：
   worker.platform_token_provider = lambda: get_downstream_token(uid, "gateway")，
   平台 MCP 的 sync/relay 均以该用户 token 鉴权（aud=gateway）；未托管/刷新失败时
-  该用户平台能力为空（fail-closed，不回退服务令牌）
+  该用户平台能力为空（fail-closed，不回退服务令牌）；root/群共享不注入 provider，
+  保持服务令牌身份（平台轨启动打 WARNING）
 
 容量与回收：
 - max_workers = env AGENT_WEB_POOL_SIZE（0 表示不启用，退化为 root 单实例）
@@ -220,9 +221,9 @@ class WebUserWorkerPool:
         owner_uid = tag.split(":", 1)[1] if ":" in tag else tag
         worker.owner_tag = tag
         worker.owner_uid = int(owner_uid) if owner_uid.isdigit() else 0
-        # 平台轨按用户身份 token(MARKET_ACT_AS=1 且平台轨启用): 每 worker 注入该用户的
-        # token provider(须在 initialize 之前写入, 平台连接在其中建立); 开关关闭=None
-        # (服务令牌全量视角); 开关开启但取不到 token → provider 返回空串, 由平台轨
+        # 平台轨按用户身份 token(无需开关, 平台轨启用即注入): 每 worker 注入该用户的
+        # token provider(须在 initialize 之前写入, 平台连接在其中建立); 平台轨关闭=None
+        # (服务令牌全量视角); 取不到 token → provider 返回空串, 由平台轨
         # fail-closed 置空 + WARNING(不回退服务令牌)
         worker.platform_token_provider = self._resolve_platform_token_provider(worker.owner_uid)
         worker.plugin_manager = getattr(self.root, "plugin_manager", None)
@@ -249,15 +250,12 @@ class WebUserWorkerPool:
         return worker
 
     def _resolve_platform_token_provider(self, owner_uid: int) -> Callable[[], str] | None:
-        """按用户身份 token provider: 开关/平台轨开时注入, 否则 None(服务令牌身份)。
+        """按用户身份 token provider: 平台轨启用即注入, 否则 None(服务令牌身份)。
 
         provider 为同步函数(get_downstream_token 读 sqlite/urllib, 有 (uid,aud) 缓存),
         由 PlatformMCPClient 经 asyncio.to_thread 调用; uid≤0 或未托管/刷新失败返回
         空串, 由平台轨 fail-closed 置空该 worker 的平台能力。
         """
-        from web.security import market_act_as_enabled
-        if not market_act_as_enabled():
-            return None
         from mcps.platform import PlatformMCPConfig
         if not PlatformMCPConfig.from_env().enabled:
             return None

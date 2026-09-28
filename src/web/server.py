@@ -687,19 +687,6 @@ class WebServer:
                 self._pool = None
         else:
             self._pool = None
-        if self._pool is None:
-            self._warn_act_as_requires_pool()
-
-    def _warn_act_as_requires_pool(self):
-        """MARKET_ACT_AS 开启但未启用 worker 池: 日志提示按用户身份不可用(root 服务令牌全量)。"""
-        try:
-            from mcps.platform import PlatformMCPConfig
-            from web.security import market_act_as_enabled
-            if market_act_as_enabled() and PlatformMCPConfig.from_env().enabled:
-                logger.warning("平台轨按用户模式需要 worker 池（AGENT_WEB_POOL_SIZE>0）; "
-                               "当前 root agent 保持服务令牌全量视角")
-        except Exception as e:
-            logger.debug(f"MARKET_ACT_AS 启动检查跳过: {e}")
 
     async def _agent_for_web(self, auth: dict, scope: str = ""):
         """按入口选择执行 agent。

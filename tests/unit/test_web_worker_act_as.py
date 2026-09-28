@@ -1,47 +1,23 @@
-"""P6 worker 平台轨按用户身份: 用户 token provider 注入 + uid → market 解析件回归。
+"""Web worker 平台轨 provider 注入: 平台轨启用即按用户 token, 关闭则为 None。
 
-- `web.security.market_act_as_enabled`: MARKET_ACT_AS=1/true/yes 开, 缺省/其它关;
-- `web.security.resolve_market_act_as`: 数字 uid(rbac_users.id)→work_id(工号);
-  非数字(已是工号/SSO sub)→原样; 查不到/存储不可用→空串 + WARNING(供 web 市场代理);
-- `WebUserWorkerPool._create_worker`: 开关 + 平台轨齐备时给 worker 注入
-  `platform_token_provider`(该用户 get_downstream_token(uid, "gateway")); 开关关闭/
-  平台轨关闭/无 worker 池(root 保持服务令牌)时为 None; 取不到 token 由平台轨置空(空串)。
+- `WebUserWorkerPool._resolve_platform_token_provider`: 平台轨启用(MARKET_BASE_URL +
+  MARKET_SERVICE_TOKEN 齐备)时恒定注入该用户 provider(lambda: get_downstream_token(
+  uid, "gateway")); 平台轨关闭 → None(worker 保持服务令牌视角);
+- `_create_worker`: provider 在 initialize(建平台连接)之前写入 worker;
+  uid 不可解析或该用户无托管 token 时 provider 返回空串, 由平台轨 fail-closed
+  置空平台能力(不回退服务令牌);
+- 归属身份 owner_tag/owner_uid 注入回归。
 """
 
 import asyncio
-import logging
 import os
 import sys
-from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import pytest  # noqa: E402
 
-import storage.storage as storage_mod  # noqa: E402
-from security.rbac import RBACManager  # noqa: E402
-from storage.storage import Storage  # noqa: E402
-from web.security import market_act_as_enabled, resolve_market_act_as  # noqa: E402
 from web.worker_pool import WebUserWorkerPool  # noqa: E402
-
-WORKID = "202202100024"
-
-
-@pytest.fixture
-def store(tmp_path, monkeypatch):
-    """临时 Storage 并替换全局单例(get_storage 读它)。"""
-    ws = tmp_path / "workspace"
-    ws.mkdir()
-    prev = storage_mod._storage_instance
-    s = Storage(str(ws))
-    storage_mod._storage_instance = s
-    yield s
-    s.close()
-    storage_mod._storage_instance = prev
-
-
-def _make_user(store, name="测试用户", work_id=WORKID, department="研发部") -> int:
-    return RBACManager(store).create_user(name=name, work_id=work_id, department=department)
 
 
 class _DummyRoot:
@@ -81,115 +57,26 @@ def fake_agent(monkeypatch):
     return _FakeWorker
 
 
-def _enable_market(monkeypatch, act_as="1"):
-    """打开 MARKET_ACT_AS 与平台轨 env(act_as=None 表示不设开关)。"""
-    if act_as is None:
-        monkeypatch.delenv("MARKET_ACT_AS", raising=False)
-    else:
-        monkeypatch.setenv("MARKET_ACT_AS", act_as)
+def _enable_market(monkeypatch):
+    """平台轨 env 齐备(MARKET_BASE_URL + MARKET_SERVICE_TOKEN)。"""
     monkeypatch.setenv("MARKET_BASE_URL", "http://market.test")
     monkeypatch.setenv("MARKET_SERVICE_TOKEN", "tok")
 
-
-# ---------------- 开关解析 ----------------
-
-@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", " yes "])
-def test_market_act_as_enabled_truthy(value):
-    assert market_act_as_enabled({"MARKET_ACT_AS": value}) is True
-
-
-@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "  "])
-def test_market_act_as_enabled_recognized_false(value):
-    assert market_act_as_enabled({"MARKET_ACT_AS": value}) is False
-
-
-@pytest.mark.parametrize("value", ["2", "enabled", "yes1"])
-def test_market_act_as_enabled_illegal_value_warns_and_off(value, caplog):
-    """非空但未识别 → WARNING(对齐既有 env 非法值回退风格), 仍按关处理。"""
-    with caplog.at_level(logging.WARNING, logger="agent.web.security"):
-        assert market_act_as_enabled({"MARKET_ACT_AS": value}) is False
-    assert any("非法" in r.getMessage() and value in r.getMessage()
-               for r in caplog.records if r.levelno == logging.WARNING)
-
-
-def test_market_act_as_enabled_missing_is_off():
-    assert market_act_as_enabled({}) is False
-
-
-# ---------------- uid → market 用户名 ----------------
-
-def test_resolve_act_as_numeric_uid_uses_rbac_name(store):
-    """数字 uid(rbac_users.id) → 查表取 name(= 工号/SSO sub)。"""
-    uid = _make_user(store)
-    assert resolve_market_act_as(f"web:{uid}") == WORKID
-    assert resolve_market_act_as(str(uid)) == WORKID  # 兼容裸 uid
-
-
-def test_resolve_act_as_non_numeric_is_workid_passthrough(store):
-    """非数字(SSO sub/工号兜底形态) → 原样使用, 不查库。"""
-    assert resolve_market_act_as("web:s_software") == "s_software"
-    assert resolve_market_act_as(" s_software ") == "s_software"
-
-
-def test_resolve_act_as_non_numeric_does_not_touch_storage(monkeypatch):
-    """非数字分支直传, 不触碰 storage(get_storage 被调用即测试失败)。"""
-    import storage.storage as storage_mod
-
-    def _boom():
-        raise AssertionError("非数字 uid 不应查 storage")
-
-    monkeypatch.setattr(storage_mod, "get_storage", _boom)
-    assert resolve_market_act_as("web:s_software") == "s_software"
-
-
-def test_resolve_act_as_non_ascii_name_warns_and_returns_empty(store, caplog):
-    """钉钉/LDAP 老账号 name 尚为中文(未并到工号): 不可作市场用户名(HTTP 头需 ASCII)。
-
-    原样透传会让 X-Act-As-Sub 在 httpx 头编码处抛 UnicodeEncodeError(钉钉群实测),
-    按解析失败处理: 空串 fail-closed + WARNING。
-    """
-    uid = _make_user(store, work_id="朱尚荣")
-    with caplog.at_level(logging.WARNING, logger="agent.web.security"):
-        assert resolve_market_act_as(f"dingtalk:{uid}") == ""
-    assert any("朱尚荣" in r.getMessage() for r in caplog.records
-               if r.levelno == logging.WARNING)
-
-
-def test_resolve_act_as_non_ascii_passthrough_rejected(store):
-    """非数字分支若本身非 ASCII(异常形态)同样 fail-closed 空串。"""
-    assert resolve_market_act_as("web:朱尚荣") == ""
-
-
-def test_resolve_act_as_service_sentinel_silent(store, caplog):
-    """uid=0(X-Service-Token 服务身份)必然查不到: 静默返回空串, 不打 WARNING。"""
-    with caplog.at_level(logging.WARNING, logger="agent.web.security"):
-        assert resolve_market_act_as("web:0") == ""
-    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-
-
-def test_resolve_act_as_unknown_uid_warns_and_returns_empty(store, caplog):
-    """数字 uid 查不到 → 空串 + WARNING(回退服务令牌视角须日志可见)。"""
-    with caplog.at_level(logging.WARNING, logger="agent.web.security"):
-        assert resolve_market_act_as("web:999999") == ""
-    assert any("999999" in r.getMessage() for r in caplog.records
-               if r.levelno == logging.WARNING)
-
-
-def test_resolve_act_as_empty_input_returns_empty(store):
-    assert resolve_market_act_as("") == ""
-    assert resolve_market_act_as("web:") == ""
-
-
-# ---------------- worker 透传(每 worker 恒定用户 token provider) ----------------
 
 def _pool(tmp_path) -> WebUserWorkerPool:
     return WebUserWorkerPool(root_agent=_DummyRoot(tmp_path), max_workers=1)
 
 
-def test_create_worker_sets_user_token_provider_when_switch_and_platform_on(
-        store, monkeypatch, tmp_path, fake_agent):
+def _create(tmp_path, tag: str):
+    return asyncio.run(_pool(tmp_path)._create_worker(tag, str(tmp_path / "ws")))
+
+
+# ---------------- provider 注入(平台轨启用即按用户 token) ----------------
+
+def test_create_worker_sets_user_token_provider_when_platform_on(
+        monkeypatch, tmp_path, fake_agent):
     _enable_market(monkeypatch)
-    uid = _make_user(store)
+    uid = 7
     calls = []
     from web import sso_tokens
 
@@ -199,7 +86,7 @@ def test_create_worker_sets_user_token_provider_when_switch_and_platform_on(
 
     monkeypatch.setattr(sso_tokens, "get_downstream_token", _fake_token)
 
-    worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
+    worker = _create(tmp_path, f"web:{uid}")
 
     assert callable(worker.platform_token_provider)
     assert worker.platform_mcp_enabled is True
@@ -209,68 +96,52 @@ def test_create_worker_sets_user_token_provider_when_switch_and_platform_on(
     assert calls == [(uid, "gateway")]  # audience 恒为 gateway
 
 
-def test_create_worker_provider_none_when_switch_off(store, monkeypatch, tmp_path, fake_agent):
-    """MARKET_ACT_AS 未开(默认): 不注入 provider, worker 保持服务令牌视角。"""
-    _enable_market(monkeypatch, act_as=None)
-    uid = _make_user(store)
-    worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
+def test_create_worker_provider_none_when_platform_disabled(
+        monkeypatch, tmp_path, fake_agent):
+    """平台轨未配置: 无平台连接可言, 不注入 provider(worker 保持服务令牌视角)。"""
+    monkeypatch.delenv("MARKET_BASE_URL", raising=False)
+    monkeypatch.delenv("MARKET_SERVICE_TOKEN", raising=False)
+    worker = _create(tmp_path, "web:7")
     assert worker.platform_token_provider is None
     assert worker.provider_at_init is None
 
 
-def test_create_worker_provider_none_when_platform_disabled(store, monkeypatch, tmp_path, fake_agent):
-    """开关开了但平台轨未配置: 无平台连接可言, 不注入 provider。"""
-    _enable_market(monkeypatch)
-    monkeypatch.delenv("MARKET_BASE_URL", raising=False)
-    monkeypatch.delenv("MARKET_SERVICE_TOKEN", raising=False)
-    uid = _make_user(store)
-    worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
-    assert worker.platform_token_provider is None
-
-
 def test_create_worker_provider_returns_empty_when_token_missing(
-        store, monkeypatch, tmp_path, fake_agent):
-    """开关开但该用户无托管 token: provider 注入且返回空串(由平台轨 fail-closed 置空)。"""
+        monkeypatch, tmp_path, fake_agent):
+    """平台轨开但该用户无托管 token: provider 注入且返回空串(由平台轨 fail-closed 置空)。"""
     _enable_market(monkeypatch)
     from web import sso_tokens
     monkeypatch.setattr(sso_tokens, "get_downstream_token",
                         lambda user_uid, audience="": "")
-    worker = asyncio.run(_pool(tmp_path)._create_worker("web:999999", str(tmp_path / "ws")))
+    worker = _create(tmp_path, "web:999999")
     assert callable(worker.platform_token_provider)
     assert worker.platform_token_provider() == ""
 
 
+def test_create_worker_provider_returns_empty_when_owner_uid_empty(
+        monkeypatch, tmp_path, fake_agent):
+    """owner_uid 不可解析(非数字 tag → 0): provider 仍注入, 真实现返回空串(fail-closed)。"""
+    _enable_market(monkeypatch)
+    worker = _create(tmp_path, "web:s_software")
+    assert worker.owner_uid == 0
+    assert callable(worker.platform_token_provider)
+    assert worker.platform_token_provider() == ""  # get_downstream_token(uid<=0) 恒空串
+
+
 # ---------------- worker 归属身份(用户级云托管安装过滤) ----------------
 
-def test_create_worker_injects_owner_identity(store, monkeypatch, tmp_path, fake_agent):
+def test_create_worker_injects_owner_identity(monkeypatch, tmp_path, fake_agent):
     _enable_market(monkeypatch)
-    uid = _make_user(store)
-    worker = asyncio.run(_pool(tmp_path)._create_worker(f"web:{uid}", str(tmp_path / "ws")))
+    uid = 7
+    worker = _create(tmp_path, f"web:{uid}")
     assert worker.owner_tag == f"web:{uid}"
     assert worker.owner_uid == uid
     assert worker.owner_at_init == (f"web:{uid}", uid)  # 时序: initialize 前注入
 
 
-def test_create_worker_non_numeric_uid_owner_uid_zero(
-        store, monkeypatch, tmp_path, fake_agent):
+def test_create_worker_non_numeric_uid_owner_uid_zero(monkeypatch, tmp_path, fake_agent):
     """非数字 uid(SSO sub 形态): owner_uid=0(无用户级安装可查)。"""
     _enable_market(monkeypatch)
-    worker = asyncio.run(_pool(tmp_path)._create_worker("web:s_software", str(tmp_path / "ws")))
+    worker = _create(tmp_path, "web:s_software")
     assert worker.owner_tag == "web:s_software"
     assert worker.owner_uid == 0
-
-
-# ---------------- 无 worker 池: root 保持服务令牌全量 ----------------
-
-def test_set_agent_warns_when_act_as_enabled_without_pool(monkeypatch, caplog):
-    _enable_market(monkeypatch)
-    monkeypatch.delenv("AGENT_WEB_POOL_SIZE", raising=False)
-
-    from web.server import WebServer  # noqa: PLC0415
-
-    with caplog.at_level(logging.WARNING, logger="agent.web.server"):
-        w = WebServer()
-        w.set_agent(SimpleNamespace(workspace=".", client=None))
-    assert w._pool is None
-    assert any("worker 池" in r.getMessage() and "AGENT_WEB_POOL_SIZE" in r.getMessage()
-               for r in caplog.records if r.levelno == logging.WARNING)

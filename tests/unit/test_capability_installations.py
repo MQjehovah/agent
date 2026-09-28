@@ -100,7 +100,7 @@ def test_installed_capability_names_filters_empty_and_disabled(store):
 # ===== 2. Agent 过滤闭包 =====
 
 def test_platform_install_filter_root_vs_worker(tmp_path):
-    """过滤仅由 owner_uid 决定(与 MARKET_ACT_AS/platform_token_provider 解耦)。"""
+    """过滤仅由 owner_uid 决定(与 platform_token_provider 解耦)。"""
     agent = _agent(tmp_path)
     assert agent._platform_install_filter() is None          # root 默认
     agent.owner_uid = UID
