@@ -1,28 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { api } from '../api'
-import {
-  ChatDotRound, Coin, Timer
-} from '@element-plus/icons-vue'
 
-/** 个人中心(对齐桌面端): 账号信息 + 个人工作台(概览/快捷入口/用量)。 */
-const router = useRouter()
-
-interface MyOverview {
-  user: { uid: string; name: string; display_name?: string; role: string }
-  sessions: { total: number; running: number }
-  memory: { mine: number; global: number }
-}
-
+/** 个人中心(对齐桌面端): 账号信息 + 我的用量。 */
 const loading = ref(true)
 
-const me = ref<MyOverview['user']>({ uid: '', name: '', display_name: '', role: '' })
+const me = ref<{ name: string; display_name?: string; role: string }>({ name: '', display_name: '', role: '' })
 const department = ref('')
-const mySessions = ref({ total: 0, running: 0 })
-const memory = ref({ mine: 0, global: 0 })
-const schedulerTotal = ref(0)
-const schedulerEnabled = ref(0)
 
 const usageDays = ref(7)
 const usageEnabled = ref(true)
@@ -34,21 +18,6 @@ const roleLabel = computed(() => {
   if (r === 'user') return '普通用户'
   return '成员'
 })
-
-const cards = computed(() => [
-  { key: 'sessions', label: '我的会话', icon: ChatDotRound, value: mySessions.value.total,
-    hint: `${mySessions.value.running} 个运行中`, to: '/chat' },
-  { key: 'scheduler', label: '定时任务', icon: Timer, value: schedulerTotal.value,
-    hint: `启用 ${schedulerEnabled.value} 个`, to: '/scheduler' },
-  { key: 'memories', label: '我的记忆', icon: Coin, value: memory.value.mine,
-    hint: '我的私有记忆', to: '/memories' }
-])
-
-const quick = [
-  { path: '/chat', title: '发起新对话', sub: '与零号员工对话', icon: ChatDotRound },
-  { path: '/scheduler', title: '定时任务', sub: '自动化例行工作', icon: Timer },
-  { path: '/memories', title: '我的记忆', sub: '长期偏好与经验', icon: Coin }
-]
 
 function fmtNum(n: number | undefined): string {
   return (n ?? 0).toLocaleString()
@@ -76,18 +45,11 @@ async function loadUsage() {
 async function load() {
   loading.value = true
   const jobs = [
-    api<MyOverview>('/api/my/overview').then(d => {
-      me.value = d.user ?? me.value
-      mySessions.value = d.sessions ?? { total: 0, running: 0 }
-      memory.value = d.memory ?? { mine: 0, global: 0 }
-    }).catch(() => {}),
-    api<{ department?: string }>('/api/auth/me').then(d => {
-      department.value = d.department ?? ''
-    }).catch(() => {}),
-    api('/api/scheduler/tasks').then(d => {
-      schedulerTotal.value = (d.tasks ?? []).length
-      schedulerEnabled.value = (d.tasks ?? []).filter((t: any) => t.enabled).length
-    }).catch(() => {}),
+    api<{ name: string; display_name?: string; role: string; department?: string }>('/api/auth/me')
+      .then(d => {
+        me.value = { name: d.name || '', display_name: d.display_name, role: d.role || '' }
+        department.value = d.department ?? ''
+      }).catch(() => {}),
     loadUsage()
   ]
   await Promise.allSettled(jobs)
@@ -113,22 +75,6 @@ onMounted(load)
       <div class="profile-row"><span class="profile-k">工号</span><span class="mono">{{ me.name || '—' }}</span></div>
       <div class="profile-row"><span class="profile-k">角色</span><span>{{ roleLabel }}</span></div>
       <div class="profile-row"><span class="profile-k">部门</span><span>{{ department || '—' }}</span></div>
-    </div>
-
-    <div class="stat-grid">
-      <div v-for="c in cards" :key="c.key" class="stat-card" :class="{ 'no-link': !c.to }" @click="c.to && router.push(c.to)">
-        <div class="label"><el-icon :size="14"><component :is="c.icon" /></el-icon>{{ c.label }}</div>
-        <div class="value">{{ c.value }}</div>
-        <div class="hint">{{ c.hint }}</div>
-      </div>
-    </div>
-
-    <div class="section-title">快捷入口</div>
-    <div class="quick-grid">
-      <a v-for="q in quick" :key="q.path" class="quick-item" :href="'#' + q.path">
-        <span class="q-icon"><el-icon :size="16"><component :is="q.icon" /></el-icon></span>
-        <span><div class="q-title">{{ q.title }}</div><div class="q-sub">{{ q.sub }}</div></span>
-      </a>
     </div>
 
     <div class="section-title">
@@ -231,7 +177,6 @@ onMounted(load)
 
 <style scoped>
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.stat-card.no-link { cursor: default; }
 .profile-card { display: flex; flex-wrap: wrap; gap: 8px 40px; padding: 14px 18px; }
 .profile-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--text); }
 .profile-k { color: var(--text-3); font-size: 12.5px; min-width: 32px; }

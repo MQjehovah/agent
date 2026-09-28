@@ -150,8 +150,7 @@ const personalItems: NavItem[] = [
   { path: '/knowledge', title: '知识库', icon: Collection },
   { path: '/market', title: '能力市场', icon: Shop },
   { path: '/scheduler', title: '定时任务', icon: Timer },
-  { path: '/memories', title: '记忆管理', icon: Coin },
-  { path: '/profile', title: '个人中心', icon: User }
+  { path: '/memories', title: '记忆管理', icon: Coin }
 ]
 
 // —— 一级：运维与管理（按细粒度权限展示）——
@@ -223,7 +222,8 @@ async function logout() {
 }
 
 function onUserCommand(cmd: string | number | object) {
-  if (cmd === 'logout') void logout()
+  if (cmd === 'profile') void router.push('/profile')
+  else if (cmd === 'logout') void logout()
 }
 </script>
 
@@ -314,7 +314,10 @@ function onUserCommand(cmd: string | number | object) {
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item disabled>{{ me.name || '未登录' }} · {{ roleLabel }}</el-dropdown-item>
-              <el-dropdown-item command="logout" divided>
+              <el-dropdown-item command="profile" divided>
+                <el-icon :size="14" style="margin-right: 6px"><User /></el-icon>个人中心
+              </el-dropdown-item>
+              <el-dropdown-item command="logout">
                 <el-icon :size="14" style="margin-right: 6px"><SwitchButton /></el-icon>退出登录
               </el-dropdown-item>
             </el-dropdown-menu>
