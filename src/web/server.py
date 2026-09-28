@@ -1430,6 +1430,31 @@ class WebServer:
             return RedirectResponse(
                 f"{target}{sep}sso_token={urllib.parse.quote(token)}", status_code=302)
 
+        @self._app.post("/api/auth/sso-tokens")
+        async def sso_tokens_host(request: Request):
+            """桌面端 SSO token 托管: 登录/续期后提交 id_token/refresh_token 供 OBO 交换。
+
+            仅允许写登录态本人(uid 取自鉴权, 不信 body); 幂等覆盖。
+            """
+            u = await _get_authz(request)
+            uid = int(u.get("uid") or 0)
+            if uid <= 0:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                data = await request.json()
+            except Exception:  # noqa: BLE001
+                return JSONResponse({"error": "invalid json"}, status_code=400)
+            if not isinstance(data, dict):
+                return JSONResponse({"error": "invalid json"}, status_code=400)
+            id_token = str(data.get("id_token") or "").strip()
+            if not id_token:
+                return JSONResponse({"error": "id_token required"}, status_code=400)
+            refresh_token = str(data.get("refresh_token") or "").strip()
+            from web.sso_tokens import save_user_tokens
+            if not save_user_tokens(uid, {"id_token": id_token, "refresh_token": refresh_token}):
+                return JSONResponse({"error": "保存 SSO token 失败"}, status_code=500)
+            return {"ok": True}
+
         @self._app.post("/api/auth/change-password")
         async def auth_change_password(request: Request):
             u = await _get_auth(request)
