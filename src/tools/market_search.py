@@ -32,6 +32,8 @@ class MarketSearchTool(BuiltinTool):
             "在能力市场按要办的事检索可用能力(以当前提问者视角): 返回 agent(专家)/skill(技能)/"
             "mcp(连接器)/tool(工具) 清单及简介。用于**先发现再调用**——找到合适的后，"
             "用 market_runtime 执行(kind=tool/mcp/skill/agent)。"
+            "每条结果带 joined 标记: joined=true 表示已开通可直接调用; joined=false 表示未开通,"
+            "**不要调用**(会 403), 应提示用户到能力市场「加入我的能力」或让管理员配置。"
             "可用 `kind` 只看某一类(如先 kind=\"agent\" 找专家；没有再 kind=\"skill\"/\"mcp\"/\"tool\")。"
         )
 
@@ -105,7 +107,13 @@ class MarketSearchTool(BuiltinTool):
                 "type": hit.get("type", ""),
                 "description": (hit.get("description") or "")[:200],
                 "score": hit.get("match_score"),
+                "joined": bool(hit.get("joined")),
             }
+
+        def _rows(rows: list) -> list[dict]:
+            items = [_row(r) for r in rows[:limit]]
+            items.sort(key=lambda x: not x["joined"])  # 已开通在前(组内保持原打分序)
+            return items
 
         groups = {
             "agent": data.get("agents", []),
@@ -117,16 +125,24 @@ class MarketSearchTool(BuiltinTool):
         out: dict = {"ok": True, "query": data.get("q", q), "terms": data.get("terms", [])}
         total = 0
         if k in plural:
-            items = [_row(r) for r in groups[k][:limit]]
+            items = _rows(groups[k])
             out[plural[k]] = items
             out["kind"] = k
             total = len(items)
         else:
             for key, rows in groups.items():
-                items = [_row(r) for r in rows[:limit]]
+                items = _rows(rows)
                 out[plural[key]] = items
                 total += len(items)
         out["total"] = total
+        locked = [i["name"] for key in plural.values() for i in out.get(key, [])
+                  if not i.get("joined")]
+        if locked:
+            out["note"] = (
+                "以下能力未开通(joined=false), 不可用 market_runtime 调用: "
+                + ", ".join(locked[:10])
+                + "。请提示用户到能力市场「加入我的能力」或让管理员配置后再使用。"
+            )
         if total == 0:
             out["hint"] = "未命中，可换更贴近的词语再检索" if k not in plural else "该类型下未命中，可换词或 kind=all 看全部"
         return json.dumps(out, ensure_ascii=False)
