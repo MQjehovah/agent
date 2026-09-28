@@ -41,7 +41,7 @@ def _fakes(monkeypatch):
 def test_require_user_token_raises_with_login_hint_when_unhosted(_fakes):
     with pytest.raises(sso_tokens.UserTokenUnavailable) as ei:
         sso_tokens.require_user_token(7)
-    assert "登录一次" in str(ei.value)
+    assert str(ei.value) == sso_tokens.USER_TOKEN_HINT
 
 
 def test_require_user_token_returns_hosted_token(monkeypatch):

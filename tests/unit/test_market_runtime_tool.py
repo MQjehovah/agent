@@ -145,7 +145,7 @@ async def test_market_runtime_tool_requires_numeric_uid(monkeypatch):
     """uid 解析失败(空/中文旧账号名) → fail-closed 统一引导登录, 不发请求。"""
     monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
     tool = MarketRuntimeTool()
-    for user_id in ("", "web:朱尚荣"):
+    for user_id in ("", "web:朱尚荣", "web:0"):
         out = await _run_with(
             user_id, lambda: tool.execute(capability="某工具", kind="tool", tool="t")
         )

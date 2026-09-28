@@ -12,7 +12,7 @@ import logging
 import httpx
 
 from . import BuiltinTool
-from .market_common import market_config
+from .market_common import market_config, resolve_user_token_or_hint
 
 logger = logging.getLogger("agent.tools")
 
@@ -72,17 +72,9 @@ class MarketSearchTool(BuiltinTool):
             return json.dumps({"ok": False, "error": "能力市场未配置"}, ensure_ascii=False)
 
         # 用户身份调用: 无托管 token 一律 fail-closed(不得回退服务令牌全量视角), 并引导登录
-        from agent.core import current_run
-        from agent.user_profile import uid_from_tag
-        from web.sso_tokens import USER_TOKEN_HINT, UserTokenUnavailable, require_user_token
-
-        uid = uid_from_tag(getattr(current_run(), "user_id", "") or "")
-        if not uid:
-            return json.dumps({"ok": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
-        try:
-            user_token = require_user_token(int(uid), "gateway")
-        except UserTokenUnavailable:
-            return json.dumps({"ok": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
+        user_token, hint = resolve_user_token_or_hint()
+        if hint:
+            return json.dumps({"ok": False, "error": hint}, ensure_ascii=False)
 
         headers = {"Authorization": f"Bearer {user_token}"}
         url = f"{base}{_TASK_SEARCH_PATH}"

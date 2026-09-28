@@ -1,14 +1,14 @@
 """专家委派工具(轻量无状态/OBO): 零号员工按需委派市场专家, 由 agent 引擎本地执行。
 
 流程:
-  1. 取专家人设: GET /api/runtime/agents/{expert}/persona (Bearer + X-Act-As-Sub) → PROMPT.md + 依赖清单;
+  1. 取专家人设: GET /api/runtime/agents/{expert}/persona (Bearer 用户 token) → PROMPT.md + 依赖清单;
   2. 校验依赖: 含 mcp 且 distribution=local 的 → 拒绝(平台不支持 stdio 本地依赖);
   3. 技能: 逐个 POST /api/runtime/skills/{name}/activate 取 SKILL.md 文本(内存缓存) → 注入人设;
   4. 组 system_prompt = 人设 + 技能文本 + 依赖(连接器/工具经 market_runtime 平台执行)说明;
   5. 起**临时子代理**(agent 引擎, 不加载本地 skill/mcp, 零文件落地)运行任务;
   6. 返回结构化结果 {ok, expert_output, error} 供零号员工判断/兜底。
 
-仅当市场配置齐备时可用; 无 subject 一律 fail-closed。
+仅当市场配置齐备时可用; 无用户托管 token(或 uid 解析失败)一律 fail-closed 并引导登录。
 """
 
 import json
@@ -18,7 +18,7 @@ import time
 import httpx
 
 from . import BuiltinTool
-from .market_common import market_config, resolve_subject
+from .market_common import market_config, resolve_user_token_or_hint
 
 logger = logging.getLogger("agent.tools")
 
@@ -239,16 +239,17 @@ class MarketDelegateTool(BuiltinTool):
         if not task:
             return _err("缺少 task")
 
-        subject = resolve_subject()
-        if not subject:
-            return _err("无法解析当前用户的市场身份，已拒绝委派")
         base, token, timeout = market_config()
         if not (base and token):
             return _err("能力市场未配置")
 
+        # 用户身份调用: 无托管 token 一律 fail-closed(不得以服务身份越权委派), 并引导登录
+        user_token, hint = resolve_user_token_or_hint()
+        if hint:
+            return _err(hint)
+
         headers = {
-            "Authorization": f"Bearer {token}",
-            "X-Act-As-Sub": subject,
+            "Authorization": f"Bearer {user_token}",
             "Content-Type": "application/json",
         }
         # 1) 取专家人设 + 依赖

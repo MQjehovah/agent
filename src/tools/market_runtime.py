@@ -6,7 +6,8 @@
   (Bearer, audience=gateway), 由市场按用户身份鉴权与归因; 适合"零号员工"等全局单例
   为不同提问者执行**用户级**能力。无托管 token 时 fail-closed 并引导用户先登录授权。
 
-仅当市场配置齐备(MARKET_BASE_URL + MARKET_SERVICE_TOKEN)时保留, 见 Agent._init_market_runtime。
+仅当市场配置齐备(MARKET_BASE_URL + MARKET_SERVICE_TOKEN)时保留, 见 Agent._init_market_runtime;
+MARKET_SERVICE_TOKEN 仅作启用门禁, 调用不再使用(逐请求携带用户 token)。
 """
 
 import json
@@ -15,7 +16,7 @@ import logging
 import httpx
 
 from . import BuiltinTool
-from .market_common import market_config
+from .market_common import market_config, resolve_user_token_or_hint
 
 logger = logging.getLogger("agent.tools")
 
@@ -36,7 +37,7 @@ class MarketRuntimeTool(BuiltinTool):
     @property
     def description(self) -> str:
         return (
-            "以当前提问者的权限(市场代授权)调用能力市场的云端能力: "
+            "逐请求以当前提问者的用户 token 调用能力市场的云端能力: "
             "kind=tool 调用工具能力(params 为参数对象); kind=mcp 调用连接器能力暴露的工具"
             "(tool 指定工具名, params 为参数对象); kind=skill 激活技能(返回技能说明文本, task 为使用场景); "
             "kind=agent 向某 Agent 下发任务(task)。"
@@ -88,17 +89,9 @@ class MarketRuntimeTool(BuiltinTool):
                               ensure_ascii=False)
 
         # 用户身份调用: 无托管 token 一律 fail-closed(不得以服务身份越权执行), 并引导登录
-        from agent.core import current_run
-        from agent.user_profile import uid_from_tag
-        from web.sso_tokens import USER_TOKEN_HINT, UserTokenUnavailable, require_user_token
-
-        uid = uid_from_tag(getattr(current_run(), "user_id", "") or "")
-        if not uid:
-            return json.dumps({"ok": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
-        try:
-            user_token = require_user_token(int(uid), "gateway")
-        except UserTokenUnavailable:
-            return json.dumps({"ok": False, "error": USER_TOKEN_HINT}, ensure_ascii=False)
+        user_token, hint = resolve_user_token_or_hint()
+        if hint:
+            return json.dumps({"ok": False, "error": hint}, ensure_ascii=False)
 
         if kind == "agent":
             path = _AGENT_TASK_PATH.format(capability=capability)

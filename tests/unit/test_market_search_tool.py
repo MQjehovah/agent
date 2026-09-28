@@ -130,7 +130,7 @@ async def test_market_search_tool_requires_numeric_uid(monkeypatch):
     """uid 解析失败(空/中文旧账号名) → fail-closed 统一引导登录, 不崩溃、不发请求。"""
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     tool = MarketSearchTool()
-    for user_id in ("", "web:朱尚荣"):
+    for user_id in ("", "web:朱尚荣", "web:0"):
         out = await _run_with(user_id, lambda: tool.execute(query="报销"))
         payload = json.loads(out)
         assert payload["ok"] is False
@@ -160,6 +160,7 @@ async def test_market_search_tool_disabled_without_config(monkeypatch, hosted_to
     payload = json.loads(out)
     assert payload["ok"] is False
     assert "未配置" in payload["error"]
+    assert _FakeClient.captured == {}
 
 
 # ---- joined 标记: 已开通优先 + 未开通 note(方案A) ----

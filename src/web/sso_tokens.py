@@ -162,7 +162,7 @@ def get_downstream_token(uid: int, audience: str = "", *, force: bool = False) -
         return token
 
 
-# 用户下游 token 不可用时的统一引导文案(市场/知识库能力 fail-closed 共用)
+# 用户下游 token 不可用时的统一引导文案(市场工具 fail-closed 共用; 知识库接入在后续任务)
 USER_TOKEN_HINT = "请先登录一次 AI 平台(https://ai.xzrobot.com)完成身份授权，后再使用市场/知识库能力。"
 
 

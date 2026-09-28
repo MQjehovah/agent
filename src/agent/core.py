@@ -502,8 +502,9 @@ class Agent:
         """市场工具(用户身份): 仅市场配置齐备时保留。
 
         - ``market_search``: 按用户视角检索市场目录(发现层);
-        - ``market_runtime``: 按用户 token 调用 /api/runtime/*(执行层)。
-        两者逐请求携带当前用户的下游 token(aud=gateway), 无托管时 fail-closed 并引导登录; 未配置市场时移除。
+        - ``market_runtime``: 按用户 token 调用 /api/runtime/*(执行层);
+        - ``market_delegate``: 委派专家(本机子代理执行; persona/技能/连接器清单同样按用户 token 拉取)。
+        三者逐请求携带当前用户的下游 token(aud=gateway), 无托管时 fail-closed 并引导登录; 未配置市场时移除。
         """
         from mcps.platform import PlatformMCPConfig
         if PlatformMCPConfig.from_env().enabled:

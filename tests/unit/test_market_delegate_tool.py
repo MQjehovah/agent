@@ -2,8 +2,9 @@
 
 覆盖:
 - 拉专家人设(persona) + 依赖并注入技能文本, 起临时子代理执行;
+- 逐请求携带用户 token(Bearer, aud=gateway), 不再带服务令牌 / X-Act-As-Sub;
 - 依赖含 local mcp → 拒绝;
-- 无 subject fail-closed; 市场未配置返回错误。
+- uid 解析失败 / 无托管 token fail-closed 统一引导登录; 市场未配置返回错误。
 """
 
 import json
@@ -17,6 +18,7 @@ import pytest  # noqa: E402
 from agent.core import RunContext, _current_run  # noqa: E402
 from tools import market_delegate as md  # noqa: E402
 from tools.market_delegate import MarketDelegateTool  # noqa: E402
+from web.sso_tokens import USER_TOKEN_HINT as _HINT  # noqa: E402
 
 
 class _FakeResp:
@@ -32,6 +34,7 @@ class _FakeResp:
 class _FakeClient:
     deps: list = []
     posts: list = []
+    captured: dict = {}
 
     def __init__(self, *args, **kwargs):
         pass
@@ -43,6 +46,7 @@ class _FakeClient:
         return False
 
     async def get(self, url, headers=None, **kwargs):
+        _FakeClient.captured = {"url": url, "headers": headers}
         # 与市场 /api/runtime/agents/{name}/persona 真实响应一致: 内容包在 result 里
         return _FakeResp(200, {
             "ok": True,
@@ -65,8 +69,19 @@ def _env(monkeypatch):
     monkeypatch.setenv("MARKET_SERVICE_TOKEN", "svc-token")
     _FakeClient.deps = []
     _FakeClient.posts = []
+    _FakeClient.captured = {}
     md._SKILL_CACHE.clear()
     yield
+
+
+@pytest.fixture
+def hosted_token(monkeypatch):
+    """托管用户 token(按 uid 派生), 供断言 Bearer 头。"""
+    from web import sso_tokens
+
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: f"user-tok-{uid}")
+    return "user-tok-7"
 
 
 async def _run_with(user_id: str, coro_factory):
@@ -84,7 +99,7 @@ def test_schema_object():
     assert set(p.get("required") or []) == {"expert", "task"}
 
 
-async def test_happy_path_composes_and_runs(monkeypatch):
+async def test_happy_path_composes_and_runs(monkeypatch, hosted_token):
     monkeypatch.setattr(md.httpx, "AsyncClient", _FakeClient)
     _FakeClient.deps = [
         {"name": "reimburse", "type": "skill", "distribution": "remote"},
@@ -99,11 +114,16 @@ async def test_happy_path_composes_and_runs(monkeypatch):
 
     monkeypatch.setattr(md, "_run_transient", fake_run)
 
-    out = await _run_with("web:jimingqing", lambda: MarketDelegateTool().execute(expert="报销专家", task="帮我报销差旅"))
+    out = await _run_with("web:7", lambda: MarketDelegateTool().execute(expert="报销专家", task="帮我报销差旅"))
     payload = json.loads(out)
     assert payload["ok"] is True
     assert payload["expert_output"] == "已处理"
     assert payload["expert"] == "报销专家"
+    # persona 请求逐请求携带用户 token, 不带服务令牌 / X-Act-As-Sub
+    cap = _FakeClient.captured
+    assert cap["url"] == "http://market.local/api/runtime/agents/报销专家/persona"
+    assert cap["headers"]["Authorization"] == "Bearer user-tok-7"
+    assert "X-Act-As-Sub" not in cap["headers"]
     # 技能文本被注入
     assert "报销流程" in captured["system_prompt"]
     assert "你是报销专家" in captured["system_prompt"]
@@ -115,7 +135,7 @@ async def test_happy_path_composes_and_runs(monkeypatch):
     assert any("/api/runtime/skills/reimburse/activate" in u for u in _FakeClient.posts)
 
 
-async def test_rejects_local_mcp_dep(monkeypatch):
+async def test_rejects_local_mcp_dep(monkeypatch, hosted_token):
     monkeypatch.setattr(md.httpx, "AsyncClient", _FakeClient)
     _FakeClient.deps = [{"name": "gitlab-devops", "type": "mcp", "distribution": "local"}]
     called = {"run": False}
@@ -125,28 +145,45 @@ async def test_rejects_local_mcp_dep(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(md, "_run_transient", fake_run)
-    out = await _run_with("web:jimingqing", lambda: MarketDelegateTool().execute(expert="e", task="t"))
+    out = await _run_with("web:7", lambda: MarketDelegateTool().execute(expert="e", task="t"))
     payload = json.loads(out)
     assert payload["ok"] is False
     assert "本地(stdio)" in payload["error"]
     assert called["run"] is False
 
 
-async def test_requires_subject(monkeypatch):
+async def test_fail_closed_without_user_token(monkeypatch):
+    """uid 解析失败(空/中文旧账号名/web:0) → fail-closed 统一引导登录, 不发市场请求。"""
     monkeypatch.setattr(md.httpx, "AsyncClient", _FakeClient)
-    out = await _run_with("", lambda: MarketDelegateTool().execute(expert="e", task="t"))
+    for user_id in ("", "web:朱尚荣", "web:0"):
+        out = await _run_with(user_id, lambda: MarketDelegateTool().execute(expert="e", task="t"))
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert payload["error"] == _HINT
+    assert _FakeClient.captured == {}
+
+
+async def test_requires_hosted_token(monkeypatch):
+    from web import sso_tokens
+
+    monkeypatch.setattr(md.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: "")
+    out = await _run_with("web:7", lambda: MarketDelegateTool().execute(expert="e", task="t"))
     payload = json.loads(out)
     assert payload["ok"] is False
-    assert "市场身份" in payload["error"]
+    assert payload["error"] == _HINT
+    assert _FakeClient.captured == {}
 
 
 async def test_disabled_without_config(monkeypatch):
     monkeypatch.delenv("MARKET_BASE_URL", raising=False)
     monkeypatch.delenv("MARKET_SERVICE_TOKEN", raising=False)
-    out = await _run_with("web:jimingqing", lambda: MarketDelegateTool().execute(expert="e", task="t"))
+    out = await _run_with("web:7", lambda: MarketDelegateTool().execute(expert="e", task="t"))
     payload = json.loads(out)
     assert payload["ok"] is False
     assert "未配置" in payload["error"]
+    assert _FakeClient.captured == {}
 
 
 async def test_market_delegate_run_on_main_loop_flag():

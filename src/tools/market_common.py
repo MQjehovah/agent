@@ -1,4 +1,4 @@
-"""能力市场共享工具: 配置读取与 subject 解析(供 market_runtime / market_search 复用)。"""
+"""能力市场共享工具: 配置读取与用户 token 解析(供 market_search / market_runtime / market_delegate 复用)。"""
 
 import os
 
@@ -8,6 +8,8 @@ def market_config() -> tuple[str, str, float]:
 
     镜像 ``mcps.platform.PlatformMCPConfig.from_env`` 语义; 此处刻意不 import ``mcps``,
     以避免仅为读配置而引入 MCP SDK(mcps 包初始化会拉起 MCP 客户端依赖)。
+
+    注: 返回的 service_token 仅作**启用门禁**判断, 市场调用不再使用(逐请求走用户 token)。
     """
     base = os.environ.get("MARKET_BASE_URL", "").strip().rstrip("/")
     token = os.environ.get("MARKET_SERVICE_TOKEN", "").strip()
@@ -20,19 +22,21 @@ def market_config() -> tuple[str, str, float]:
     return base, token, timeout
 
 
-def resolve_subject() -> str:
-    """当前 run 的提问者(subject) → 市场用户名(= rbac 工号); 解析失败返回空串。"""
-    try:
-        from agent.core import current_run
+def resolve_user_token_or_hint() -> tuple[str, str | None]:
+    """解析当前 run 提问者的用户下游 token(aud=gateway), fail-closed。
 
-        raw = getattr(current_run(), "user_id", "") or ""
-    except Exception:
-        raw = ""
-    if not raw:
-        return ""
-    try:
-        from web.security import resolve_market_act_as
+    uid 由 ``RunContext.user_id`` tag 经 ``user_profile.uid_from_tag`` 解析。
+    返回 ``(token, None)``; uid 解析失败或市场无托管 token(含 uid <= 0)时返回
+    ``("", USER_TOKEN_HINT)``。调用方一律 fail-closed, 不得回退服务令牌身份。
+    """
+    from agent.core import current_run
+    from agent.user_profile import uid_from_tag
+    from web.sso_tokens import USER_TOKEN_HINT, UserTokenUnavailable, require_user_token
 
-        return resolve_market_act_as(raw)
-    except Exception:
-        return ""
+    uid = uid_from_tag(getattr(current_run(), "user_id", "") or "")
+    if not uid:
+        return "", USER_TOKEN_HINT
+    try:
+        return require_user_token(int(uid), "gateway"), None
+    except UserTokenUnavailable:
+        return "", USER_TOKEN_HINT
