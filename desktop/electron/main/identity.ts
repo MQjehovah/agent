@@ -127,6 +127,8 @@ async function ensureFreshOidc(): Promise<void> {
     expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000
   }
   saveIdentity(current)
+  // SSO refresh_token 单次使用轮换: 刷新成功立即把新代理 token 复投给 agent(失败仅告警)
+  await hostSsoTokens()
 }
 
 /**
@@ -186,6 +188,8 @@ export async function freshAgentJwt(): Promise<string | null> {
 
 /**
  * 把 SSO 的 id_token/refresh_token 托管给 agent(供服务端按用户 OBO 交换, 幂等覆盖)。
+ * SSO refresh_token 为单次使用轮换: 约定「桌面复投为主、agent 侧仅兜底刷新」,
+ * 故登录成功、agent JWT 续期、OIDC 刷新后都复投, 保持 agent 副本新鲜。
  * 需 agent JWT 就绪; 失败仅告警, 不阻断登录/续期。
  */
 async function hostSsoTokens(): Promise<void> {
@@ -199,7 +203,8 @@ async function hostSsoTokens(): Promise<void> {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${identity.agentJwt}`
       },
-      body: JSON.stringify({ id_token: oidc.idToken, refresh_token: oidc.refreshToken })
+      body: JSON.stringify({ id_token: oidc.idToken, refresh_token: oidc.refreshToken }),
+      signal: AbortSignal.timeout(10_000)
     })
     if (!res.ok) console.warn(`[identity] SSO token 托管失败(HTTP ${res.status})`)
   } catch (err) {
