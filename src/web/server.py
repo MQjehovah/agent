@@ -1435,6 +1435,8 @@ class WebServer:
             """桌面端 SSO token 托管: 登录/续期后提交 id_token/refresh_token 供 OBO 交换。
 
             仅允许写登录态本人(uid 取自鉴权, 不信 body); 幂等覆盖。
+            id_token 强制验签 + iss(桌面 aud/TTL 与 agent 不同故跳过 aud/exp),
+            并要求 sub 与登录态 work_id 一致, 防止托管他人 token。
             """
             u = await _get_authz(request)
             uid = int(u.get("uid") or 0)
@@ -1446,13 +1448,26 @@ class WebServer:
                 return JSONResponse({"error": "invalid json"}, status_code=400)
             if not isinstance(data, dict):
                 return JSONResponse({"error": "invalid json"}, status_code=400)
-            id_token = str(data.get("id_token") or "").strip()
-            if not id_token:
+            raw_id_token = data.get("id_token")
+            if not isinstance(raw_id_token, str) or not raw_id_token.strip():
                 return JSONResponse({"error": "id_token required"}, status_code=400)
-            refresh_token = str(data.get("refresh_token") or "").strip()
+            raw_refresh = data.get("refresh_token")
+            if raw_refresh is not None and not isinstance(raw_refresh, str):
+                return JSONResponse({"error": "refresh_token must be a string"}, status_code=400)
+            id_token = raw_id_token.strip()
+            refresh_token = (raw_refresh or "").strip()
+            try:
+                claims = sso_auth.verify_sso_token(id_token, verify_audience=False, verify_expiry=False)
+            except sso_auth.SsoAuthError:
+                return JSONResponse({"error": "invalid id_token"}, status_code=400)
+            work_id = str(u.get("work_id") or "").strip() or _user_identity_for_uid(uid)["work_id"]
+            if not work_id or str(claims.get("sub") or "").strip() != work_id:
+                logger.warning(f"SSO token 托管 sub 不匹配: uid={uid}")
+                return JSONResponse({"error": "id_token subject mismatch"}, status_code=403)
             from web.sso_tokens import save_user_tokens
             if not save_user_tokens(uid, {"id_token": id_token, "refresh_token": refresh_token}):
                 return JSONResponse({"error": "保存 SSO token 失败"}, status_code=500)
+            logger.info(f"SSO token 托管成功: uid={uid}")
             return {"ok": True}
 
         @self._app.post("/api/auth/change-password")

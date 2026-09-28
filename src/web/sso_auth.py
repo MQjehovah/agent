@@ -166,11 +166,14 @@ def _public_key(kid: str | None):
     return jose_jwk.construct(jwk_dict, algorithm=ALGORITHM)
 
 
-def verify_sso_token(token: str) -> dict:
+def verify_sso_token(token: str, *, verify_audience: bool = True, verify_expiry: bool = True) -> dict:
     """校验 SSO 签发的 RS256 token, 通过则返回 claims(含 sub 工号)。
 
     未配置 sso_issuer 视为 SSO 禁用; iss/aud 不匹配、签名无效、过期、
     缺少 sub(工号)等一律抛 SsoAuthError。
+    verify_audience/verify_expiry=False 供「受众/寿命与 agent 不同」的场景(如桌面
+    id_token 的 aud=工作台客户端、TTL 很短)跳过对应校验, 签名与 iss 仍强制;
+    此类调用须由调用方另行绑定 sub 归属。
     """
     if not sso_issuer():
         raise SsoAuthError("SSO not configured")
@@ -179,6 +182,12 @@ def verify_sso_token(token: str) -> dict:
     except jose_exceptions.JWTError as e:
         raise SsoAuthError(f"SSO token header 无效: {e}") from e
     kid = header.get("kid")
+    # 关闭 aud 校验必须走 options: 传 audience=None 时 jose 对带 aud 的 token 仍会报 Invalid audience
+    options: dict = {}
+    if not verify_audience:
+        options["verify_aud"] = False
+    if not verify_expiry:
+        options["verify_exp"] = False
     try:
         key = _public_key(kid)
         claims = jose_jwt.decode(
@@ -187,6 +196,7 @@ def verify_sso_token(token: str) -> dict:
             algorithms=[ALGORITHM],
             issuer=sso_issuer(),
             audience=sso_audience() or None,
+            options=options,
         )
     except SsoAuthError:
         raise
