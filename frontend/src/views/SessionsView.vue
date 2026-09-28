@@ -5,8 +5,8 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
-import { api } from '../api'
-import { channelMeta } from '../channel'
+import { api, del } from '../api'
+import { channelMeta, isDingtalkGroupSession } from '../channel'
 
 /** 个人「会话历史」:本人跨渠道会话（与对话页侧栏同源），可查看/继续/删除。 */
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -117,12 +117,17 @@ function continueSession(row: SessionRow): void {
 
 async function removeSession(row: SessionRow): Promise<void> {
   try {
-    await ElMessageBox.confirm(`确认删除会话 ${row.id}？删除后不再显示。`, '删除会话', { type: 'warning' })
+    await ElMessageBox.confirm(
+      `确认删除会话 ${row.id}？\n删除后不再显示（消息数据保留，可由管理员恢复）`,
+      '删除会话',
+      { type: 'warning' }
+    )
   } catch {
     return
   }
   try {
-    await api(`/api/sessions/${encodeURIComponent(row.id)}`, { method: 'DELETE' })
+    // 逻辑删除(与桌面端/侧栏一致): 内存会话 + DB 历史一起标记, 可由管理员恢复
+    await del(`/api/agent/sessions?session_id=${encodeURIComponent(row.id)}`)
     ElMessage.success('已删除')
     await refresh()
   } catch (e) {
@@ -173,7 +178,11 @@ onMounted(() => void refresh())
               <el-button size="small" text type="primary" :disabled="!canContinue(row)" @click="continueSession(row)">继续对话</el-button>
             </span>
           </el-tooltip>
-          <el-button size="small" text type="danger" @click="removeSession(row)">删除</el-button>
+          <el-tooltip :disabled="!isDingtalkGroupSession(row.id)" content="群会话为多人共享，不支持删除" placement="top">
+            <span>
+              <el-button size="small" text type="danger" :disabled="isDingtalkGroupSession(row.id)" @click="removeSession(row)">删除</el-button>
+            </span>
+          </el-tooltip>
         </template>
       </el-table-column>
     </el-table>

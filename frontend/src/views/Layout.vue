@@ -284,6 +284,7 @@ function onUserCommand(cmd: string | number | object) {
             <span v-if="s.streaming" class="side-session-tag" title="运行中">运行中</span>
             <span class="side-session-time">{{ shortTime(s.at) }}</span>
             <el-dropdown
+              v-if="!isDingtalkGroupSession(s.id)"
               trigger="click"
               class="side-session-more"
               @command="(c: string) => c === 'delete' && removeSideSession(s)"

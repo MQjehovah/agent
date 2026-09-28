@@ -202,3 +202,22 @@ def test_chat_stream_emits_session_id_for_new_session(env):
                 break
     assert '"type": "session"' in first, first
     assert '"session_id": "web:7:' in first, first
+
+
+def test_session_delete_allows_owner_dingtalk_single_chat(env):
+    """钉钉单聊可由归属人逻辑删除(与 web 一致); 群会话仍拒绝(共享会话)。"""
+    w, st, client = env
+    _make_agent_for(w)
+    w.agent.session_manager.sessions = {}
+    _seed_msg(st, "dingtalk:7:b1", "dingtalk:7")
+
+    r = client.delete("/api/agent/sessions?session_id=dingtalk:7:b1", headers=_token(7))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("soft") is True and body.get("deleted") == 1
+    hist = client.get("/api/agent/sessions/history?limit=20", headers=_token(7)).json()
+    assert "dingtalk:7:b1" not in [x["id"] for x in hist.get("sessions", [])]
+
+    _seed_msg(st, "dingtalk_group:g1:abc", "dingtalk:7")
+    r = client.delete("/api/agent/sessions?session_id=dingtalk_group:g1:abc", headers=_token(7))
+    assert r.status_code == 400 and "群会话" in r.text

@@ -2336,8 +2336,9 @@ class WebServer:
         async def agent_session_delete(session_id: str = Query(...), request: Request = None):
             """逻辑删除在线会话(对话根): 列表不再显示, 消息数据保留供审计/分析。
 
-            仅会话所属人(或 admin)可删; 群会话与子代理内部线程不允许直接删除,
-            正在执行中的会话返回 409 提示先停止。误删可经 /api/agent/sessions/restore 恢复。
+            仅会话所属人(或 admin)可删; 群会话(多人共享)与子代理内部线程不允许直接删除,
+            正在执行中的会话返回 409 提示先停止。钉钉等外部渠道的**单聊**与 web 一样
+            按归属人逻辑删除(可由管理员经 /api/agent/sessions/restore 恢复)。
             """
             sid = str(session_id or "").strip()
             if not sid:
@@ -2352,8 +2353,8 @@ class WebServer:
                 return JSONResponse({"error": "Session not found"}, status_code=404)
             if sid.startswith("dingtalk_group:"):
                 return JSONResponse({"error": "群会话不支持删除"}, status_code=400)
-            if "#" in sid or sid.startswith("dingtalk:"):
-                return JSONResponse({"error": "外部渠道会话请在其来源应用内处理"}, status_code=400)
+            if "#" in sid:
+                return JSONResponse({"error": "子代理内部线程不支持删除"}, status_code=400)
 
             if self.agent and self.agent.session_manager:
                 sess = self.agent.session_manager.sessions.get(sid)
