@@ -503,6 +503,20 @@ class Storage:
             _add_col("rbac_users", "display_name TEXT DEFAULT ''")
             # 姓名/工号分离: name=姓名, work_id=工号/登录账号(独立列, 市场代授权用它)
             _add_col("rbac_users", "work_id TEXT DEFAULT ''")
+            # 用户字段扩展: phone(手机号, SSO claims.mobile 回写), dingtalk_id(钉钉 userId 冗余映射)
+            _add_col("rbac_users", "phone TEXT DEFAULT ''")
+            _add_col("rbac_users", "dingtalk_id TEXT DEFAULT ''")
+            with suppress(sqlite3.OperationalError):
+                # 一次性回填(幂等, 仅 dingtalk_id 为空的行): 从 identities 取钉钉 platform_uid
+                conn.execute("""
+                    UPDATE rbac_users SET dingtalk_id = (
+                        SELECT i.platform_uid FROM rbac_user_identities i
+                        WHERE i.user_id = rbac_users.id AND i.platform='dingtalk' LIMIT 1
+                    ) WHERE (dingtalk_id IS NULL OR dingtalk_id = '')
+                      AND EXISTS (SELECT 1 FROM rbac_user_identities i
+                                  WHERE i.user_id = rbac_users.id AND i.platform='dingtalk')
+                """)
+                conn.commit()
             with suppress(sqlite3.OperationalError):
                 # 一次性回填(幂等, 仅 work_id 为空的行):
                 #   name=工号 + display_name=姓名 → work_id=工号, name=姓名;

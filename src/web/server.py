@@ -220,16 +220,25 @@ def _sso_claim_email(claims: dict) -> str:
     return str(v).strip().lower() if isinstance(v, str) and v.strip() else ""
 
 
-_SSO_USER_COLS = "id, name, work_id, department, role, status, email"
+_SSO_USER_COLS = "id, name, work_id, department, role, status, email, phone, dingtalk_id"
+
+
+def _sso_claim_mobile(claims: dict) -> str:
+    """SSO claims 里的手机号(mobile); 缺失/非法返回空串。"""
+    v = claims.get("mobile")
+    return str(v).strip() if isinstance(v, str) and v.strip() else ""
 
 
 def _sso_user_payload(row) -> dict:
     """把 rbac_users 行转成鉴权 payload。name=姓名(展示), work_id=工号(身份/市场用户名)。"""
+    keys = row.keys()
     return {"id": row["id"], "name": row["name"], "work_id": row["work_id"] or "",
             "department": row["department"],
             "role": row["role"], "status": row["status"],
             # sqlite3.Row 的 in 判断的是值而非键, 必须用 row.keys()
-            "email": (row["email"] or "") if "email" in row.keys() else ""}  # noqa: SIM118
+            "email": (row["email"] or "") if "email" in keys else "",
+            "phone": (row["phone"] or "") if "phone" in keys else "",
+            "dingtalk_id": (row["dingtalk_id"] or "") if "dingtalk_id" in keys else ""}
 
 
 def _user_name_for_uid(uid) -> str:
@@ -271,7 +280,10 @@ def _sso_claim_name(claims: dict) -> str:
 
 
 def _sso_bind_dingtalk(storage, uid: int, claims: dict):
-    """登录成功后按 claims.dingtalk 自动绑钉钉身份(幂等, 已绑/异常静默)。"""
+    """登录成功后按 claims.dingtalk 自动绑钉钉身份(幂等, 已绑/异常静默)。
+
+    identities 行为身份权威源, 同时把 rbac_users.dingtalk_id 冗余列双写(供免联表读取)。
+    """
     dt = claims.get("dingtalk")
     if dt is None:
         return
@@ -281,6 +293,12 @@ def _sso_bind_dingtalk(storage, uid: int, claims: dict):
     try:
         from security.rbac import RBACManager
         RBACManager(storage).bind_identity(uid, "dingtalk", dt)
+        with storage.get_connection() as conn:
+            conn.execute(
+                "UPDATE rbac_users SET dingtalk_id=?, updated_at=datetime('now') WHERE id=?",
+                (dt, uid),
+            )
+            conn.commit()
         logger.info(f"[sso] 已自动绑定钉钉身份(uid={uid}, dingtalk={dt})")
     except Exception as e:
         logger.warning(f"[sso] 自动绑定钉钉失败(uid={uid}, dingtalk={dt}): {e}")
@@ -362,6 +380,25 @@ def _sso_sync_email(storage, uid: int, row, claims: dict):
         ).fetchone()
 
 
+def _sso_sync_phone(storage, uid: int, row, claims: dict):
+    """SSO 为手机号权威源: claims.mobile 非空且与当前不同则回写 rbac_users.phone。
+
+    空/缺 mobile 一律保留现有值(管理员手工填写不覆盖); 返回回写后的 rbac_users 行。
+    """
+    claim_mobile = _sso_claim_mobile(claims)
+    if not claim_mobile or claim_mobile == (row["phone"] or ""):
+        return row
+    with storage.get_connection() as conn:
+        conn.execute(
+            "UPDATE rbac_users SET phone=?, updated_at=datetime('now') WHERE id=?",
+            (claim_mobile, uid),
+        )
+        conn.commit()
+        return conn.execute(
+            f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE id = ?", (uid,)
+        ).fetchone()
+
+
 def _sso_lookup_user(sub: str) -> dict | None:
     """按 SSO sub(工号) 查 rbac_users(work_id=sub), 返回 auth 形状; 不存在/禁用返回 None。"""
     from storage.storage import get_storage
@@ -413,9 +450,12 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
     def _sync_all(uid: int, row):
         row = _sso_sync_name(storage, uid, row, claims)
         row = _sso_sync_email(storage, uid, row, claims)
+        row = _sso_sync_phone(storage, uid, row, claims)
         row = _sso_sync_department(storage, uid, row, claims)
+        # 钉钉绑定 + dingtalk_id 双写后重取行, 保证返回 payload 含最新映射
         _sso_bind_dingtalk(storage, uid, claims)
-        return row
+        with storage.get_connection() as conn:
+            return _refresh(conn, uid)
 
     # 1) 按工号(work_id)查(常规路径)
     with storage.get_connection() as conn:
@@ -474,7 +514,8 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
     dept = sso_auth.sso_user_department(claims)
     role = sso_auth.sso_user_role(claims)
     rbac = RBACManager(storage)
-    uid = rbac.create_user(name=claim_name or sub, work_id=sub, department=dept, role=role)
+    uid = rbac.create_user(name=claim_name or sub, work_id=sub, department=dept, role=role,
+                           phone=_sso_claim_mobile(claims))
     _sso_ensure_department_registered(storage, dept)
     # 随机不可登录密码(SSO 用户不走密码登录)
     import secrets as _secrets
@@ -484,8 +525,8 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
             conn.execute("UPDATE rbac_users SET email=? WHERE id=?", (claim_email, uid))
             conn.commit()
     _sso_bind_dingtalk(storage, uid, claims)
-    return {"id": uid, "name": claim_name or sub, "work_id": sub, "department": dept,
-            "role": role, "status": "active", "email": claim_email}
+    with storage.get_connection() as conn:
+        return _sso_user_payload(_refresh(conn, uid))
 
 
 def _sse(payload: dict) -> str:

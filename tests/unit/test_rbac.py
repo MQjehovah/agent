@@ -80,6 +80,28 @@ def test_create_user_and_bind_identity(rbac):
     assert role == "admin"
 
 
+def test_create_user_with_phone(rbac):
+    uid = rbac.create_user(name="张三", work_id="10010", phone="13500000000")
+    u = rbac.get_user(uid)
+    assert u["phone"] == "13500000000"
+    assert u["dingtalk_id"] == ""
+    assert u["work_id"] == "10010"
+
+
+def test_update_user_optional_phone_and_dingtalk_id(rbac):
+    uid = rbac.create_user(name="张三", work_id="10010")
+    rbac.update_user(uid, phone="13600000000", dingtalk_id="dt_10010")
+    u = rbac.get_user(uid)
+    assert u["phone"] == "13600000000"
+    assert u["dingtalk_id"] == "dt_10010"
+    # 不传(默认 None) → 保留现值, 仅更新姓名
+    rbac.update_user(uid, name="张三丰")
+    u2 = rbac.get_user(uid)
+    assert u2["name"] == "张三丰"
+    assert u2["phone"] == "13600000000"
+    assert u2["dingtalk_id"] == "dt_10010"
+
+
 def test_create_custom_role_and_check(rbac):
     rbac.create_role(name="developer", description="开发者",
                      allowed_tools=["shell", "file_operation", "search"],
