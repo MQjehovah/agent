@@ -3,7 +3,7 @@ defineOptions({ name: 'KnowledgeView' })
 import { computed, onMounted, ref } from 'vue'
 import { Back, CaretRight, Document, Refresh, Search } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
-import { api } from '../api'
+import { api, hasPerm } from '../api'
 
 /** 只读知识库(经 agent /api/knowledge/* 代理到 RAG)。 */
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -22,6 +22,8 @@ interface SearchHit { id: string; title: string; content: string; score: number;
 
 /** 两级视图: activeSpace=null 显示空间卡片列表; 否则进入该空间 wiki(id ''=全部, 'default'=默认空间) */
 const activeSpace = ref<{ id: string; name: string; icon: string } | null>(null)
+/** 「全部」(跨空间聚合)仅管理员可见, 普通用户按空间浏览 */
+const isAdminUser = computed(() => hasPerm('*'))
 const spaces = ref<WikiSpaceItem[]>([])
 const spacesTotal = ref(0)
 const spacesDefaultCount = ref(0)
@@ -238,7 +240,7 @@ onMounted(() => void loadSpaces())
         </div>
         <div v-else-if="spacesLoaded && spacesTotal === 0" class="kb-state"><el-empty description="知识库还没有内容" /></div>
         <div v-else-if="spacesLoaded" class="kb-spaces-grid">
-          <button class="kb-space-card" @click="enterSpace('', '全部', '📚')">
+          <button v-if="isAdminUser" class="kb-space-card" @click="enterSpace('', '全部', '📚')">
             <span class="kb-space-icon">📚</span>
             <span class="kb-space-main">
               <span class="kb-space-name">全部</span>

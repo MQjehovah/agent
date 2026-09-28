@@ -17,6 +17,8 @@ const index = ref<WikiIndex>({ total: 0, categories: [], running: false })
 
 /** 两级视图: activeSpace=null 显示空间卡片列表; 否则进入该空间 wiki(id ''=全部, 'default'=默认空间) */
 const activeSpace = ref<{ id: string; name: string; icon: string } | null>(null)
+/** 「全部」(跨空间聚合)仅管理员可见, 普通用户按空间浏览 */
+const isAdminUser = () => (settings.user?.role || '') === 'admin'
 const spaces = ref<WikiSpaceItem[]>([])
 const spacesTotal = ref(0)
 const spacesDefaultCount = ref(0)
@@ -354,7 +356,7 @@ onMounted(() => {
           <el-empty description="知识库还没有内容" />
         </div>
         <div v-else-if="spacesLoaded" class="knowledge-spaces-grid">
-          <button class="knowledge-space-card" @click="enterSpace('', '全部', '📚')">
+          <button v-if="isAdminUser()" class="knowledge-space-card" @click="enterSpace('', '全部', '📚')">
             <span class="knowledge-space-icon">📚</span>
             <span class="knowledge-space-main">
               <span class="knowledge-space-name">全部</span>
