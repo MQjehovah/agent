@@ -330,6 +330,14 @@ async def _drain(rounds: int = 40) -> None:
         await asyncio.sleep(0)
 
 
+async def _drain_until(predicate, *, rounds: int = 400) -> None:
+    """真等一小段直到条件满足(provider 经 asyncio.to_thread, 需等线程池回调跑完)。"""
+    for _ in range(rounds):
+        if predicate():
+            return
+        await asyncio.sleep(0.005)
+
+
 def test_auth_headers_use_explicit_bearer_only():
     """请求头只含 Bearer(不再发送 X-Act-As-Sub; 连接身份完全由 token 决定)。"""
     cfg = platform.PlatformMCPConfig(base_url="http://m", service_token="tok")
@@ -431,6 +439,78 @@ async def test_start_warns_when_no_token_provider(caplog):
         client.start()
     try:
         assert any("服务令牌身份" in r.getMessage() for r in caplog.records)
+    finally:
+        await client.close()
+
+
+async def test_stable_token_does_not_reconnect():
+    """token 不变时刷新不得重连(防抖: connect_token 比对不误触发)。"""
+    calls = []
+    sessions = {"cap-a": _FakeSession([_tool("t", read_only=True)], calls)}
+    entered, exited = [], []
+    client, _ = _make_client([_cap("cap-a")], sessions, entered, exited,
+                             token_provider=lambda: "utok-1")
+    try:
+        assert await client.refresh_once() is True
+        assert await client.refresh_once() is True
+        assert entered == [("cap-a", {"Authorization": "Bearer utok-1"})]  # 只连一次
+        assert exited == []
+    finally:
+        await client.close()
+
+
+async def test_provider_exception_treated_as_missing_token(caplog):
+    """provider 抛异常按 token 不可用处理: 置空 + WARNING, 不发任何请求。"""
+    import logging
+
+    calls = []
+    sessions = {"cap-a": _FakeSession([_tool("t")], calls)}
+    entered, exited = [], []
+
+    def _boom():
+        raise RuntimeError("sqlite locked")
+
+    client, stub = _make_client([_cap("cap-a")], sessions, entered, exited,
+                                token_provider=_boom)
+    try:
+        with caplog.at_level(logging.WARNING, logger="agent.mcps.platform"):
+            assert await client.refresh_once() is False
+        assert stub.requests == []
+        assert client._caps == {} and client.tool_defs == []
+        assert any("获取异常" in r.getMessage() for r in caplog.records)
+        assert any("用户 token 不可用" in r.getMessage() for r in caplog.records)
+    finally:
+        await client.close()
+
+
+async def test_missing_token_warning_only_on_transition(caplog):
+    """空态 WARNING 仅转变时一条: 持续不可用不逐周期刷屏, 恢复后再掉线可再告警。"""
+    import logging
+
+    calls = []
+    sessions = {"cap-a": _FakeSession([_tool("t")], calls)}
+    entered, exited = [], []
+    token = [""]
+    client, _ = _make_client([_cap("cap-a")], sessions, entered, exited,
+                             token_provider=lambda: token[0])
+    logger_name = "agent.mcps.platform"
+
+    def _warns():
+        return [r for r in caplog.records
+                if r.levelno == logging.WARNING and "用户 token 不可用" in r.getMessage()]
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=logger_name):
+            assert await client.refresh_once() is False    # 首次观测: 一条
+            assert await client.refresh_once() is False    # 持续不可用: 不再刷
+        assert len(_warns()) == 1
+
+        token[0] = "utok-1"                                # 恢复: sync 成功清零标志
+        assert await client.refresh_once() is True
+        token[0] = ""
+        with caplog.at_level(logging.WARNING, logger=logger_name):
+            assert await client.refresh_once() is False    # 再次掉线(有连接): 再一条
+        assert len(_warns()) == 2
     finally:
         await client.close()
 
@@ -627,6 +707,96 @@ async def test_fast_retry_waits_when_refresh_connect_in_flight():
         hang_stop.set()
         if hang is not None:
             await hang
+        await client.close()
+
+
+async def test_retry_loop_uses_rotated_token():
+    """快速重试时 token 已轮换 → 更新 connect_token 并按新 token 重连。"""
+    calls = []
+    sessions = {"cap-bad": _FakeSession([_tool("u", read_only=True)], calls)}
+    entered, exited, attempts = [], [], []
+    token = ["utok-1"]
+    clock = _FakeClock()
+    failing = {"cap-bad"}
+    client, _ = _make_client([_cap("cap-bad")], sessions, entered, exited,
+                             failing=failing, now=clock.time, sleeper=clock.sleep,
+                             attempts=attempts, token_provider=lambda: token[0])
+    try:
+        assert await client.refresh_once() is True
+        assert entered == [] and client._caps["cap-bad"].connected is False
+        await _drain()
+        assert clock.sleeps == [30.0]
+
+        failing.discard("cap-bad")
+        token[0] = "utok-2"                       # 等退避期间 token 过期重换
+        clock.advance(30)
+        await _drain_until(lambda: client.has_tool("platform__cap-bad__u"))
+        assert attempts == ["cap-bad", "cap-bad"]  # 刷新失败一次 + 重试一次
+        assert entered[-1] == ("cap-bad", {"Authorization": "Bearer utok-2"})
+        assert client._caps["cap-bad"].connect_token == "utok-2"
+        assert client.has_tool("platform__cap-bad__u")
+    finally:
+        await client.close()
+
+
+async def test_retry_loop_stops_when_token_missing():
+    """重试到期但 token 不可用 → retry_at 清零停止重试, 等下轮刷新统一置空。"""
+    calls = []
+    sessions = {"cap-bad": _FakeSession([_tool("u")], calls)}
+    entered, exited, attempts = [], [], []
+    token = ["utok-1"]
+    clock = _FakeClock()
+    client, _ = _make_client([_cap("cap-bad")], sessions, entered, exited,
+                             failing={"cap-bad"}, now=clock.time, sleeper=clock.sleep,
+                             attempts=attempts, token_provider=lambda: token[0])
+    try:
+        assert await client.refresh_once() is True
+        await _drain()
+        assert clock.sleeps == [30.0]
+
+        token[0] = ""
+        clock.advance(30)
+        await _drain_until(lambda: client._caps["cap-bad"].retry_at == 0)
+        assert attempts == ["cap-bad"]             # 不再发起连接
+        cap = client._caps["cap-bad"]
+        assert cap.retry_at == 0 and cap.connected is False
+        assert not client.has_tool("platform__cap-bad__u")
+    finally:
+        await client.close()
+
+
+async def test_retry_loop_skips_capability_removed_during_token_wait():
+    """竞态: 快照 due 后等 token 期间能力被刷新下线(轮换/移除), 不得对幽灵 state 重连。
+
+    无守卫时旧 state 会被重连: 会话不登记进 _caps, close() 也收不了尸。
+    """
+    calls = []
+    sessions = {"cap-bad": _FakeSession([_tool("u", read_only=True)], calls)}
+    entered, exited, attempts = [], [], []
+    failing = {"cap-bad"}
+    clock = _FakeClock()
+    client, _ = _make_client([_cap("cap-bad")], sessions, entered, exited,
+                             failing=failing, now=clock.time, sleeper=clock.sleep,
+                             attempts=attempts, token_provider=lambda: "utok-1")
+    try:
+        assert await client.refresh_once() is True
+        await _drain()
+        assert clock.sleeps == [30.0]
+
+        # 模拟 await 取 token 期间 refresh_once 把该能力下线(目录移除/轮换/空 token)
+        async def _resolve_then_drop() -> str:
+            await client._close_capability("cap-bad")
+            return "utok-2"
+
+        client._resolve_token = _resolve_then_drop
+        failing.discard("cap-bad")
+        clock.advance(30)
+        await asyncio.sleep(0.05)  # 让重试循环走完本次迭代(含守卫判定)
+        await _drain()
+        assert client._caps == {}                  # 不重建幽灵 state
+        assert entered == []                       # 未建任何会话
+        assert attempts == ["cap-bad"]             # 只尝试过刷新那次(失败)
+    finally:
         await client.close()
 
 

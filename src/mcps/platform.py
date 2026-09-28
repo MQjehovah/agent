@@ -300,6 +300,9 @@ class PlatformMCPClient:
         self._refresh_lock = asyncio.Lock()
         self._managers: weakref.WeakSet[Any] = weakref.WeakSet()
         self._closing = False
+        # 空态告警节流: 用户 token 不可用仅在「从有到无」的转变时打一条 WARNING,
+        # 持续不可用不再逐周期刷屏; token 恢复(sync 成功)后清零, 再次掉线可再告警
+        self._missing_token_warned = False
 
     # ---------- 生命周期 ----------
 
@@ -392,6 +395,7 @@ class PlatformMCPClient:
                 logger.warning(f"平台 MCP {self.last_error}(保留既有连接)")
                 return False
             self.last_error = ""
+            self._missing_token_warned = False  # token 恢复可用: 下次空态可再告警
             current = {c["name"]: c for c in caps}
             for name in [n for n in list(self._caps) if n not in current]:
                 await self._close_capability(name)
@@ -414,15 +418,21 @@ class PlatformMCPClient:
             return True
 
     async def _drop_capabilities_for_missing_token(self) -> None:
-        """用户 token 不可用: 关闭全部平台会话并告警(fail-closed, 每刷新周期一条)。"""
+        """用户 token 不可用: 关闭全部平台会话并置 last_error(fail-closed, 不回退服务令牌)。
+
+        WARNING 仅在空态「从有到无」或首次观测时打一条(持续不可用逐周期告警无增量
+        信息, 防刷屏); token 恢复(sync 成功)后标志清零, 再次掉线可再告警。
+        """
         had_caps = bool(self._caps)
         for name in list(self._caps):
             await self._close_capability(name)
         if had_caps:
             self._rebuild_tools()
+        if had_caps or not self._missing_token_warned:
+            logger.warning(
+                "平台 MCP 用户 token 不可用(未托管或刷新失败): 平台能力置空, 不回退服务令牌")
+            self._missing_token_warned = True
         self.last_error = "用户 token 不可用(未托管或刷新失败)"
-        logger.warning(
-            "平台 MCP 用户 token 不可用(未托管或刷新失败): 平台能力置空, 不回退服务令牌")
 
     async def _resolve_token(self) -> str:
         """当前连接身份 token: provider 注入时取用户 token(同步调用经线程池), 否则服务令牌。"""
@@ -535,6 +545,10 @@ class PlatformMCPClient:
             for cap in due:
                 if self._closing:
                     break
+                if self._caps.get(cap.name) is not cap:
+                    # 快照后被刷新轮换/下线(或本项被 close): 该 state 已不在注册表,
+                    # 不得重连(否则会话无人登记, close() 也收不了尸)
+                    continue
                 if cap._conn_task is not None and not cap._conn_task.done():
                     busy = True  # 刷新正在连它: 稍后再看, 避免空转
                     continue
