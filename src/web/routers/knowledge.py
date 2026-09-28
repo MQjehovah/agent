@@ -4,7 +4,8 @@ Web 端(员工端)只持有 agent 凭据、无权直连 RAG;本路由用 agent �
 代理由此暴露只读接口给前端:
 
 - GET /api/knowledge/status          —— RAG 是否已配置
-- GET /api/knowledge/wiki            —— 知识库目录(Wiki 索引)
+- GET /api/knowledge/spaces          —— 空间列表(卡片入口)
+- GET /api/knowledge/wiki?space_id=  —— 知识库目录(Wiki 索引; space_id 空=全部, default=默认空间)
 - GET /api/knowledge/wiki/{page_id}  —— 单页(Wiki 页面 + 正文 + 来源)
 - GET /api/knowledge/search?q=&top_k= —— 混合检索(穿透 RAG /api/search)
 
@@ -120,13 +121,25 @@ def build_knowledge_router(server) -> APIRouter:  # noqa: ARG001 (与其它 rout
             return bad
         return {"enabled": client.enabled()}
 
-    @router.get("/api/knowledge/wiki")
-    async def knowledge_wiki(request: Request):
+    @router.get("/api/knowledge/spaces")
+    async def knowledge_spaces(request: Request):
         if (bad := _guard(request)) is not None:
             return bad
         if not client.enabled():
             return _unavailable()
-        resp, err = client.request("GET", "/api/wiki")
+        resp, err = client.request("GET", "/api/wiki/spaces")
+        if resp is None:
+            return JSONResponse({"error": err}, status_code=502)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+    @router.get("/api/knowledge/wiki")
+    async def knowledge_wiki(request: Request, space_id: str | None = Query(None)):
+        if (bad := _guard(request)) is not None:
+            return bad
+        if not client.enabled():
+            return _unavailable()
+        params = {"space_id": space_id} if space_id else None
+        resp, err = client.request("GET", "/api/wiki", params=params)
         if resp is None:
             return JSONResponse({"error": err}, status_code=502)
         return JSONResponse(resp.json(), status_code=resp.status_code)

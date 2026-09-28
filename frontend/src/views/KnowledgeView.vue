@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'KnowledgeView' })
 import { computed, onMounted, ref } from 'vue'
-import { CaretRight, Document, Refresh, Search } from '@element-plus/icons-vue'
+import { Back, CaretRight, Document, Refresh, Search } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import { api } from '../api'
 
@@ -16,7 +16,18 @@ interface WikiPage {
   id: string; title: string; category: string; content: string; summary: string
   sources: WikiSource[]; updated_at: string
 }
+interface WikiSpaceItem { id: string; name: string; icon: string; description: string; count: number }
+interface WikiSpacesResp { spaces: WikiSpaceItem[]; default_count: number; total: number }
 interface SearchHit { id: string; title: string; content: string; score: number; source: string; chunks?: unknown[] }
+
+/** 两级视图: activeSpace=null 显示空间卡片列表; 否则进入该空间 wiki(id ''=全部, 'default'=默认空间) */
+const activeSpace = ref<{ id: string; name: string; icon: string } | null>(null)
+const spaces = ref<WikiSpaceItem[]>([])
+const spacesTotal = ref(0)
+const spacesDefaultCount = ref(0)
+const spacesLoading = ref(false)
+const spacesError = ref('')
+const spacesLoaded = ref(false)
 
 const indexLoading = ref(false)
 const indexError = ref('')
@@ -45,11 +56,53 @@ function errText(e: unknown): string {
   return `RAG 知识库不可达:${(e as Error).message}`
 }
 
+async function loadSpaces(): Promise<void> {
+  spacesLoading.value = true
+  spacesError.value = ''
+  try {
+    const data = await api<WikiSpacesResp>('/api/knowledge/spaces')
+    spaces.value = data.spaces ?? []
+    spacesTotal.value = data.total ?? 0
+    spacesDefaultCount.value = data.default_count ?? 0
+    spacesLoaded.value = true
+  } catch (e) {
+    spacesError.value = errText(e)
+  } finally {
+    spacesLoading.value = false
+  }
+}
+
+/** 进入空间(卡片点击): 重置阅读状态并按空间过滤目录 */
+function enterSpace(id: string, name: string, icon: string): void {
+  activeSpace.value = { id, name, icon }
+  current.value = null
+  page.value = null
+  pageError.value = ''
+  openCats.value = []
+  void loadIndex()
+}
+
+/** 返回空间卡片列表(刷新计数) */
+function backToSpaces(): void {
+  activeSpace.value = null
+  current.value = null
+  page.value = null
+  pageError.value = ''
+  void loadSpaces()
+}
+
+function refresh(): void {
+  if (activeSpace.value) void loadIndex()
+  else void loadSpaces()
+}
+
 async function loadIndex(): Promise<void> {
   indexLoading.value = true
   indexError.value = ''
   try {
-    const data = await api<WikiIndex>('/api/knowledge/wiki')
+    const sid = activeSpace.value?.id ?? ''
+    const qs = sid ? '?space_id=' + encodeURIComponent(sid) : ''
+    const data = await api<WikiIndex>('/api/knowledge/wiki' + qs)
     index.value = data
     indexLoaded.value = true
     const names = (data.categories ?? []).map((c) => c.name)
@@ -127,20 +180,22 @@ function fmtTime(t: string): string {
   return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
-onMounted(() => void loadIndex())
+onMounted(() => void loadSpaces())
 </script>
 
 <template>
   <div class="kb-view">
     <div class="view-header">
       <div class="view-header-left">
-        <span class="view-title">知识库</span>
-        <span v-if="indexLoaded && index.total > 0" class="kb-count">共 {{ index.total }} 篇</span>
-        <el-tag v-if="index.running" size="small" type="warning" effect="plain">知识库整理中</el-tag>
+        <el-button v-if="activeSpace" :icon="Back" size="small" circle text title="返回空间列表" @click="backToSpaces" />
+        <span class="view-title">{{ activeSpace ? activeSpace.icon + ' ' + activeSpace.name : '知识库' }}</span>
+        <span v-if="!activeSpace && spacesLoaded && spacesTotal > 0" class="kb-count">共 {{ spacesTotal }} 篇</span>
+        <span v-if="activeSpace && indexLoaded && index.total > 0" class="kb-count">共 {{ index.total }} 篇</span>
+        <el-tag v-if="activeSpace && index.running" size="small" type="warning" effect="plain">知识库整理中</el-tag>
       </div>
       <div class="kb-head-actions">
         <el-button :icon="Search" size="small" circle title="检索知识库" @click="searchOpen = true" />
-        <el-button :icon="Refresh" size="small" circle title="刷新目录" :loading="indexLoading" @click="loadIndex" />
+        <el-button :icon="Refresh" size="small" circle title="刷新" :loading="indexLoading || spacesLoading" @click="refresh" />
       </div>
     </div>
 
@@ -175,12 +230,49 @@ onMounted(() => void loadIndex())
       </div>
     </el-dialog>
 
-    <div v-loading="indexLoading" class="kb-body">
-      <div v-if="indexError" class="kb-state">
-        <el-empty :description="indexError"><el-button size="small" @click="loadIndex">重试</el-button></el-empty>
+    <div v-loading="spacesLoading || indexLoading" class="kb-body">
+      <!-- 第一级: 空间卡片列表 -->
+      <div v-if="!activeSpace" class="kb-spaces">
+        <div v-if="spacesError" class="kb-state">
+          <el-empty :description="spacesError"><el-button size="small" @click="loadSpaces">重试</el-button></el-empty>
+        </div>
+        <div v-else-if="spacesLoaded && spacesTotal === 0" class="kb-state"><el-empty description="知识库还没有内容" /></div>
+        <div v-else-if="spacesLoaded" class="kb-spaces-grid">
+          <button class="kb-space-card" @click="enterSpace('', '全部', '📚')">
+            <span class="kb-space-icon">📚</span>
+            <span class="kb-space-main">
+              <span class="kb-space-name">全部</span>
+              <span class="kb-space-desc">全库 Wiki 页面</span>
+            </span>
+            <span class="kb-space-count">{{ spacesTotal }} 篇</span>
+          </button>
+          <button v-if="spacesDefaultCount > 0" class="kb-space-card" @click="enterSpace('default', '默认空间', '📄')">
+            <span class="kb-space-icon">📄</span>
+            <span class="kb-space-main">
+              <span class="kb-space-name">默认空间</span>
+              <span class="kb-space-desc">未归入其它空间的页面</span>
+            </span>
+            <span class="kb-space-count">{{ spacesDefaultCount }} 篇</span>
+          </button>
+          <button v-for="s in spaces" :key="s.id" class="kb-space-card" @click="enterSpace(s.id, s.name, s.icon || '🗂️')">
+            <span class="kb-space-icon">{{ s.icon || '🗂️' }}</span>
+            <span class="kb-space-main">
+              <span class="kb-space-name">{{ s.name }}</span>
+              <span v-if="s.description" class="kb-space-desc">{{ s.description }}</span>
+            </span>
+            <span class="kb-space-count">{{ s.count }} 篇</span>
+          </button>
+        </div>
+        <div v-else class="kb-state"><el-empty description="加载中…" /></div>
       </div>
-      <div v-else-if="indexLoaded && index.total === 0" class="kb-state"><el-empty description="知识库还没有内容" /></div>
-      <div v-else-if="indexLoaded" class="kb-body-inner">
+
+      <!-- 第二级: 空间内 Wiki -->
+      <template v-else>
+        <div v-if="indexError" class="kb-state">
+          <el-empty :description="indexError"><el-button size="small" @click="loadIndex">重试</el-button></el-empty>
+        </div>
+        <div v-else-if="indexLoaded && index.total === 0" class="kb-state"><el-empty description="该空间还没有内容" /></div>
+        <div v-else-if="indexLoaded" class="kb-body-inner">
         <aside class="kb-cats">
           <div v-for="cat in index.categories" :key="cat.name" class="kb-cat">
             <button class="kb-cat-head" :class="{ open: openCats.includes(cat.name) }" @click="toggleCat(cat.name)">
@@ -232,7 +324,8 @@ onMounted(() => void loadIndex())
           <div v-else class="kb-state"><el-empty description="从左侧选择一篇文章开始阅读" /></div>
         </section>
       </div>
-      <div v-else class="kb-state"><el-empty description="加载中…" /></div>
+        <div v-else class="kb-state"><el-empty description="加载中…" /></div>
+      </template>
     </div>
   </div>
 </template>

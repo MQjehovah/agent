@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { CaretRight, Document, Refresh, Search } from '@element-plus/icons-vue'
+import { Back, CaretRight, Document, Refresh, Search } from '@element-plus/icons-vue'
 import { ApiError, request } from '../api/client'
-import type { WikiIndex, WikiPage, WikiPageMeta } from '../api/types'
+import type { WikiIndex, WikiPage, WikiPageMeta, WikiSpaceItem, WikiSpacesResp } from '../api/types'
 import { useSettingsStore } from '../stores/settings'
 import MarkdownBody from '../components/MarkdownBody.vue'
 
@@ -14,6 +14,15 @@ const indexLoading = ref(false)
 const indexError = ref('')
 const indexLoaded = ref(false)
 const index = ref<WikiIndex>({ total: 0, categories: [], running: false })
+
+/** 两级视图: activeSpace=null 显示空间卡片列表; 否则进入该空间 wiki(id ''=全部, 'default'=默认空间) */
+const activeSpace = ref<{ id: string; name: string; icon: string } | null>(null)
+const spaces = ref<WikiSpaceItem[]>([])
+const spacesTotal = ref(0)
+const spacesDefaultCount = ref(0)
+const spacesLoading = ref(false)
+const spacesError = ref('')
+const spacesLoaded = ref(false)
 const openCats = ref<string[]>([])
 /** 当前选中页的目录元信息(选中高亮 / 加载中标题 / 失败重试) */
 const current = ref<WikiPageMeta | null>(null)
@@ -119,12 +128,55 @@ function ragError(err: unknown): string {
   return `RAG 知识库不可达:${(err as Error).message}`
 }
 
+async function loadSpaces() {
+  if (!settings.hasUser) return
+  spacesLoading.value = true
+  spacesError.value = ''
+  try {
+    const data = await request<WikiSpacesResp>('rag', '/api/wiki/spaces')
+    spaces.value = data.spaces ?? []
+    spacesTotal.value = data.total ?? 0
+    spacesDefaultCount.value = data.default_count ?? 0
+    spacesLoaded.value = true
+  } catch (err) {
+    spacesError.value = ragError(err)
+  } finally {
+    spacesLoading.value = false
+  }
+}
+
+/** 进入空间(卡片点击): 重置阅读状态并按空间过滤目录 */
+function enterSpace(id: string, name: string, icon: string) {
+  activeSpace.value = { id, name, icon }
+  current.value = null
+  page.value = null
+  pageError.value = ''
+  openCats.value = []
+  void loadIndex()
+}
+
+/** 返回空间卡片列表(刷新计数) */
+function backToSpaces() {
+  activeSpace.value = null
+  current.value = null
+  page.value = null
+  pageError.value = ''
+  void loadSpaces()
+}
+
+function refresh() {
+  if (activeSpace.value) void loadIndex()
+  else void loadSpaces()
+}
+
 async function loadIndex() {
   if (!settings.hasUser) return
   indexLoading.value = true
   indexError.value = ''
   try {
-    const data = await request<WikiIndex>('rag', '/api/wiki')
+    const sid = activeSpace.value?.id ?? ''
+    const qs = sid ? '?space_id=' + encodeURIComponent(sid) : ''
+    const data = await request<WikiIndex>('rag', '/api/wiki' + qs)
     index.value = data
     indexLoaded.value = true
     // 保留仍存在的已展开分类;确保当前阅读页所在分类可见,避免高亮与内容脱节
@@ -181,7 +233,7 @@ function formatTime(t: string): string {
 }
 
 onMounted(() => {
-  if (settings.hasUser) void loadIndex()
+  if (settings.hasUser) void loadSpaces()
 })
 </script>
 
@@ -189,9 +241,11 @@ onMounted(() => {
   <div class="knowledge-view">
     <header class="view-header">
       <div class="view-header-left">
-        <span class="view-title">知识库</span>
-        <span v-if="indexLoaded && index.total > 0" class="knowledge-count">共 {{ index.total }} 篇</span>
-        <el-tag v-if="index.running" size="small" type="warning" effect="plain" class="knowledge-running">
+        <el-button v-if="activeSpace" :icon="Back" size="small" circle text title="返回空间列表" @click="backToSpaces" />
+        <span class="view-title">{{ activeSpace ? activeSpace.icon + ' ' + activeSpace.name : '知识库' }}</span>
+        <span v-if="!activeSpace && spacesLoaded && spacesTotal > 0" class="knowledge-count">共 {{ spacesTotal }} 篇</span>
+        <span v-if="activeSpace && indexLoaded && index.total > 0" class="knowledge-count">共 {{ index.total }} 篇</span>
+        <el-tag v-if="activeSpace && index.running" size="small" type="warning" effect="plain" class="knowledge-running">
           知识库整理中
         </el-tag>
       </div>
@@ -208,10 +262,10 @@ onMounted(() => {
           :icon="Refresh"
           size="small"
           circle
-          title="刷新目录"
-          :loading="indexLoading"
+          title="刷新"
+          :loading="indexLoading || spacesLoading"
           :disabled="!settings.hasUser"
-          @click="loadIndex"
+          @click="refresh"
         />
       </div>
     </header>
@@ -281,7 +335,7 @@ onMounted(() => {
       </div>
     </el-dialog>
 
-    <div v-loading="indexLoading" class="knowledge-body">
+    <div v-loading="spacesLoading || indexLoading" class="knowledge-body">
       <!-- 未登录:先完成企业 SSO 登录 -->
       <div v-if="!settings.hasUser" class="knowledge-state">
         <el-empty description="登录后可查看知识库">
@@ -289,19 +343,60 @@ onMounted(() => {
         </el-empty>
       </div>
 
-      <!-- 目录加载失败 -->
-      <div v-else-if="indexError" class="knowledge-state">
-        <el-empty :description="indexError">
-          <el-button size="small" @click="loadIndex">重试</el-button>
-        </el-empty>
+      <!-- 第一级: 空间卡片列表 -->
+      <div v-else-if="!activeSpace" class="knowledge-spaces">
+        <div v-if="spacesError" class="knowledge-state">
+          <el-empty :description="spacesError">
+            <el-button size="small" @click="loadSpaces">重试</el-button>
+          </el-empty>
+        </div>
+        <div v-else-if="spacesLoaded && spacesTotal === 0" class="knowledge-state">
+          <el-empty description="知识库还没有内容" />
+        </div>
+        <div v-else-if="spacesLoaded" class="knowledge-spaces-grid">
+          <button class="knowledge-space-card" @click="enterSpace('', '全部', '📚')">
+            <span class="knowledge-space-icon">📚</span>
+            <span class="knowledge-space-main">
+              <span class="knowledge-space-name">全部</span>
+              <span class="knowledge-space-desc">全库 Wiki 页面</span>
+            </span>
+            <span class="knowledge-space-count">{{ spacesTotal }} 篇</span>
+          </button>
+          <button v-if="spacesDefaultCount > 0" class="knowledge-space-card" @click="enterSpace('default', '默认空间', '📄')">
+            <span class="knowledge-space-icon">📄</span>
+            <span class="knowledge-space-main">
+              <span class="knowledge-space-name">默认空间</span>
+              <span class="knowledge-space-desc">未归入其它空间的页面</span>
+            </span>
+            <span class="knowledge-space-count">{{ spacesDefaultCount }} 篇</span>
+          </button>
+          <button v-for="s in spaces" :key="s.id" class="knowledge-space-card" @click="enterSpace(s.id, s.name, s.icon || '🗂️')">
+            <span class="knowledge-space-icon">{{ s.icon || '🗂️' }}</span>
+            <span class="knowledge-space-main">
+              <span class="knowledge-space-name">{{ s.name }}</span>
+              <span v-if="s.description" class="knowledge-space-desc">{{ s.description }}</span>
+            </span>
+            <span class="knowledge-space-count">{{ s.count }} 篇</span>
+          </button>
+        </div>
+        <div v-else class="knowledge-state"><el-empty description="加载中…" /></div>
       </div>
 
-      <!-- 知识库为空 -->
-      <div v-else-if="indexLoaded && index.total === 0" class="knowledge-state">
-        <el-empty description="知识库还没有内容" />
-      </div>
+      <!-- 第二级: 空间内 Wiki -->
+      <template v-else>
+        <!-- 目录加载失败 -->
+        <div v-if="indexError" class="knowledge-state">
+          <el-empty :description="indexError">
+            <el-button size="small" @click="loadIndex">重试</el-button>
+          </el-empty>
+        </div>
 
-      <div v-else-if="indexLoaded" class="knowledge-body-inner">
+        <!-- 空间为空 -->
+        <div v-else-if="indexLoaded && index.total === 0" class="knowledge-state">
+          <el-empty description="该空间还没有内容" />
+        </div>
+
+        <div v-else-if="indexLoaded" class="knowledge-body-inner">
         <aside class="knowledge-cats">
           <div v-for="cat in index.categories" :key="cat.name" class="knowledge-cat">
             <button class="knowledge-cat-head" :class="{ open: openCats.includes(cat.name) }" @click="toggleCat(cat.name)">
@@ -367,6 +462,7 @@ onMounted(() => {
           </div>
         </section>
       </div>
+      </template>
     </div>
   </div>
 </template>

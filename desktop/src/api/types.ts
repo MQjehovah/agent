@@ -245,6 +245,22 @@ export interface WikiCategory {
   pages: WikiPageMeta[]
 }
 
+/** GET /api/wiki/spaces 的空间项(卡片入口) */
+export interface WikiSpaceItem {
+  id: string
+  name: string
+  icon: string
+  description: string
+  count: number
+}
+
+/** GET /api/wiki/spaces 响应(默认空间计数单列) */
+export interface WikiSpacesResp {
+  spaces: WikiSpaceItem[]
+  default_count: number
+  total: number
+}
+
 /** GET /api/wiki 目录响应(category 名可能是「未分类」) */
 export interface WikiIndex {
   total: number
