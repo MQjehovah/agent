@@ -6,7 +6,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 interface User {
   id: number | string
   name: string
-  display_name?: string
+  work_id?: string
   role: string
   status?: string
   department?: string
@@ -45,10 +45,10 @@ const loading = ref(false)
 
 // —— 用户 ——
 const dialog = ref(false)
-const form = ref({ name: '', display_name: '', password: '', role: 'default', department: '' })
+const form = ref({ name: '', work_id: '', password: '', role: 'default', department: '' })
 const editDialog = ref(false)
 const editTarget = ref<User | null>(null)
-const editForm = ref({ role: '', display_name: '', department: '', password: '' })
+const editForm = ref({ name: '', work_id: '', role: '', department: '', password: '' })
 
 // —— 角色 ——
 const roleDialog = ref(false)
@@ -67,7 +67,7 @@ const deptForm = ref<{ name: string; description: string; manager_id: number | n
 
 const roleNames = computed(() => roles.value.map((r) => r.name))
 const deptNames = computed(() => departments.value.map((d) => d.name))
-const userOptions = computed(() => users.value.map((u) => ({ id: Number(u.id), name: u.display_name || u.name })))
+const userOptions = computed(() => users.value.map((u) => ({ id: Number(u.id), name: u.name })))
 
 async function load() {
   loading.value = true
@@ -111,7 +111,7 @@ async function addUser() {
   try {
     await post('/api/rbac/users', form.value)
     dialog.value = false
-    form.value = { name: '', display_name: '', password: '', role: 'default', department: '' }
+    form.value = { name: '', work_id: '', password: '', role: 'default', department: '' }
     await load()
   } catch (e) {
     ElMessage.error((e as Error).message)
@@ -121,8 +121,9 @@ async function addUser() {
 function openEdit(u: User) {
   editTarget.value = u
   editForm.value = {
+    name: u.name ?? '',
+    work_id: u.work_id ?? '',
     role: u.role,
-    display_name: u.display_name ?? '',
     department: u.department ?? '',
     password: ''
   }
@@ -133,7 +134,8 @@ async function saveEdit() {
   const u = editTarget.value
   if (!u) return
   const body: Record<string, string> = { role: editForm.value.role }
-  if (editForm.value.display_name !== (u.display_name ?? '')) body.display_name = editForm.value.display_name
+  if (editForm.value.name !== (u.name ?? '')) body.name = editForm.value.name
+  if (editForm.value.work_id !== (u.work_id ?? '')) body.work_id = editForm.value.work_id
   if (editForm.value.department !== (u.department ?? '')) body.department = editForm.value.department
   if (editForm.value.password) body.password = editForm.value.password
   try {
@@ -157,7 +159,7 @@ async function toggle(u: User) {
 
 async function removeUser(u: User) {
   try {
-    await ElMessageBox.confirm(`删除用户「${u.display_name || u.name}」?`, '确认', { type: 'warning' })
+    await ElMessageBox.confirm(`删除用户「${u.name}」?`, '确认', { type: 'warning' })
   } catch { return }
   try {
     await del(`/api/rbac/users/${u.id}`)
@@ -294,10 +296,8 @@ onMounted(load)
       <el-tab-pane v-if="canUsers" label="用户" name="users">
         <el-table :data="users" v-loading="loading">
           <el-table-column prop="id" label="ID" width="70" />
-          <el-table-column prop="name" label="工号/用户名" min-width="140" />
-          <el-table-column label="显示名" min-width="120">
-            <template #default="{ row }">{{ row.display_name || '—' }}</template>
-          </el-table-column>
+          <el-table-column prop="work_id" label="工号" min-width="140" />
+          <el-table-column prop="name" label="姓名" min-width="120" />
           <el-table-column prop="role" label="角色" width="120">
             <template #default="{ row }"><el-tag size="small">{{ row.role }}</el-tag></template>
           </el-table-column>
@@ -377,8 +377,8 @@ onMounted(load)
     <!-- 新建用户 -->
     <el-dialog v-model="dialog" title="新建用户" width="460px">
       <el-form label-width="90px">
-        <el-form-item label="工号/用户名"><el-input v-model="form.name" /></el-form-item>
-        <el-form-item label="显示名"><el-input v-model="form.display_name" placeholder="中文显示名(可选)" /></el-form-item>
+        <el-form-item label="工号"><el-input v-model="form.work_id" placeholder="工号/登录账号(市场代授权身份)" /></el-form-item>
+        <el-form-item label="姓名"><el-input v-model="form.name" placeholder="姓名" /></el-form-item>
         <el-form-item label="部门">
           <el-select v-model="form.department" filterable allow-create clearable style="width: 100%" placeholder="选择或输入部门">
             <el-option v-for="d in deptNames" :key="d" :label="d" :value="d" />
@@ -400,8 +400,8 @@ onMounted(load)
     <!-- 编辑用户 -->
     <el-dialog v-model="editDialog" title="编辑用户" width="460px">
       <el-form label-width="90px" v-if="editTarget">
-        <el-form-item label="工号/用户名"><el-input :model-value="editTarget.name" disabled /></el-form-item>
-        <el-form-item label="显示名"><el-input v-model="editForm.display_name" placeholder="中文显示名" /></el-form-item>
+        <el-form-item label="工号"><el-input :model-value="editTarget.work_id" disabled /></el-form-item>
+        <el-form-item label="姓名"><el-input v-model="editForm.name" placeholder="姓名" /></el-form-item>
         <el-form-item label="部门">
           <el-select v-model="editForm.department" filterable allow-create clearable style="width: 100%" placeholder="选择或输入部门">
             <el-option v-for="d in deptNames" :key="d" :label="d" :value="d" />

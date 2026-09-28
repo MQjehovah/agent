@@ -36,7 +36,7 @@ const { theme } = useTheme()
 const loading = ref(false)
 const error = ref('')
 const summary = ref<UsageSummary | null>(null)
-const me = ref<{ name: string; display_name?: string; role: string }>({ name: '', display_name: '', role: '' })
+const me = ref<{ name: string; work_id?: string; role: string }>({ name: '', work_id: '', role: '' })
 const department = ref('')
 
 const roleLabel = computed(() => {
@@ -143,9 +143,9 @@ async function load() {
   loading.value = true
   error.value = ''
   const jobs = [
-    api<{ name: string; display_name?: string; role: string; department?: string }>('/api/auth/me')
+    api<{ name: string; work_id?: string; role: string; department?: string }>('/api/auth/me')
       .then(d => {
-        me.value = { name: d.name || '', display_name: d.display_name, role: d.role || '' }
+        me.value = { name: d.name || '', work_id: d.work_id, role: d.role || '' }
         department.value = d.department ?? ''
       }).catch(() => {}),
     api<UsageSummary>('/api/me/gateway-usage')
@@ -165,7 +165,7 @@ onMounted(load)
       <div>
         <h2>个人中心</h2>
         <div class="sub">
-          {{ (me.display_name || me.name) ? `你好，${me.display_name || me.name}（${roleLabel}），这是你的个人中心` : '你的个人中心' }}
+          {{ me.name ? `你好，${me.name}（${roleLabel}），这是你的个人中心` : '你的个人中心' }}
           <span v-if="summary" class="usage-updated">· 用量更新于 {{ formatTime(summary.fetchedAt) }}</span>
         </div>
       </div>
@@ -174,8 +174,8 @@ onMounted(load)
 
     <div class="section-title">账号信息</div>
     <div class="card profile-card">
-      <div class="profile-row"><span class="profile-k">姓名</span><span>{{ me.display_name || me.name || '—' }}</span></div>
-      <div class="profile-row"><span class="profile-k">工号</span><span class="mono">{{ me.name || '—' }}</span></div>
+      <div class="profile-row"><span class="profile-k">姓名</span><span>{{ me.name || '—' }}</span></div>
+      <div class="profile-row"><span class="profile-k">工号</span><span class="mono">{{ me.work_id || '—' }}</span></div>
       <div class="profile-row"><span class="profile-k">角色</span><span>{{ roleLabel }}</span></div>
       <div class="profile-row"><span class="profile-k">部门</span><span>{{ department || '—' }}</span></div>
     </div>

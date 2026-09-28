@@ -169,7 +169,8 @@ export async function freshAgentJwt(): Promise<string | null> {
       String(identity.user.id),
       identity.user.name,
       'active',
-      identity.user.roles ?? []
+      identity.user.roles ?? [],
+      identity.user.department ?? ''
     )
     if (current) {
       current.agentJwt = next
@@ -301,7 +302,7 @@ export async function startSsoLogin(timeoutMs = 5 * 60_000): Promise<IdentityUse
 
   // agent JIT:失败降级(与既有行为一致)
   try {
-    identity.agentJwt = await ensureAgentJwt(sub, name, 'active', roles)
+    identity.agentJwt = await ensureAgentJwt(sub, name, 'active', roles, user.department ?? '')
     saveIdentity(identity)
   } catch (err) {
     console.warn('[identity] agent JIT 降级(无 agent JWT):', (err as Error).message)

@@ -290,7 +290,7 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS rbac_users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
-                    display_name TEXT DEFAULT '',
+                    work_id TEXT DEFAULT '',
                     department TEXT DEFAULT '',
                     role TEXT NOT NULL DEFAULT 'default',
                     status TEXT DEFAULT 'active',
@@ -499,7 +499,33 @@ class Storage:
             # 老库升级: 渐进披露(工具搜索)的会话激活集(JSON 数组)
             _add_col("session_meta", "active_tools TEXT DEFAULT '[]'")
             _add_col("rbac_users", "password_hash TEXT DEFAULT ''")
+            # 历史列(已废弃): 仅老库迁移回填 work_id/name 时读取, 新代码不再读写
             _add_col("rbac_users", "display_name TEXT DEFAULT ''")
+            # 姓名/工号分离: name=姓名, work_id=工号/登录账号(独立列, 市场代授权用它)
+            _add_col("rbac_users", "work_id TEXT DEFAULT ''")
+            with suppress(sqlite3.OperationalError):
+                # 一次性回填(幂等, 仅 work_id 为空的行):
+                #   name=工号 + display_name=姓名 → work_id=工号, name=姓名;
+                #   name 已是姓名(中文/含空白) → work_id 保持空;
+                #   name 为纯 ASCII 账号(无空白, 如 admin/工号) → work_id=name。
+                for _r in conn.execute(
+                    "SELECT id, name, display_name FROM rbac_users "
+                    "WHERE work_id IS NULL OR work_id = ''"
+                ).fetchall():
+                    _rid, _nm_raw, _disp_raw = _r[0], _r[1], _r[2]
+                    _nm = str(_nm_raw or "").strip()
+                    _disp = str(_disp_raw or "").strip()
+                    if _disp and _disp != _nm:
+                        _wid, _new_name = _nm, _disp
+                    elif _nm and (not _disp) and _nm.isascii() and not any(c.isspace() for c in _nm):
+                        _wid, _new_name = _nm, _nm
+                    else:
+                        _wid, _new_name = "", _nm
+                    if _wid or _new_name != _nm:
+                        conn.execute("UPDATE rbac_users SET work_id=?, name=? WHERE id=?",
+                                     (_wid, _new_name, _rid))
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_rbac_users_work_id ON rbac_users(work_id)")
+                conn.commit()
             # 老库升级: 内置角色的 Web 权限/数据范围回填(仅当仍为默认空值时, 幂等)
             with suppress(sqlite3.OperationalError):
                 conn.execute(
@@ -1855,7 +1881,7 @@ class Storage:
     def get_user_by_token(self, token: str) -> dict[str, Any] | None:
         with self._get_connection() as conn:
             row = conn.execute("""
-                SELECT u.id, u.name, u.display_name, u.department, u.role, u.status, t.id AS token_id
+                SELECT u.id, u.name, u.work_id, u.department, u.role, u.status, t.id AS token_id
                 FROM web_tokens t JOIN rbac_users u ON t.user_id = u.id WHERE t.token = ?
             """, (token,)).fetchone()
         if row:
@@ -1870,7 +1896,7 @@ class Storage:
         with self._get_connection() as conn:
             rows = conn.execute("""
                 SELECT t.id, substring(t.token,1,8)||'...' AS token_preview, t.user_id,
-                       u.name AS user_name, u.display_name, t.description, t.created_at, t.last_used_at
+                       u.name AS user_name, u.work_id, t.description, t.created_at, t.last_used_at
                 FROM web_tokens t JOIN rbac_users u ON t.user_id = u.id ORDER BY t.id DESC
             """).fetchall()
         return [dict(r) for r in rows]
@@ -1993,8 +2019,9 @@ class Storage:
         import hashlib
         with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT id, name, display_name, department, role, status, password_hash FROM rbac_users WHERE name = ? AND status = 'active'",
-                (username,),
+                "SELECT id, name, work_id, department, role, status, password_hash FROM rbac_users "
+                "WHERE (name = ? OR work_id = ?) AND status = 'active' ORDER BY id LIMIT 1",
+                (username, username),
             ).fetchone()
         if not row or not row["password_hash"]:
             return None
@@ -2006,7 +2033,7 @@ class Storage:
                 return None
         except Exception:
             return None
-        return {"id": row["id"], "name": row["name"], "display_name": row["display_name"] or row["name"],
+        return {"id": row["id"], "name": row["name"], "work_id": row["work_id"] or "",
                 "department": row["department"], "role": row["role"], "status": row["status"]}
 
     def close(self):

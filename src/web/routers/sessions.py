@@ -79,8 +79,8 @@ def build_sessions_router(server) -> APIRouter:
             }
             if can_all:
                 info = server._owner_display(sid, owner_tag or tag)
-                item.update({"user_id": info["uid"], "owner": info["display_name"],
-                             "display_name": info["display_name"], "tag": info["tag"]})
+                item.update({"user_id": info["uid"], "owner": info["name"],
+                             "name": info["name"], "work_id": info["work_id"], "tag": info["tag"]})
             out.append(item)
         out.sort(key=lambda x: x["created_at"], reverse=True)
         return {"sessions": out}

@@ -281,9 +281,9 @@ def _seed_dept_scope_users(st):
     rbac.create_department("设备部")
     rbac.create_department("售后部")
     rbac.create_role("deptmon", permissions=["admin.monitor"], data_scope="department")
-    mgr = rbac.create_user(name="mgr", department="设备部", role="deptmon", display_name="设备主管")
-    a1 = rbac.create_user(name="a1", department="设备部", display_name="设备甲")
-    b1 = rbac.create_user(name="b1", department="售后部", display_name="售后乙")
+    mgr = rbac.create_user(name="设备主管", work_id="mgr", department="设备部", role="deptmon")
+    a1 = rbac.create_user(name="设备甲", work_id="a1", department="设备部")
+    b1 = rbac.create_user(name="售后乙", work_id="b1", department="售后部")
     return mgr, a1, b1
 
 

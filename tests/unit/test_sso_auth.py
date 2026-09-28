@@ -245,14 +245,14 @@ def test_get_auth_dual_track_accepts_sso_token(sso_env, tmp_path, monkeypatch):
     from web.server import WebServer
 
     key, _ = sso_env
-    # 预置 rbac 用户(name=sub 工号)
+    # 预置 rbac 用户(work_id=sub 工号, name=姓名)
     prev = storage_mod._storage_instance
     s = Storage(str(tmp_path))
     storage_mod._storage_instance = s
     with s.get_connection() as conn:
         conn.execute(
-            "INSERT INTO rbac_users (name, department, role, status, created_at, updated_at) "
-            "VALUES ('10086', '研发', 'default', 'active', datetime('now'), datetime('now'))"
+            "INSERT INTO rbac_users (name, work_id, department, role, status, created_at, updated_at) "
+            "VALUES ('张三', '10086', '研发', 'default', 'active', datetime('now'), datetime('now'))"
         )
         conn.commit()
     try:
@@ -261,7 +261,8 @@ def test_get_auth_dual_track_accepts_sso_token(sso_env, tmp_path, monkeypatch):
         token = sign_token(valid_claims(), key)
         resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200, resp.text
-        assert resp.json()["name"] == "10086"
+        assert resp.json()["name"] == "张三"
+        assert resp.json()["work_id"] == "10086"
         assert resp.json()["role"] == "default"
     finally:
         s.close()

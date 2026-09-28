@@ -44,7 +44,7 @@ def _resolve_rbac(rbac=None):
 
 
 def resolve_rbac_user(uid: str, rbac=None) -> dict | None:
-    """按数字 uid 查 rbac_users(name=工号 / display_name / department / role)。
+    """按数字 uid 查 rbac_users(name=姓名 / work_id=工号 / department / role)。
 
     rbac 缺省时回退进程内 storage 新建 RBACManager; 非数字/查不到/异常 → None(静默)。
     """
@@ -80,8 +80,8 @@ def resolve_dingtalk_uid(user_id, rbac=None) -> str:
 def resolve_user_profile(ctx, rbac=None) -> dict:
     """RunContext → 用户画像字段(全部字符串, 缺失为空)。
 
-    - name: ctx.user_name(渠道显示名)优先, rbac.display_name 兜底;
-    - employee_id: rbac_users.name(= 工号);
+    - name: ctx.user_name(渠道显示名) 优先, rbac_users.name(= 姓名) 兜底;
+    - employee_id: rbac_users.work_id(= 工号);
     - department: ctx.user_department 优先, rbac.department 兜底;
     - user_role: 渠道显式角色(技能/身份判定唯一角色源); role: 权限判定哨兵值;
     - dingtalk: rbac_user_identities 中 platform='dingtalk' 的 platform_uid(未绑定为空);
@@ -94,8 +94,8 @@ def resolve_user_profile(ctx, rbac=None) -> dict:
         "user_id": str(getattr(ctx, "user_id", "") or ""),
         "uid": uid,
         "channel": channel_from_tag(getattr(ctx, "user_id", "")),
-        "name": flat_text(getattr(ctx, "user_name", "")) or flat_text(user.get("display_name")),
-        "employee_id": flat_text(user.get("name")),
+        "name": flat_text(getattr(ctx, "user_name", "")) or flat_text(user.get("name")),
+        "employee_id": flat_text(user.get("work_id")),
         "department": (flat_text(getattr(ctx, "user_department", ""))
                        or flat_text(user.get("department"))),
         "user_role": flat_text(getattr(ctx, "user_role", "")),

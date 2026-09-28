@@ -90,7 +90,7 @@ def create_jwt(user: dict, expires_seconds: int | None = None) -> str:
         expires_seconds = _session_ttl_seconds()
     import time
     payload = {"uid": user["id"], "name": user["name"], "role": user["role"],
-               "display_name": user.get("display_name") or "",
+               "work_id": user.get("work_id") or "",
                "exp": int(time.time()) + expires_seconds}
     return jwt.encode(payload, _load_jwt_secret(), algorithm="HS256")
 
@@ -220,20 +220,20 @@ def _sso_claim_email(claims: dict) -> str:
     return str(v).strip().lower() if isinstance(v, str) and v.strip() else ""
 
 
-_SSO_USER_COLS = "id, name, display_name, department, role, status, email"
+_SSO_USER_COLS = "id, name, work_id, department, role, status, email"
 
 
 def _sso_user_payload(row) -> dict:
-    """把 rbac_users 行转成鉴权 payload。name 恒为工号(身份键), display_name 为中文/显示名。"""
-    return {"id": row["id"], "name": row["name"], "department": row["department"],
+    """把 rbac_users 行转成鉴权 payload。name=姓名(展示), work_id=工号(身份/市场用户名)。"""
+    return {"id": row["id"], "name": row["name"], "work_id": row["work_id"] or "",
+            "department": row["department"],
             "role": row["role"], "status": row["status"],
-            "display_name": row["display_name"] or row["name"],
             # sqlite3.Row 的 in 判断的是值而非键, 必须用 row.keys()
             "email": (row["email"] or "") if "email" in row.keys() else ""}  # noqa: SIM118
 
 
-def _display_name_for_uid(uid) -> str:
-    """按 uid 查中文显示名(display_name 优先, 空则回退 name)；查不到返回空串。"""
+def _user_name_for_uid(uid) -> str:
+    """按 uid 查姓名(rbac_users.name, 即展示名); 查不到/为空返回空串。"""
     try:
         from storage.storage import get_storage
         storage = get_storage()
@@ -241,11 +241,28 @@ def _display_name_for_uid(uid) -> str:
             return ""
         with storage.get_connection() as conn:
             row = conn.execute(
-                "SELECT display_name, name FROM rbac_users WHERE id = ?", (int(uid),)
+                "SELECT name FROM rbac_users WHERE id = ?", (int(uid),)
             ).fetchone()
-        return (row["display_name"] or row["name"]) if row else ""
+        return (row["name"] or "") if row else ""
     except Exception:
         return ""
+
+
+def _user_identity_for_uid(uid) -> dict:
+    """按 uid 查 {name(姓名), work_id(工号)}; 查不到/非数字返回空字段。"""
+    try:
+        from storage.storage import get_storage
+        storage = get_storage()
+        if not storage or str(uid) in ("", "0", "None") or not str(uid).isdigit():
+            return {"name": "", "work_id": ""}
+        with storage.get_connection() as conn:
+            row = conn.execute(
+                "SELECT name, work_id FROM rbac_users WHERE id = ?", (int(uid),)
+            ).fetchone()
+        return {"name": (row["name"] or ""), "work_id": (row["work_id"] or "")} if row \
+            else {"name": "", "work_id": ""}
+    except Exception:
+        return {"name": "", "work_id": ""}
 
 
 def _sso_claim_name(claims: dict) -> str:
@@ -306,18 +323,17 @@ def _sso_sync_department(storage, uid: int, row, claims: dict):
         ).fetchone()
 
 
-def _sso_sync_display_name(storage, uid: int, row, claims: dict):
-    """SSO 为姓名权威源: claims.name 非空且与当前不同则回写 display_name。
+def _sso_sync_name(storage, uid: int, row, claims: dict):
+    """SSO 为姓名权威源: claims.name 非空且与当前 name(=姓名) 不同则回写。
 
-    空/缺 name 一律保留现有 display_name(不清空、不覆盖为工号);
-    返回回写后的 rbac_users 行(无变化原样返回)。
+    空/缺 name 一律保留现有姓名; 返回回写后的 rbac_users 行(无变化原样返回)。
     """
     claim_name = _sso_claim_name(claims)
-    if not claim_name or claim_name == (row["display_name"] or ""):
+    if not claim_name or claim_name == (row["name"] or ""):
         return row
     with storage.get_connection() as conn:
         conn.execute(
-            "UPDATE rbac_users SET display_name=?, updated_at=datetime('now') WHERE id=?",
+            "UPDATE rbac_users SET name=?, updated_at=datetime('now') WHERE id=?",
             (claim_name, uid),
         )
         conn.commit()
@@ -347,7 +363,7 @@ def _sso_sync_email(storage, uid: int, row, claims: dict):
 
 
 def _sso_lookup_user(sub: str) -> dict | None:
-    """按 SSO sub(工号) 查 rbac_users(name=sub), 返回 auth 形状; 不存在/禁用返回 None。"""
+    """按 SSO sub(工号) 查 rbac_users(work_id=sub), 返回 auth 形状; 不存在/禁用返回 None。"""
     from storage.storage import get_storage
 
     storage = get_storage()
@@ -355,7 +371,7 @@ def _sso_lookup_user(sub: str) -> dict | None:
         return None
     with storage.get_connection() as conn:
         row = conn.execute(
-            f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE name = ?",
+            f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE work_id = ?",
             (sub,),
         ).fetchone()
     if not row or row["status"] != "active":
@@ -364,12 +380,14 @@ def _sso_lookup_user(sub: str) -> dict | None:
 
 
 def _sso_ensure_user(sub: str, claims: dict) -> dict:
-    """SSO 登录: 保证 name=sub(工号) 的用户存在并返回。
+    """SSO 登录: 保证 work_id=sub(工号) 的用户存在并返回(name=姓名)。
 
-    1. 按 name=sub 命中 → 直接返回(姓名/部门按 SSO 权威源回写);
-    2. 未命中 → 按 name=claims.name(老账号中文名) 找历史账号 → 把老账号 name
-       改成 sub(工号)+ 补 display_name(保留 role/dept/status/钉钉绑定/历史) 后返回;
-    3. 都未命中 → 新建 name=sub / display_name=claims.name 用户。
+    1. 按 work_id=sub 命中 → 直接返回(姓名/邮箱/部门按 SSO 权威源回写);
+    2. 未命中: 邮箱优先(系统自建账号的 name 未必是工号, 邮箱/LDAP mail 是最可靠对齐键)
+       → 命中即补 work_id=sub, 与"姓名合并"同语义, 避免同一人两份账号;
+       再按 name=claims.name(老账号姓名) 找历史账号 → 补 work_id=sub(保留 role/dept/
+       status/钉钉绑定/历史);
+    3. 都未命中 → 新建 name=claims.name / work_id=sub 用户。
     命中已有账号时以 SSO 为权威源: claims.name/claims.email/claims.dept 非空且不同则回写
     (空值保留手工值); 非空 dept 在部门注册表缺失时自动建档。老账号(命中但)被禁用一律抛
     403; 登录成功且 claims 含 dingtalk 时自动绑钉钉。
@@ -382,9 +400,9 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
         raise HTTPException(status_code=500, detail="storage unavailable")
     claim_name = _sso_claim_name(claims)
 
-    def _row_to_dict(conn, name: str):
+    def _row_by(conn, col: str, value: str):
         return conn.execute(
-            f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE name = ?", (name,)
+            f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE {col} = ?", (value,)
         ).fetchone()
 
     def _refresh(conn, uid: int):
@@ -392,25 +410,23 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
             f"SELECT {_SSO_USER_COLS} FROM rbac_users WHERE id = ?", (uid,)
         ).fetchone()
 
-    def _merge_old_account(old_row, new_name: str, display: str) -> dict:
-        """老账号(name=中文) → 改名工号 + 补 display_name(保留其余列)。"""
-        uid = old_row["id"]
-        with storage.get_connection() as conn:
-            new_display = display or old_row["display_name"]
-            conn.execute(
-                "UPDATE rbac_users SET name=?, display_name=?, updated_at=datetime('now') WHERE id=?",
-                (new_name, new_display, uid),
-            )
-            conn.commit()
-            merged = _refresh(conn, uid)
-        merged = _sso_sync_department(storage, uid, merged, claims)
-        merged = _sso_sync_email(storage, uid, merged, claims)
+    def _sync_all(uid: int, row):
+        row = _sso_sync_name(storage, uid, row, claims)
+        row = _sso_sync_email(storage, uid, row, claims)
+        row = _sso_sync_department(storage, uid, row, claims)
         _sso_bind_dingtalk(storage, uid, claims)
-        return _sso_user_payload(merged)
+        return row
 
-    # 1) 按工号查(常规路径)
-    # 0) 邮箱优先: 系统自建账号的 name 未必是工号, 邮箱(LDAP mail)才是最可靠的对齐键;
-    #    命中即复用并把 name 改成工号(与"中文名合并"同语义), 避免同一人两份账号。
+    # 1) 按工号(work_id)查(常规路径)
+    with storage.get_connection() as conn:
+        row = _row_by(conn, "work_id", sub)
+    if row:
+        if row["status"] != "active":
+            raise HTTPException(status_code=403, detail="账号已被禁用")
+        uid = row["id"]
+        return _sso_user_payload(_sync_all(uid, row))
+
+    # 2) 邮箱优先: 命中即补 work_id=sub, 避免同一人两份账号
     claim_email = _sso_claim_email(claims)
     if claim_email:
         with storage.get_connection() as conn:
@@ -422,51 +438,43 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
                 raise HTTPException(status_code=403, detail="账号已被禁用")
             uid = email_row["id"]
             with storage.get_connection() as conn:
-                if email_row["name"] != sub:
+                if (email_row["work_id"] or "") != sub:
                     conn.execute(
-                        "UPDATE rbac_users SET name=?, display_name=?, email=?, "
-                        "updated_at=datetime('now') WHERE id=?",
-                        (sub, claim_name or email_row["display_name"] or sub, claim_email, uid),
+                        "UPDATE rbac_users SET work_id=?, updated_at=datetime('now') WHERE id=?",
+                        (sub, uid),
                     )
-                elif not email_row["email"]:
+                if not email_row["email"]:
                     conn.execute(
                         "UPDATE rbac_users SET email=?, updated_at=datetime('now') WHERE id=?",
                         (claim_email, uid),
                     )
                 conn.commit()
                 email_row = _refresh(conn, uid)
-            email_row = _sso_sync_display_name(storage, uid, email_row, claims)
-            email_row = _sso_sync_email(storage, uid, email_row, claims)
-            email_row = _sso_sync_department(storage, uid, email_row, claims)
-            _sso_bind_dingtalk(storage, uid, claims)
-            return _sso_user_payload(email_row)
+            return _sso_user_payload(_sync_all(uid, email_row))
 
-    with storage.get_connection() as conn:
-        row = _row_to_dict(conn, sub)
-    if row:
-        if row["status"] != "active":
-            raise HTTPException(status_code=403, detail="账号已被禁用")
-        uid = row["id"]
-        row = _sso_sync_display_name(storage, uid, row, claims)
-        row = _sso_sync_email(storage, uid, row, claims)
-        row = _sso_sync_department(storage, uid, row, claims)
-        _sso_bind_dingtalk(storage, uid, claims)
-        return _sso_user_payload(row)
-
-    # 2) 未命中: 按中文名找老账号(双账号合并)
+    # 3) 未命中: 按姓名找老账号 → 补工号(双账号合并, 保留其余列)
     if claim_name:
         with storage.get_connection() as conn:
-            old_row = _row_to_dict(conn, claim_name)
+            old_row = _row_by(conn, "name", claim_name)
         if old_row:
             if old_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="账号已被禁用")
-            return _merge_old_account(old_row, sub, claim_name)
+            uid = old_row["id"]
+            with storage.get_connection() as conn:
+                if (old_row["work_id"] or "") != sub:
+                    conn.execute(
+                        "UPDATE rbac_users SET work_id=?, updated_at=datetime('now') WHERE id=?",
+                        (sub, uid),
+                    )
+                conn.commit()
+                merged = _refresh(conn, uid)
+            return _sso_user_payload(_sync_all(uid, merged))
 
-    # 3) 都未命中: 新建 name=工号, display_name=中文名
+    # 4) 都未命中: 新建 name=姓名, work_id=工号
     dept = sso_auth.sso_user_department(claims)
     role = sso_auth.sso_user_role(claims)
     rbac = RBACManager(storage)
-    uid = rbac.create_user(name=sub, department=dept, role=role, display_name=claim_name)
+    uid = rbac.create_user(name=claim_name or sub, work_id=sub, department=dept, role=role)
     _sso_ensure_department_registered(storage, dept)
     # 随机不可登录密码(SSO 用户不走密码登录)
     import secrets as _secrets
@@ -476,8 +484,8 @@ def _sso_ensure_user(sub: str, claims: dict) -> dict:
             conn.execute("UPDATE rbac_users SET email=? WHERE id=?", (claim_email, uid))
             conn.commit()
     _sso_bind_dingtalk(storage, uid, claims)
-    return {"id": uid, "name": sub, "department": dept, "role": role, "status": "active",
-            "display_name": claim_name or sub, "email": claim_email}
+    return {"id": uid, "name": claim_name or sub, "work_id": sub, "department": dept,
+            "role": role, "status": "active", "email": claim_email}
 
 
 def _sse(payload: dict) -> str:
@@ -666,7 +674,7 @@ class WebServer:
             tag = WebServer._owner_tag(uid)
             try:
                 agent = await pool.acquire(tag, uid,
-                                           auth.get("display_name") or auth.get("name", ""))
+                                           auth.get("name", ""))
                 return agent, tag
             except Exception as e:
                 if type(e).__name__ == "PoolBusyError":
@@ -888,32 +896,31 @@ class WebServer:
         return "allow"
 
     def _owner_display(self, session_id: str, tag: str) -> dict:
-        """解析会话归属展示信息 {uid, name, display_name, tag}。
+        """解析会话归属展示信息 {uid, name, work_id, tag}。
 
-        tag 形如 {channel}:{uid}; name 为身份键(工号, DB 优先), display_name 为
-        中文显示名(内存记录 > DB display_name > name), 供前端优先展示。
+        tag 形如 {channel}:{uid}; name 为姓名(内存记录 > DB name > uid),
+        work_id 为工号(DB), 供前端展示与识别。
         """
         uid = WebServer._tag_uid(tag)
         mem = self._session_owner_names.get(session_id, "")
-        db_name, db_display = "", ""
+        db_name, db_work_id = "", ""
         try:
             from storage.storage import get_storage
             storage = get_storage()
             if storage and uid.isdigit():
                 with storage.get_connection() as conn:
                     row = conn.execute(
-                        "SELECT name, display_name FROM rbac_users WHERE id = ?",
+                        "SELECT name, work_id FROM rbac_users WHERE id = ?",
                         (int(uid),)).fetchone()
                 if row:
-                    db_name, db_display = row["name"] or "", row["display_name"] or ""
+                    db_name, db_work_id = row["name"] or "", row["work_id"] or ""
         except Exception:
-            db_name = db_display = ""
+            db_name = db_work_id = ""
         name = db_name or mem or uid
-        display = (mem if mem and mem != db_name else db_display or db_name) or mem or uid
-        return {"uid": uid, "tag": tag, "name": name, "display_name": display}
+        return {"uid": uid, "tag": tag, "name": name, "work_id": db_work_id}
 
     def _user_display_name(self, tag: str) -> str:
-        """按归属 tag 查询用户中文显示名(display_name 优先, 空回退 name/工号)，用于管理端展示。"""
+        """按归属 tag 查询用户姓名(rbac_users.name); 查不到回退 tag, 用于管理端展示。"""
         uid = WebServer._tag_uid(tag)
         try:
             from storage.storage import get_storage
@@ -921,10 +928,10 @@ class WebServer:
             if storage and str(uid).isdigit():
                 with storage.get_connection() as conn:
                     row = conn.execute(
-                        "SELECT name, display_name FROM rbac_users WHERE id = ?",
+                        "SELECT name FROM rbac_users WHERE id = ?",
                         (int(uid),)).fetchone()
-                if row:
-                    return (row["display_name"] or row["name"]) if row["name"] else tag
+                if row and row["name"]:
+                    return row["name"]
         except Exception:
             pass
         return tag
@@ -981,8 +988,8 @@ class WebServer:
                 "id": sid, "is_streaming": cs.is_streaming,
                 "created_at": cs.created_at, "duration_s": dur,
                 "message_count": cs.message_count(),
-                "uid": info["uid"], "owner": info["display_name"],
-                "display_name": info["display_name"], "tag": info["tag"],
+                "uid": info["uid"], "owner": info["name"],
+                "name": info["name"], "work_id": info["work_id"], "tag": info["tag"],
             })
         out.sort(key=lambda x: x["created_at"], reverse=True)
         return out
@@ -1085,7 +1092,7 @@ class WebServer:
             "conversation_id": sid,
             "channel": channel,
             "user": {"uid": info["uid"], "name": info["name"],
-                     "display_name": info["display_name"]},
+                     "work_id": info["work_id"]},
             "tag": info["tag"],
             "started_at": started_at,
             "duration_s": dur,
@@ -1209,7 +1216,7 @@ class WebServer:
             if not user:
                 raise HTTPException(status_code=401, detail="Unauthorized")
             return {"uid": user["id"], "name": user["name"], "role": user["role"],
-                    "display_name": user.get("display_name") or ""}
+                    "work_id": user.get("work_id") or ""}
 
         _service_token = os.environ.get("AGENT_SERVICE_TOKEN", "")
 
@@ -1307,19 +1314,19 @@ class WebServer:
             _rbac = RBACManager(storage)
             return {"token": token, "user": {"id": user["id"], "name": user["name"],
                      "role": user["role"], "department": user.get("department", ""),
-                     "display_name": user.get("display_name") or user["name"],
+                     "work_id": user.get("work_id") or "",
                      "permissions": _rbac.get_permissions(user["role"]),
                      "data_scope": _rbac.get_data_scope(user["role"])}}
 
         @self._app.get("/api/auth/me")
         async def auth_me(request: Request):
             u = await _get_authz(request)
-            display = (u.get("display_name") or "").strip()
-            if not display:
-                # 旧 JWT(签发时未含 display_name) 兜底按 uid 查
-                display = _display_name_for_uid(u.get("uid", ""))
-            return {"id": u["uid"], "name": u["name"], "role": u["role"],
-                    "display_name": display or u["name"],
+            # 以 DB 为姓名/工号权威源(旧 JWT 可能携带旧格式 name=工号)
+            ident = _user_identity_for_uid(u.get("uid", ""))
+            name = ident["name"] or u.get("name", "")
+            work_id = ident["work_id"] or (u.get("work_id") or "")
+            return {"id": u["uid"], "name": name, "role": u["role"],
+                    "work_id": work_id,
                     "department": u.get("department", ""),
                     "permissions": u.get("permissions", []),
                     "data_scope": u.get("data_scope", "self")}
@@ -1585,7 +1592,7 @@ class WebServer:
                 return JSONResponse({"error": "会话正在处理中,请稍后再试"}, status_code=409)
             chat_session.add_message("user", message)
             chat_session.start_stream()
-            auth_display = auth.get("display_name") or auth.get("name", "") or uid
+            auth_display = auth.get("name", "") or uid
             self._record_owner(session_id, tag, auth_display)
 
             web_user_id = tag
@@ -1665,7 +1672,7 @@ class WebServer:
                 return JSONResponse({"error": "会话正在处理中,请稍后再试"}, status_code=409)
             chat_session.add_message("user", message)
             chat_session.start_stream()
-            auth_display = auth.get("display_name") or auth.get("name", "") or uid
+            auth_display = auth.get("name", "") or uid
             self._record_owner(session_id, tag, auth_display)
 
             web_user_id = tag
@@ -2487,9 +2494,9 @@ class WebServer:
             uid = str(u.get("uid", "")) or ""
             tag = WebServer._owner_tag(uid) if uid and uid not in ("anon", "0", "None") else ""
             storage = get_storage()
-            display = (u.get("display_name") or "").strip()
-            if not display:
-                display = _display_name_for_uid(uid)
+            ident = _user_identity_for_uid(uid)
+            name = ident["name"] or u.get("name", "") or uid
+            work_id = ident["work_id"] or (u.get("work_id") or "")
             sessions_total, running = 0, []
             if tag and storage:
                 try:
@@ -2508,8 +2515,8 @@ class WebServer:
                 except Exception as e:
                     logger.warning(f"[my/overview] 记忆统计失败: {e}")
             return {
-                "user": {"uid": uid, "name": u.get("name", "") or uid,
-                         "display_name": display or u.get("name", "") or uid,
+                "user": {"uid": uid, "name": name,
+                         "work_id": work_id,
                          "role": u.get("role", "")},
                 "sessions": {"total": sessions_total, "running": len(running)},
                 "memory": {"mine": mem_mine, "global": mem_global},
@@ -2879,7 +2886,7 @@ class WebServer:
                 name=data["name"].strip(),
                 department=department,
                 role=data.get("role", "default"),
-                display_name=data.get("display_name", ""),
+                work_id=(data.get("work_id") or "").strip(),
             )
             pw = (data.get("password") or "").strip()
             if pw:
@@ -2924,7 +2931,7 @@ class WebServer:
                 name=data.get("name"),
                 department=new_dept,
                 role=data.get("role"),
-                display_name=data.get("display_name"),
+                work_id=data.get("work_id"),
             )
             pw = (data.get("password") or "").strip()
             if pw:

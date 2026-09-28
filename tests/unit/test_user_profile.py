@@ -75,7 +75,7 @@ def test_no_injection_when_identity_empty(tmp_path):
 def test_no_injection_in_group_context(tmp_path):
     """群聊沿用「群内不注入触发人私有信息」约定: 不注入, 也不查库。"""
     agent = _agent(tmp_path)
-    agent.rbac = _FakeRbac({3: {"name": "202202100024", "display_name": "张明"}})
+    agent.rbac = _FakeRbac({3: {"name": "张明", "work_id": "202202100024"}})
     ctx = RunContext(user_id="dingtalk:3", user_name="张明", user_department="信息部",
                      user_role="default", group_context=True)
     agent._apply_user_profile(ctx)
@@ -87,16 +87,16 @@ def test_no_injection_in_group_context(tmp_path):
 
 def test_employee_id_and_display_name_from_rbac(tmp_path):
     agent = _agent(tmp_path)
-    agent.rbac = _FakeRbac({3: {"name": "202202100024", "display_name": "张明"}})
+    agent.rbac = _FakeRbac({3: {"name": "张明", "work_id": "202202100024"}})
     ctx = RunContext(user_id="web:3", user_department="数字中台部", user_role="editor")
     agent._apply_user_profile(ctx)
     assert "当前用户：张明（工号 202202100024）" in ctx.system_dynamic
     assert agent.rbac.calls == [3]
 
 
-def test_ctx_user_name_wins_over_rbac_display_name(tmp_path):
+def test_ctx_user_name_wins_over_rbac_name(tmp_path):
     agent = _agent(tmp_path)
-    agent.rbac = _FakeRbac({3: {"name": "202202100024", "display_name": "张三"}})
+    agent.rbac = _FakeRbac({3: {"name": "张三", "work_id": "202202100024"}})
     ctx = RunContext(user_id="web:3", user_name="张明")
     agent._apply_user_profile(ctx)
     assert "当前用户：张明（工号 202202100024）" in ctx.system_dynamic
@@ -132,7 +132,7 @@ def test_rbac_not_initialized_is_silent(tmp_path):
 def test_profile_includes_dingtalk_uid_when_bound(tmp_path):
     agent = _agent(tmp_path)
     agent.rbac = _FakeRbac(
-        {3: {"id": 3, "name": "202202100024", "display_name": "季明清",
+        {3: {"id": 3, "name": "季明清", "work_id": "202202100024",
              "department": "应用软件部"}},
         identities={3: [
             {"platform": "gitlab", "platform_uid": "gl-1"},
@@ -150,7 +150,7 @@ def test_profile_includes_dingtalk_uid_when_bound(tmp_path):
 
 def test_profile_omits_dingtalk_when_unbound(tmp_path):
     agent = _agent(tmp_path)
-    agent.rbac = _FakeRbac({3: {"id": 3, "name": "202202100024"}}, identities={})
+    agent.rbac = _FakeRbac({3: {"id": 3, "name": "测试用户", "work_id": "202202100024"}}, identities={})
     ctx = RunContext(user_id="web:3", user_name="张明")
     agent._apply_user_profile(ctx)
     assert "钉钉 userId" not in ctx.system_dynamic
@@ -162,7 +162,7 @@ def test_profile_dingtalk_lookup_failure_is_silent(tmp_path):
             raise RuntimeError("db down")
 
     agent = _agent(tmp_path)
-    agent.rbac = _BrokenIdentities({3: {"id": 3, "name": "202202100024"}})
+    agent.rbac = _BrokenIdentities({3: {"id": 3, "name": "张明", "work_id": "202202100024"}})
     ctx = RunContext(user_id="web:3", user_name="张明")
     agent._apply_user_profile(ctx)
     assert "当前用户：张明（工号 202202100024）" in ctx.system_dynamic

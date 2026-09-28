@@ -107,9 +107,9 @@ def _seed_dept_users(st):
     rbac.create_department("设备部")
     rbac.create_department("售后部")
     rbac.create_role("deptmgr", permissions=["admin.users"], data_scope="department")
-    mgr = rbac.create_user(name="mgr", department="设备部", role="deptmgr", display_name="设备主管")
-    rbac.create_user(name="a1", department="设备部", display_name="设备甲")
-    rbac.create_user(name="b1", department="售后部", display_name="售后乙")
+    mgr = rbac.create_user(name="设备主管", work_id="mgr", department="设备部", role="deptmgr")
+    rbac.create_user(name="设备甲", work_id="a1", department="设备部")
+    rbac.create_user(name="售后乙", work_id="b1", department="售后部")
     return rbac, mgr
 
 

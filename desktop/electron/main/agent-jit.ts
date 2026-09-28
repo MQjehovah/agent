@@ -1,9 +1,9 @@
-// agent 璐﹀彿 JIT:韬唤 鈫?agent 璐﹀彿鏄犲皠(鍑嵁鍔犲瘑瀛樺偍浜庣綉鍏虫暟鎹洰褰?
+// agent 账号 JIT:身份 → agent 账号映射(凭据加密存储于网关数据目录)
 import { randomBytes } from 'node:crypto'
 import { getConfig } from './store'
 import { getCred, saveCred } from './credstore'
 
-/** 鍐呴儴閿欒,甯?HTTP 璇箟鐘舵€佺爜(浠呬富杩涚▼鍐呴儴浣跨敤) */
+/** 内部错误,带 HTTP 语义状态码(仅主进程内部使用) */
 export class AuthError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -24,16 +24,16 @@ async function agentLogin(username: string, password: string): Promise<string> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password })
   })
-  if (!res.ok) throw new AuthError(401, `agent 鐧诲綍澶辫触(HTTP ${res.status})`)
+  if (!res.ok) throw new AuthError(401, `agent 登录失败(HTTP ${res.status})`)
   const data = (await res.json()) as { token: string }
-  // agent JWT 7 澶╂湁鏁?鎻愬墠 1 灏忔椂鍒锋柊
+  // agent JWT 7 天有效, 提前 1 天刷新
   adminJwtCache = { jwt: data.token, expiresAt: Date.now() + 6 * 24 * 3_600_000 }
   return data.token
 }
 
 /**
- * 绠＄悊鍛?JWT:浼樺厛鐜鍙橀噺鍑嵁;鑻?admin 瀵嗙爜宸茶鏈綉鍏?JIT 杞崲,
- * 鍥為€€浣跨敤鍑嵁搴撲腑 admin 鐨勬墭绠″瘑鐮?楦＄敓铔嬮棶棰樼殑瑙ｆ硶)銆?
+ * 管理员 JWT:优先环境变量凭据;若 admin 密码已被本网关 JIT 轮换,
+ * 回退使用凭据库中 admin 的托管密码(鸡生蛋问题的解法)。
  */
 export async function agentAdminJwt(): Promise<string> {
   if (adminJwtCache && Date.now() < adminJwtCache.expiresAt) return adminJwtCache.jwt
@@ -44,7 +44,7 @@ export async function agentAdminJwt(): Promise<string> {
   } catch {
     const stored = getCred(envUser)
     if (stored) return await agentLogin(envUser, stored.agentPassword)
-    throw new AuthError(502, 'agent 绠＄悊鍛樺嚟鎹棤鏁?妫€鏌?AGENT_ADMIN_USER/PASSWORD)')
+    throw new AuthError(502, 'agent 管理员凭据无效(检查 AGENT_ADMIN_USER/PASSWORD)')
   }
 }
 
@@ -58,9 +58,9 @@ async function agentCall(path: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(`${agentBase()}${path}`, { ...init, headers })
   if (res.status === 401 || res.status === 403) {
     adminJwtCache = null
-    throw new AuthError(502, `agent 绠＄悊鎺ュ彛鎷掔粷(HTTP ${res.status}):${await res.text().catch(() => '')}`)
+    throw new AuthError(502, `agent 管理接口拒绝(HTTP ${res.status}):${await res.text().catch(() => '')}`)
   }
-  if (!res.ok) throw new AuthError(502, `agent 绠＄悊鎺ュ彛澶辫触(HTTP ${res.status})`)
+  if (!res.ok) throw new AuthError(502, `agent 管理接口失败(HTTP ${res.status})`)
   return res.json()
 }
 
@@ -69,13 +69,6 @@ function randomPassword(): string {
 }
 
 /**
- * 鎸夊伐鍙?find-or-provision agent 璐﹀彿,骞跺彇寰楄鐢ㄦ埛鐨?agent JWT銆?
- * 绛栫暐:
- *   - 棣栨鐧诲綍:agent 渚у缓鍙?闅忔満瀵嗙爜)鎴栧瀛橀噺璐﹀彿閲嶇疆涓€娆″瘑鐮?鈫?缃戝叧鍔犲瘑淇濆瓨鍑嵁
- *   - 鍚庣画鐧诲綍:鐢ㄤ繚瀛樼殑鍑嵁鐧诲綍(涓嶅啀杞崲,閬垮厤鐮村潖瀛橀噺璐﹀彿)
- *   - 鍑嵁澶辨晥(瀵嗙爜琚閮ㄦ敼鍔?鈫?閲嶇疆涓€娆″苟鏇存柊瀛樺偍
- */
-/**
  * Map SSO roles to an agent rbac role. 'admin' when SSO grants admin, else the
  * least-privileged 'default'. Callers apply elevate-only semantics (never demote).
  */
@@ -83,37 +76,51 @@ export function mapAgentRole(roles: string[] = []): string {
   return roles.some((r) => String(r).toLowerCase() === 'admin') ? 'admin' : 'default'
 }
 
+/**
+ * 按工号 find-or-provision agent 账号,并取得该用户的 agent JWT。
+ * 策略:
+ *   - 首次登录:agent 侧建号(随机密码)或对存量账号重置一次密码 → 网关加密保存凭据
+ *   - 后续登录:用保存的凭据登录(不再轮换,避免破坏存量账号)
+ *   - 凭据失效(密码被外部改动) → 重置一次并更新存储
+ * 账号模型(姓名/工号分离):name=姓名, work_id=工号(身份键, 市场代授权用它);
+ * 登录即按 SSO 权威源回写姓名/部门。
+ */
 export async function ensureAgentJwt(
   sub: string,
   name: string,
   status: string,
-  roles: string[] = []
+  roles: string[] = [],
+  department = ''
 ): Promise<string> {
+  const display = name && name !== sub ? name : sub
   const usersRes = await agentCall('/api/rbac/users')
   const list: Array<Record<string, unknown>> =
     Array.isArray(usersRes) ? usersRes : (usersRes?.users ?? [])
-  const found = list.find((u) => String(u.name) === sub)
+  const byIdentity = (u: Record<string, unknown>) =>
+    String(u.work_id ?? '') === sub || String(u.name) === sub
+  const found = list.find(byIdentity)
   const stored = getCred(sub)
 
   if (!found) {
-    // JIT 寮€閫?榛樿 default 瑙掕壊("鍙兘瀵硅瘽"),鐗规畩瑙掕壊鐢辩鐞嗗憳鍦?agent 渚ц皟鏁?
+    // JIT 开通: 默认 default 角色("只能对话"), 特殊角色由管理员在 agent 侧调整
     const password = randomPassword()
     await agentCall('/api/rbac/users', {
       method: 'POST',
-      body: JSON.stringify({ name: sub, password, role: mapAgentRole(roles), department: '' })
+      body: JSON.stringify({ name: display, work_id: sub, password, role: mapAgentRole(roles), department })
     })
     const usersNow: Array<Record<string, unknown>> =
       Array.isArray(usersRes) ? [] : ((await agentCall('/api/rbac/users'))?.users ?? [])
-    const created = usersNow.find((u) => String(u.name) === sub)
+    const created = usersNow.find(byIdentity)
     if (created) saveCred(sub, { agentUserId: created.id as number | string, agentPassword: password })
-    console.log(`[jit] 寮€閫?agent 璐﹀彿:${sub}(${name})`)
+    console.log(`[jit] 开通 agent 账号:${sub}(${display})`)
   } else if (String(found.status ?? 'active') !== 'active') {
-    throw new AuthError(403, '璐﹀彿宸茶绂佺敤,璇疯仈绯荤鐞嗗憳')
+    throw new AuthError(403, '账号已被禁用,请联系管理员')
   }
 
-  // 鏈夌綉鍏充繚绠＄殑鍑嵁 鈫?鍏堝皾璇曠洿鎺ョ櫥褰?
+  // 有网关保管的凭据 → 先尝试直接登录
   // Elevate-only role sync: promote an existing account to admin when SSO grants
   // admin (never demote, to avoid locking out a manually-managed account).
+  // 姓名/部门按 SSO 权威源回写(登录即同步, 与 SSO 登录同语义)。
   if (found) {
     const desired = mapAgentRole(roles)
     if (desired === 'admin' && String(found.role ?? 'default') !== 'admin') {
@@ -122,6 +129,16 @@ export async function ensureAgentJwt(
         body: JSON.stringify({ role: 'admin' })
       })
       console.log(`[jit] elevate agent role to admin: ${sub}`)
+    }
+    const patch: Record<string, string> = {}
+    if (display && String(found.name ?? '') !== display) patch.name = display
+    if (department && String(found.department ?? '') !== department) patch.department = department
+    if (Object.keys(patch).length) {
+      await agentCall(`/api/rbac/users/${found.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(patch)
+      })
+      console.log(`[jit] 回写姓名/部门: ${sub} ${JSON.stringify(patch)}`)
     }
   }
 
@@ -135,15 +152,15 @@ export async function ensureAgentJwt(
       const login = (await loginRes.json()) as { token: string }
       return login.token
     }
-    console.warn(`[jit] 瀛樺偍鍑嵁澶辨晥,閲嶇疆 agent 瀵嗙爜鍚庨噸璇?${sub}`)
+    console.warn(`[jit] 存储凭据失效,重置 agent 密码后重试: ${sub}`)
   }
 
-  // 鍑嵁缂哄け鎴栧け鏁?鈫?鐢?admin 閲嶇疆涓€娆?鏇存柊瀛樺偍
+  // 凭据缺失或失效 → 由 admin 重置一次,更新存储
   const usersNow: Array<Record<string, unknown>> =
     Array.isArray(usersRes) ? usersRes : ((await agentCall('/api/rbac/users'))?.users ?? [])
-  const target = found ?? usersNow.find((u) => String(u.name) === sub)
+  const target = found ?? usersNow.find(byIdentity)
   if (!target || target.id === undefined || target.id === null) {
-    throw new AuthError(502, 'agent 鐢ㄦ埛寮€閫氬悗鏈壘鍒?id')
+    throw new AuthError(502, 'agent 用户开通后未找到 id')
   }
   const userId = target.id as string | number
 
@@ -157,7 +174,7 @@ export async function ensureAgentJwt(
     headers: resetHeaders,
     body: JSON.stringify({ user_id: userId, password: random })
   })
-  if (!resetRes.ok) throw new AuthError(502, `agent 瀵嗙爜閲嶇疆澶辫触(HTTP ${resetRes.status})`)
+  if (!resetRes.ok) throw new AuthError(502, `agent 密码重置失败(HTTP ${resetRes.status})`)
   saveCred(sub, { agentUserId: userId, agentPassword: random })
 
   const loginRes = await fetch(`${agentBase()}/api/auth/login`, {
@@ -165,7 +182,7 @@ export async function ensureAgentJwt(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: sub, password: random })
   })
-  if (!loginRes.ok) throw new AuthError(502, `agent 鐧诲綍澶辫触(HTTP ${loginRes.status})`)
+  if (!loginRes.ok) throw new AuthError(502, `agent 登录失败(HTTP ${loginRes.status})`)
   const login = (await loginRes.json()) as { token: string }
   return login.token
 }

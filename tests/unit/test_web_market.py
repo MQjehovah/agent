@@ -52,7 +52,7 @@ def env(tmp_path, monkeypatch):
     prev = storage_mod._storage_instance
     store = Storage(str(tmp_path / "ws"))
     storage_mod._storage_instance = store
-    uid = RBACManager(store).create_user(name=MARKET_WORKID, department="研发部")
+    uid = RBACManager(store).create_user(name="市场用户", work_id=MARKET_WORKID, department="研发部")
 
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()

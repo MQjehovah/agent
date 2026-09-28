@@ -39,8 +39,8 @@ def store(tmp_path, monkeypatch):
     storage_mod._storage_instance = prev
 
 
-def _make_user(store, name=WORKID, department="研发部") -> int:
-    return RBACManager(store).create_user(name=name, department=department)
+def _make_user(store, name="测试用户", work_id=WORKID, department="研发部") -> int:
+    return RBACManager(store).create_user(name=name, work_id=work_id, department=department)
 
 
 class _DummyRoot:
@@ -147,7 +147,7 @@ def test_resolve_act_as_non_ascii_name_warns_and_returns_empty(store, caplog):
     原样透传会让 X-Act-As-Sub 在 httpx 头编码处抛 UnicodeEncodeError(钉钉群实测),
     按解析失败处理: 空串 fail-closed + WARNING。
     """
-    uid = _make_user(store, name="朱尚荣")
+    uid = _make_user(store, work_id="朱尚荣")
     with caplog.at_level(logging.WARNING, logger="agent.web.security"):
         assert resolve_market_act_as(f"dingtalk:{uid}") == ""
     assert any("朱尚荣" in r.getMessage() for r in caplog.records

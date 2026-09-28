@@ -192,9 +192,9 @@ const roleLabel = computed(() => {
 
 async function refreshMe() {
   try {
-    const d = await api<{ id?: number; name: string; display_name?: string; role: string;
+    const d = await api<{ id?: number; name: string; work_id?: string; role: string;
       department?: string; permissions?: string[]; data_scope?: string }>('/api/auth/me')
-    me.value = { name: d.display_name || d.name, role: d.role, department: d.department }
+    me.value = { name: d.name, role: d.role, department: d.department }
     setIdentity({ role: d.role, permissions: d.permissions, data_scope: d.data_scope, department: d.department })
     role.value = d.role
     permsVersion.value++
