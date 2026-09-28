@@ -30,7 +30,7 @@ const router = createRouter({
     {
       path: '/',
       component: () => import('./views/Layout.vue'),
-      redirect: '/dashboard',
+      redirect: '/chat',
       children: [
         { path: 'dashboard', component: DashboardView, meta: { title: '工作台' } },
         { path: 'chat', component: ChatView, meta: { title: '对话' } },

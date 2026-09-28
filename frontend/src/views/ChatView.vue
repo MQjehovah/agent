@@ -576,10 +576,6 @@ onBeforeUnmount(() => {
     <div class="chat-main">
       <header class="chat-head">
         <span class="chat-title">{{ sessionId || '新对话' }}</span>
-        <el-radio-group v-model="entryScope" size="small">
-          <el-radio-button value="company">零号员工</el-radio-button>
-          <el-radio-button value="personal">员工助手</el-radio-button>
-        </el-radio-group>
       </header>
       <div ref="scrollRef" class="chat-scroll" @scroll.passive="onScroll">
         <div v-if="messages.length === 0" class="chat-empty">

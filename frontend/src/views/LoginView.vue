@@ -28,7 +28,7 @@ async function submit() {
       data_scope: data.user?.data_scope,
       department: data.user?.department
     })
-    router.push('/dashboard')
+    router.push('/chat')
   } catch (err) {
     error.value = (err as Error).message
   } finally {
@@ -44,7 +44,7 @@ async function loginWithSso() {
   window.location.href = apiUrl('/api/auth/sso/start')
 }
 
-/** SSO 回调:读取 sso_token 写入会话并进入工作台;带 error 则展示原因 */
+/** SSO 回调:读取 sso_token 写入会话并进入会话页;带 error 则展示原因 */
 function handleSsoCallback() {
   const e = route.query.error
   if (typeof e === 'string' && e) error.value = e
@@ -52,7 +52,7 @@ function handleSsoCallback() {
   if (typeof q === 'string' && q) {
     setToken(q)
     // 角色:回调未携带时默认空,后续 /api/auth/me 可补;此处保持最小
-    router.replace('/dashboard')
+    router.replace('/chat')
   }
 }
 
