@@ -9,9 +9,9 @@ export interface AppConfig {
   agentUrl: string
   ragUrl: string
   marketUrl: string
-  routerUrl: string
-  /** router admin 地址:SSO 登录后同域自取 router 凭据(/api/me/*) */
-  routerAdminUrl: string
+  gatewayUrl: string
+  /** gateway admin 地址:SSO 登录后同域自取 gateway 凭据(/api/me/*) */
+  gatewayAdminUrl: string
   /** agent 服务间专用凭证(与 .34 agent 的 AGENT_SERVICE_TOKEN 一致) */
   agentServiceToken: string
   /** 企业 SSO(OIDC)Issuer 地址,留空则读环境变量 OIDC_ISSUER;无内置兜底 */
@@ -63,8 +63,8 @@ export function buildDefaultConfig(input: DefaultConfigInput): AppConfig {
     agentUrl: 'https://ai.xzrobot.com/agent',
     ragUrl: 'https://ai.xzrobot.com/rag',
     marketUrl: 'https://ai.xzrobot.com/market',
-    routerUrl: 'https://ai.xzrobot.com/gateway/api',
-    routerAdminUrl: env.ROUTER_ADMIN_URL ?? 'https://ai.xzrobot.com/gateway',
+    gatewayUrl: env.GATEWAY_URL ?? env.ROUTER_URL ?? 'https://ai.xzrobot.com/gateway/api',
+    gatewayAdminUrl: env.GATEWAY_ADMIN_URL ?? env.ROUTER_ADMIN_URL ?? 'https://ai.xzrobot.com/gateway',
     agentServiceToken: env.AGENT_SERVICE_TOKEN ?? '',
     oidcIssuer: env.OIDC_ISSUER ?? 'https://auth.xzrobot.com',
     oidcClientId: env.OIDC_CLIENT_ID ?? 'dashboard-gateway',
@@ -148,6 +148,28 @@ export interface ConfigStoreDeps {
   readText(): string | null
   /** 覆盖写入 config.json(目录由调用方保证存在) */
   writeText(text: string): void
+  /** 读取后归一化(旧键迁移等);缺省保持原样 */
+  migrateStored?(stored: Partial<Record<string, unknown>>): Partial<Record<string, unknown>>
+}
+
+/**
+ * 旧键迁移(0.2.x 及以前 routerUrl/routerAdminUrl → gatewayUrl/gatewayAdminUrl):
+ * 仅当新键缺失时映射,随后删除旧键;旧键非字符串时直接丢弃。
+ * 抽成纯函数便于 store 与单测共用。
+ */
+export function migrateLegacyConfigKeys(
+  stored: Partial<Record<string, unknown>>
+): Partial<Record<string, unknown>> {
+  const next: Record<string, unknown> = { ...stored }
+  if (next.gatewayUrl === undefined && typeof next.routerUrl === 'string') {
+    next.gatewayUrl = next.routerUrl
+  }
+  if (next.gatewayAdminUrl === undefined && typeof next.routerAdminUrl === 'string') {
+    next.gatewayAdminUrl = next.routerAdminUrl
+  }
+  delete next.routerUrl
+  delete next.routerAdminUrl
+  return next
 }
 
 export interface ConfigStore<T> {
@@ -165,7 +187,8 @@ export function createConfigStore<T extends object>(defaults: T, deps: ConfigSto
   function stored(): Partial<T> {
     try {
       const text = deps.readText()
-      return text ? (JSON.parse(text) as Partial<T>) : {}
+      const raw = text ? (JSON.parse(text) as Partial<Record<string, unknown>>) : {}
+      return (deps.migrateStored ? deps.migrateStored(raw) : raw) as Partial<T>
     } catch {
       // 配置文件缺失或损坏时视为空,并在下次保存时覆盖
       return {}

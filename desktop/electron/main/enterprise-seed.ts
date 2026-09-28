@@ -13,11 +13,17 @@ export const ENTERPRISE_FIELDS = [
   'agentUrl',
   'ragUrl',
   'marketUrl',
-  'routerUrl',
-  'routerAdminUrl',
+  'gatewayUrl',
+  'gatewayAdminUrl',
   'updateFeedUrl',
   'asrUrl'
 ] as const
+
+/** 兼容 0.2.x 及以前安装包/模板的旧字段名(router → gateway 改名);仅当新字段为空时映射 */
+const LEGACY_FIELD_MAP: ReadonlyArray<readonly [string, (typeof ENTERPRISE_FIELDS)[number]]> = [
+  ['routerUrl', 'gatewayUrl'],
+  ['routerAdminUrl', 'gatewayAdminUrl']
+]
 
 /** 早退判定用字段:client_secret 可选(公共客户端 + PKCE),不参与是否已注入的判断 */
 const REQUIRED_SEED_FIELDS = ENTERPRISE_FIELDS.filter((key) => key !== 'oidcClientSecret')
@@ -50,6 +56,18 @@ export function seedEnterpriseConfig(deps: EnterpriseSeedDeps): void {
         const value = data[key]
         if (typeof value === 'string' && value.trim() && !(stored[key] ?? '').trim()) {
           patch[key] = value.trim()
+        }
+      }
+      // 旧字段名(routerUrl/routerAdminUrl)兼容:新字段为空时才映射
+      for (const [oldKey, newKey] of LEGACY_FIELD_MAP) {
+        const value = data[oldKey]
+        if (
+          typeof value === 'string' &&
+          value.trim() &&
+          !(stored[newKey] ?? '').trim() &&
+          !(patch[newKey] ?? '').trim()
+        ) {
+          patch[newKey] = value.trim()
         }
       }
       if (Object.keys(patch).length > 0) {

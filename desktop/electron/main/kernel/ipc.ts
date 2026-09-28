@@ -4,7 +4,7 @@ import { basename, extname, isAbsolute, join as pjoin2 } from 'node:path'
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { getConfig } from '../store'
-import { getIdentity, ensureRouterKey, freshAgentJwt, freshOidcAccessToken } from '../identity'
+import { getIdentity, ensureGatewayKey, freshAgentJwt, freshOidcAccessToken } from '../identity'
 import {
   createSessionStore,
   parseModelIds,
@@ -1067,7 +1067,7 @@ let modelListCache: { at: number; models: string[] } | null = null
 /**
  * 拉取网关可用模型清单(供输入区「模型」下拉)。
  * 失败时回退为已知模型(含默认模型)并带 error 说明, 不阻断会话;
- * 凭据经 ensureRouterKey 自愈(缺失时用 SSO 凭据重换)。
+ * 凭据经 ensureGatewayKey 自愈(缺失时用 SSO 凭据重换)。
  */
 async function handleModelsList(): Promise<{ models: string[]; defaultModel: string; error?: string }> {
   const cfg = getConfig()
@@ -1077,8 +1077,8 @@ async function handleModelsList(): Promise<{ models: string[]; defaultModel: str
     return { models: modelListCache.models, defaultModel }
   }
   try {
-    const key = await ensureRouterKey()
-    const base = cfg.routerUrl.replace(/\/+$/, '')
+    const key = await ensureGatewayKey()
+    const base = cfg.gatewayUrl.replace(/\/+$/, '')
     const res = await fetch(`${base}/v1/models`, { headers: { authorization: `Bearer ${key}` } })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const models = parseModelIds(await res.json())
@@ -1094,7 +1094,7 @@ async function handleModelsList(): Promise<{ models: string[]; defaultModel: str
 
 /**
  * 本地会话单轮流式执行（claim 已由编排层在破坏性写之前同步取得）：
- *   身份与 router key 准备 → 系统提示词 → loop 事件流；抛错时由编排层 release claim。
+ *   身份与 gateway key 准备 → 系统提示词 → loop 事件流；抛错时由编排层 release claim。
  */
 async function executeLocalTurn(
   claim: TurnClaim,
@@ -1106,7 +1106,7 @@ async function executeLocalTurn(
   const identity = getIdentity()
   if (!identity) throw new Error('请先完成企业 SSO 登录')
   // key 缺失时用已存 SSO 凭据自动重试交换(自愈),仍失败才报错(编排层负责 release claim)
-  const routerKey = await ensureRouterKey()
+  const gatewayKey = await ensureGatewayKey()
 
   const reg = ensureRegistry()
   // MCP 工具注册进 registry 后再开跑（首次 chat 时才真正连接）
@@ -1150,8 +1150,8 @@ async function executeLocalTurn(
   // fire and forget：loop 内部已把一切异常折叠为 error 事件，这里 .catch 兜底
   void runAgentTurn(
     {
-      apiKey: routerKey,
-      baseUrl: getConfig().routerUrl.replace(/\/+$/, ''),
+      apiKey: gatewayKey,
+      baseUrl: getConfig().gatewayUrl.replace(/\/+$/, ''),
       registry: reg,
       permissions,
       systemPrompt,

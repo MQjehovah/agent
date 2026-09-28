@@ -8,15 +8,15 @@ import { resolveOidcIssuer, resolveOidcClientId, resolveOidcClientSecret } from 
 import { createSsoFlow } from './sso-flow'
 import { ensureAgentJwt } from './agent-jit'
 import { encrypt, decrypt } from './credstore'
-import { createRouterCredentials } from './router-credentials'
+import { createGatewayCredentials } from './gateway-credentials'
 
 /**
  * 身份与凭据管理(仅主进程):
  *   - OIDC SSO 登录(系统浏览器 + loopback 回调),持有 id/access/refresh token
- *   - router access_token:用 id_token 走 RFC 8693 token-exchange 换取(供 /api/me/* 调用)
- *   - router apikey:用 router access_token 调 router admin /api/me/key 自取(sk-,供 gateway/agent)
+ *   - gateway access_token:用 id_token 走 RFC 8693 token-exchange 换取(供 /api/me/* 调用)
+ *   - gateway apikey:用 gateway access_token 调 gateway admin /api/me/key 自取(sk-,供 gateway/agent)
  *   - agent JWT:按工号 JIT 开号换取
- *   - rag/market 复用 OIDC access_token;agent 用 agent JWT;router 用 apikey
+ *   - rag/market 复用 OIDC access_token;agent 用 agent JWT;gateway 用 apikey
  * 全部凭据只在主进程内存与加密落盘,渲染层永远拿不到。
  */
 
@@ -41,12 +41,12 @@ export interface OidcTokens {
 export interface Identity {
   user: IdentityUser
   oidc: OidcTokens | null
-  /** router apikey(sk-),供 gateway 调用与本地 agent 使用 */
-  routerKey: string
-  /** router access_token,仅供 router admin /api/me/* 的 Bearer 使用 */
-  routerToken?: string
-  /** routerToken 过期时间戳(ms) */
-  routerTokenExpiresAt?: number
+  /** gateway apikey(sk-),供 gateway 调用与本地 agent 使用 */
+  gatewayKey: string
+  /** gateway access_token,仅供 gateway admin /api/me/* 的 Bearer 使用 */
+  gatewayToken?: string
+  /** gatewayToken 过期时间戳(ms) */
+  gatewayTokenExpiresAt?: number
   agentJwt: string
 }
 
@@ -182,38 +182,38 @@ export async function freshAgentJwt(): Promise<string | null> {
   }
 }
 
-// ---- router 凭据(token 交换 + apikey 自取) ----
+// ---- gateway 凭据(token 交换 + apikey 自取) ----
 
-const routerCredentials = createRouterCredentials<Identity>({
+const gatewayCredentials = createGatewayCredentials<Identity>({
   getIdentity: () => current,
   saveIdentity,
   ensureFreshOidc,
   issuer,
   oidcClient,
-  routerAdminUrl: () => getConfig().routerAdminUrl
+  gatewayAdminUrl: () => getConfig().gatewayAdminUrl
 })
 
 /**
- * 取新鲜 router token:未过期(>60s 余量)直接返回;过期/缺失时交换;并发调用合并为一次交换(单飞);
+ * 取新鲜 gateway token:未过期(>60s 余量)直接返回;过期/缺失时交换;并发调用合并为一次交换(单飞);
  * 交换失败但旧 token 未过期时回退旧值,否则抛错。
  */
-export function freshRouterToken(): Promise<string> {
-  return routerCredentials.freshRouterToken()
+export function freshGatewayToken(): Promise<string> {
+  return gatewayCredentials.freshGatewayToken()
 }
 
 /** 401 自愈:清零 token 过期时间并落盘后强制重换(usage 首次 401 时重试用) */
-export function renewRouterToken(): Promise<string> {
-  return routerCredentials.renewRouterToken()
+export function renewGatewayToken(): Promise<string> {
+  return gatewayCredentials.renewGatewayToken()
 }
 
-/** 取 router apikey:已有则直接返回;否则调 router admin /api/me/key(401 时重换 token 重试一次) */
-export function fetchRouterKey(): Promise<string> {
-  return routerCredentials.fetchRouterKey()
+/** 取 gateway apikey:已有则直接返回;否则调 gateway admin /api/me/key(401 时重换 token 重试一次) */
+export function fetchGatewayKey(): Promise<string> {
+  return gatewayCredentials.fetchGatewayKey()
 }
 
-/** 兼容既有调用点:语义等同 fetchRouterKey() */
-export function ensureRouterKey(): Promise<string> {
-  return fetchRouterKey()
+/** 兼容既有调用点:语义等同 fetchGatewayKey() */
+export function ensureGatewayKey(): Promise<string> {
+  return fetchGatewayKey()
 }
 
 // ---- SSO 登录(系统浏览器 + loopback 回调) ----
@@ -278,7 +278,7 @@ export async function startSsoLogin(timeoutMs = 5 * 60_000): Promise<IdentityUse
   if (roles.length) user.roles = roles
   if (dingtalk) user.dingtalk = dingtalk
 
-  // 先落身份(router token 交换依赖 current),再取 router 凭据
+  // 先落身份(gateway token 交换依赖 current),再取 gateway 凭据
   const identity: Identity = {
     user,
     oidc: {
@@ -287,16 +287,16 @@ export async function startSsoLogin(timeoutMs = 5 * 60_000): Promise<IdentityUse
       refreshToken: tokens.refresh_token ?? '',
       expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000
     },
-    routerKey: '',
+    gatewayKey: '',
     agentJwt: ''
   }
   saveIdentity(identity)
 
-  // router token:失败降级(登录成功但用量/gateway 调用稍后自愈)
+  // gateway token:失败降级(登录成功但用量/gateway 调用稍后自愈)
   try {
-    await freshRouterToken()
+    await freshGatewayToken()
   } catch (err) {
-    console.warn('[identity] router token 交换降级:', (err as Error).message)
+    console.warn('[identity] gateway token 交换降级:', (err as Error).message)
   }
 
   // agent JIT:失败降级(与既有行为一致)

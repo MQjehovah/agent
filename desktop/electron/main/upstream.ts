@@ -1,22 +1,22 @@
 import { randomBytes } from 'node:crypto'
 import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { getConfig } from './store'
-import { freshAgentJwt, freshOidcAccessToken, getIdentity, ensureRouterKey } from './identity'
+import { freshAgentJwt, freshOidcAccessToken, getIdentity, ensureGatewayKey } from './identity'
 
 /**
  * 上游代理(IPC 直达,无本地 HTTP):
  *   渲染层 invoke('upstream:request'|'upstream:stream:start') → 主进程注入凭证 → fetch 上游。
- *   凭证策略:agent → agent JWT;router → apikey;rag/market → OIDC access_token。
+ *   凭证策略:agent → agent JWT;gateway → apikey;rag/market → OIDC access_token。
  *   SSE 流以 streamId 为键,经 'upstream:event' 通道推送原始文本块,abort 通道可中断。
  */
 
-export type ServiceName = 'agent' | 'rag' | 'market' | 'router'
+export type ServiceName = 'agent' | 'rag' | 'market' | 'gateway'
 
-const SERVICE_FIELD: Record<ServiceName, 'agentUrl' | 'ragUrl' | 'marketUrl' | 'routerUrl'> = {
+const SERVICE_FIELD: Record<ServiceName, 'agentUrl' | 'ragUrl' | 'marketUrl' | 'gatewayUrl'> = {
   agent: 'agentUrl',
   rag: 'ragUrl',
   market: 'marketUrl',
-  router: 'routerUrl'
+  gateway: 'gatewayUrl'
 }
 
 async function authFor(service: ServiceName): Promise<string | null> {
@@ -24,12 +24,12 @@ async function authFor(service: ServiceName): Promise<string | null> {
   if (!identity) return null
   // agent JWT 默认 12h, 请求前按需用本机保管的凭据续期
   if (service === 'agent') return freshAgentJwt()
-  if (service === 'router') {
-    // routerKey 可能因登录时交换降级而缺失:走 ensureRouterKey 自愈;失败仍回退无鉴权(由上游 401 提示)
+  if (service === 'gateway') {
+    // gatewayKey 可能因登录时交换降级而缺失:走 ensureGatewayKey 自愈;失败仍回退无鉴权(由上游 401 提示)
     try {
-      return await ensureRouterKey()
+      return await ensureGatewayKey()
     } catch (err) {
-      console.warn('[upstream] router 凭据获取失败:', (err as Error).message)
+      console.warn('[upstream] gateway 凭据获取失败:', (err as Error).message)
       return null
     }
   }

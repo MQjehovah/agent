@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildDefaultConfig, createConfigStore, type AppConfig } from './config-core'
+import { buildDefaultConfig, createConfigStore, migrateLegacyConfigKeys, type AppConfig } from './config-core'
 
 export type { AppConfig }
 
@@ -16,7 +16,9 @@ const configStore = createConfigStore(
     writeText: (text) => {
       mkdirSync(app.getPath('userData'), { recursive: true })
       writeFileSync(configPath(), text, 'utf-8')
-    }
+    },
+    /** 旧键迁移(0.2.x 及以前 routerUrl/routerAdminUrl → gatewayUrl/gatewayAdminUrl) */
+    migrateStored: migrateLegacyConfigKeys
   }
 )
 

@@ -1,7 +1,7 @@
 /**
  * 把用户消息里的图片附件路径内联为多模态 wire content（仅当前这轮；历史仍存文本路径）。
  *
- * 桌面端本地 kernel 直接调 router，需自己做多模态：识别消息里的 `.attachments/xxx.png`
+ * 桌面端本地 kernel 直接调 gateway，需自己做多模态：识别消息里的 `.attachments/xxx.png`
  * 等图片路径，从 workspace 读取并 base64 成 data URL。找不到/超限则原样返回文本。
  */
 import { existsSync, readFileSync, statSync } from 'fs'

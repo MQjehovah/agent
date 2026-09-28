@@ -1,9 +1,9 @@
 /**
  * 全部出网请求的统一传输层:渲染端只与主进程 IPC 通信,
- * 由主进程按服务注入凭证(agent JWT / router apikey / OIDC token)后转发上游。
+ * 由主进程按服务注入凭证(agent JWT / gateway apikey / OIDC token)后转发上游。
  */
 
-export type ServiceName = 'agent' | 'rag' | 'market' | 'router'
+export type ServiceName = 'agent' | 'rag' | 'market' | 'gateway'
 
 export class ApiError extends Error {
   status: number

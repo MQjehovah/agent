@@ -80,7 +80,7 @@ test('asr: 正常路径 POST 到解析后的端点, 带 Bearer、multipart 表�
   const { calls, impl } = fakeFetch({ ok: true, body: '{"text":" 你好世界 "}' })
   const deps: AsrCallDeps = {
     asrUrl: 'https://ai.xzrobot.com/gateway/api/v1/',
-    apiKey: 'router-key',
+    apiKey: 'gateway-key',
     audio: AUDIO,
     filename: 'voice-1.webm',
     mime: 'audio/webm;codecs=opus',
@@ -94,7 +94,7 @@ test('asr: 正常路径 POST 到解析后的端点, 带 Bearer、multipart 表�
   assert.equal(calls[0].init?.method, 'POST')
   assert.ok(calls[0].init?.signal, '必须传 AbortSignal(超时兜底)')
   const headers = calls[0].init?.headers as Record<string, string>
-  assert.equal(headers.authorization, 'Bearer router-key')
+  assert.equal(headers.authorization, 'Bearer gateway-key')
   const form = calls[0].init?.body as FormData
   assert.equal((form.get('file') as File).name, 'voice-1.webm')
   assert.equal((form.get('file') as File).type, 'audio/webm;codecs=opus')
@@ -136,14 +136,21 @@ test('asr: 响应缺 text 与 fetch 抛错都折叠为 ok:false', async () => {
 })
 
 test('asr: 超时(可注入)中止请求并返回专门文案', async () => {
-  const res = await transcribeAudio({
-    asrUrl: 'https://asr.example.com/v1',
-    audio: AUDIO,
-    fetchImpl: hangingFetch(),
-    timeoutMs: 10
-  })
-  assert.deepEqual(res, { ok: false, error: ASR_TIMEOUT_ERROR })
-  assert.equal(ASR_TIMEOUT_ERROR, '语音转写超时')
+  // AbortSignal.timeout 内部定时器是 unref 的:测试进程需持有一个 ref 句柄,
+  // 否则事件循环先排空,超时回调永远不触发(生产为常驻进程,无此问题)
+  const keepAlive = setTimeout(() => {}, 1000)
+  try {
+    const res = await transcribeAudio({
+      asrUrl: 'https://asr.example.com/v1',
+      audio: AUDIO,
+      fetchImpl: hangingFetch(),
+      timeoutMs: 10
+    })
+    assert.deepEqual(res, { ok: false, error: ASR_TIMEOUT_ERROR })
+    assert.equal(ASR_TIMEOUT_ERROR, '语音转写超时')
+  } finally {
+    clearTimeout(keepAlive)
+  }
 })
 
 test('asr: 已取消的信号不再发请求', async () => {

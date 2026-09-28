@@ -11,8 +11,8 @@ const BUNDLE = {
   agentUrl: 'https://bundle.example/agent',
   ragUrl: 'https://bundle.example/rag',
   marketUrl: 'https://bundle.example/market',
-  routerUrl: 'https://bundle.example/router',
-  routerAdminUrl: 'https://bundle.example/router',
+  gatewayUrl: 'https://bundle.example/gateway',
+  gatewayAdminUrl: 'https://bundle.example/gateway',
   updateFeedUrl: 'https://bundle.example/updates/dashboard',
   asrUrl: 'https://bundle.example/asr/v1'
 }
@@ -81,7 +81,7 @@ test('seed: stored 已有 issuer/secret → 不覆盖,仅补空字段', () => {
   assert.equal(updates[0].updateFeedUrl, undefined)
   assert.equal(updates[0].oidcClientId, BUNDLE.oidcClientId)
   assert.equal(updates[0].agentUrl, BUNDLE.agentUrl)
-  assert.equal(updates[0].routerAdminUrl, BUNDLE.routerAdminUrl)
+  assert.equal(updates[0].gatewayAdminUrl, BUNDLE.gatewayAdminUrl)
 })
 
 test('seed: 白名单含 updateFeedUrl,老机器(已有其余字段)升级后补注入更新源', () => {
@@ -145,4 +145,33 @@ test('seed: 解析失败 → 警告并继续尝试下一候选文件', () => {
   assert.equal(warns.length, 1)
   assert.match(warns[0], /读取 C:\/pkg\/broken\.json 失败/)
   assert.deepEqual(updates, [BUNDLE])
+})
+
+test('seed: 旧版 enterprise.json(routerUrl/routerAdminUrl)映射为 gateway 字段', () => {
+  const legacyBundle: Record<string, string> = { ...BUNDLE }
+  delete legacyBundle.gatewayUrl
+  delete legacyBundle.gatewayAdminUrl
+  legacyBundle.routerUrl = 'https://bundle.example/gateway/api'
+  legacyBundle.routerAdminUrl = 'https://bundle.example/gateway'
+  const { updates } = setup({
+    stored: {},
+    files: { 'C:/pkg/enterprise.json': JSON.stringify(legacyBundle) }
+  })
+  assert.equal(updates.length, 1)
+  assert.equal(updates[0].gatewayUrl, 'https://bundle.example/gateway/api')
+  assert.equal(updates[0].gatewayAdminUrl, 'https://bundle.example/gateway')
+  assert.equal('routerUrl' in updates[0], false)
+  assert.equal('routerAdminUrl' in updates[0], false)
+})
+
+test('seed: 新字段已存在时旧字段不覆盖旧值', () => {
+  const legacyBundle: Record<string, string> = { ...BUNDLE }
+  legacyBundle.routerUrl = 'https://bundle.example/old-router'
+  const { updates } = setup({
+    stored: { gatewayUrl: 'https://user.example/gateway/api' },
+    files: { 'C:/pkg/enterprise.json': JSON.stringify(legacyBundle) }
+  })
+  assert.equal(updates.length, 1)
+  assert.equal(updates[0].gatewayUrl, undefined)
+  assert.equal(updates[0].gatewayAdminUrl, BUNDLE.gatewayAdminUrl)
 })

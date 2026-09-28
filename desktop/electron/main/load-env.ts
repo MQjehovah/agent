@@ -4,7 +4,7 @@
  * 用途：开发 / 内网运行时便捷注入凭据与地址（见 `.env.example`），免去逐个 export：
  *   AGENT_SERVICE_TOKEN / AGENT_ADMIN_USER / AGENT_ADMIN_PASSWORD
  *   OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET
- *   AGENT_URL / RAG_URL / MARKET_URL / ROUTER_URL / ROUTER_ADMIN_URL
+ *   AGENT_URL / RAG_URL / MARKET_URL / GATEWAY_URL / GATEWAY_ADMIN_URL(兼容旧 ROUTER_*)
  *
  * 查找顺序：进程 cwd/.env → 项目根（相对 out/main 的 ../../）.env；找不到静默跳过。
  * 打包版请用随包 enterprise.json 或系统环境变量。

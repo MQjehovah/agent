@@ -4,8 +4,8 @@
   "agentUrl": "https://ai.xzrobot.com/agent",
   "ragUrl": "https://ai.xzrobot.com/rag",
   "marketUrl": "https://ai.xzrobot.com/market",
-  "routerUrl": "https://ai.xzrobot.com/gateway/api",
-  "routerAdminUrl": "https://ai.xzrobot.com/gateway",
+  "gatewayUrl": "https://ai.xzrobot.com/gateway/api",
+  "gatewayAdminUrl": "https://ai.xzrobot.com/gateway",
   "updateFeedUrl": "https://ai.xzrobot.com/agent/updates/desktop",
   "asrUrl": "https://ai.xzrobot.com/gateway/api/v1"
 }

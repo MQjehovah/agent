@@ -64,7 +64,7 @@ test('parseUsageSummary: 缺 fetchedAt 时本地补,非对象/缺字段给出安
   assert.ok(b.fetchedAt)
 })
 
-test('fetchUsageSummary: 只发 1 个 GET /api/me/usage 请求且带 Bearer router token', async () => {
+test('fetchUsageSummary: 只发 1 个 GET /api/me/usage 请求且带 Bearer gateway token', async () => {
   const seen: Array<{ url: string; init?: RequestInit }> = []
   let tokenCalls = 0
   const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -176,7 +176,7 @@ test('fetchUsageSummary: 其它非 2xx 映射为 HTTP 状态码文案', async ()
   )
 })
 
-test('fetchUsageSummary: 未配置 routerAdminUrl 时直接抛中文错误且不发请求', async () => {
+test('fetchUsageSummary: 未配置 gatewayAdminUrl 时直接抛中文错误且不发请求', async () => {
   let requested = 0
   const fetchImpl = (async () => {
     requested++

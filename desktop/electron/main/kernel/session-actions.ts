@@ -6,7 +6,7 @@ import type { ChatMessage } from './types'
  *
  * 顺序契约：**先同步 claim（同会话并发守卫）→ 再做任何破坏性写**。
  *   守卫命中 → 抛错且存储零改动（不做截断/替换）；
- *   claim 成功后才做异步准备（ensureRouterKey 等，见 execute），失败由本模块 release claim。
+ *   claim 成功后才做异步准备（ensureGatewayKey 等，见 execute），失败由本模块 release claim。
  *
  * 不 import electron：store/claim/execute 全部注入，便于离线单测守卫顺序。
  */
@@ -21,7 +21,7 @@ export interface SessionActionDeps<C extends TurnClaimHandle = TurnClaimHandle> 
   /** 同步抢占会话：已有活跃流时抛错；必须在破坏性写之前调用 */
   claim(sessionId: string): C
   /**
-   * claim 成功后异步执行一轮（身份/router key 准备 + 启动流式循环）。
+   * claim 成功后异步执行一轮（身份/gateway key 准备 + 启动流式循环）。
    * 正常路径由执行方在流结束后结算；抛错时由本模块 release claim。
    */
   execute(

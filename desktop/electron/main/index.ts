@@ -8,7 +8,7 @@ import { dirname } from 'node:path'
 import { registerUpstreamIpc } from './upstream'
 import { registerKernelIpc } from './kernel/ipc'
 import { registerMediaProtocol, registerMediaScheme } from './media'
-import { startSsoLogin, getIdentity, clearIdentity, restoreIdentity, ensureRouterKey } from './identity'
+import { startSsoLogin, getIdentity, clearIdentity, restoreIdentity, ensureGatewayKey } from './identity'
 import { getUsageSummary } from './usage'
 import { seedEnterpriseConfig as runEnterpriseSeed } from './enterprise-seed'
 import { setupTray, destroyTray, hasTray, showFirstHideBalloon, resolveTrayIconPath } from './tray'
@@ -309,7 +309,7 @@ function registerIpc(): void {
     }
   })
 
-  // 语音转写(E): 未配置 asrUrl 直接降级为可读错误; 密钥走 ensureRouterKey 自愈;
+  // 语音转写(E): 未配置 asrUrl 直接降级为可读错误; 密钥走 ensureGatewayKey 自愈;
   // requestId 用于渲染层「取消转写」透传 abort(主进程另有 30s 超时兜底)
   const asrJobs = new Map<string, AbortController>()
   ipcMain.handle(
@@ -326,7 +326,7 @@ function registerIpc(): void {
       // 密钥缺失不阻断: 内网 ASR 端点可能免鉴权, 拿不到 key 时按无 Authorization 尝试
       let apiKey = ''
       try {
-        apiKey = await ensureRouterKey()
+        apiKey = await ensureGatewayKey()
       } catch (err) {
         console.warn('[asr] 未取到网关密钥, 按未鉴权端点尝试:', (err as Error).message)
       }

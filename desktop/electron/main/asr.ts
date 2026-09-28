@@ -1,7 +1,7 @@
 /**
  * 语音转写（E 阶段）主进程纯逻辑：OpenAI 兼容 `/audio/transcriptions` 请求组装与调用。
  *
- * 不 import electron：地址与 token 由 IPC handler 注入（token 走 identity.ensureRouterKey），
+ * 不 import electron：地址与 token 由 IPC handler 注入（token 走 identity.ensureGatewayKey），
  * fetch 可注入便于单测锁定表单字段、鉴权头、取消/超时与降级行为。
  */
 
@@ -14,7 +14,7 @@ export const ASR_CANCELED_ERROR = '语音转写已取消'
 export interface AsrCallDeps {
   /** 企业配置的 ASR 地址（OpenAI 兼容 base，如 https://ai.xzrobot.com/gateway/api/v1） */
   asrUrl: string
-  /** Bearer token（ensureRouterKey 结果）；空串时仍可请求未鉴权的内网端点 */
+  /** Bearer token（ensureGatewayKey 结果）；空串时仍可请求未鉴权的内网端点 */
   apiKey?: string
   /** 音频字节 */
   audio: Uint8Array | ArrayBuffer

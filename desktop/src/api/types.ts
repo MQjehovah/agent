@@ -2,8 +2,8 @@ export interface AppConfig {
   agentUrl: string
   ragUrl: string
   marketUrl: string
-  routerUrl: string
-  routerAdminUrl: string
+  gatewayUrl: string
+  gatewayAdminUrl: string
   /** 企业 SSO(OIDC)Issuer 地址(与主进程 store.ts 同步,留空则读环境变量 OIDC_ISSUER) */
   oidcIssuer: string
   /** 企业 SSO(OIDC)客户端 ID(与主进程 store.ts 同步) */

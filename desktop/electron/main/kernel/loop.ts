@@ -7,7 +7,7 @@ import { selectRoundTools } from './tool-search'
 import { buildWireContent } from './image-wire'
 
 /**
- * agent 工具调用循环：经 router 网关的 OpenAI 兼容 SSE 流驱动多轮对话，
+ * agent 工具调用循环：经 gateway 网关的 OpenAI 兼容 SSE 流驱动多轮对话，
  * 模型发起 tool_calls 时按注册表执行工具并把结果回填，直至最终作答或轮次用尽。
  * 工具列表每轮重算：连接器很多时按 ToolSearchHooks 走渐进披露（内置 + search_tools + 已激活远程工具）。
  * SSE 解析与 tool_calls 拼装为纯函数便于离线单测；完整网络循环由真机冒烟覆盖。
@@ -128,7 +128,7 @@ export function toWireMessages(
 
 export interface LoopDeps {
   apiKey: string
-  /** router 网关地址，如 http://127.0.0.1:3100 */
+  /** gateway 网关地址，如 http://127.0.0.1:3100 */
   baseUrl: string
   registry: Registry
   permissions: PermissionGateway

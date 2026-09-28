@@ -50,16 +50,16 @@ export function parseUsageSummary(raw: unknown): UsageSummary {
 }
 
 export interface UsageFetchContext {
-  /** router admin 根地址(如 https://ai.xzrobot.com/gateway) */
+  /** gateway admin 根地址(如 https://ai.xzrobot.com/gateway) */
   baseUrl: string
-  /** 取 router Bearer token(内部含刷新与单飞) */
+  /** 取 gateway Bearer token(内部含刷新与单飞) */
   token: () => Promise<string>
   /** 401 自愈:清零 token 过期时间并强制重换(由身份层实现);缺省则不做重试 */
   refreshToken?: () => Promise<string>
   fetchImpl?: typeof fetch
 }
 
-/** 单请求取用量:GET {baseUrl}/api/me/usage + Bearer router token;401 重换 token 重试一次 */
+/** 单请求取用量:GET {baseUrl}/api/me/usage + Bearer gateway token;401 重换 token 重试一次 */
 export async function fetchUsageSummary(ctx: UsageFetchContext): Promise<UsageSummary> {
   const base = ctx.baseUrl.trim().replace(/\/+$/, '')
   if (!base) throw new Error('未配置路由管理端地址')
@@ -84,14 +84,14 @@ export async function fetchUsageSummary(ctx: UsageFetchContext): Promise<UsageSu
 export async function getUsageSummary(): Promise<UsageSummary> {
   // store/identity 依赖 electron app,顶层静态导入会在纯 node 测试环境加载即抛错;
   // 故仅在此处动态导入,保持 fetchUsageSummary/parseUsageSummary 可独立单测。
-  const [{ getConfig }, { freshRouterToken, renewRouterToken }] = await Promise.all([
+  const [{ getConfig }, { freshGatewayToken, renewGatewayToken }] = await Promise.all([
     import('./store'),
     import('./identity')
   ])
   const cfg = getConfig()
   return fetchUsageSummary({
-    baseUrl: cfg.routerAdminUrl ?? '',
-    token: freshRouterToken,
-    refreshToken: renewRouterToken
+    baseUrl: cfg.gatewayAdminUrl ?? '',
+    token: freshGatewayToken,
+    refreshToken: renewGatewayToken
   })
 }

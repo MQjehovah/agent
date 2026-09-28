@@ -4,13 +4,18 @@ import {
   buildDefaultConfig,
   createConfigStore,
   filterUserConfigPatch,
+  migrateLegacyConfigKeys,
   USER_CONFIG_KEYS,
   type AppConfig
 } from '../../electron/main/config-core'
 
 const CTX = { home: 'C:/Users/tester', env: {} }
 
-function memoryStore(defaults: AppConfig, initial?: string) {
+function memoryStore(
+  defaults: AppConfig,
+  initial?: string,
+  migrateStored?: (stored: Partial<Record<string, unknown>>) => Partial<Record<string, unknown>>
+) {
   let text: string | null = initial ?? null
   const writes: string[] = []
   const store = createConfigStore(defaults, {
@@ -18,7 +23,8 @@ function memoryStore(defaults: AppConfig, initial?: string) {
     writeText: (next) => {
       text = next
       writes.push(next)
-    }
+    },
+    migrateStored
   })
   return { store, writes, text: () => text }
 }
@@ -93,7 +99,7 @@ test('desktop-config：config:set 键白名单只放行用户偏好键,企业/�
     oidcClientSecret: 'stolen-secret',
     oidcIssuer: 'https://evil.example',
     agentUrl: 'https://evil.example/agent',
-    routerAdminUrl: 'https://evil.example/router',
+    gatewayAdminUrl: 'https://evil.example/gateway',
     agentServiceToken: 'stolen-token',
     unknownField: 1
   } as Partial<AppConfig>
@@ -105,9 +111,9 @@ test('desktop-config：config:set 键白名单只放行用户偏好键,企业/�
     'agentServiceToken',
     'agentUrl',
     'asrUrl',
+    'gatewayAdminUrl',
     'oidcClientSecret',
     'oidcIssuer',
-    'routerAdminUrl',
     'unknownField',
     'updateFeedUrl'
   ])
@@ -202,4 +208,39 @@ test('desktop-config：文件缺失或 JSON 损坏时回退默认值,不抛错',
   const broken = memoryStore(buildDefaultConfig(CTX), '{ 损坏的 JSON')
   assert.equal(broken.store.get().notifyOnFinish, true)
   assert.deepEqual(broken.store.stored(), {})
+})
+
+test('desktop-config：旧键 routerUrl/routerAdminUrl 迁移为 gatewayUrl/gatewayAdminUrl', () => {
+  const migrated = migrateLegacyConfigKeys({
+    routerUrl: 'https://old.example/gateway/api',
+    routerAdminUrl: 'https://old.example/gateway',
+    theme: 'light'
+  })
+  assert.equal(migrated.gatewayUrl, 'https://old.example/gateway/api')
+  assert.equal(migrated.gatewayAdminUrl, 'https://old.example/gateway')
+  assert.equal(migrated.theme, 'light')
+  assert.equal('routerUrl' in migrated, false)
+  assert.equal('routerAdminUrl' in migrated, false)
+})
+
+test('desktop-config：新键已存在时不回退旧键,旧键仍被清理', () => {
+  const migrated = migrateLegacyConfigKeys({
+    gatewayUrl: 'https://new.example/gateway/api',
+    routerUrl: 'https://old.example/gateway/api',
+    routerAdminUrl: 'https://old.example/gateway'
+  })
+  assert.equal(migrated.gatewayUrl, 'https://new.example/gateway/api')
+  assert.equal(migrated.gatewayAdminUrl, 'https://old.example/gateway')
+  assert.equal('routerUrl' in migrated, false)
+})
+
+test('desktop-config：createConfigStore 挂迁移后,旧键磁盘配置读回即生效', () => {
+  const initial = JSON.stringify({
+    routerUrl: 'https://old.example/gateway/api',
+    routerAdminUrl: 'https://old.example/gateway'
+  })
+  const { store } = memoryStore(buildDefaultConfig(CTX), initial, migrateLegacyConfigKeys)
+  assert.equal(store.get().gatewayUrl, 'https://old.example/gateway/api')
+  assert.equal(store.get().gatewayAdminUrl, 'https://old.example/gateway')
+  assert.equal('routerUrl' in store.stored(), false)
 })
