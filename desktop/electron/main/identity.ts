@@ -203,7 +203,12 @@ async function hostSsoTokens(): Promise<void> {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${identity.agentJwt}`
       },
-      body: JSON.stringify({ id_token: oidc.idToken, refresh_token: oidc.refreshToken }),
+      body: JSON.stringify({
+        id_token: oidc.idToken,
+        refresh_token: oidc.refreshToken,
+        // token 来源客户端(桌面 SSO 登录所用 client), agent 侧刷新/交换按它执行
+        client_id: oidcClient().clientId
+      }),
       signal: AbortSignal.timeout(10_000)
     })
     if (!res.ok) console.warn(`[identity] SSO token 托管失败(HTTP ${res.status})`)
