@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../theme'
-  import { api, clearToken, getRole, hasPerm, setIdentity } from '../api'
+  import { api, clearToken, del, getRole, hasPerm, setIdentity } from '../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
   import logoUrl from '../assets/logo.svg'
 import CommandPalette from '../components/CommandPalette.vue'
 import { dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
@@ -101,6 +102,29 @@ async function loadSideSessions(): Promise<void> {
 }
 function openSideSession(id: string): void {
   void router.push({ path: '/chat', query: { session: id } })
+}
+
+/** 删除会话(逻辑删除, 与桌面端一致): 消息数据保留, 可由管理员恢复 */
+async function removeSideSession(s: SideSession): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除会话 ${sessionLabel(s)}？\n删除后不再显示（消息数据保留，可由管理员恢复）`,
+      '删除会话',
+      { type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await del(`/api/agent/sessions?session_id=${encodeURIComponent(s.id)}`)
+    ElMessage.success('已删除')
+    if (currentSessionId.value === s.id) {
+      void router.push({ path: '/chat', query: { new: String(Date.now()) } })
+    }
+    await loadSideSessions()
+  } catch (err) {
+    ElMessage.error(`删除失败:${(err as Error).message}`)
+  }
 }
 function shortTime(t?: string): string {
   if (!t) return ''
@@ -259,6 +283,19 @@ function onUserCommand(cmd: string | number | object) {
             <span class="side-session-chan" :class="'chan-' + chanKind(s)">{{ chanShort(s) }}</span>
             <span v-if="s.streaming" class="side-session-tag" title="运行中">运行中</span>
             <span class="side-session-time">{{ shortTime(s.at) }}</span>
+            <el-dropdown
+              trigger="click"
+              class="side-session-more"
+              @command="(c: string) => c === 'delete' && removeSideSession(s)"
+              @click.stop
+            >
+              <button class="side-session-menu" title="更多" @click.stop>⋯</button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="delete">删除</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
           <div v-if="!sideSessions.length" class="side-empty">暂无会话</div>
         </div>
@@ -357,6 +394,14 @@ function onUserCommand(cmd: string | number | object) {
 }
 .side-session-time { flex: none; font-size: 10.5px; color: var(--text-3); }
 .side-session-tag { flex: none; font-size: 10px; color: var(--el-color-warning); }
+.side-session-more { flex: none; }
+.side-session-menu {
+  border: none; background: transparent; color: var(--text-3);
+  cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px;
+  border-radius: 6px; display: none;
+}
+.side-session:hover .side-session-menu { display: inline-block; }
+.side-session-menu:hover { background: var(--el-fill-color); color: var(--text); }
 .side-empty { padding: 6px 8px; font-size: 12px; color: var(--text-3); }
 .layout.collapsed .side-section { display: none; }
 .side-section-title.collapsible { cursor: pointer; user-select: none; }

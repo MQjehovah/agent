@@ -350,12 +350,6 @@ async function openSession(row: SessionRow) {
   }
 }
 
-async function removeSession(row: SessionRow) {
-  try { await api(`/api/sessions/${encodeURIComponent(row.id)}`, { method: 'DELETE' }) } catch { return }
-  if (sessionId.value === row.id) { sessionId.value = ''; currentSession.value = null; messages.value = [] }
-  await loadSessions()
-}
-
 function newSession() {
   if (streaming.value) return
   sessionId.value = ''
