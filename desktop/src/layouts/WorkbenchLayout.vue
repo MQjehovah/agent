@@ -22,7 +22,7 @@ import {
   UserFilled
 } from '@element-plus/icons-vue'
 import {
-  canContinueInDashboard,
+  canContinueInDesktop,
   channelKindFromId,
   channelLabel,
   useSessionsStore,
@@ -144,7 +144,7 @@ function sideChannelClass(s: SessionListItem): string {
   return 'chan-' + sideChannelKind(s)
 }
 function sideCanContinue(s: SessionListItem): boolean {
-  return canContinueInDashboard(s)
+  return canContinueInDesktop(s)
 }
 
 /** 已归档分组默认折叠; 仅在有内容时显示 */

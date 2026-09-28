@@ -181,7 +181,7 @@ export function bindAutoUpdater(updater: AutoUpdaterLike, options: BindAutoUpdat
   updater.on('update-downloaded', (...args) => {
     const status = publish('downloaded', toInfo(args[0]))
     // 通知点击由主进程接管(重启安装),文案已含「点击重启安装」
-    options.notify({ title: 'Dashboard 更新', body: status.message })
+    options.notify({ title: '零号员工工作台 更新', body: status.message })
   })
   updater.on('error', (...args) => {
     const err = args[0]

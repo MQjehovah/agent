@@ -5,7 +5,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import { agentApi } from '../api/agent'
 import type { HistoryMessage } from '../api/types'
 import {
-  canContinueInDashboard,
+  canContinueInDesktop,
   channelLabel,
   channelKindFromId,
   sessionArchiveKey,
@@ -52,7 +52,7 @@ function rowChannelTagType(row: SessionListItem): 'primary' | 'success' | 'warni
 }
 /** 是否可在 dashboard 内续聊(仅 web/本地; 钉钉会话只读) */
 function rowCanContinue(row: SessionListItem): boolean {
-  return canContinueInDashboard(row)
+  return canContinueInDesktop(row)
 }
 
 const viewVisible = ref(false)
@@ -92,7 +92,7 @@ async function openSession(s: SessionListItem) {
 /** 继续对话:本地会话切到本地模式并回放历史 */
 function continueSession(s: SessionListItem) {
   if (chat.streaming) return
-  if (!canContinueInDashboard(s)) {
+  if (!canContinueInDesktop(s)) {
     ElMessage.info('该会话来自钉钉等外部渠道，仅支持查看历史，请在对应渠道继续对话')
     return
   }

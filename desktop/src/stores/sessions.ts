@@ -66,7 +66,7 @@ export function channelLabel(kind: string | undefined): string {
 }
 
 /** 会话是否可在 dashboard 内续聊: 仅 web(在线)与本地会话; 钉钉会话只读 */
-export function canContinueInDashboard(item: { mode: 'agent' | 'local'; id: string; channelKind?: string }): boolean {
+export function canContinueInDesktop(item: { mode: 'agent' | 'local'; id: string; channelKind?: string }): boolean {
   if (item.mode === 'local') return true
   return (item.channelKind || channelKindFromId(item.id)) === 'web'
 }

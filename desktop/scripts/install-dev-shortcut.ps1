@@ -1,11 +1,16 @@
-<#
+﻿<#
   为开发态(electron.exe)注册一个带 AppUserModelID 的开始菜单快捷方式。
   Windows 11 任务栏按钮的名称/图标按「进程身份(AUMID) -> 快捷方式」解析,
   未打包的 electron.exe 没有带 AUMID 的快捷方式时,任务栏会显示 Electron 默认图标;
   注册本快捷方式后,`npm run dev` 的任务栏按钮即显示品牌图标与名称。
 
   用法(在仓库根目录): powershell -ExecutionPolicy Bypass -File scripts/install-dev-shortcut.ps1
-  卸载: 删除 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Dashboard (Dev).lnk
+  卸载: 删除 %APPDATA%\Microsoft\Windows\Start Menu\Programs\零号员工工作台 (Dev).lnk
+
+  排障(任务栏仍空白图标时):
+  1) 确认开始菜单里没有其它指向旧路径/无图标的旧快捷方式占用同一 AUMID
+     (历史遗留 Dashboard (Dev).lnk / Electron.lnk 都会抢占解析导致空白);
+  2) 重启 explorer.exe 刷新任务栏按钮缓存后重新启动 npm run dev。
 #>
 $ErrorActionPreference = 'Stop'
 
@@ -13,7 +18,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $electron = Join-Path $repo 'node_modules\electron\dist\electron.exe'
 $icon = Join-Path $repo 'build\icon.ico'
 $lnkDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-$lnkPath = Join-Path $lnkDir 'Dashboard (Dev).lnk'
+$lnkPath = Join-Path $lnkDir '零号员工工作台 (Dev).lnk'
 $appUserModelId = 'com.company.aibench.dashboard'
 
 if (-not (Test-Path $electron)) { throw "未找到 electron.exe: $electron (先 npm install)" }
@@ -26,7 +31,7 @@ $lnk.TargetPath = $electron
 $lnk.Arguments = '"' + $repo + '"'
 $lnk.WorkingDirectory = $repo
 $lnk.IconLocation = "$icon,0"
-$lnk.Description = 'Dashboard 开发态(electron-vite)'
+$lnk.Description = '零号员工工作台 开发态(electron-vite)'
 $lnk.Save()
 
 # 2) 写入 AppUserModelID(IShellLink + IPropertyStore)

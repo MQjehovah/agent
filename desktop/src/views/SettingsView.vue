@@ -586,7 +586,7 @@ async function doLogout() {
           <el-icon class="card-icon" :size="16"><InfoFilled /></el-icon>
           <div>
             <h3 class="card-title">关于</h3>
-            <p class="card-sub">Dashboard · 零号员工平台员工端 v{{ appVersion }}</p>
+            <p class="card-sub">零号员工工作台 · 员工端 v{{ appVersion }}</p>
           </div>
         </div>
 

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createPinia, setActivePinia } from 'pinia'
 import {
-  canContinueInDashboard,
+  canContinueInDesktop,
   channelKindFromId,
   channelLabel,
   mergeSessionList,
@@ -63,10 +63,10 @@ test('channels: 渠道细类/文案 + dashboard 续聊判定(方案A)', () => {
   assert.equal(channelLabel('dingtalk_group'), '钉钉群')
 
   // 仅 web 在线会话与本地会话可在 dashboard 续聊; 钉钉私聊/群只读
-  assert.equal(canContinueInDashboard({ mode: 'agent', id: 'web:7:a' }), true)
-  assert.equal(canContinueInDashboard({ mode: 'agent', id: 'dingtalk:7:a' }), false)
-  assert.equal(canContinueInDashboard({ mode: 'agent', id: 'dingtalk_group:x:y' }), false)
-  assert.equal(canContinueInDashboard({ mode: 'local', id: 'local-1' }), true)
+  assert.equal(canContinueInDesktop({ mode: 'agent', id: 'web:7:a' }), true)
+  assert.equal(canContinueInDesktop({ mode: 'agent', id: 'dingtalk:7:a' }), false)
+  assert.equal(canContinueInDesktop({ mode: 'agent', id: 'dingtalk_group:x:y' }), false)
+  assert.equal(canContinueInDesktop({ mode: 'local', id: 'local-1' }), true)
 })
 
 test('channels: mergeSessionList 透传 channelKind(服务端优先, 缺失按前缀兜底)', () => {

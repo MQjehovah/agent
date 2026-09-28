@@ -109,6 +109,22 @@ function seedEnterpriseConfig(): void {
   })
 }
 
+/** 托盘装配(独立成函数便于自愈重建:系统 shell 重启会销毁托盘图标) */
+function setupAppTray(): void {
+  setupTray({
+    onOpen: showMainWindow,
+    onToggle: toggleMainWindow,
+    onNewSession: () => {
+      showMainWindow()
+      sendToMainWindow('desktop:new-session', {})
+    },
+    onQuit: () => {
+      isQuitting = true
+      app.quit()
+    }
+  })
+}
+
 function createWindow(): void {
   const theme = getConfig().theme
   mainWindowReady = false
@@ -150,9 +166,16 @@ function createWindow(): void {
     destroyTray()
   })
 
-  // 关闭到托盘:拦截关闭并隐藏,首次提示一次;无托盘可用时放行关闭,避免窗口失去 UI 入口
+  // 关闭到托盘:拦截关闭并隐藏,首次提示一次。
+  // 托盘图标可能被 shell 重启等销毁:先按标准托盘软件行为自愈重建,
+  // 重建成功 → 隐藏;确实无托盘可用 → 放行关闭,避免窗口失去 UI 入口
   mainWindow.on('close', (e) => {
-    if (isQuitting || !getConfig().closeToTray || !hasTray()) return
+    if (isQuitting || !getConfig().closeToTray) return
+    if (!hasTray()) {
+      destroyTray()
+      setupAppTray()
+    }
+    if (!hasTray()) return
     e.preventDefault()
     mainWindow?.hide()
     showFirstHideBalloon()
@@ -408,18 +431,7 @@ if (!gotLock) {
 
     // 桌面壳:托盘、全局快捷键、开机自启(按配置启动时生效)
     const config = getConfig()
-    setupTray({
-      onOpen: showMainWindow,
-      onToggle: toggleMainWindow,
-      onNewSession: () => {
-        showMainWindow()
-        sendToMainWindow('desktop:new-session', {})
-      },
-      onQuit: () => {
-        isQuitting = true
-        app.quit()
-      }
-    })
+    setupAppTray()
     registerQuickHotkey(config.quickHotkey)
     applyLoginItem(config.launchAtLogin)
 
