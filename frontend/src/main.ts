@@ -8,7 +8,7 @@ import './style.css'
 import { hasPerm } from './api'
 
 import LoginView from './views/LoginView.vue'
-import DashboardView from './views/DashboardView.vue'
+import ProfileView from './views/ProfileView.vue'
 import WebhookView from './views/WebhookView.vue'
 import ChatView from './views/ChatView.vue'
 import SessionsView from './views/SessionsView.vue'
@@ -32,7 +32,9 @@ const router = createRouter({
       component: () => import('./views/Layout.vue'),
       redirect: '/chat',
       children: [
-        { path: 'dashboard', component: DashboardView, meta: { title: '工作台' } },
+        { path: 'profile', component: ProfileView, meta: { title: '个人中心' } },
+        // 旧「工作台」已并入个人中心, 保留路径重定向避免历史链接失效
+        { path: 'dashboard', redirect: '/profile' },
         { path: 'chat', component: ChatView, meta: { title: '对话' } },
         { path: 'knowledge', component: KnowledgeView, meta: { title: '知识库' } },
         { path: 'scheduler', component: SchedulerView, meta: { title: '定时任务' } },
@@ -60,11 +62,11 @@ router.beforeEach((to) => {
   if (!to.meta.public && !localStorage.getItem('agent_jwt')) return '/login'
   // 权限路由守卫: 细粒度 Web 权限(后端仍强制鉴权, 此处仅导航收敛)
   const permAny = to.meta.permAny as string[] | undefined
-  if (permAny && !permAny.some((p) => hasPerm(p))) return '/dashboard'
-  if (to.meta.perm && !hasPerm(to.meta.perm as string)) return '/dashboard'
+  if (permAny && !permAny.some((p) => hasPerm(p))) return '/profile'
+  if (to.meta.perm && !hasPerm(to.meta.perm as string)) return '/profile'
   // 「运行监控」组内页的全量 query: 无对应权限一律回个人空间
-  if (!hasPerm('admin.scheduler') && to.path === '/scheduler' && to.query.scope === 'all') return '/dashboard'
-  if (!hasPerm('admin.memories') && to.path === '/memories' && to.query.view === 'all') return '/dashboard'
+  if (!hasPerm('admin.scheduler') && to.path === '/scheduler' && to.query.scope === 'all') return '/profile'
+  if (!hasPerm('admin.memories') && to.path === '/memories' && to.query.view === 'all') return '/profile'
 })
 
 const app = createApp(App)

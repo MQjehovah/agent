@@ -8,7 +8,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import CommandPalette from '../components/CommandPalette.vue'
 import { dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import {
-  Monitor, ChatDotRound, Timer, Coin,
+  ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
   Shop, Files, Collection, Clock, Search, Refresh, CaretRight, FolderOpened
 } from '@element-plus/icons-vue'
@@ -150,12 +150,12 @@ const personalItems: NavItem[] = [
   { path: '/knowledge', title: '知识库', icon: Collection },
   { path: '/market', title: '能力市场', icon: Shop },
   { path: '/scheduler', title: '定时任务', icon: Timer },
-  { path: '/memories', title: '记忆管理', icon: Coin }
+  { path: '/memories', title: '记忆管理', icon: Coin },
+  { path: '/profile', title: '个人中心', icon: User }
 ]
 
 // —— 一级：运维与管理（按细粒度权限展示）——
 const allOpsItems: NavItem[] = [
-  { path: '/dashboard', title: '工作台', icon: Monitor },
   { path: '/monitor', title: '运行监控', icon: Odometer, perm: 'admin.monitor' },
   { path: '/admin/local-mcp', title: '本地安装', icon: Files, perm: 'admin.mcp_local' },
   { path: '/admin', title: '用户与权限', icon: User,

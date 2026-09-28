@@ -6,6 +6,7 @@ import {
   ChatDotRound, Coin, Timer
 } from '@element-plus/icons-vue'
 
+/** 个人中心(对齐桌面端): 账号信息 + 个人工作台(概览/快捷入口/用量)。 */
 const router = useRouter()
 
 interface MyOverview {
@@ -17,6 +18,7 @@ interface MyOverview {
 const loading = ref(true)
 
 const me = ref<MyOverview['user']>({ uid: '', name: '', display_name: '', role: '' })
+const department = ref('')
 const mySessions = ref({ total: 0, running: 0 })
 const memory = ref({ mine: 0, global: 0 })
 const schedulerTotal = ref(0)
@@ -79,6 +81,9 @@ async function load() {
       mySessions.value = d.sessions ?? { total: 0, running: 0 }
       memory.value = d.memory ?? { mine: 0, global: 0 }
     }).catch(() => {}),
+    api<{ department?: string }>('/api/auth/me').then(d => {
+      department.value = d.department ?? ''
+    }).catch(() => {}),
     api('/api/scheduler/tasks').then(d => {
       schedulerTotal.value = (d.tasks ?? []).length
       schedulerEnabled.value = (d.tasks ?? []).filter((t: any) => t.enabled).length
@@ -96,10 +101,18 @@ onMounted(load)
   <div class="page" v-loading="loading">
     <div class="page-head">
       <div>
-        <h2>工作台</h2>
-        <div class="sub">{{ (me.display_name || me.name) ? `你好，${me.display_name || me.name}（${roleLabel}），这是你的个人工作台` : '你的个人工作台' }}</div>
+        <h2>个人中心</h2>
+        <div class="sub">{{ (me.display_name || me.name) ? `你好，${me.display_name || me.name}（${roleLabel}），这是你的个人中心` : '你的个人中心' }}</div>
       </div>
       <div class="actions"><el-button @click="load">刷新</el-button></div>
+    </div>
+
+    <div class="section-title">账号信息</div>
+    <div class="card profile-card">
+      <div class="profile-row"><span class="profile-k">姓名</span><span>{{ me.display_name || me.name || '—' }}</span></div>
+      <div class="profile-row"><span class="profile-k">工号</span><span class="mono">{{ me.name || '—' }}</span></div>
+      <div class="profile-row"><span class="profile-k">角色</span><span>{{ roleLabel }}</span></div>
+      <div class="profile-row"><span class="profile-k">部门</span><span>{{ department || '—' }}</span></div>
     </div>
 
     <div class="stat-grid">
@@ -219,4 +232,7 @@ onMounted(load)
 <style scoped>
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .stat-card.no-link { cursor: default; }
+.profile-card { display: flex; flex-wrap: wrap; gap: 8px 40px; padding: 14px 18px; }
+.profile-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--text); }
+.profile-k { color: var(--text-3); font-size: 12.5px; min-width: 32px; }
 </style>
