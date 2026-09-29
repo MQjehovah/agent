@@ -215,14 +215,14 @@ class RBACManager:
         with self.storage.get_connection() as conn:
             rows = conn.execute(
                 "SELECT id, name, work_id, department, role, status, created_at, updated_at, "
-                "phone, dingtalk_id FROM rbac_users ORDER BY id"
+                "phone, dingtalk_id, email FROM rbac_users ORDER BY id"
             ).fetchall()
         result = []
         for r in rows:
             result.append({
                 "id": r[0], "name": r[1], "work_id": r[2] or "", "department": r[3],
                 "role": r[4], "status": r[5], "created_at": r[6], "updated_at": r[7],
-                "phone": r[8] or "", "dingtalk_id": r[9] or "",
+                "phone": r[8] or "", "dingtalk_id": r[9] or "", "email": r[10] or "",
             })
         return result
 
@@ -231,7 +231,7 @@ class RBACManager:
             rows = conn.execute(
                 "SELECT id, name, work_id, department, role, status, created_at, updated_at, "
                 "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_pw, "
-                "phone, dingtalk_id "
+                "phone, dingtalk_id, email "
                 "FROM rbac_users ORDER BY id"
             ).fetchall()
         result = []
@@ -240,6 +240,7 @@ class RBACManager:
                 "id": r[0], "name": r[1], "work_id": r[2] or "", "department": r[3],
                 "role": r[4], "status": r[5], "created_at": r[6], "updated_at": r[7],
                 "has_password": bool(r[8]), "phone": r[9] or "", "dingtalk_id": r[10] or "",
+                "email": r[11] or "",
             })
         return result
 
@@ -247,7 +248,7 @@ class RBACManager:
         with self.storage.get_connection() as conn:
             row = conn.execute(
                 "SELECT id, name, work_id, department, role, status, created_at, updated_at, "
-                "phone, dingtalk_id FROM rbac_users WHERE id=?",
+                "phone, dingtalk_id, email FROM rbac_users WHERE id=?",
                 (user_id,)
             ).fetchone()
         if not row:
@@ -255,7 +256,7 @@ class RBACManager:
         return {
             "id": row[0], "name": row[1], "work_id": row[2] or "", "department": row[3],
             "role": row[4], "status": row[5], "created_at": row[6], "updated_at": row[7],
-            "phone": row[8] or "", "dingtalk_id": row[9] or "",
+            "phone": row[8] or "", "dingtalk_id": row[9] or "", "email": row[10] or "",
         }
 
     def get_user_with_password_flag(self, user_id: int) -> dict | None:
@@ -263,7 +264,7 @@ class RBACManager:
             row = conn.execute(
                 "SELECT id, name, work_id, department, role, status, created_at, updated_at, "
                 "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_pw, "
-                "phone, dingtalk_id "
+                "phone, dingtalk_id, email "
                 "FROM rbac_users WHERE id=?", (user_id,)
             ).fetchone()
         if not row:
@@ -272,6 +273,7 @@ class RBACManager:
             "id": row[0], "name": row[1], "work_id": row[2] or "", "department": row[3],
             "role": row[4], "status": row[5], "created_at": row[6], "updated_at": row[7],
             "has_password": bool(row[8]), "phone": row[9] or "", "dingtalk_id": row[10] or "",
+            "email": row[11] or "",
         }
 
     def update_user(self, user_id: int, name: str = None, department: str = None,

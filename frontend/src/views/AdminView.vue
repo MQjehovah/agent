@@ -10,6 +10,8 @@ interface User {
   role: string
   status?: string
   department?: string
+  phone?: string
+  email?: string
   has_password?: boolean
 }
 interface Role {
@@ -298,6 +300,12 @@ onMounted(load)
           <el-table-column prop="id" label="ID" width="70" />
           <el-table-column prop="work_id" label="工号" min-width="140" />
           <el-table-column prop="name" label="姓名" min-width="120" />
+          <el-table-column prop="phone" label="手机" min-width="130">
+            <template #default="{ row }">{{ row.phone || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="email" label="邮箱" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.email || '—' }}</template>
+          </el-table-column>
           <el-table-column prop="role" label="角色" width="120">
             <template #default="{ row }"><el-tag size="small">{{ row.role }}</el-tag></template>
           </el-table-column>
