@@ -9,6 +9,7 @@ BOM 一律按空目录容错; 最多保留按 last_active 最新 ``MAX_GROUPS`` 
     {"version": 1, "groups": {"cidXXXX": {"name": "群名", "robot_code": "...",
       "sender": "最近触发人", "last_active": "2026-09-29T13:00:00+08:00"}}}
 """
+import contextlib
 import json
 import logging
 import os
@@ -84,6 +85,10 @@ def _atomic_write(path: str, payload: dict) -> None:
         except OSError:
             pass
         raise
+    # mkstemp 产物默认 0600, 改为 0644 供 market 容器(不同 UID, ro 挂载)读取;
+    # chmod 语义受限平台(如 Windows)失败不影响写入结果, 仅忽略。
+    with contextlib.suppress(Exception):
+        os.chmod(path, 0o644)
 
 
 def upsert_group_entry(path: str, cid: str, name: str,
