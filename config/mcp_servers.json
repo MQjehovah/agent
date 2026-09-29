@@ -25,9 +25,10 @@
         "env": {
             "DINGTALK_APP_KEY": "ding3xmu1gbsy11jbks3",
             "DINGTALK_AGENT_ID": "4389947271",
-            "DINGTALK_ROBOT_CODE": "ding3xmu1gbsy11jbks3"
+            "DINGTALK_ROBOT_CODE": "ding3xmu1gbsy11jbks3",
+            "DINGTALK_GROUPS_FILE": "/app/shared/dingtalk_groups.json"
         },
-        "description": "钉钉消息推送服务 - 支持工作通知、机器人单聊/群聊消息、Webhook、通讯录查询等"
+        "description": "钉钉消息推送服务 - 支持工作通知、机器人单聊/群聊消息、Webhook、通讯录查询等；群目录支持按群名发消息"
     },
     {
         "name": "mysql_query",

@@ -608,11 +608,126 @@ def dingtalk_send_robot_single_message(
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
+# ── 群目录(按群名发消息) ──
+# agent 钉钉插件收到群消息时把 (cid, 群名, robot_code, 最近触发人, last_active)
+# 回写到共享文件(路径由 DINGTALK_GROUPS_FILE 指定, 默认 /app/shared/dingtalk_groups.json);
+# 本模块读取该文件, 支持「按群名」解析 conversation_id / 列出已知群。
+_DEFAULT_GROUPS_FILE = "/app/shared/dingtalk_groups.json"
+_MAX_LIST_GROUPS = 200
+
+
+def _groups_file() -> str:
+    """群目录文件路径(env DINGTALK_GROUPS_FILE 优先, 缺省 /app/shared/dingtalk_groups.json)。"""
+    return os.environ.get("DINGTALK_GROUPS_FILE", "").strip() or _DEFAULT_GROUPS_FILE
+
+
+def _load_groups() -> dict:
+    """读取群目录(容错): 文件缺失/空/损坏/BOM 一律返回 {}。
+
+    返回 {cid: entry}; entry 非 dict 的条目丢弃。
+    """
+    try:
+        with open(_groups_file(), encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except Exception:
+        return {}
+    groups = data.get("groups") if isinstance(data, dict) else None
+    if not isinstance(groups, dict):
+        return {}
+    return {str(cid): entry for cid, entry in groups.items()
+            if isinstance(entry, dict)}
+
+
+def _group_rows(groups: dict, keyword: str = "") -> list[dict]:
+    """群目录 → 行列表(按 last_active 倒序, 同值按 cid 倒序); keyword 过滤 name/cid。"""
+    rows = []
+    for cid, entry in groups.items():
+        name = str(entry.get("name") or "")
+        if keyword and keyword not in name.casefold() and keyword not in cid.casefold():
+            continue
+        rows.append({
+            "name": name,
+            "conversation_id": cid,
+            "robot_code": str(entry.get("robot_code") or ""),
+            "sender": str(entry.get("sender") or ""),
+            "last_active": str(entry.get("last_active") or ""),
+        })
+    rows.sort(key=lambda row: (row["last_active"], row["conversation_id"]), reverse=True)
+    return rows
+
+
+def _resolve_conversation_id(conversation_id: str, group: str,
+                             groups: dict) -> tuple[str, dict | None]:
+    """解析群发目标: conversation_id 优先, 否则按 group 群名解析 cid。
+
+    规则:
+    - conversation_id 非空: 直接返回(不校验存在性);
+    - group 非空: 先不区分大小写**精确**匹配群名, 命中即用(多个同名取最近活跃);
+      否则 contains 模糊: 唯一命中即用; 多命中报错并附 candidates; 无命中报错提示;
+    - 二者皆空: 明确报错。
+    返回 (cid, error_dict), error_dict 非 None 时 cid 为空。
+    """
+    cid = str(conversation_id or "").strip()
+    if cid:
+        return cid, None
+    name = str(group or "").strip()
+    if not name:
+        return "", {
+            "error": "conversation_id 与 group 至少提供一个",
+            "hint": "可先调用 dingtalk_list_groups 查询群名与 conversation_id",
+        }
+    lowered = name.casefold()
+    rows = _group_rows(groups)
+    exact = [row for row in rows if row["name"].strip().casefold() == lowered]
+    if exact:
+        return exact[0]["conversation_id"], None
+    fuzzy = [row for row in rows if lowered in row["name"].casefold()]
+    if len(fuzzy) == 1:
+        return fuzzy[0]["conversation_id"], None
+    if len(fuzzy) > 1:
+        return "", {
+            "error": f"群名 '{name}' 模糊匹配到多个群, 请用完整群名或 conversation_id",
+            "candidates": [{k: row[k] for k in ("name", "conversation_id", "last_active")}
+                           for row in fuzzy],
+            "hint": "也可先调用 dingtalk_list_groups(keyword=...) 确认目标群",
+        }
+    known = "、".join(row["name"] for row in rows[:10] if row["name"]) or "(群目录为空)"
+    return "", {
+        "error": f"未找到群: {name}",
+        "hint": ("机器人须已在目标群内且群内有过消息(agent 收到后自动登记群目录); "
+                 f"已知群: {known}"),
+    }
+
+
+@mcp.tool(annotations=_READ_ANNOTATIONS)
+def dingtalk_list_groups(keyword: str = "", limit: int = 20):
+    """列出已知钉钉群目录(agent 钉钉插件收到群消息时自动回写)。
+
+    用于把群名解析成 conversation_id(openConversationId), 或供
+    dingtalk_send_robot_group_message / dingtalk_send_text_group /
+    dingtalk_send_markdown_group / dingtalk_send_file_group 的 group 参数直接传群名。
+
+    参数:
+    - keyword: 可选, 按群名或 conversation_id 模糊过滤(不区分大小写)
+    - limit: 返回条数上限(默认 20, 最大 200), 按 last_active 倒序(最近活跃在前)
+
+    注意: 机器人未发过言的群不会出现在目录; 发消息前请确认机器人已在目标群,
+    否则钉钉会返回机器人不在群。
+    """
+    limit_n, problem = _int_arg(limit, "limit", 1)
+    if problem:
+        return _dump({"success": False, "error": problem})
+    rows = _group_rows(_load_groups(), str(keyword or "").strip().casefold())
+    limited = rows[:min(limit_n, _MAX_LIST_GROUPS)]
+    return _dump({"success": True, "count": len(limited), "groups": limited})
+
+
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_robot_group_message(
-    conversation_id: str,
     msg_key: str,
     msg_param: str,
+    conversation_id: str = "",
+    group: str = "",
     robot_code: str = "",
     dingtalk_userids: list[str] | None = None,
     at_all: bool = False
@@ -620,18 +735,28 @@ def dingtalk_send_robot_group_message(
     """通过机器人发送群聊消息。
 
     参数:
-    - conversation_id: 群会话ID，例如 "cidXXXXXX"
     - msg_key: 消息类型，如 sampleText / sampleMarkdown / sampleActionCard / sampleInteractiveCard
     - msg_param: 消息参数JSON字符串
+    - conversation_id: 群会话ID(openConversationId), 例如 "cidXXXXXX"; 与 group 至少提供一个
+    - group: 群名(不区分大小写), 按共享群目录解析为 conversation_id: 精确匹配优先,
+        否则唯一模糊匹配; 多义/未命中返回错误(含 candidates/hint), 不发起请求。
+        群名可先经 dingtalk_list_groups 查询
     - robot_code: 机器人编码，默认使用 DINGTALK_ROBOT_CODE
     - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; @的用户ID列表（可选）
     - at_all: 是否@所有人（默认否）
+
+    前提: 机器人须在目标群内(否则钉钉拒绝); 目标群需曾给机器人发过消息才会被登记。
     """
-    logger.info(f"机器人群聊消息: conversation={conversation_id}, type={msg_key}")
+    logger.info(f"机器人群聊消息: conversation={conversation_id or '-'}, group={group or '-'}, type={msg_key}")
 
     err = _check_config()
     if err:
         return err
+
+    target, resolve_error = _resolve_conversation_id(conversation_id, group, _load_groups())
+    if resolve_error is not None:
+        logger.info(f"群聊消息目标解析失败: {resolve_error.get('error')}")
+        return _dump({"success": False, **resolve_error})
 
     try:
         token = _get_access_token()
@@ -645,7 +770,7 @@ def dingtalk_send_robot_group_message(
 
         payload = {
             "robotCode": robot_code or ROBOT_CODE,
-            "conversationId": conversation_id,
+            "conversationId": target,
             "msgKey": msg_key,
             "msgParam": json.dumps(param_obj, ensure_ascii=False),
             "atUserIds": dingtalk_userids or [],
@@ -1062,9 +1187,10 @@ def dingtalk_send_markdown_single(
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_markdown_group(
-    conversation_id: str,
     title: str,
     text: str,
+    conversation_id: str = "",
+    group: str = "",
     robot_code: str = "",
     dingtalk_userids: list[str] | None = None,
     at_all: bool = False
@@ -1072,15 +1198,22 @@ def dingtalk_send_markdown_group(
     """快捷发送Markdown群聊消息（封装好的便捷方法）。
 
     参数:
-    - conversation_id: 群会话ID
     - title: 消息标题
     - text: Markdown格式正文
+    - conversation_id: 群会话ID; 与 group 至少提供一个
+    - group: 群名(不区分大小写), 按共享群目录解析 conversation_id
+        (精确优先/唯一模糊; 多义或未命中返回错误, 可用 dingtalk_list_groups 查询)
     - robot_code: 机器人编码
     - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; @的用户ID列表
     - at_all: 是否@所有人
+
+    前提: 机器人须在目标群内。
     """
     msg_param = json.dumps({"title": title, "text": text}, ensure_ascii=False)
-    return dingtalk_send_robot_group_message(conversation_id, "sampleMarkdown", msg_param, robot_code, dingtalk_userids, at_all)
+    return dingtalk_send_robot_group_message(
+        msg_key="sampleMarkdown", msg_param=msg_param,
+        conversation_id=conversation_id, group=group, robot_code=robot_code,
+        dingtalk_userids=dingtalk_userids, at_all=at_all)
 
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
@@ -1102,8 +1235,9 @@ def dingtalk_send_text_single(
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
 def dingtalk_send_text_group(
-    conversation_id: str,
     content: str,
+    conversation_id: str = "",
+    group: str = "",
     robot_code: str = "",
     dingtalk_userids: list[str] | None = None,
     at_all: bool = False
@@ -1111,14 +1245,21 @@ def dingtalk_send_text_group(
     """快捷发送文本群聊消息（封装好的便捷方法）。
 
     参数:
-    - conversation_id: 群会话ID
     - content: 文本消息内容
+    - conversation_id: 群会话ID; 与 group 至少提供一个
+    - group: 群名(不区分大小写), 按共享群目录解析 conversation_id
+        (精确优先/唯一模糊; 多义或未命中返回错误, 可用 dingtalk_list_groups 查询)
     - robot_code: 机器人编码
     - dingtalk_userids: 钉钉用户ID列表(不是工号, 也不是本系统 userId), 逗号分隔; @的用户ID列表
     - at_all: 是否@所有人
+
+    前提: 机器人须在目标群内。
     """
     msg_param = json.dumps({"content": content}, ensure_ascii=False)
-    return dingtalk_send_robot_group_message(conversation_id, "sampleText", msg_param, robot_code, dingtalk_userids, at_all)
+    return dingtalk_send_robot_group_message(
+        msg_key="sampleText", msg_param=msg_param,
+        conversation_id=conversation_id, group=group, robot_code=robot_code,
+        dingtalk_userids=dingtalk_userids, at_all=at_all)
 
 
 @mcp.tool(annotations=_READ_ANNOTATIONS)
@@ -2617,24 +2758,30 @@ def dingtalk_send_file_single(dingtalk_userids: str, file_path: str):
 
 
 @mcp.tool(annotations=_SAFE_WRITE_ANNOTATIONS)
-def dingtalk_send_file_group(open_conversation_id: str, file_path: str):
+def dingtalk_send_file_group(open_conversation_id: str = "", file_path: str = "",
+                             group: str = ""):
     """上传本地文件并发送群文件消息。
 
     参数:
-    - open_conversation_id: 群 openConversationId(必填)
+    - open_conversation_id: 群 openConversationId; 与 group 至少提供一个
     - file_path: 本地文件路径(必填, 不超过 20MB)
+    - group: 群名(不区分大小写), 按共享群目录解析 open_conversation_id
+        (精确优先/唯一模糊; 多义或未命中返回错误, 可用 dingtalk_list_groups 查询)
 
+    前提: 机器人须在目标群内。
     线上冒烟待确认: msgKey=sampleFile 及 msgParam 字段。
     """
-    logger.info(f"发送群文件消息: conversation={_clip(open_conversation_id, 64)}")
+    logger.info(f"发送群文件消息: conversation={_clip(open_conversation_id, 64) or '-'}, "
+                f"group={_clip(group, 64) or '-'}")
 
     err = _check_config()
     if err:
         return err
 
-    conversation = str(open_conversation_id or "").strip()
-    if not conversation:
-        return _dump({"success": False, "error": "open_conversation_id 必填"})
+    conversation, resolve_error = _resolve_conversation_id(open_conversation_id, group, _load_groups())
+    if resolve_error is not None:
+        logger.info(f"群文件消息目标解析失败: {resolve_error.get('error')}")
+        return _dump({"success": False, **resolve_error})
     problem = _check_upload_file(file_path)
     if problem:
         return _dump({"success": False, "error": problem})

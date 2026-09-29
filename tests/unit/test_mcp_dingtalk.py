@@ -1174,7 +1174,7 @@ async def test_tool_annotations_and_count():
     from mcp import Client
     async with Client(module.mcp, raise_exceptions=True) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-    assert len(tools) == 61
+    assert len(tools) == 62
 
     read_tools = (
         "dingtalk_approval_instance", "dingtalk_approval_tasks",
@@ -1188,6 +1188,7 @@ async def test_tool_annotations_and_count():
         "dingtalk_role_list", "dingtalk_external_contacts",
         "dingtalk_card_template_list",
         "dingtalk_doc_workspaces", "dingtalk_doc_list", "dingtalk_doc_info",
+        "dingtalk_list_groups",
     )
     safe_write_tools = (
         "dingtalk_approval_start", "dingtalk_approval_comment",
@@ -1216,4 +1217,4 @@ async def test_tool_annotations_and_count():
     for name in destructive_tools:
         assert tools[name].annotations.read_only_hint is False, name
         assert tools[name].annotations.destructive_hint is True, name
-    assert len(read_tools) + len(safe_write_tools) + len(destructive_tools) == 46
+    assert len(read_tools) + len(safe_write_tools) + len(destructive_tools) == 47
