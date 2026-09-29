@@ -276,8 +276,8 @@ def refresh_token_grant(refresh_token: str, *, client_id: str | None = None,
                         client_secret: str | None = None) -> dict:
     """refresh_token grant: 刷新并轮换, 返回新 token 组 dict(缺 id_token 抛错)。
 
-    client_id/client_secret 缺省为 agent 客户端配置; 桌面托管行传
-    dashboard-gateway + 空 secret(public 客户端, 不带 secret)。
+    client_id/client_secret 缺省为 agent 客户端配置; 桌面(dashboard-gateway)托管行由桌面
+    客户端独占刷新并复投(单一写者), agent 只读其 id_token, 不再代刷。
     """
     token = (refresh_token or "").strip()
     if not token:

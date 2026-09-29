@@ -1,8 +1,12 @@
 """按用户的 SSO token 托管与下游代换(web OBO, RFC 8693)。
 
-登录回调把用户 id_token(约 10 分钟)/refresh_token 存入本地存储, 本模块负责:
+登录回调/桌面复投把用户 id_token(约 10 分钟)/refresh_token 存入本地存储, 本模块负责:
 
-- id_token 临近过期时用 refresh_token 刷新(轮换后回存), 刷新失败清空托管;
+- 自家客户端(web 回调, client_id == ``sso_auth.sso_client_id()``)行: id_token 临近过期时
+  用 refresh_token 刷新(轮换后回存), 刷新失败清空托管;
+- 桌面(dashboard-gateway)来源的行: 单一写者——由桌面客户端独占刷新并复投, agent 只读其
+  id_token(留 60s 余量), 已过期返回空串(不发起刷新、不删除托管行), 由调用方 fail-closed
+  引导登录;
 - 按受众交换下游 token(默认 1 小时), 进程内按 (uid, audience) 缓存;
 - 用户未走 SSO(如本地密码登录)或托管缺失时返回空串, 由调用方 fail-closed 处理
   (统一引导登录, 不回退服务身份);
@@ -22,6 +26,7 @@ from web import sso_auth
 logger = logging.getLogger("agent.web.sso_tokens")
 
 _REFRESH_MARGIN_SECONDS = 120.0  # id_token 剩余寿命低于该值即刷新
+_DESKTOP_READ_MARGIN_SECONDS = 60.0  # 桌面行只读 id_token 的余量(单一写者, 过期即 fail-closed)
 _EXCHANGE_MARGIN_SECONDS = 60.0  # 下游 token 剩余寿命低于该值视为过期
 
 _lock = threading.Lock()
@@ -91,7 +96,11 @@ def clear_user_tokens(uid: int) -> None:
 
 
 def _fresh_id_token(storage, uid: int) -> tuple[str, str, str | None]:
-    """取新鲜 id_token: 未到期直接用; 临近/已过期用来源客户端的 refresh_token 刷新并回存。
+    """取新鲜 id_token: 未到期直接用; 自家/web 行临近/已过期用 refresh_token 刷新并回存。
+
+    单一写者: 桌面客户端(dashboard-gateway)负责刷新并复投其托管行, agent 对桌面行只读
+    id_token(留 60s 余量): 有效直接返回, 已过期返回空串且**不调用 refresh_token_grant**、
+    不删除托管行, 由调用方 fail-closed 引导登录(不回退服务身份)。
 
     返回 (id_token, client_id, client_secret); 取不到时 id_token 为空串。
     """
@@ -102,6 +111,11 @@ def _fresh_id_token(storage, uid: int) -> tuple[str, str, str | None]:
     refresh_token = str(row.get("refresh_token") or "")
     exp = float(row.get("id_expires_at") or 0)
     client_id, client_secret = _client_creds(row)
+    if client_id != sso_auth.sso_client_id():
+        # 桌面行: agent 只读 id_token, 绝不与桌面竞态消费单次使用的 refresh_token
+        if id_token and exp - time.time() > _DESKTOP_READ_MARGIN_SECONDS:
+            return id_token, client_id, client_secret
+        return "", client_id, client_secret
     if id_token and exp - time.time() > _REFRESH_MARGIN_SECONDS:
         return id_token, client_id, client_secret
     if not refresh_token:

@@ -108,36 +108,50 @@ def test_save_and_clear(fakes, monkeypatch):
     assert 5 not in store.rows
 
 
-def test_row_client_id_drives_refresh_and_exchange(fakes, monkeypatch):
-    """托管行来源 client=dashboard-gateway: 刷新/交换均按它执行且不带 secret。"""
+def test_desktop_row_reads_id_token_and_exchanges_without_refresh(fakes, monkeypatch):
+    """桌面行(client_id=dashboard-gateway)id_token 有效: 原样使用且不刷新, 交换按它执行(public 不带 secret)。"""
     store = fakes
     monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
     monkeypatch.setattr(sso_auth, "sso_client_secret", lambda: "s3cr3t")
-    store.rows[7] = {"user_id": 7, "id_token": "old", "refresh_token": "rt-1",
-                     "id_expires_at": _exp(10),  # 低于刷新余量
+    store.rows[7] = {"user_id": 7, "id_token": "id-1", "refresh_token": "rt-1",
+                     "id_expires_at": _exp(600),
                      "client_id": "dashboard-gateway"}
-    refresh_calls: list[dict] = []
+    monkeypatch.setattr(sso_auth, "refresh_token_grant",
+                        lambda rt, **kw: pytest.fail("桌面行(单一写者)不应由 agent 刷新"))
     exchange_calls: list[dict] = []
-
-    def _refresh(rt, **kw):
-        refresh_calls.append({"rt": rt, **kw})
-        return {"id_token": "new-id", "refresh_token": "rt-2"}
 
     def _exchange(tok, aud, **kw):
         exchange_calls.append({"tok": tok, "aud": aud, **kw})
         return "down-1"
 
-    monkeypatch.setattr(sso_auth, "refresh_token_grant", _refresh)
     monkeypatch.setattr(sso_auth, "exchange_token", _exchange)
     monkeypatch.setattr(sso_auth, "token_exp", lambda tok: _exp(600))
 
     assert sso_tokens.get_downstream_token(7) == "down-1"
-    assert refresh_calls == [{"rt": "rt-1", "client_id": "dashboard-gateway", "client_secret": ""}]
     assert exchange_calls == [
-        {"tok": "new-id", "aud": "gateway",
+        {"tok": "id-1", "aud": "gateway",
          "client_id": "dashboard-gateway", "client_secret": ""}
     ]
-    assert store.rows[7]["client_id"] == "dashboard-gateway"  # 回存保留来源 client
+    assert store.rows[7]["id_token"] == "id-1"  # 不刷新, 托管行保持桌面复投的原值
+    assert store.rows[7]["refresh_token"] == "rt-1"
+
+
+@pytest.mark.parametrize("remaining", [-5.0, 30.0])  # 已过期 / 低于 60s 余量
+def test_desktop_row_unusable_id_token_fails_closed_without_refresh(fakes, monkeypatch, remaining):
+    """桌面行 id_token 不可用: 返回空、不发起刷新、不删除托管行(等桌面复投)。"""
+    store = fakes
+    monkeypatch.setattr(sso_auth, "sso_client_id", lambda: "agent")
+    store.rows[7] = {"user_id": 7, "id_token": "old", "refresh_token": "rt-1",
+                     "id_expires_at": _exp(remaining),
+                     "client_id": "dashboard-gateway"}
+    monkeypatch.setattr(sso_auth, "refresh_token_grant",
+                        lambda rt, **kw: pytest.fail("桌面行(单一写者)不应由 agent 刷新"))
+    monkeypatch.setattr(sso_auth, "exchange_token",
+                        lambda tok, aud, **kw: pytest.fail("无可用 id_token 不应发起交换"))
+
+    assert sso_tokens.get_downstream_token(7) == ""
+    assert store.rows[7]["id_token"] == "old"  # 托管行未删除
+    assert store.rows[7]["refresh_token"] == "rt-1"
 
 
 def test_default_agent_row_defers_to_agent_config(fakes, monkeypatch):
