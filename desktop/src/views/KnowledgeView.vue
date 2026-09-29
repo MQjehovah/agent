@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Back, CaretRight, Document, Refresh, Search } from '@element-plus/icons-vue'
 import { ApiError, request } from '../api/client'
-import type { WikiIndex, WikiPage, WikiPageMeta, WikiSpaceItem, WikiSpacesResp } from '../api/types'
+import type { WikiIndex, WikiPage, WikiSpaceItem, WikiSpacesResp, WikiTreeItem } from '../api/types'
 import { useSettingsStore } from '../stores/settings'
 import MarkdownBody from '../components/MarkdownBody.vue'
 
@@ -25,9 +25,11 @@ const spacesDefaultCount = ref(0)
 const spacesLoading = ref(false)
 const spacesError = ref('')
 const spacesLoaded = ref(false)
-const openCats = ref<string[]>([])
-/** 当前选中页的目录元信息(选中高亮 / 加载中标题 / 失败重试) */
-const current = ref<WikiPageMeta | null>(null)
+/** 树展开集合: 首次默认展开全部有子节点的节点, 刷新时保留仍存在的 id */
+const expanded = ref<Set<string>>(new Set())
+let treeInit = false
+/** 当前选中页(树行只需最小字段; WikiTreeItem 与 WikiPageMeta 均可传入) */
+const current = ref<{ id: string; title: string; summary?: string } | null>(null)
 const page = ref<WikiPage | null>(null)
 const pageLoading = ref(false)
 const pageError = ref('')
@@ -153,7 +155,8 @@ function enterSpace(id: string, name: string, icon: string) {
   current.value = null
   page.value = null
   pageError.value = ''
-  openCats.value = []
+  expanded.value = new Set()
+  treeInit = false
   void loadIndex()
 }
 
@@ -181,16 +184,7 @@ async function loadIndex() {
     const data = await request<WikiIndex>('rag', '/api/wiki' + qs)
     index.value = data
     indexLoaded.value = true
-    // 保留仍存在的已展开分类;确保当前阅读页所在分类可见,避免高亮与内容脱节
-    const prevOpen = openCats.value
-    const names = (data.categories ?? []).map((c) => c.name)
-    let next = prevOpen.filter((n) => names.includes(n))
-    if (current.value) {
-      const holder = (data.categories ?? []).find((c) => c.pages.some((p) => p.id === current.value?.id))
-      if (holder && !next.includes(holder.name)) next = [...next, holder.name]
-    }
-    if (next.length === 0 && data.categories.length) next = [data.categories[0].name]
-    openCats.value = next
+    syncTreeExpanded(data)
   } catch (err) {
     indexError.value = ragError(err)
   } finally {
@@ -198,7 +192,76 @@ async function loadIndex() {
   }
 }
 
-async function openPage(meta: WikiPageMeta) {
+/** 目录树数据源: 优先 items(真树); items 缺失/为空时回退 categories 摊平为根级行(兼容老 RAG) */
+function wikiItemsOf(data: WikiIndex): WikiTreeItem[] {
+  const items = data.items ?? []
+  if (items.length) return items
+  return (data.categories ?? []).flatMap((c) =>
+    (c.pages ?? []).map((p) => ({ ...p, parent_id: null, position: 0, space_id: null }))
+  )
+}
+
+/** parent_id 为空或指向不可见节点(不在 byId)视为根; 子节点按 position 升序(同 position 按 title) */
+const treeChildren = computed<Map<string | null, WikiTreeItem[]>>(() => {
+  const src = wikiItemsOf(index.value)
+  const byId = new Map(src.map((p) => [p.id, p] as const))
+  const map = new Map<string | null, WikiTreeItem[]>()
+  for (const p of src) {
+    const pid = p.parent_id && p.parent_id !== p.id && byId.has(p.parent_id) ? p.parent_id : null
+    const list = map.get(pid)
+    if (list) list.push(p)
+    else map.set(pid, [p])
+  }
+  for (const list of map.values()) {
+    list.sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || (a.title ?? '').localeCompare(b.title ?? ''))
+  }
+  return map
+})
+
+/** DFS 展开为带缩进深度的行(折叠的子树不出行) */
+const treeRows = computed<Array<{ page: WikiTreeItem; depth: number; hasChildren: boolean }>>(() => {
+  const children = treeChildren.value
+  const rows: Array<{ page: WikiTreeItem; depth: number; hasChildren: boolean }> = []
+  const walk = (pid: string | null, depth: number): void => {
+    for (const p of children.get(pid) ?? []) {
+      const hasChildren = (children.get(p.id) ?? []).length > 0
+      rows.push({ page: p, depth, hasChildren })
+      if (hasChildren && expanded.value.has(p.id)) walk(p.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  return rows
+})
+
+/** 刷新索引后同步展开集合: 首次展开全部有子节点; 之后保留仍存在的 id 并自动展开当前选中页的祖先 */
+function syncTreeExpanded(data: WikiIndex): void {
+  const src = wikiItemsOf(data)
+  const byId = new Map(src.map((p) => [p.id, p] as const))
+  const childIds = new Set<string>()
+  for (const p of src) {
+    if (p.parent_id && p.parent_id !== p.id && byId.has(p.parent_id)) childIds.add(p.parent_id)
+  }
+  const next = treeInit
+    ? new Set([...expanded.value].filter((id) => byId.has(id)))
+    : new Set(childIds)
+  treeInit = true
+  let cur = current.value ? byId.get(current.value.id) : undefined
+  while (cur && cur.parent_id && byId.has(cur.parent_id)) {
+    if (next.has(cur.parent_id)) break
+    next.add(cur.parent_id)
+    cur = byId.get(cur.parent_id)
+  }
+  expanded.value = next
+}
+
+function toggleNode(id: string): void {
+  const next = new Set(expanded.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expanded.value = next
+}
+
+async function openPage(meta: { id: string; title: string; summary?: string }) {
   current.value = meta
   const seq = ++reqSeq
   page.value = null
@@ -214,12 +277,6 @@ async function openPage(meta: WikiPageMeta) {
   } finally {
     if (seq === reqSeq) pageLoading.value = false
   }
-}
-
-function toggleCat(name: string) {
-  openCats.value = openCats.value.includes(name)
-    ? openCats.value.filter((n) => n !== name)
-    : [...openCats.value, name]
 }
 
 function formatTime(t: string): string {
@@ -399,25 +456,23 @@ onMounted(() => {
         </div>
 
         <div v-else-if="indexLoaded" class="knowledge-body-inner">
-        <aside class="knowledge-cats">
-          <div v-for="cat in index.categories" :key="cat.name" class="knowledge-cat">
-            <button class="knowledge-cat-head" :class="{ open: openCats.includes(cat.name) }" @click="toggleCat(cat.name)">
-              <el-icon :size="13" class="knowledge-caret"><CaretRight /></el-icon>
-              <span class="knowledge-cat-name">{{ cat.name }}</span>
-              <span class="knowledge-cat-count">{{ cat.pages.length }}</span>
-            </button>
-            <div v-show="openCats.includes(cat.name)" class="knowledge-cat-list">
-              <button
-                v-for="p in cat.pages"
-                :key="p.id"
-                class="knowledge-page"
-                :class="{ active: p.id === current?.id }"
-                @click="openPage(p)"
-              >
-                <span class="knowledge-page-title">{{ p.title }}</span>
-                <span v-if="p.summary" class="knowledge-page-sum">{{ p.summary }}</span>
-              </button>
-            </div>
+        <aside class="knowledge-tree">
+          <div
+            v-for="row in treeRows"
+            :key="row.page.id"
+            class="knowledge-tree-row"
+            :class="{ active: row.page.id === current?.id }"
+            :style="{ paddingLeft: (8 + row.depth * 14) + 'px' }"
+            @click="openPage(row.page)"
+          >
+            <span
+              v-if="row.hasChildren"
+              class="knowledge-tree-caret"
+              :class="{ open: expanded.has(row.page.id) }"
+              @click.stop="toggleNode(row.page.id)"
+            ><el-icon :size="13"><CaretRight /></el-icon></span>
+            <span v-else class="knowledge-tree-caret knowledge-tree-caret-placeholder"></span>
+            <span class="knowledge-tree-title">{{ row.page.title }}</span>
           </div>
         </aside>
 

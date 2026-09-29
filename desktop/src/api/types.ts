@@ -236,10 +236,25 @@ export interface WikiPageMeta {
   id: string
   title: string
   summary?: string
+  category?: string
+  parent_id?: string | null
+  position?: number
+  space_id?: string | null
   updated_at: string
 }
 
-/** Wiki 目录里的一个分类 */
+/** Wiki 目录树条目(GET /api/wiki 的扁平 items, 按 parent_id/position 渲染真树) */
+export interface WikiTreeItem {
+  id: string
+  title: string
+  summary?: string
+  category?: string
+  parent_id: string | null
+  position: number
+  space_id: string | null
+}
+
+/** Wiki 目录里的一个分类(旧 RAG 分组, items 缺失时的回退数据源) */
 export interface WikiCategory {
   name: string
   pages: WikiPageMeta[]
@@ -261,10 +276,11 @@ export interface WikiSpacesResp {
   total: number
 }
 
-/** GET /api/wiki 目录响应(category 名可能是「未分类」) */
+/** GET /api/wiki 目录响应(items=真树; categories 仅作老 RAG 回退) */
 export interface WikiIndex {
   total: number
-  categories: WikiCategory[]
+  items?: WikiTreeItem[]
+  categories?: WikiCategory[]
   running: boolean
 }
 

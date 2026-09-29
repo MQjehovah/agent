@@ -80,19 +80,23 @@ let wikiLoading = false
 async function loadWiki(): Promise<void> {
   wikiLoading = true
   try {
-    const data = await api<{ categories: Array<{ name: string; pages: any[] }> }>('/api/knowledge/wiki')
+    const data = await api<{
+      items?: Array<{ id: string; title: string; summary?: string; category?: string }>
+      categories?: Array<{ name: string; pages: any[] }>
+    }>('/api/knowledge/wiki')
+    const entries = data.items?.length
+      ? data.items.map((p) => ({ page: p as any, category: p.category ?? '' }))
+      : (data.categories ?? []).flatMap((cat) => (cat.pages ?? []).map((p) => ({ page: p as any, category: cat.name })))
     const items: PaletteItem[] = []
-    for (const cat of data.categories ?? []) {
-      for (const p of cat.pages ?? []) {
-        items.push({
-          key: `wiki:${p.id}`,
-          title: p.title,
-          subtitle: cat.name,
-          icon: Document,
-          search: `${p.title} ${p.summary ?? ''} ${p.id}`,
-          run: () => emit('navigate', '/knowledge')
-        })
-      }
+    for (const { page, category } of entries) {
+      items.push({
+        key: `wiki:${page.id}`,
+        title: page.title,
+        subtitle: category || undefined,
+        icon: Document,
+        search: `${page.title} ${page.summary ?? ''} ${page.id}`,
+        run: () => emit('navigate', '/knowledge')
+      })
     }
     wikiItems.value = items
   } catch {

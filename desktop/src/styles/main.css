@@ -2049,8 +2049,8 @@ html.dark .composer {
   padding: 20px;
 }
 
-/* 左:目录分组折叠 */
-.knowledge-cats {
+/* 左:目录树(按 parent_id/position 渲染) */
+.knowledge-tree {
   width: 300px;
   flex: none;
   overflow-y: auto;
@@ -2058,106 +2058,53 @@ html.dark .composer {
   border-right: 1px solid var(--el-border-color-lighter);
 }
 
-.knowledge-cat {
-  margin-bottom: 2px;
-}
-
-.knowledge-cat-head {
+.knowledge-tree-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--el-text-color-regular);
-  padding: 8px 8px;
+  gap: 5px;
+  padding: 7px 8px;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
+  color: var(--el-text-color-regular);
   transition: background 0.12s, color 0.12s;
 }
 
-.knowledge-cat-head:hover {
+.knowledge-tree-row:hover {
   background: var(--el-fill-color-light);
   color: var(--el-text-color-primary);
 }
 
-.knowledge-caret {
+.knowledge-tree-row.active {
+  background: var(--el-fill-color-darker);
+  color: var(--el-text-color-primary);
+}
+
+.knowledge-tree-row.active .knowledge-tree-title {
+  font-weight: 500;
+}
+
+.knowledge-tree-caret {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
   color: var(--el-text-color-secondary);
   transition: transform 0.15s;
 }
 
-.knowledge-cat-head.open .knowledge-caret {
+.knowledge-tree-caret.open {
   transform: rotate(90deg);
 }
 
-.knowledge-cat-name {
+.knowledge-tree-caret-placeholder {
+  visibility: hidden;
+}
+
+.knowledge-tree-title {
   flex: 1;
   min-width: 0;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.knowledge-cat-count {
-  flex: none;
-  min-width: 20px;
-  text-align: center;
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--el-text-color-secondary);
-  background: var(--el-fill-color-light);
-  border-radius: 999px;
-  padding: 1px 6px;
-}
-
-.knowledge-cat-list {
-  padding: 2px 0 6px;
-}
-
-.knowledge-page {
-  display: block;
-  width: 100%;
-  border: none;
-  background: transparent;
-  text-align: left;
-  padding: 8px 10px 8px 22px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.knowledge-page:hover {
-  background: var(--el-fill-color-light);
-}
-
-.knowledge-page.active {
-  background: var(--el-fill-color-darker);
-}
-
-.knowledge-page-title {
-  display: block;
   font-size: 13px;
-  color: var(--el-text-color-regular);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: color 0.12s;
-}
-
-.knowledge-page:hover .knowledge-page-title,
-.knowledge-page.active .knowledge-page-title {
-  color: var(--el-text-color-primary);
-}
-
-.knowledge-page-sum {
-  display: block;
-  margin-top: 2px;
-  font-size: 11.5px;
-  color: var(--el-text-color-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
