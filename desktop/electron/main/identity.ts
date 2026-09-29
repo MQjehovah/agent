@@ -52,6 +52,16 @@ export interface Identity {
 
 let current: Identity | null = null
 
+/** OIDC 刷新失败冷却(ms): 失败后 60s 内直接抛同错, 跳过重复网络请求(防重试风暴) */
+const OIDC_REFRESH_FAIL_COOLDOWN_MS = 60_000
+let oidcRefreshFailedAt = 0
+let oidcRefreshFailedError: Error | null = null
+
+function resetOidcRefreshFailure(): void {
+  oidcRefreshFailedAt = 0
+  oidcRefreshFailedError = null
+}
+
 export function getIdentity(): Identity | null {
   return current
 }
@@ -75,6 +85,7 @@ function saveIdentity(identity: Identity): void {
 
 export function clearIdentity(): void {
   current = null
+  resetOidcRefreshFailure()
   try {
     if (existsSync(identityFile())) writeFileSync(identityFile(), '')
   } catch {
@@ -117,18 +128,30 @@ async function ensureFreshOidc(): Promise<void> {
   if (!oidc) return
   if (oidc.expiresAt > Date.now() + 60_000) return
   if (!oidc.refreshToken) throw new Error('无 refresh_token')
-
-  const data = await ssoFlow.refresh(oidc.refreshToken)
-  if (!data.access_token || !current) throw new Error('刷新响应缺少 access_token')
-  current.oidc = {
-    idToken: data.id_token ?? oidc.idToken,
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token ?? oidc.refreshToken,
-    expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000
+  // 刷新失败(dashboard-gateway refresh_token 单次使用, 桌面与服务端竞态时 SSO 返回 400 invalid_grant)
+  // 后进入 60s 冷却: 期间直接抛同错, 跳过重复网络请求, 防重试风暴
+  if (oidcRefreshFailedAt && Date.now() - oidcRefreshFailedAt < OIDC_REFRESH_FAIL_COOLDOWN_MS) {
+    throw oidcRefreshFailedError ?? new Error('OIDC 刷新失败(冷却中)')
   }
-  saveIdentity(current)
-  // SSO refresh_token 单次使用轮换: 刷新成功立即把新代理 token 复投给 agent(失败仅告警)
-  await hostSsoTokens()
+
+  try {
+    const data = await ssoFlow.refresh(oidc.refreshToken)
+    if (!data.access_token || !current) throw new Error('刷新响应缺少 access_token')
+    current.oidc = {
+      idToken: data.id_token ?? oidc.idToken,
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? oidc.refreshToken,
+      expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000
+    }
+    saveIdentity(current)
+    resetOidcRefreshFailure()
+    // SSO refresh_token 单次使用轮换: 刷新成功立即把新代理 token 复投给 agent(失败仅告警)
+    await hostSsoTokens()
+  } catch (err) {
+    oidcRefreshFailedAt = Date.now()
+    oidcRefreshFailedError = err instanceof Error ? err : new Error(String(err))
+    throw oidcRefreshFailedError
+  }
 }
 
 /**
@@ -327,6 +350,7 @@ export async function startSsoLogin(timeoutMs = 5 * 60_000): Promise<IdentityUse
     agentJwt: ''
   }
   saveIdentity(identity)
+  resetOidcRefreshFailure()
 
   // gateway token:失败降级(登录成功但用量/gateway 调用稍后自愈)
   try {
