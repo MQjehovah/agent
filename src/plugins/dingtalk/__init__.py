@@ -20,6 +20,7 @@ from plugins.dingtalk.confirm import (
     parse_card_action,
     parse_out_track_id,
 )
+from plugins.dingtalk.groups import groups_file_path, upsert_group_entry
 
 logger = logging.getLogger("plugin.dingtalk")
 logging.getLogger("dingtalk_stream").setLevel(logging.WARNING)
@@ -971,6 +972,21 @@ class AgentChatbotHandler:
             # 单/群判定: 优先官方 conversation_type('2'=群,'1'=单), cid 前缀仅兜底。
             # 单聊与群聊的 conversationId 均可能以 cid 开头, 前缀不可靠(曾致私聊误判为群)。
             is_group = is_group_conversation_id(conversation_id, conversation_type)
+
+            # 群目录回写: 群消息触发即登记 (cid, 群名, robot_code, 最近触发人,
+            # last_active), 供 dingtalk MCP 按群名发消息(共享文件, 部署时挂载同一
+            # 宿主目录)。群名优先取 SDK conversation_title(核实存在, 无则空串);
+            # cid 前缀校验后写入; 写失败仅告警(由 upsert 内部打), 不阻断消息处理。
+            if is_group and str(conversation_id).startswith("cid"):
+                group_title = getattr(incoming_message, "conversation_title", "") or ""
+                try:
+                    await asyncio.to_thread(
+                        upsert_group_entry,
+                        groups_file_path(), conversation_id, group_title,
+                        robot_code, user_name,
+                    )
+                except Exception as e:
+                    self.logger.warning(f"回写钉钉群目录异常: {e!r}")
 
             # /new: 忽略大小写/空格, force 开新根, 回复确认, 不进 agent 处理
             if content.strip().lower() == "/new":
