@@ -243,22 +243,56 @@ def test_robot_group_by_name_resolves_cid(send_env):
         msg_key="sampleText", msg_param='{"content":"hi"}', group="设备运维群"))
     assert payload["success"] is True
     assert len(posts) == 1
-    assert posts[0]["json"]["conversationId"] == "cidDev"
+    assert posts[0]["json"]["openConversationId"] == "cidDev"
     assert posts[0]["url"].endswith("/v1.0/robot/groupMessages/send")
+
+
+def test_robot_group_body_uses_open_conversation_id_key(send_env):
+    """回归: 钉钉 v1.0 群发要求 openConversationId; 旧字段 conversationId 会 400。"""
+    module, _, posts = send_env
+    payload = _payload(module.dingtalk_send_robot_group_message(
+        msg_key="sampleText", msg_param='{"content":"hi"}', conversation_id="cidDirect"))
+    assert payload["success"] is True
+    body = posts[0]["json"]
+    assert body["openConversationId"] == "cidDirect"
+    assert "conversationId" not in body
+
+
+def test_file_group_body_uses_open_conversation_id_key(send_env, monkeypatch, tmp_path):
+    """回归: 文件群发路径同样使用 openConversationId(上传媒体单独 mock)。"""
+    module, _, _ = send_env
+    monkeypatch.setattr(module, "_upload_robot_media", lambda file_path: "M-1")
+    calls = []
+
+    def fake_api(method, path, *, params=None, json_body=None, data=None,
+                 files=None, timeout=10):
+        calls.append({"method": method, "path": path, "json": json_body})
+        return {"processQueryKey": "PQ"}
+
+    monkeypatch.setattr(module, "_api", fake_api)
+    local = tmp_path / "a.txt"
+    local.write_text("x", encoding="utf-8")
+    payload = _payload(module.dingtalk_send_file_group(
+        open_conversation_id="cidFile", file_path=str(local)))
+    assert payload["success"] is True
+    assert len(calls) == 1
+    body = calls[0]["json"]
+    assert body["openConversationId"] == "cidFile"
+    assert "conversationId" not in body
 
 
 def test_text_and_markdown_group_by_name_resolve_cid(send_env):
     module, _, posts = send_env
     payload = _payload(module.dingtalk_send_text_group(content="你好", group="it运维群"))
     assert payload["success"] is True
-    assert posts[0]["json"]["conversationId"] == "cidIT"
+    assert posts[0]["json"]["openConversationId"] == "cidIT"
     assert posts[0]["json"]["msgKey"] == "sampleText"
 
     # 精确未命中 → 模糊唯一("设备运维" 仅被一个群名包含)
     payload = _payload(module.dingtalk_send_markdown_group(
         title="标题", text="# 正文", group="设备运维"))
     assert payload["success"] is True
-    assert posts[1]["json"]["conversationId"] == "cidDev"
+    assert posts[1]["json"]["openConversationId"] == "cidDev"
     assert posts[1]["json"]["msgKey"] == "sampleMarkdown"
 
     # 模糊多义("运维" 同时命中两个群) → 报错且不发起请求
@@ -300,7 +334,7 @@ def test_file_group_by_name_resolves_cid(send_env, monkeypatch, tmp_path):
     payload = _payload(module.dingtalk_send_file_group(group="设备运维群", file_path=str(local)))
     assert payload["success"] is True
     assert payload["process_query_key"] == "PQ-2"
-    assert calls[1]["json"]["conversationId"] == "cidDev"
+    assert calls[1]["json"]["openConversationId"] == "cidDev"
     assert calls[1]["json"]["msgKey"] == "sampleFile"
 
     # 解析失败: 不触达上传/发送

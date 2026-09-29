@@ -770,7 +770,8 @@ def dingtalk_send_robot_group_message(
 
         payload = {
             "robotCode": robot_code or ROBOT_CODE,
-            "conversationId": target,
+            # 钉钉 v1.0 规范字段名为 openConversationId(线上实证: conversationId 回 400)
+            "openConversationId": target,
             "msgKey": msg_key,
             "msgParam": json.dumps(param_obj, ensure_ascii=False),
             "atUserIds": dingtalk_userids or [],
@@ -2795,7 +2796,7 @@ def dingtalk_send_file_group(open_conversation_id: str = "", file_path: str = ""
             "fileType": os.path.splitext(file_name)[1].lstrip(".") or "file",
         }, ensure_ascii=False)
         result = _api("POST", "/v1.0/robot/groupMessages/send",
-                      json_body={"robotCode": ROBOT_CODE, "conversationId": conversation,
+                      json_body={"robotCode": ROBOT_CODE, "openConversationId": conversation,
                                  "msgKey": "sampleFile", "msgParam": msg_param})
         return _dump({"success": True, "media_id": media_id,
                       "message": "群文件消息已发送",

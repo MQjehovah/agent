@@ -712,7 +712,7 @@ def test_send_file_group_success_and_validation(api, tmp_path):
     assert payload["process_query_key"] == "PQ2"
     send = calls[1]
     assert send["path"] == "/v1.0/robot/groupMessages/send"
-    assert send["json"]["conversationId"] == "cidX"
+    assert send["json"]["openConversationId"] == "cidX"
     assert send["json"]["msgKey"] == "sampleFile"
 
     for kwargs in (
