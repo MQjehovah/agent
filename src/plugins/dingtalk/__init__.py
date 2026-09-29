@@ -946,6 +946,27 @@ class AgentChatbotHandler:
 
             self.logger.info(f"钉钉插件收到消息: [{sender_nick}](staff_id={sender_staff_id}) {content}...")
 
+            # 单/群判定: 优先官方 conversation_type('2'=群,'1'=单), cid 前缀仅兜底。
+            # 单聊与群聊的 conversationId 均可能以 cid 开头, 前缀不可靠(曾致私聊误判为群)。
+            is_group = is_group_conversation_id(conversation_id, conversation_type)
+
+            # 群目录回写: 群消息触发即登记 (cid, 群名, robot_code, 最近触发人,
+            # last_active), 供 dingtalk MCP 按群名发消息(共享文件, 部署时挂载同一
+            # 宿主目录)。登记只需 cid/群名/robot_code, 不依赖发送者身份, 故置于身份
+            # 解析之前(未开户成员群内发言也能登记该群); 群名优先取 SDK
+            # conversation_title(核实存在, 无则空串); cid 前缀校验后写入; 写失败
+            # 仅告警(由 upsert 内部打), 不阻断消息处理。
+            if is_group and str(conversation_id).startswith("cid"):
+                group_title = getattr(incoming_message, "conversation_title", "") or ""
+                try:
+                    await asyncio.to_thread(
+                        upsert_group_entry,
+                        groups_file_path(), conversation_id, group_title,
+                        robot_code, sender_nick,
+                    )
+                except Exception as e:
+                    self.logger.warning(f"回写钉钉群目录异常: {e!r}")
+
             # 身份解析: rbac_user_identities 绑定表(staff_id → agent 用户/角色)。
             # 未开户(无绑定)/被禁用/解析异常 → 一律拒绝并 ACK，不创建会话、不路由，
             # 杜绝以 dingtalk:{staff_id} 或 default 角色静默放行。
@@ -968,25 +989,6 @@ class AgentChatbotHandler:
             agent_uid = str(user_info.get("user_id") or "")
             role = user_info.get("role") or "default"
             user_name = user_info.get("user_name") or sender_nick
-
-            # 单/群判定: 优先官方 conversation_type('2'=群,'1'=单), cid 前缀仅兜底。
-            # 单聊与群聊的 conversationId 均可能以 cid 开头, 前缀不可靠(曾致私聊误判为群)。
-            is_group = is_group_conversation_id(conversation_id, conversation_type)
-
-            # 群目录回写: 群消息触发即登记 (cid, 群名, robot_code, 最近触发人,
-            # last_active), 供 dingtalk MCP 按群名发消息(共享文件, 部署时挂载同一
-            # 宿主目录)。群名优先取 SDK conversation_title(核实存在, 无则空串);
-            # cid 前缀校验后写入; 写失败仅告警(由 upsert 内部打), 不阻断消息处理。
-            if is_group and str(conversation_id).startswith("cid"):
-                group_title = getattr(incoming_message, "conversation_title", "") or ""
-                try:
-                    await asyncio.to_thread(
-                        upsert_group_entry,
-                        groups_file_path(), conversation_id, group_title,
-                        robot_code, user_name,
-                    )
-                except Exception as e:
-                    self.logger.warning(f"回写钉钉群目录异常: {e!r}")
 
             # /new: 忽略大小写/空格, force 开新根, 回复确认, 不进 agent 处理
             if content.strip().lower() == "/new":

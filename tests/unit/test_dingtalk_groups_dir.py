@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from plugins.dingtalk import AgentChatbotHandler, DingTalkPlugin
+from plugins.dingtalk import NOT_PROVISIONED_REPLY, AgentChatbotHandler, DingTalkPlugin
 from plugins.dingtalk.groups import (
     DEFAULT_GROUPS_FILE,
     MAX_GROUPS,
@@ -269,6 +269,35 @@ async def test_group_message_without_title_still_registers(tmp_path, monkeypatch
         }))
     assert code == 200
     assert _read_groups(path)["cidNoTitle"]["name"] == ""
+
+
+async def test_unprovisioned_group_message_still_registers(tmp_path, monkeypatch, storage):
+    """未开户成员群内发言: 仍登记群目录(sender 取 sender_nick), 拒绝路由路径不变。"""
+    path = tmp_path / "dingtalk_groups.json"
+    monkeypatch.setenv("DINGTALK_GROUPS_FILE", str(path))
+    router = MagicMock()
+    router.route = AsyncMock(return_value=SimpleNamespace(result="不应被路由"))
+    with patch("storage.storage.get_storage", return_value=storage):
+        plugin = _plugin()
+        handler = _handler(plugin, router=router)
+        code, _ = await handler.process(SimpleNamespace(data={
+            "sender_id": "s-unbound", "sender_staff_id": "staff-unbound",
+            "sender_nick": "路人甲", "conversation_id": "cidGRPunbound==",
+            "conversation_type": "2", "conversation_title": "吃瓜群",
+            "robot_code": "rc-1", "content": "你好",
+        }))
+    assert code == 200
+    # 未开户: 不路由、不建会话, 回复未开户提示不变
+    router.route.assert_not_awaited()
+    assert plugin.sessions == {}
+    args, kwargs = handler.reply_text.call_args
+    assert args[0] == NOT_PROVISIONED_REPLY
+    assert kwargs.get("msgtype") == "text"
+    # 但群已被登记(sender=发送者昵称, 与发送者身份无关)
+    entry = _read_groups(path)["cidGRPunbound=="]
+    assert entry["name"] == "吃瓜群"
+    assert entry["robot_code"] == "rc-1"
+    assert entry["sender"] == "路人甲"
 
 
 async def test_single_chat_and_non_cid_do_not_write(tmp_path, monkeypatch, storage):
