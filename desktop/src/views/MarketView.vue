@@ -16,7 +16,7 @@ import { iconPhStyle, typeName } from '../utils/market'
 const router = useRouter()
 const settings = useSettingsStore()
 
-const tab = ref<'browse' | 'installed'>('browse')
+const tab = ref<'browse' | 'joined' | 'installed'>('browse')
 
 /** portal /api/capabilities 分页外壳(只读最小字段,容错) */
 interface MarketCapPage {
@@ -233,19 +233,23 @@ async function refreshBrowse(): Promise<void> {
   await Promise.allSettled([loadMine(), loadInstalled()])
 }
 
-/** 头部刷新:按当前页签只刷新对应数据 */
+/** 头部刷新:按当前页签只刷新对应数据(已加入与浏览同源) */
 function onRefresh(): void {
-  if (tab.value === 'browse') void refreshBrowse()
-  else void loadInstalled()
+  if (tab.value === 'installed') void loadInstalled()
+  else void refreshBrowse()
 }
 
-function onTab(next: 'browse' | 'installed'): void {
+function onTab(next: 'browse' | 'joined' | 'installed'): void {
   tab.value = next
-  if (next === 'browse') {
-    if (!browseLoaded.value && !browseLoading.value) void refreshBrowse()
-  } else if (!installedLoaded.value && !installedLoading.value) {
-    void loadInstalled()
+  if (next === 'installed') {
+    if (!installedLoaded.value && !installedLoading.value) void loadInstalled()
+    return
   }
+  if (!browseLoaded.value) {
+    if (!browseLoading.value) void refreshBrowse()
+    return
+  }
+  if (next === 'joined') void loadMine()
 }
 
 const countText = computed(() => {
@@ -253,6 +257,7 @@ const countText = computed(() => {
     if (!browseLoaded.value) return ''
     return hasBrowseFilter.value ? `筛选 ${cards.value.length} / ${browse.value.length} 项` : `共 ${browse.value.length} 项`
   }
+  if (tab.value === 'joined') return `已加入 ${joinedCards.value.length} 项`
   return installedLoaded.value ? `已安装 ${installed.value.length} 项` : ''
 })
 
@@ -276,6 +281,18 @@ interface BrowseCard extends MarketCapabilityLite {
   installed: boolean
 }
 
+/** 目录条目 + 订阅态 + 本机已装态(浏览/已加入共用同一标注口径) */
+function decorate(list: MarketCapabilityLite[]): BrowseCard[] {
+  const mine = mineIds.value
+  const mineNamesSet = mineNames.value
+  const instKeys = new Set(installed.value.map((it) => typeKey(it.type, it.name)))
+  return list.map((c) => ({
+    ...c,
+    mine: mine.has(c.id) || mineNamesSet.has(c.name),
+    installed: instKeys.has(typeKey(c.type, c.name))
+  }))
+}
+
 /** 浏览卡片 = 目录条目(先按 搜索/类型/分类 过滤) + 订阅态 + 本机已装态 */
 const cards = computed<BrowseCard[]>(() => {
   const kw = q.value.trim().toLowerCase()
@@ -290,15 +307,16 @@ const cards = computed<BrowseCard[]>(() => {
     }
     return true
   })
-  const mine = mineIds.value
-  const mineNamesSet = mineNames.value
-  const instKeys = new Set(installed.value.map((it) => typeKey(it.type, it.name)))
-  return filtered.map((c) => ({
-    ...c,
-    mine: mine.has(c.id) || mineNamesSet.has(c.name),
-    installed: instKeys.has(typeKey(c.type, c.name))
-  }))
+  return decorate(filtered)
 })
+
+/** 已加入卡片 = 目录中 mine=true 的全部条目(目录未加载时为空) */
+const joinedCards = computed<BrowseCard[]>(() => decorate(browse.value).filter((c) => c.mine))
+
+/** 当前页签的卡片数据源:browse→筛选后目录,joined→已加入 */
+const displayCards = computed<BrowseCard[]>(() =>
+  tab.value === 'joined' ? joinedCards.value : cards.value
+)
 
 /** 是否有生效的浏览筛选 */
 const hasBrowseFilter = computed(() => !!(q.value.trim() || typeFilter.value || categoryFilter.value))
@@ -517,7 +535,7 @@ async function uninstallItem(item: MarketInstalledItem): Promise<void> {
 }
 
 const headerLoading = computed(() =>
-  tab.value === 'browse' ? browseLoading.value : installedLoading.value
+  tab.value === 'installed' ? installedLoading.value : browseLoading.value
 )
 
 onMounted(() => {
@@ -547,6 +565,9 @@ onMounted(() => {
       <button class="market-tab" :class="{ active: tab === 'browse' }" @click="onTab('browse')">
         浏览
       </button>
+      <button class="market-tab" :class="{ active: tab === 'joined' }" @click="onTab('joined')">
+        已加入
+      </button>
       <button
         class="market-tab"
         :class="{ active: tab === 'installed' }"
@@ -565,10 +586,10 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 浏览:市场目录卡片 -->
-    <div v-else-if="tab === 'browse'" class="market-body">
+    <!-- 浏览 / 已加入:市场目录卡片(已加入=目录中 mine=true 的子集,无过滤条) -->
+    <div v-else-if="tab === 'browse' || tab === 'joined'" class="market-body">
       <section class="market-pane">
-        <div class="market-filters">
+        <div v-if="tab === 'browse'" class="market-filters">
           <el-input
             v-model="q"
             placeholder="搜索名称 / 描述 / 分类"
@@ -609,11 +630,19 @@ onMounted(() => {
               <el-button size="small" @click="refreshBrowse">重试</el-button>
             </el-empty>
           </div>
-          <div v-else-if="browseLoaded && cards.length === 0" class="market-state">
-            <el-empty :description="hasBrowseFilter ? '没有匹配的能力，试试清空筛选' : '市场还没有可显示内容'" />
+          <div v-else-if="browseLoaded && displayCards.length === 0" class="market-state">
+            <el-empty
+              :description="
+                tab === 'joined'
+                  ? '还没有加入任何能力，去「浏览」里加入吧'
+                  : hasBrowseFilter
+                    ? '没有匹配的能力，试试清空筛选'
+                    : '市场还没有可显示内容'
+              "
+            />
           </div>
           <div v-else-if="browseLoaded" v-loading="browseLoading" class="market-grid">
-            <article v-for="card in cards" :key="card.id" class="market-card">
+            <article v-for="card in displayCards" :key="card.id" class="market-card">
               <span v-if="!card.rating_count" class="market-ribbon">新品</span>
               <div class="market-card-head">
                 <img
