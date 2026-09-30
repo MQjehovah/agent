@@ -1,12 +1,14 @@
 <script setup lang="ts">
 defineOptions({ name: 'KnowledgeView' })
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { Back, CaretRight, Document, Refresh, Search } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import { api, hasPerm } from '../api'
 
 /** 只读知识库(经 agent /api/knowledge/* 代理到 RAG)。 */
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
+const router = useRouter()
 
 interface WikiPageMeta { id: string; title: string; summary?: string; updated_at: string; parent_id?: string | null }
 interface WikiCategory { name: string; pages: WikiPageMeta[] }
@@ -57,10 +59,19 @@ const searchResults = ref<SearchHit[]>([])
 const searchMeta = ref<{ total: number; graph_expanded?: boolean } | null>(null)
 const expandedHits = ref<Set<string>>(new Set())
 
+/** 无 SSO 会话时后端 fail-closed 503(引导登录), 与「未配置」区分 */
+const needLogin = ref(false)
+
 function errText(e: unknown): string {
   const x = e as { status?: number; message?: string }
   if (x?.status === 401) return '登录已过期，请重新登录'
-  if (x?.status === 503) return 'RAG 知识库未配置 (RAG_BASE_URL)'
+  if (x?.status === 503) {
+    if (x.message && x.message.includes('请先登录')) {
+      needLogin.value = true
+      return x.message
+    }
+    return 'RAG 知识库未配置 (RAG_BASE_URL)'
+  }
   if (x?.status) return `知识库请求失败(HTTP ${x.status}):${x.message ?? ''}`
   return `RAG 知识库不可达:${(e as Error).message}`
 }
@@ -68,6 +79,7 @@ function errText(e: unknown): string {
 async function loadSpaces(): Promise<void> {
   spacesLoading.value = true
   spacesError.value = ''
+  needLogin.value = false
   try {
     const data = await api<WikiSpacesResp>('/api/knowledge/spaces')
     spaces.value = data.spaces ?? []
@@ -109,6 +121,7 @@ function refresh(): void {
 async function loadIndex(): Promise<void> {
   indexLoading.value = true
   indexError.value = ''
+  needLogin.value = false
   try {
     const sid = activeSpace.value?.id ?? ''
     const qs = sid ? '?space_id=' + encodeURIComponent(sid) : ''
@@ -197,6 +210,7 @@ async function openPage(meta: { id: string; title: string; summary?: string }): 
   const seq = ++reqSeq
   page.value = null
   pageError.value = ''
+  needLogin.value = false
   pageLoading.value = true
   try {
     const data = await api<WikiPage>('/api/knowledge/wiki/' + encodeURIComponent(meta.id))
@@ -215,6 +229,7 @@ async function runSearch(): Promise<void> {
   if (!q || searching.value) return
   searching.value = true
   searchError.value = ''
+  needLogin.value = false
   try {
     const data = await api<{ results: SearchHit[]; total: number; graph_expanded?: boolean }>(
       '/api/knowledge/search?q=' + encodeURIComponent(q) + '&top_k=8'
@@ -273,7 +288,7 @@ onMounted(() => void loadSpaces())
         <el-button type="primary" :loading="searching" @click="runSearch">检索</el-button>
       </div>
       <div v-loading="searching" class="kb-search-body">
-        <div v-if="searchError" class="kb-state"><el-empty :description="searchError"><el-button size="small" @click="runSearch">重试</el-button></el-empty></div>
+        <div v-if="searchError" class="kb-state"><el-empty :description="searchError"><el-button v-if="needLogin" type="primary" size="small" @click="router.push('/login')">前往登录</el-button><el-button size="small" @click="runSearch">重试</el-button></el-empty></div>
         <template v-else-if="searchResults.length || searchMeta">
           <div class="kb-search-meta">
             共 {{ searchMeta?.total ?? 0 }} 条命中<template v-if="searchMeta?.graph_expanded">，已启用图谱扩展</template>
@@ -300,7 +315,7 @@ onMounted(() => void loadSpaces())
       <!-- 第一级: 空间卡片列表 -->
       <div v-if="!activeSpace" class="kb-spaces">
         <div v-if="spacesError" class="kb-state">
-          <el-empty :description="spacesError"><el-button size="small" @click="loadSpaces">重试</el-button></el-empty>
+          <el-empty :description="spacesError"><el-button v-if="needLogin" type="primary" size="small" @click="router.push('/login')">前往登录</el-button><el-button size="small" @click="loadSpaces">重试</el-button></el-empty>
         </div>
         <div v-else-if="spacesLoaded && spacesTotal === 0" class="kb-state"><el-empty description="知识库还没有内容" /></div>
         <div v-else-if="spacesLoaded" class="kb-spaces-grid">
@@ -335,7 +350,7 @@ onMounted(() => void loadSpaces())
       <!-- 第二级: 空间内 Wiki -->
       <template v-else>
         <div v-if="indexError" class="kb-state">
-          <el-empty :description="indexError"><el-button size="small" @click="loadIndex">重试</el-button></el-empty>
+          <el-empty :description="indexError"><el-button v-if="needLogin" type="primary" size="small" @click="router.push('/login')">前往登录</el-button><el-button size="small" @click="loadIndex">重试</el-button></el-empty>
         </div>
         <div v-else-if="indexLoaded && index.total === 0" class="kb-state"><el-empty description="该空间还没有内容" /></div>
         <div v-else-if="indexLoaded" class="kb-body-inner">
@@ -362,7 +377,7 @@ onMounted(() => void loadSpaces())
         <section class="kb-reader">
           <el-skeleton v-if="pageLoading" :rows="8" animated />
           <div v-else-if="pageError" class="kb-state">
-            <el-empty :description="pageError"><el-button size="small" @click="current && openPage(current)">重试</el-button></el-empty>
+            <el-empty :description="pageError"><el-button v-if="needLogin" type="primary" size="small" @click="router.push('/login')">前往登录</el-button><el-button size="small" @click="current && openPage(current)">重试</el-button></el-empty>
           </div>
           <div v-else-if="page" class="kb-doc">
             <header class="kb-doc-head">

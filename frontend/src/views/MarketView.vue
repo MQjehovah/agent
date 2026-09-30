@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { api, del, patch, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarketCard from '../components/MarketCard.vue'
+
+const router = useRouter()
 
 interface MarketComponent {
   name?: string
@@ -44,6 +47,9 @@ const installations = ref<Installation[]>([])
 const total = ref(0)
 const loading = ref(false)
 const marketMissing = ref(false)
+/** 无 SSO 会话时后端 fail-closed 503(引导登录) 与「未配置」区分 */
+const needLogin = ref(false)
+const loginHint = ref('')
 
 const query = reactive({ q: '', type: '', category: '', page: 1, page_size: 12 })
 
@@ -149,6 +155,8 @@ function enabledOf(item: MarketItem): boolean {
 async function load() {
   loading.value = true
   marketMissing.value = false
+  needLogin.value = false
+  loginHint.value = ''
   try {
     const qs = new URLSearchParams()
     if (query.q) qs.set('q', query.q)
@@ -164,8 +172,14 @@ async function load() {
     total.value = browse.total ?? 0
     installations.value = local.installations ?? []
   } catch (e) {
-    if ((e as { status?: number }).status === 503) {
-      marketMissing.value = true
+    const x = e as { status?: number; message?: string }
+    if (x.status === 503) {
+      if (x.message && x.message.includes('请先登录')) {
+        needLogin.value = true
+        loginHint.value = x.message
+      } else {
+        marketMissing.value = true
+      }
       items.value = []
       total.value = 0
     } else {
@@ -203,8 +217,14 @@ async function openDetail(item: MarketItem) {
     const d = await api<MarketItem>(`/api/market/capabilities/${item.id}`)
     detail.value = d
   } catch (e) {
-    if ((e as { status?: number }).status === 503) {
-      marketMissing.value = true
+    const x = e as { status?: number; message?: string }
+    if (x.status === 503) {
+      if (x.message && x.message.includes('请先登录')) {
+        needLogin.value = true
+        loginHint.value = x.message
+      } else {
+        marketMissing.value = true
+      }
     } else {
       ElMessage.error((e as Error).message)
     }
@@ -332,6 +352,11 @@ onBeforeUnmount(() => {
     <el-alert v-if="marketMissing" type="warning" :closable="false" show-icon
               title="能力市场未配置，请联系管理员" style="margin-bottom: 12px" />
 
+    <el-alert v-if="needLogin" type="warning" :closable="false" show-icon
+              :title="loginHint || '请先登录一次 AI 平台完成身份授权'" style="margin-bottom: 12px">
+      <el-button type="primary" size="small" @click="router.push('/login')">前往登录</el-button>
+    </el-alert>
+
     <div v-loading="loading">
       <div v-if="!marketMissing && items.length" ref="gridRef" class="cards">
         <MarketCard
@@ -349,8 +374,11 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <div v-if="!loading && (marketMissing || items.length === 0)" style="margin-top: 12px">
-        <el-empty v-if="marketMissing" description="能力市场未配置，请联系管理员" />
+      <div v-if="!loading && (marketMissing || needLogin || items.length === 0)" style="margin-top: 12px">
+        <el-empty v-if="needLogin" :description="loginHint || '请先登录一次 AI 平台完成身份授权，后再使用市场能力。'">
+          <el-button type="primary" size="small" @click="router.push('/login')">前往登录</el-button>
+        </el-empty>
+        <el-empty v-else-if="marketMissing" description="能力市场未配置，请联系管理员" />
         <el-empty v-else :description="query.q || query.type || query.category ? '无匹配能力' : '暂无能力'" />
       </div>
 
