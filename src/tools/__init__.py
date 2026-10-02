@@ -348,6 +348,7 @@ from .diagnostics import CodeDiagnosticsTool
 from .git import GitTool
 from .grep import GrepTool
 from .lsp import LspTool
+from .rename_symbol import RenameSymbolTool
 from .repo_map import RepoMapTool
 
 # Web / 多模态 / 身份 / 渐进披露
@@ -361,6 +362,7 @@ __all__ = [
     'AskUserTool', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
     'TerminalTool',
     'GrepTool', 'GlobTool', 'EditTool', 'CodeSearchTool', 'RepoMapTool', 'LspTool',
+    'RenameSymbolTool',
     'PatchTool', 'CodeDiagnosticsTool', 'GitTool',
     'SearchToolsTool', 'ViewImageTool', 'WhoamiTool',
     'WebSearchTool', 'WebFetchTool',

@@ -45,6 +45,7 @@ class PermissionConfig:
         "terminal",
         "edit",
         "patch",
+        "rename_symbol",
         "git",
     ])
     # SMART 模式(必要时询问): 命中以下片段的 shell 命令需用户确认
