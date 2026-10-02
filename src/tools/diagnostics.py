@@ -283,17 +283,31 @@ def format_advisory(result: dict, max_issues: int = 10) -> str:
     return "\n".join(lines)
 
 
+async def diagnostics_result_for_paths(workspace: str, paths: list[str], timeout: int = 20) -> dict | None:
+    """运行诊断并返回原始结果 dict（失败/不可用返回 None）。"""
+    if not paths:
+        return None
+    try:
+        return await asyncio.to_thread(run_diagnostics, workspace, paths, None, timeout)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[diagnostics] 诊断跳过: {e}")
+        return None
+
+
+def has_error_issues(result: dict | None) -> bool:
+    """结果中是否存在 error 级问题（供写后 `block` 模式判定）。"""
+    for res in (result or {}).get("results", []):
+        for issue in res.get("issues", []):
+            if issue.get("severity") == "error":
+                return True
+    return False
+
+
 async def advisory_for_paths(workspace: str, paths: list[str], timeout: int = 20,
                              max_issues: int = 10) -> str:
     """写工具后追加诊断（仅提示）。任何异常/不可用都返回空串。"""
-    if not paths:
-        return ""
-    try:
-        result = await asyncio.to_thread(run_diagnostics, workspace, paths, None, timeout)
-        return format_advisory(result, max_issues)
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"[diagnostics] 建议诊断跳过: {e}")
-        return ""
+    result = await diagnostics_result_for_paths(workspace, paths, timeout)
+    return format_advisory(result, max_issues)
 
 
 class CodeDiagnosticsTool(BuiltinTool):

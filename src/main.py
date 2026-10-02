@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import gc
+import json
 import logging
 import os
 import signal
@@ -33,6 +34,37 @@ os.environ.setdefault("AGENT_LOG_DIR", _LOCAL_LOG if os.path.isdir(_LOCAL_LOG) e
 
 
 console = Console()
+
+
+def _install_cli_confirm(agent, auto: bool = False) -> None:
+    """交互式 CLI 下安装真实审批回调（写操作/计划）。
+
+    非 tty（管道/CI）或 `--auto` 时不安装：保持 AUTO 放行，避免阻塞无人值守运行。
+    安装后权限模式切到 DEFAULT（写操作需确认），`/plan on` 的计划审批也经此回调。
+    """
+    if auto or not sys.stdin.isatty():
+        return
+    from rich.prompt import Confirm
+
+    from security.permissions.modes import PermissionMode
+
+    with contextlib.suppress(Exception):
+        agent._permission_config.mode = PermissionMode.DEFAULT
+
+    async def _confirm(name, args):
+        if name == "__plan__":
+            title = (args or {}).get("title", "")
+            plan = (args or {}).get("plan", "")
+            console.print(Panel(plan or title, title="执行计划", border_style="cyan"))
+            return await asyncio.to_thread(Confirm.ask, "批准该计划并继续？", default=True)
+        preview = ""
+        with contextlib.suppress(Exception):
+            preview = json.dumps(args or {}, ensure_ascii=False)[:500]
+        console.print(f"[yellow]需要确认[/yellow] 工具 [bold]{name}[/bold]  参数: {preview}")
+        return await asyncio.to_thread(Confirm.ask, f"允许执行 {name}？", default=False)
+
+    agent.on_confirm = _confirm
+
 
 # 加载环境配置
 _project_root = Path(__file__).parent.parent
@@ -413,6 +445,16 @@ async def main():
     parser.add_argument("--no-plugins", action="store_true")
     parser.add_argument("--skip-config-check", action="store_true")
     parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="跳过写操作/计划的交互确认(等价完全访问; 默认交互式下会确认写操作)",
+    )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="启动时开启 Plan Mode(生成计划→审批→执行)",
+    )
+    parser.add_argument(
         "--mode",
         "-m",
         choices=["interactive", "autonomous"],
@@ -519,6 +561,10 @@ async def _main_with_args(args):
     )
     agent = Agent(workspace=workspace, config_dir=config_dir, client=client)
     await agent.initialize()
+
+    if args.plan:
+        agent._enable_plan_mode = True
+    _install_cli_confirm(agent, auto=args.auto)
 
     target_agent = args.agent or ""
 

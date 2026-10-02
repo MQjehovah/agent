@@ -30,10 +30,17 @@ logger = logging.getLogger("agent.agent")
 _DIAGNOSTIC_WRITE_TOOLS = frozenset({"edit", "patch"})
 
 
-def _diagnostics_enabled() -> bool:
-    """写后诊断开关（AGENT_POST_EDIT_DIAGNOSTICS，默认开）。"""
-    val = (os.environ.get("AGENT_POST_EDIT_DIAGNOSTICS", "1") or "1").strip().lower()
-    return val not in ("0", "false", "off", "no")
+def _diagnostics_mode() -> str:
+    """写后诊断模式（AGENT_POST_EDIT_DIAGNOSTICS）：off / advisory(默认) / block。
+
+    block: 若诊断出现 error 级问题，把工具结果标记为 success=false（编辑已写入，提示模型修复）。
+    """
+    val = (os.environ.get("AGENT_POST_EDIT_DIAGNOSTICS", "advisory") or "advisory").strip().lower()
+    if val in ("0", "false", "off", "no", "none"):
+        return "off"
+    if val in ("block", "strict", "2", "error"):
+        return "block"
+    return "advisory"
 
 
 def _touched_paths(name: str, args: dict, result: str) -> list[str]:
@@ -56,8 +63,14 @@ def _touched_paths(name: str, args: dict, result: str) -> list[str]:
 
 
 async def _maybe_append_diagnostics(agent, name: str, args: dict, result: str) -> str:
-    """写工具成功后追加诊断（仅提示，绝不阻断）；任何异常都保持原结果。"""
-    if name not in _DIAGNOSTIC_WRITE_TOOLS or not _diagnostics_enabled():
+    """写工具成功后追加诊断。
+
+    模式 off/advisory(默认)/block（`AGENT_POST_EDIT_DIAGNOSTICS`）：
+    - advisory: 仅把诊断文本追加到结果（绝不阻断）；
+    - block: 若存在 error 级问题，把结果标记为 success=false（编辑已写入，提示模型修复）。
+    """
+    mode = _diagnostics_mode()
+    if name not in _DIAGNOSTIC_WRITE_TOOLS or mode == "off":
         return result
     try:
         parsed = json.loads(result)
@@ -66,11 +79,22 @@ async def _maybe_append_diagnostics(agent, name: str, args: dict, result: str) -
         paths = _touched_paths(name, args, result)
         if not paths:
             return result
-        from tools.diagnostics import advisory_for_paths
+        from tools.diagnostics import (
+            diagnostics_result_for_paths,
+            format_advisory,
+            has_error_issues,
+        )
         workspace = getattr(agent, "workspace", "") or os.getcwd()
-        advisory = await advisory_for_paths(workspace, paths)
-        if advisory:
-            return f"{result}\n\n{advisory}"
+        raw = await diagnostics_result_for_paths(workspace, paths)
+        advisory = format_advisory(raw)
+        if not advisory:
+            return result
+        if mode == "block" and has_error_issues(raw):
+            parsed["success"] = False
+            parsed["error"] = "写后诊断发现错误级问题（编辑已写入，请按 diagnostics 修复）"
+            parsed["diagnostics"] = advisory
+            return json.dumps(parsed, ensure_ascii=False)
+        return f"{result}\n\n{advisory}"
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[诊断] 写后诊断跳过: {e}")
     return result
