@@ -185,6 +185,12 @@ class SubagentManager:
                 "ask_user", "memory",
             ])),
         }
+        # 团队级能力作用域（成员未配置时继承；成员配置则整份覆盖）
+        from agent.capabilities import Capabilities
+        team_caps = Capabilities.from_frontmatter(frontmatter)
+        team_caps.disallowed_tools = sorted(
+            set(team_caps.disallowed_tools) | set(config["tool_denylist"]))
+        config["capabilities"] = team_caps
         self._team_configs[name] = config
 
         members: dict[str, dict[str, Any]] = {}
@@ -274,12 +280,24 @@ class SubagentManager:
         if not frontmatter:
             return None
 
+        from agent.capabilities import Capabilities
         return {
             "name": frontmatter.get("name", member_name),
             "description": frontmatter.get("description", ""),
             "workspace": self.parent_workspace,
             "config_dir": member_dir,
+            "capabilities": Capabilities.from_frontmatter(frontmatter),
         }
+
+    def _effective_member_capabilities(self, team_name: str, member_name: str):
+        """成员有效能力：成员配置整份覆盖团队；成员空则继承团队。"""
+        from agent.capabilities import Capabilities
+        team_caps = self._team_configs.get(team_name, {}).get("capabilities") or Capabilities()
+        template = self._team_member_cache.get(f"{team_name}/{member_name}")
+        if template is None:
+            template = self.get_team_member_template(team_name, member_name) or {}
+        member_caps = template.get("capabilities") or Capabilities()
+        return member_caps if not member_caps.is_empty else team_caps
 
     async def _create_team_subagent(
         self,
@@ -316,11 +334,15 @@ class SubagentManager:
                      or self.parent_workspace or os.getcwd())
         config_dir = self._team_member_cache[cache_key].get("config_dir", "")
 
+        # 有效能力作用域：成员配置整份覆盖团队；成员无则继承团队（含 legacy denylist）
+        effective_caps = self._effective_member_capabilities(team_name, member_name)
+
         agent = Agent(
             workspace=workspace,
             client=client or self._client,
             parent_agent=parent_agent or self._parent_agent,
             config_dir=config_dir,
+            capabilities=effective_caps,
         )
         if parent_agent or self._parent_agent:
             agent.plugin_manager = (parent_agent or self._parent_agent).plugin_manager

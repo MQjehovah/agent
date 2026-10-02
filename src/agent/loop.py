@@ -6,12 +6,26 @@ Agent 循环模块 — run_impl / run_impl_reflective / think / execute_tool_cal
 import asyncio
 import json
 import logging
+import os
 
 from agent.core import AgentResult
+from agent.events import AgentEventType, emit_agent_event
 from agent.executor import execute_tool_safe
 from agent.session import sanitize_tool_message_pairs
 
 logger = logging.getLogger("agent.agent")
+
+
+def _tool_parallel_limit() -> int:
+    """同轮工具并发的上限（队列化超出部分；<=0 表示不限制）。
+
+    对应 Pi 的 steering/队列理念：模型一轮可能发起大量工具调用，这里用每批
+    信号量限流，避免瞬时打爆下游/资源，同时保持不同批之间不相互阻塞。
+    """
+    try:
+        return int(os.environ.get("AGENT_TOOL_MAX_PARALLEL", "4") or "4")
+    except (TypeError, ValueError):
+        return 4
 
 
 def _sanitize_llm_messages(messages: list, session=None) -> list:
@@ -165,10 +179,10 @@ async def think_stream(agent, messages, session=None) -> dict:
             # 把思考过程也推送（DeepSeek 推理模型先思考几十秒，若只推 content，
             # 用户会长时间无反馈）。用 content= 传 reasoning token，与正常回答的
             # token= 区分，前端可显示"正在思考"。
-            await agent.hooks.fire(agent._hook_event.CHAT_EVENT, content=delta.reasoning_content)
+            await emit_agent_event(agent, AgentEventType.CHAT_EVENT, content=delta.reasoning_content)
         if delta and delta.content:
             content += delta.content
-            await agent.hooks.fire(agent._hook_event.CHAT_EVENT, token=delta.content)
+            await emit_agent_event(agent, AgentEventType.CHAT_EVENT, token=delta.content)
         if delta and delta.tool_calls:
             for tc in delta.tool_calls:
                 idx = tc.index
@@ -219,6 +233,9 @@ async def execute_tool_calls_parallel(agent, tool_calls: list, session):
                     writer.add(index, tc, f"工具执行异常: {e}")
             return
 
+        limit = _tool_parallel_limit()
+        sem = asyncio.Semaphore(limit) if limit > 0 else None
+
         async def _run_one(tc):
             func_name = tc.get("function", {}).get("name", "")
             func_args = tc.get("function", {}).get("arguments", {})
@@ -227,7 +244,10 @@ async def execute_tool_calls_parallel(agent, tool_calls: list, session):
                     func_args = json.loads(func_args)
                 except (json.JSONDecodeError, ValueError):
                     func_args = {}
-            return tc, await execute_tool_safe(agent, func_name, func_args)
+            if sem is None:
+                return tc, await execute_tool_safe(agent, func_name, func_args)
+            async with sem:
+                return tc, await execute_tool_safe(agent, func_name, func_args)
 
         tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
         try:
@@ -278,6 +298,9 @@ async def execute_tool_calls_parallel_reflective(agent, tool_calls: list, sessio
                     had_errors = True
             return had_errors
 
+        limit = _tool_parallel_limit()
+        sem = asyncio.Semaphore(limit) if limit > 0 else None
+
         async def _run_one(tc):
             func_name = tc.get("function", {}).get("name", "")
             func_args = tc.get("function", {}).get("arguments", {})
@@ -286,7 +309,10 @@ async def execute_tool_calls_parallel_reflective(agent, tool_calls: list, sessio
                     func_args = json.loads(func_args)
                 except (json.JSONDecodeError, ValueError):
                     func_args = {}
-            return tc, await execute_tool_safe(agent, func_name, func_args)
+            if sem is None:
+                return tc, await execute_tool_safe(agent, func_name, func_args)
+            async with sem:
+                return tc, await execute_tool_safe(agent, func_name, func_args)
 
         tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
         try:
@@ -387,7 +413,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                     f"¥{usage_summary['total_cost_cny']}"
                 )
                 if i > 0:
-                    await agent.hooks.fire(agent._hook_event.ROUND_START, metadata={"iteration": i + 1})
+                    await emit_agent_event(agent, AgentEventType.ROUND_START, metadata={"iteration": i + 1})
 
                 think_messages = session.messages
                 # 多模态：仅把最后一条含图用户消息的引用物化为图片（历史轮次降级为占位），
@@ -439,7 +465,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
                 msg = response.get("message", {})
                 content = msg.get("content") or ""
                 if content:
-                    await agent.hooks.fire(agent._hook_event.LLM_RESPONSE,
+                    await emit_agent_event(agent, AgentEventType.LLM_RESPONSE,
                                            content=content,
                                            reasoning=getattr(msg, "reasoning_content", None) or "")
 
@@ -511,7 +537,7 @@ async def run_impl(agent, task: str, session_id: str, user_id: str, user_name: s
         agent._background_tasks.add(bg_task)
         bg_task.add_done_callback(agent._background_tasks.discard)
 
-    await agent.hooks.fire(agent._hook_event.AGENT_STOP, metadata={
+    await emit_agent_event(agent, AgentEventType.RUN_END, metadata={
         "status": ctx.status, "result_length": len(ctx.result) if ctx.result else 0,
     })
 
@@ -600,7 +626,7 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                 logger.info(f"[{agent.name}] reflective phase={phase} 第 {i+1}/{agent.max_iterations} 轮 | ctx {ctx_tokens:,}t")
 
                 if i > 0:
-                    await agent.hooks.fire(agent._hook_event.ROUND_START, metadata={"iteration": i + 1})
+                    await emit_agent_event(agent, AgentEventType.ROUND_START, metadata={"iteration": i + 1})
 
                 think_messages = list(session.messages)
 
@@ -665,7 +691,7 @@ async def run_impl_reflective(agent, task: str, session_id: str, user_id: str, u
                 msg = response.get("message", {})
                 content = msg.get("content") or ""
                 if content:
-                    await agent.hooks.fire(agent._hook_event.LLM_RESPONSE,
+                    await emit_agent_event(agent, AgentEventType.LLM_RESPONSE,
                                            content=content,
                                            reasoning=getattr(msg, "reasoning_content", None) or "")
 

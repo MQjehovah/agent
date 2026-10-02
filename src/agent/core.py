@@ -151,11 +151,17 @@ class Agent:
         permission_mode: str = "auto",
         config_dir: str = "",
         mcp_servers: list = None,
+        capabilities=None,
     ):
         self.workspace = workspace
         self.client = client
         self.parent_agent = parent_agent
         self.config_dir = config_dir or workspace
+
+        # 按 agent 能力作用域（显式传入优先于 PROMPT.md frontmatter）
+        from agent.capabilities import Capabilities
+        self._explicit_capabilities = capabilities
+        self.capabilities = Capabilities()
 
         self.agent_id = ""
         self.name = ""
@@ -225,6 +231,9 @@ class Agent:
         from hooks import HookEvent, HookManager
         self.hooks = HookManager()
         self._hook_event = HookEvent
+        # 内部 typed 事件流(P0: 内核产生 AgentEvent, hooks 作为消费者之一)
+        from agent.events import EventEmitter
+        self.events = EventEmitter(hooks=self.hooks)
 
         # 调用链路追踪
         from llm.tracing import Tracer
@@ -274,6 +283,7 @@ class Agent:
 
     async def initialize(self, session_id: str = None):
         self._load_system_prompt()
+        self._load_capabilities()
         await self._load_team_config()
         self._init_sandbox()
         self._create_temp_dir()
@@ -334,6 +344,46 @@ class Agent:
 
         self.system_prompt = self._expand_env_vars(body.strip()) if body else ""
         self.system_prompt_raw = self.system_prompt
+
+    def _load_capabilities(self):
+        """加载按 agent 的能力作用域：显式传入优先，其次 PROMPT.md frontmatter，缺省全量。"""
+        from agent.capabilities import Capabilities
+        from utils.frontmatter import extract_frontmatter
+
+        if self._explicit_capabilities is not None:
+            self.capabilities = Capabilities.coerce(self._explicit_capabilities)
+        else:
+            self.capabilities = Capabilities()
+            prompt_file = os.path.join(self.config_dir, "PROMPT.md")
+            if os.path.exists(prompt_file):
+                try:
+                    with open(prompt_file, encoding="utf-8") as f:
+                        content = f.read()
+                    fm, _ = extract_frontmatter(content)
+                    self.capabilities = Capabilities.from_frontmatter(fm)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"加载 agent 能力 frontmatter 失败(按全量处理): {e}")
+
+        self._apply_capability_permission_mode()
+        if not self.capabilities.is_empty:
+            mcp_scope = self.capabilities.mcp_servers
+            logger.info(
+                f"Agent [{self.name or self.config_dir}] 能力作用域: "
+                f"tools_allow={self.capabilities.tools or 'all'} "
+                f"tools_deny={self.capabilities.disallowed_tools or '[]'} "
+                f"mcp={mcp_scope if mcp_scope is not None else 'inherit'} "
+                f"skills={self.capabilities.skills or 'all'}")
+
+    def _apply_capability_permission_mode(self):
+        mode = (self.capabilities.permission_mode or "").strip().lower()
+        if not mode:
+            return
+        try:
+            from security.permissions import PermissionMode
+            self._permission_config.mode = PermissionMode(mode)
+            logger.info(f"Agent [{self.name or self.config_dir}] 权限模式(能力指定): {mode}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"能力 permissionMode 非法(忽略): {mode} ({e})")
 
     async def _load_team_config(self):
         """检查 config_dir 下是否有 TEAM.md，加载团队配置"""
@@ -578,6 +628,8 @@ class Agent:
         if os.path.exists(skills_dir):
             from skills import SkillManager
             self.skill_manager = SkillManager(skills_dir)
+            # 按 agent 能力作用域限制可见/可调用技能（空=不限）
+            self.skill_manager.set_agent_scope(self.capabilities.skills)
             logger.info(
                 f"Agent [{self.name}] 已加载 {len(self.skill_manager.list_skills())} 个技能: {[self.skill_manager.list_skills()]}")
 
@@ -587,16 +639,33 @@ class Agent:
         use_platform = self.platform_mcp_enabled and platform_config.enabled
         if self.parent_agent:
             # 子 agent（方案B）：优先运行时传入的 mcp_servers，否则读自己 config_dir 的 mcp_servers.json
-            self.mcp_configs = list(self._subagent_mcp_configs) or self._read_mcp_config_file()
+            self.mcp_configs = self._filter_mcp_configs(
+                list(self._subagent_mcp_configs) or self._read_mcp_config_file())
             if not self.mcp_configs and not use_platform:
                 return
             await self._connect_mcp_servers(subagent=not use_platform, platform_config=platform_config)
             return
 
         # 主 agent：读 config_dir/mcp_servers.json + 平台 MCP 轨(市场能力, 可配可关)
-        self.mcp_configs = self._read_mcp_config_file()
+        self.mcp_configs = self._filter_mcp_configs(self._read_mcp_config_file())
         if self.mcp_configs or use_platform:
             await self._connect_mcp_servers(subagent=False, platform_config=platform_config)
+
+    def _filter_mcp_configs(self, configs: list) -> list:
+        """按能力作用域过滤本地 MCP server（mcp_servers=None 表示继承全量）。"""
+        caps = self.capabilities
+        if caps.mcp_servers is None:
+            return list(configs or [])
+        allowed = set(caps.mcp_servers)
+        kept, dropped = [], []
+        for config in configs or []:
+            name = str(config.get("name", ""))
+            (kept if name in allowed else dropped).append(config)
+        if dropped:
+            logger.info(
+                f"Agent [{self.name}] 能力作用域: 跳过 MCP server "
+                f"{[c.get('name') for c in dropped]}")
+        return kept
 
     def _read_mcp_config_file(self) -> list:
         """读取 config_dir/mcp_servers.json（主子代理共用）"""
@@ -1042,9 +1111,12 @@ class Agent:
         """
         pairs: list[tuple[dict[str, Any], str, str]] = []
 
+        caps = self.capabilities
+
         if self.tool_registry:
             for t in self.tool_registry.get_tool_definitions():
-                if t.get("function", {}).get("name") not in self.tool_denylist:
+                name = t.get("function", {}).get("name", "")
+                if name not in self.tool_denylist and caps.allows_tool(name):
                     pairs.append((t, "builtin", ""))
 
         if self.mcp:
@@ -1057,9 +1129,12 @@ class Agent:
                     server = self.mcp.tool_server(name) or ""
                 except Exception:
                     server = ""
+                if not caps.allows_mcp_server(server):
+                    continue
                 pairs.append((t, "mcp", server))
 
         if self.skill_manager:
+            # skill 工具恒定；具体技能可见性/可调用性由 SkillManager agent 作用域过滤
             for t in self.skill_manager.get_tool_definitions():
                 pairs.append((t, "skill", ""))
 
@@ -1067,7 +1142,8 @@ class Agent:
             for plugin in self.plugin_manager.plugins.values():
                 if plugin.enabled:
                     for t in plugin.get_tool_defs():
-                        if t.get("function", {}).get("name") not in self.tool_denylist:
+                        name = t.get("function", {}).get("name", "")
+                        if name not in self.tool_denylist and caps.allows_tool(name):
                             pairs.append((t, "plugin", getattr(plugin, "name", "") or ""))
 
         return pairs

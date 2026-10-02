@@ -10,6 +10,8 @@ import logging
 import os
 import time
 
+from agent.events import AgentEventType, emit_agent_event
+
 
 # 延迟导入 current_run，避免与 agent.py 的循环导入问题
 def _current_run():
@@ -104,6 +106,51 @@ async def _maybe_auto_checkpoint(agent, name: str, args: dict) -> None:
                 rc._auto_ckpt = True
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[git] 自动检查点跳过: {e}")
+
+
+async def _apply_post_tool_hooks(agent, name: str, args: dict, result: str) -> str:
+    """工具执行后的插件后处理（权限之后的纯后处理，不可提权、失败不影响结果）。
+
+    顺序：每个插件的 on_post_tool_call → on_transform_tool_result → 触发 POST_TOOL_USE 事件。
+    返回值若为 None 视为不改写；非字符串结果做 JSON 序列化。
+    """
+    if agent.plugin_manager:
+        for plugin in agent.plugin_manager.plugins.values():
+            if not plugin.enabled:
+                continue
+            try:
+                updated = await plugin.on_post_tool_call(name, args, result)
+                if updated is not None:
+                    result = updated if isinstance(updated, str) else json.dumps(updated, ensure_ascii=False)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"插件 [{plugin.name}] on_post_tool_call 异常: {e}")
+            try:
+                updated = await plugin.on_transform_tool_result(name, result)
+                if updated is not None:
+                    result = updated if isinstance(updated, str) else json.dumps(updated, ensure_ascii=False)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"插件 [{plugin.name}] on_transform_tool_result 异常: {e}")
+    await emit_agent_event(agent, AgentEventType.POST_TOOL_USE, tool_name=name, result=result)
+    return result
+
+
+def _agent_capability_allows(agent, name: str) -> bool:
+    """执行层能力作用域校验（fail-closed；空能力=全量）。MCP 按 server 判定。"""
+    caps = getattr(agent, "capabilities", None)
+    if caps is None or getattr(caps, "is_empty", True):
+        return True
+    mcp = getattr(agent, "mcp", None)
+    try:
+        is_mcp = bool(mcp and mcp.has_tool(name))
+    except Exception:  # noqa: BLE001
+        is_mcp = False
+    if is_mcp:
+        try:
+            server = mcp.tool_server(name)
+        except Exception:  # noqa: BLE001
+            server = ""
+        return caps.allows_mcp_server(server)
+    return caps.allows_tool(name)
 
 
 def _mark_run_sensitive_if_hit(agent, name: str) -> None:
@@ -226,6 +273,13 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
             logger.warning(f"RBAC: 代授权执行者 [{actor_role}] 无权执行工具 [{name}](subject={role})")
             return "抱歉，您当前没有使用该功能的权限，请联系管理员开通。"
 
+    if not _agent_capability_allows(agent, name):
+        logger.warning(
+            f"能力作用域: agent [{getattr(agent, 'name', '')}] 无权执行工具 [{name}]")
+        return json.dumps(
+            {"success": False, "error": "该能力不在当前 agent 的授权范围内"},
+            ensure_ascii=False)
+
     if perm_result.reason == "需要用户确认" and agent.on_confirm:
         try:
             confirmed = await agent.on_confirm(name, args)
@@ -259,7 +313,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
         args_preview = args_preview[:500] + "..."
     logger.info(f"[工具调用] {name} | 输入: {args_preview}")
 
-    await agent.hooks.fire(agent._hook_event.TOOL_START, tool_name=name, arguments=args)
+    await emit_agent_event(agent, AgentEventType.TOOL_START, tool_name=name, arguments=args)
 
     _mark_run_sensitive_if_hit(agent, name)
     await _maybe_auto_checkpoint(agent, name, args)
@@ -287,7 +341,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
             result_preview = result_preview[:500] + "..."
         logger.info(f"[工具返回] {name} | 输出: {result_preview}")
 
-        await agent.hooks.fire(agent._hook_event.TOOL_RESULT, tool_name=name, result=result_preview)
+        await emit_agent_event(agent, AgentEventType.TOOL_RESULT, tool_name=name, result=result_preview)
 
         from tool_result_compressor import compress_tool_result
         if len(result) > MAX_TOOL_OUTPUT_CHARS:
@@ -296,6 +350,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
             logger.debug(f"[工具压缩] {name}: {original_len} -> {len(result)} chars")
 
         result = await _maybe_append_diagnostics(agent, name, args, result)
+        result = await _apply_post_tool_hooks(agent, name, args, result)
         return result
     except asyncio.CancelledError:
         logger.warning(f"工具调用被取消: {name}")
@@ -306,7 +361,9 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
         cb = _get_user_circuit_breaker(agent)
         if cb and name != "ask_user":
             cb.on_failure()
-        return json.dumps({"success": False, "error": err_text}, ensure_ascii=False)
+        err_result = json.dumps({"success": False, "error": err_text}, ensure_ascii=False)
+        await emit_agent_event(agent, AgentEventType.POST_TOOL_USE, tool_name=name, result=err_result, error=e)
+        return err_result
 
 
 async def execute_tool(agent, name: str, args: dict) -> str:

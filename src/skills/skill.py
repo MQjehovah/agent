@@ -164,7 +164,16 @@ class SkillManager:
         self.skills: dict[str, Skill] = {}
         self.tools: list[dict[str, Any]] = []
         self._active_skills: dict[str, str] = {}
+        # 按 agent 能力作用域的技能白名单（空 = 全部；由 Agent 注入）
+        self._agent_allowed: list[str] = []
         self._load_all()
+
+    def set_agent_scope(self, allowed: list[str] | None) -> None:
+        """设置该 agent 允许的技能白名单（空列表 = 不限）。"""
+        self._agent_allowed = [s for s in (allowed or []) if s]
+
+    def _agent_allows(self, name: str) -> bool:
+        return not self._agent_allowed or name in self._agent_allowed
 
     def _load_all(self) -> int:
         if not os.path.exists(self.skills_dir):
@@ -300,7 +309,8 @@ class SkillManager:
         """
         department, role = self._current_user_access()
         return [s for s in self.skills.values()
-                if s.enabled and s.is_available_to(department=department, role=role)]
+                if s.enabled and s.is_available_to(department=department, role=role)
+                and self._agent_allows(s.name)]
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """skill 工具定义; <available_skills> 按当前 run 用户动态过滤。"""
@@ -323,7 +333,8 @@ class SkillManager:
         # 执行前二次校验(防绕过 <available_skills> 清单直接点名调用): disabled 或无权
         # 技能一律拒绝。对外文案不回显技能名(避免确认受限技能存在性); 名称仅记服务端日志。
         department, role = self._current_user_access()
-        if not skill.enabled or not skill.is_available_to(department=department, role=role):
+        if (not skill.enabled or not skill.is_available_to(department=department, role=role)
+                or not self._agent_allows(skill_name)):
             logger.warning(f"拒绝执行不可用/无权访问的技能: {skill_name} (enabled={skill.enabled})")
             return json.dumps({
                 "error": "该技能当前不可用或无权访问",
