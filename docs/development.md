@@ -193,12 +193,13 @@ AgentSession
 
 | 工具 | 文件 | 说明 |
 |------|------|------|
-| `file_operation` | `tools/file.py` | 读/写/追加/删除/列目录，50K 字符截断 |
+| `file` | `tools/file.py` | 读/写/追加/删除/存在/列目录，50K 字符截断 |
 | `shell` | `tools/shell.py` | 命令执行，stdout 10K 截断 |
-| `grep` | `tools/grep.py` | 正则搜索，50 条匹配上限 |
-| `glob` | `tools/glob.py` | 文件模式匹配，100 条上限 |
-| `edit` | `tools/edit.py` | 精确字符串替换 |
-| `code_preview` | `tools/code_preview.py` | 代码片段预览 |
+| `grep` | `tools/grep.py` | 正则搜索，默认 50 条匹配上限（`limit`） |
+| `glob` | `tools/glob.py` | 文件模式匹配，默认 100 条上限（`limit`） |
+| `edit` | `tools/edit.py` | 精确字符串替换（`old_string`/`new_string`）+ 跨文件批量原子编辑 |
+| `apply_patch` | `tools/apply_patch.py` | git 风格 unified diff 原子落地 |
+| `code_search` | `tools/code_search.py` | Tree-sitter AST 定义/调用/引用 |
 | `web_search` | `tools/web.py` | 多引擎搜索 (SearXNG/Tavily/Serper/Bing) |
 | `web_fetch` | `tools/web.py` | 网页抓取 |
 | `task` | `tools/subagent.py` | 子代理委派（实际逻辑在 agent executor） |

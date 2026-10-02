@@ -41,7 +41,7 @@
 | **.agentignore** | `src/agent_ignore.py` ✅ | 已实现 | 文件排除系统，注入 glob/grep |
 | **渐进式熔断器** | `src/circuit_breaker.py` ✅ | 已实现 | closed→half-open→open 三态，分级降级 |
 | **结构化代码搜索** | `src/tools/code_search.py` ✅ | 已实现 | AST 解析定义/调用方/引用 |
-| **原子批处理编辑** | `src/tools/batch_edit.py` ✅ | 已实现 | hash-anchored 定位，跨文件原子提交 |
+| **原子批处理编辑** | `src/tools/edit.py` ✅ | 已实现 | 跨文件 `edits`(每项带 `file`，可选 hash 锚点)原子提交（`batch_edit` 已并入） |
 | **Git 自动管理** | `src/git_integration.py` ✅ | 已实现 | Conventional Commits 提交、检查点、回滚 |
 | **代码变更影响分析** | `src/code_diff.py` ✅ | 已实现 | 风险等级评估、调用方追踪 |
 | **对抗性代码审查** | `src/adversarial.py` ✅ | 已实现 | 攻击者视角猎杀，CRITICAL→LOW 分级 |

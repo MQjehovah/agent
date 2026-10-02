@@ -636,7 +636,7 @@ class Agent:
     async def _load_mcp_servers(self):
         from mcps.platform import PlatformMCPConfig
         platform_config = PlatformMCPConfig.from_env()
-        use_platform = self.platform_mcp_enabled and platform_config.enabled
+        use_platform = self._platform_mcp_allowed() and platform_config.enabled
         if self.parent_agent:
             # 子 agent（方案B）：优先运行时传入的 mcp_servers，否则读自己 config_dir 的 mcp_servers.json
             self.mcp_configs = self._filter_mcp_configs(
@@ -650,6 +650,10 @@ class Agent:
         self.mcp_configs = self._filter_mcp_configs(self._read_mcp_config_file())
         if self.mcp_configs or use_platform:
             await self._connect_mcp_servers(subagent=False, platform_config=platform_config)
+
+    def _platform_mcp_allowed(self) -> bool:
+        """平台市场 MCP 轨是否允许（能力 frontmatter `platform_mcp` 可关；默认沿用 platform_mcp_enabled）。"""
+        return bool(self.platform_mcp_enabled) and self.capabilities.allows_platform_mcp(True)
 
     def _filter_mcp_configs(self, configs: list) -> list:
         """按能力作用域过滤本地 MCP server（mcp_servers=None 表示继承全量）。"""
@@ -696,6 +700,7 @@ class Agent:
         use_platform = bool(
             not subagent and platform_config is not None
             and getattr(platform_config, "enabled", False)
+            and self.capabilities.allows_platform_mcp(True)
         )
         mode = (os.environ.get("AGENT_MCP_LOCAL_MODE", "market") or "market").strip().lower()
         if mode not in ("market", "both", "local"):

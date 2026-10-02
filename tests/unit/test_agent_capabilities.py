@@ -86,6 +86,37 @@ def test_mcp_denied_by_pattern():
 
 # ── 技能判定 ─────────────────────────────────────
 
+def test_platform_mcp_parse_and_allow():
+    assert Capabilities.from_frontmatter({"platform_mcp": False}).allows_platform_mcp(True) is False
+    assert Capabilities.from_frontmatter({"platformMCP": True}).allows_platform_mcp(False) is True
+    assert Capabilities.from_frontmatter({}).allows_platform_mcp(True) is True     # 继承默认
+    assert Capabilities.from_frontmatter({}).allows_platform_mcp(False) is False
+
+
+def test_platform_mcp_counts_as_non_empty():
+    assert Capabilities.from_frontmatter({"platform_mcp": False}).is_empty is False
+
+
+def test_subagent_pool_mcp_resolution(tmp_path):
+    import json
+    base = tmp_path / "agents"
+    base.mkdir()
+    (tmp_path / "mcp_servers.json").write_text(
+        json.dumps([{"name": "gitlab"}, {"name": "jira"}]), encoding="utf-8")
+    member_dir = base / "m" / "agents" / "M"
+    member_dir.mkdir(parents=True)
+
+    from agent.subagent import SubagentManager
+    mgr = SubagentManager(str(base))
+    caps = Capabilities(mcp_servers=["gitlab"])
+    assert [c["name"] for c in mgr._pool_mcp_for(caps, str(member_dir))] == ["gitlab"]
+    # 自带 mcp_servers.json 优先
+    (member_dir / "mcp_servers.json").write_text("[]", encoding="utf-8")
+    assert mgr._pool_mcp_for(caps, str(member_dir)) is None
+    # 未指定 mcpServers → 不注入
+    assert mgr._pool_mcp_for(Capabilities(), str(member_dir)) is None
+
+
 def test_skill_allowlist():
     caps = Capabilities(skills=["s1"])
     assert caps.allows_skill("s1") is True

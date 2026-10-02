@@ -5,6 +5,7 @@
 """
 import asyncio
 import difflib
+import json
 import logging
 import os
 import time
@@ -30,6 +31,9 @@ class SubagentInstance:
     last_used: float = field(default_factory=time.time)
     task_count: int = 0
     conversation_id: str = ""  # 所属逻辑对话(顶层会话),用于跨对话隔离
+    # 运行串行锁: 同一实例(同对话同模板/同名)并发的 run 串行, 避免同一 session 上下文互相污染;
+    # 不同实例(不同 name)各持各的锁 → 仍可并行。
+    run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class SubagentManager:
@@ -51,8 +55,78 @@ class SubagentManager:
         self._client = None
         self._parent_agent = None
         self._lock = asyncio.Lock()
+        # 创建去重锁(按 对话|session/template): 并发首调同名只创建一个实例
+        self._create_locks: dict[str, asyncio.Lock] = {}
+        # 团队运行串行锁(按 对话|团队): 避免同名团队并发抢同一 workspace/artifacts
+        self._team_run_locks: dict[str, asyncio.Lock] = {}
+        # 全局并发信号量(懒创建; None=未初始化, False=不限制)
+        self._run_sem: asyncio.Semaphore | None | bool = None
+        # root MCP 服务器池(懒读: <base_dir>/../mcp_servers.json), 供子代理按名引用
+        self._mcp_pool: list[dict[str, Any]] | None = None
         self._cleanup_task = None
         self._load_all()
+
+    # ── 按 agent 作用域的 MCP 池解析 ───────────────────
+
+    def _mcp_pool_configs(self) -> list[dict[str, Any]]:
+        """读取 root MCP 池（config/mcp_servers.json，即 base_dir 的上一级）。"""
+        if self._mcp_pool is None:
+            self._mcp_pool = []
+            try:
+                path = os.path.join(os.path.dirname(os.path.abspath(self.base_dir)), "mcp_servers.json")
+                if os.path.exists(path):
+                    with open(path, encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        self._mcp_pool = data
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"读取 root MCP 池失败(按空处理): {e}")
+        return self._mcp_pool
+
+    def _pool_mcp_for(self, caps, config_dir: str) -> list[dict[str, Any]] | None:
+        """子代理未自带 mcp_servers.json 且 frontmatter 指定 mcpServers 时, 从 root 池按名取。
+
+        返回 None 表示不注入(让 Agent 走自带文件/默认)。
+        """
+        if caps is None or getattr(caps, "mcp_servers", None) is None:
+            return None
+        own = os.path.join(config_dir, "mcp_servers.json") if config_dir else ""
+        if own and os.path.exists(own):
+            return None  # 自带配置优先
+        allowed = set(caps.mcp_servers)
+        return [c for c in self._mcp_pool_configs() if str(c.get("name", "")) in allowed]
+
+    def _creation_lock(self, key: str) -> asyncio.Lock:
+        lock = self._create_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._create_locks[key] = lock
+        return lock
+
+    def team_run_lock(self, key: str) -> asyncio.Lock:
+        lock = self._team_run_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._team_run_locks[key] = lock
+        return lock
+
+    @staticmethod
+    def _parallel_limit() -> int:
+        """子代理并发上限: AGENT_SUBAGENT_PARALLEL=0 强制串行; AGENT_SUBAGENT_MAX_PARALLEL 默认 4; <=0 不限。"""
+        flag = (os.environ.get("AGENT_SUBAGENT_PARALLEL", "1") or "1").strip().lower()
+        if flag in ("0", "false", "off", "no"):
+            return 1
+        try:
+            return int(os.environ.get("AGENT_SUBAGENT_MAX_PARALLEL", "4") or "4")
+        except (TypeError, ValueError):
+            return 4
+
+    def run_semaphore(self) -> asyncio.Semaphore | None:
+        """全局子代理并发信号量(懒创建); <=0 表示不限制(返回 None)。"""
+        if self._run_sem is None:
+            limit = self._parallel_limit()
+            self._run_sem = asyncio.Semaphore(limit) if limit > 0 else False
+        return self._run_sem if self._run_sem is not False else None
 
     def _load_all(self):
         """加载所有子代理模板（包括个人和团队）"""
@@ -81,11 +155,13 @@ class SubagentManager:
                 if frontmatter:
                     name = frontmatter.get("name", dir_name)
                     description = frontmatter.get("description", "")
+                    from agent.capabilities import Capabilities
                     template = {
                         "name": name,
                         "description": description,
                         "workspace": self.parent_workspace,
                         "config_dir": agent_dir,
+                        "capabilities": Capabilities.from_frontmatter(frontmatter),
                     }
                     self.templates[name] = template
                     logger.debug(f"加载子代理模板: {name}")
@@ -337,12 +413,16 @@ class SubagentManager:
         # 有效能力作用域：成员配置整份覆盖团队；成员无则继承团队（含 legacy denylist）
         effective_caps = self._effective_member_capabilities(team_name, member_name)
 
+        # 成员未自带 mcp_servers.json 且 frontmatter 指定 mcpServers 时, 从 root 池按名取
+        pool_mcp = self._pool_mcp_for(effective_caps, config_dir)
+
         agent = Agent(
             workspace=workspace,
             client=client or self._client,
             parent_agent=parent_agent or self._parent_agent,
             config_dir=config_dir,
             capabilities=effective_caps,
+            mcp_servers=pool_mcp,
         )
         if parent_agent or self._parent_agent:
             agent.plugin_manager = (parent_agent or self._parent_agent).plugin_manager
@@ -539,6 +619,39 @@ class SubagentManager:
         parent_agent=None,
         allow_dynamic: bool = False,
     ) -> tuple:
+        """获取或创建子代理（按 `对话|session/template` 加创建锁，消除并发重复创建竞态）。"""
+        _conv = ""
+        try:
+            from agent.core import current_run
+            _conv = getattr(current_run(), "conversation_id", "") or ""
+        except Exception:  # noqa: BLE001
+            _conv = ""
+        key = f"{_conv}|{session_id or template or name}"
+        async with self._creation_lock(key):
+            return await self._get_or_create_impl(
+                template=template,
+                name=name,
+                session_id=session_id,
+                system_prompt=system_prompt,
+                tools=tools,
+                mcp_servers=mcp_servers,
+                client=client,
+                parent_agent=parent_agent,
+                allow_dynamic=allow_dynamic,
+            )
+
+    async def _get_or_create_impl(
+        self,
+        template: str = "",
+        name: str = "",
+        session_id: str = "",
+        system_prompt: str = "",
+        tools: list[str] | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
+        client=None,
+        parent_agent=None,
+        allow_dynamic: bool = False,
+    ) -> tuple:
         """
         获取或创建子代理
 
@@ -624,12 +737,17 @@ class SubagentManager:
         workspace = template_data.get("workspace") or self.parent_workspace or os.getcwd()
         config_dir = template_data.get("config_dir", "")
 
+        # 未显式传 mcp_servers 时, 若模板 frontmatter 指定 mcpServers 且未自带文件, 从 root 池按名取
+        effective_mcp = mcp_servers
+        if effective_mcp is None and not _dynamic:
+            effective_mcp = self._pool_mcp_for(template_data.get("capabilities"), config_dir)
+
         agent = Agent(
             workspace=workspace,
             client=self._client or client,
             parent_agent=self._parent_agent or parent_agent,
             config_dir=config_dir,
-            mcp_servers=mcp_servers,
+            mcp_servers=effective_mcp,
         )
 
         if self._parent_agent or parent_agent:

@@ -57,6 +57,8 @@ class Capabilities:
     mcp_servers: list[str] | None = None
     skills: list[str] = field(default_factory=list)
     permission_mode: str = ""
+    # 平台市场 MCP 轨开关: None=继承默认, True/False 显式覆盖
+    platform_mcp: bool | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -67,6 +69,7 @@ class Capabilities:
             and self.mcp_servers is None
             and not self.skills
             and not self.permission_mode
+            and self.platform_mcp is None
         )
 
     # ── 判定 ─────────────────────────────────────────
@@ -99,6 +102,10 @@ class Capabilities:
             return True
         return name in self.skills
 
+    def allows_platform_mcp(self, default: bool = True) -> bool:
+        """平台市场 MCP 轨是否允许（None=继承默认）。"""
+        return default if self.platform_mcp is None else bool(self.platform_mcp)
+
     # ── 构造 ─────────────────────────────────────────
 
     @classmethod
@@ -107,12 +114,15 @@ class Capabilities:
             return cls()
         raw_mcp = _by_keys(fm, _MCP_SERVER_KEYS, default=None)
         mcp_servers = None if raw_mcp is None else as_list(raw_mcp)
+        raw_platform = _by_keys(fm, ("platform_mcp", "platformMCP"), default=None)
+        platform_mcp = None if raw_platform is None else bool(raw_platform)
         return cls(
             tools=as_list(fm.get("tools")),
             disallowed_tools=as_list(_by_keys(fm, _TOOLS_DENY_KEYS, default=[])),
             mcp_servers=mcp_servers,
             skills=as_list(fm.get("skills")),
             permission_mode=str(_by_keys(fm, _PERMISSION_KEYS, default="") or "").strip(),
+            platform_mcp=platform_mcp,
         )
 
     @classmethod

@@ -442,21 +442,28 @@ async def execute_subagent(agent, args: dict) -> str:
     await agent.hooks.fire(agent._hook_event.SUBAGENT_START, metadata={"name": display_name, "task": task})
 
     try:
-        if agent.subagent_manager and agent.subagent_manager.is_team(template_name):
-            def _team_progress(stage, status, info, extra=None):
-                asyncio.ensure_future(agent.hooks.fire(
-                    agent._hook_event.SUBAGENT_PROGRESS,
-                    metadata={"stage": stage, "status": status, "info": info, "extra": extra, "team": display_name},
-                ))
+        sm = agent.subagent_manager
 
-            team_result = await agent.subagent_manager._run_team_orchestrator(
-                task, template_name,
-                client=agent.client,
-                progress_callback=_team_progress,
-                parent_session_id=args.get("session_id", ""))
-            # AgentResult dataclass → 字符串
-            result = team_result.result if hasattr(team_result, 'result') else str(team_result)
-        else:
+        async def _execute_sub() -> str:
+            if sm and sm.is_team(template_name):
+                def _team_progress(stage, status, info, extra=None):
+                    asyncio.ensure_future(agent.hooks.fire(
+                        agent._hook_event.SUBAGENT_PROGRESS,
+                        metadata={"stage": stage, "status": status, "info": info, "extra": extra, "team": display_name},
+                    ))
+
+                _rc0 = _current_run()
+                team_key = f"{getattr(_rc0, 'conversation_id', '') or args.get('session_id', '')}|{template_name}"
+                # 同名团队串行(避免并发抢同一 workspace/artifacts)
+                async with sm.team_run_lock(team_key):
+                    team_result = await sm._run_team_orchestrator(
+                        task, template_name,
+                        client=agent.client,
+                        progress_callback=_team_progress,
+                        parent_session_id=args.get("session_id", ""))
+                # AgentResult dataclass → 字符串
+                return team_result.result if hasattr(team_result, 'result') else str(team_result)
+
             # 确定性子线程 id：<当前上下文线程>#<agent>，使同一对话内子代理上下文连续、
             # 且按(对话, agent)天然隔离（不同对话/用户不复用同一实例）。
             _rc = _current_run()
@@ -474,7 +481,7 @@ async def execute_subagent(agent, args: dict) -> str:
                 thread_id = f"{_base_sid}#{_label}"
             else:
                 thread_id = ""
-            instance, _ = await agent.subagent_manager.get_or_create_subagent(
+            instance, _ = await sm.get_or_create_subagent(
                 template=args.get("template", ""),
                 name=args.get("name", ""),
                 session_id=thread_id,
@@ -489,13 +496,23 @@ async def execute_subagent(agent, args: dict) -> str:
 
             user_id = _current_run().user_id or "cli:admin"
             user_name = _current_run().user_name or "管理员"
-            r = await sub_agent.run(task, session_id=sub_sid, user_id=user_id, user_name=user_name)
+            # 同一实例(同对话同模板/同名)并发的 run 串行; 不同 name 的不同实例仍并行
+            async with instance.run_lock:
+                r = await sub_agent.run(task, session_id=sub_sid, user_id=user_id, user_name=user_name)
             text = r.result if hasattr(r, 'result') else str(r)
 
             if args.get("keep_alive", True):
-                await agent.subagent_manager.cleanup_subagent(instance.session_id)
+                await sm.cleanup_subagent(instance.session_id)
 
-            result = text
+            return text
+
+        # 全局并发上限(AGENT_SUBAGENT_MAX_PARALLEL / AGENT_SUBAGENT_PARALLEL=0 串行)
+        _sem = sm.run_semaphore() if sm else None
+        if _sem is not None:
+            async with _sem:
+                result = await _execute_sub()
+        else:
+            result = await _execute_sub()
 
         await agent.hooks.fire(agent._hook_event.SUBAGENT_RESULT, metadata={
             "name": display_name, "status": "completed" if result else "failed", "result": result[:3000] if result else "",
