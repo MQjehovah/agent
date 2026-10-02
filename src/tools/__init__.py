@@ -347,6 +347,7 @@ from .code_search import CodeSearchTool
 from .diagnostics import CodeDiagnosticsTool
 from .git import GitTool
 from .grep import GrepTool
+from .lsp import LspTool
 from .repo_map import RepoMapTool
 
 # Web / 多模态 / 身份 / 渐进披露
@@ -359,7 +360,7 @@ __all__ = [
     'ToolRegistry', 'BuiltinTool', 'ToolDefinition',
     'AskUserTool', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
     'TerminalTool',
-    'GrepTool', 'GlobTool', 'EditTool', 'CodeSearchTool', 'RepoMapTool',
+    'GrepTool', 'GlobTool', 'EditTool', 'CodeSearchTool', 'RepoMapTool', 'LspTool',
     'PatchTool', 'CodeDiagnosticsTool', 'GitTool',
     'SearchToolsTool', 'ViewImageTool', 'WhoamiTool',
     'WebSearchTool', 'WebFetchTool',

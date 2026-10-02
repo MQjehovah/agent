@@ -1551,6 +1551,13 @@ class Agent:
 
         if self.learner and self.memory and not self.parent_agent:
             self.learner.stop_daily_task()
+        if not self.parent_agent and not getattr(self, "owner_uid", 0):
+            # 关闭 LSP 语言服务器连接（root/CLI；worker 保留给其它用户）
+            try:
+                from lsp import shutdown_all
+                await shutdown_all()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"LSP 关闭失败(忽略): {e}")
         if self.mcp:
             try:
                 # MCP close 在专属连接任务内收尾并以 shielded 等待: 这里的 10s 超时触发取消后
