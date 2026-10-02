@@ -278,7 +278,7 @@ def _compress_web_fetch(data: dict, budget: int) -> str:
 
 
 _COMPRESSORS = {
-    "subagent": _compress_subagent,
+    "task": _compress_subagent,
     "knowledge_search": _compress_knowledge_search,
     "file": _compress_file_read,
     "grep": _compress_grep,

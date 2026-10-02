@@ -67,7 +67,7 @@ class UndoManager:
 
         Args:
             file_paths: 要快照的文件列表
-            tool_name: 工具名（如 edit, batch_edit）
+            tool_name: 工具名（如 edit, apply_patch）
             description: 描述
 
         Returns:

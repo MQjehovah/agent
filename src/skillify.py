@@ -229,7 +229,7 @@ class Skillifier:
             "file(preview)": "阅读代码",
             "web_search": "搜索网络",
             "web_fetch": "抓取网页",
-            "subagent": "委派子代理",
+            "task": "委派子代理",
             "memory": "读写记忆",
             "llm_response": "LLM 回复",
             "skill": "加载技能",

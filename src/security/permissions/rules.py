@@ -43,7 +43,6 @@ class PermissionConfig:
         "file",
         "shell",
         "edit",
-        "batch_edit",
         "apply_patch",
         "git",
     ])

@@ -2,11 +2,12 @@ import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger("agent.tools")
 
@@ -178,10 +179,14 @@ class ToolRegistry:
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         return [tool.get_definition() for tool in self._tools.values()]
 
+    @staticmethod
+    def _json_error(message: str) -> str:
+        return json.dumps({"success": False, "error": message}, ensure_ascii=False)
+
     async def execute(self, name: str, args: dict[str, Any]) -> str:
         if name not in self._tools:
             logger.error(f"工具 '{name}' 未找到")
-            return f"错误: 工具 '{name}' 未找到"
+            return self._json_error(f"工具 '{name}' 未找到")
 
         tool = self._tools[name]
         try:
@@ -191,20 +196,19 @@ class ToolRegistry:
                 return await asyncio.wait_for(
                     tool.execute(**args), timeout=resolve_tool_timeout(name, self._tool_timeout)
                 )
-            result = await self._execute_in_worker(tool, name, args)
-            return result
+            return await self._execute_in_worker(tool, name, args)
         except TypeError as e:
             logger.error(f"工具 '{name}' 参数错误: {e}")
-            return f"错误: 工具 '{name}' 参数错误 - {e}"
+            return self._json_error(f"工具 '{name}' 参数错误 - {e}")
         except Exception as e:
             err_text = str(e) or type(e).__name__
             logger.error(f"工具 '{name}' 执行失败: {err_text}")
-            return f"错误: 工具 '{name}' 执行失败 - {err_text}"
+            return self._json_error(f"工具 '{name}' 执行失败 - {err_text}")
 
     async def _execute_in_worker(self, tool: BuiltinTool, name: str, args: dict) -> str:
         """在线程池中执行工具，避免同步阻塞卡死事件循环。
 
-        背景：多数工具（file/grep/glob/code_search/edit/batch_edit）内部是同步
+        背景：多数工具（file/grep/glob/code_search/edit/apply_patch）内部是同步
         IO/CPU 密集（整文件读入、os.walk、subprocess.run、tree-sitter 解析）。
         若在主事件循环内直接 await，一个用户的工具操作会冻结所有用户的
         agent.run（LLM 流式响应、其他工具全部停摆）。
@@ -326,31 +330,34 @@ def _find_tool_classes(source: str) -> list[str]:
     return result
 
 
-# 核心工具
 # 用户交互工具
 from .ask_user import AskUserTool
 from .edit import EditTool
 from .file import FileTool
 from .glob import GlobTool
-
-# 搜索与编辑工具
-from .batch_edit import BatchEditTool
-from .code_search import CodeSearchTool
-from .grep import GrepTool
 from .memory import MemoryTool
 from .shell import ShellTool
 from .subagent import SubagentTool
-
 from .todo import TodoTool
 
-# Web 工具
+# 搜索与编辑工具
+from .apply_patch import ApplyPatchTool
+from .code_search import CodeSearchTool
+from .diagnostics import CodeDiagnosticsTool
+from .git import GitTool
+from .grep import GrepTool
+
+# Web / 多模态 / 身份 / 渐进披露
+from .read_image import ViewImageTool
+from .tool_search import SearchToolsTool
 from .web import WebFetchTool, WebSearchTool
+from .whoami import WhoamiTool
 
 __all__ = [
     'ToolRegistry', 'BuiltinTool', 'ToolDefinition',
-    'AskUserTool',
-    'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
-    'GrepTool', 'GlobTool', 'EditTool',
-    'CodeSearchTool', 'BatchEditTool',
+    'AskUserTool', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
+    'GrepTool', 'GlobTool', 'EditTool', 'CodeSearchTool',
+    'ApplyPatchTool', 'CodeDiagnosticsTool', 'GitTool',
+    'SearchToolsTool', 'ViewImageTool', 'WhoamiTool',
     'WebSearchTool', 'WebFetchTool',
 ]

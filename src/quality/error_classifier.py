@@ -99,7 +99,6 @@ class ErrorClassifier:
         "web_search": ErrorType.NETWORK,             # 默认为网络问题
         "web_fetch": ErrorType.NETWORK,              # 默认为网络问题
         "code_search": ErrorType.NOT_FOUND,          # 默认为符号未找到
-        "batch_edit": ErrorType.SYNTAX,              # 默认为锚点不匹配
     }
 
     def __init__(self):
@@ -147,7 +146,7 @@ class ErrorClassifier:
             return ErrorType.NETWORK
 
         # 4. 根据工具参数启发式
-        if tool_name in ("edit", "batch_edit") and args:
+        if tool_name == "edit" and args:
             if "old" in args and args["old"] not in self._get_file_content(args.get("file", "")):
                 return ErrorType.SYNTAX
 
@@ -264,8 +263,6 @@ class ErrorClassifier:
         advice_map = {
             ("edit", ErrorType.SYNTAX): "原文可能已被修改，重新读取文件后再提交编辑",
             ("edit", ErrorType.NOT_FOUND): "文件可能已被移动或删除，先确认文件路径",
-            ("batch_edit", ErrorType.SYNTAX): "某个锚点不匹配或原文不唯一，逐个检查每个编辑项",
-            ("batch_edit", ErrorType.NOT_FOUND): "文件列表中某个文件不存在，先确认所有文件路径",
             ("shell", ErrorType.TIMEOUT): "命令执行太久，先检查命令是否正确，或拆分为小步骤执行",
             ("shell", ErrorType.NOT_FOUND): "命令未找到，先检查是否安装了对应工具",
             ("code_search", ErrorType.NOT_FOUND): "符号未找到，尝试不同的大小写或缩写",

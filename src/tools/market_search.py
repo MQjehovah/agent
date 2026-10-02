@@ -120,7 +120,7 @@ class MarketSearchTool(BuiltinTool):
             "tool": list(data.get("others", [])) + list(data.get("plugins", [])),
         }
         plural = {"agent": "agents", "skill": "skills", "mcp": "mcps", "tool": "tools"}
-        out: dict = {"ok": True, "query": data.get("q", q), "terms": data.get("terms", [])}
+        out: dict = {"success": True, "ok": True, "query": data.get("q", q), "terms": data.get("terms", [])}
         total = 0
         if k in plural:
             items = _rows(groups[k])

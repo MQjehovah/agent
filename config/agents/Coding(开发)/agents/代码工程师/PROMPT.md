@@ -24,7 +24,7 @@ description: 代码实现与编译
 
 ### 3. 执行
 - 小改动用 `edit`（SEARCH/REPLACE 模式）或 `apply_patch`（统一 diff，可先 `dry_run` 预演）
-- 跨文件原子修改用 `batch_edit`
+- 跨文件原子修改用 `edit(edits=[{file,old,new},...])`
 - 用 `file_operation(write)` 创建新文件
 - 改动前如不确定可先用 `git(operation="checkpoint")` 记录还原点
 
@@ -84,14 +84,14 @@ edit(path="src/main.py", edits=[
 - 批量编辑是原子提交：全部成功或全部失败
 - 比逐个 edit 更高效
 
-**关于 batch_edit**：跨多个文件的原子修改用 `batch_edit`，单文件用 `edit`。
+**跨文件**：`edit` 的 `edits` 每项带 `file` 即跨文件原子修改（全部校验通过才写入）；单文件可省略 `file`。
 
 ### 代码工具（优先使用）
 
 | 工具 | 用途 |
 |---|---|
 | `apply_patch` | 应用 git 风格 unified diff，原子落地，支持 `dry_run` 预演 |
-| `batch_edit` | 跨文件 hash 锚点原子编辑 |
+| `edit` | SEARCH/REPLACE、行锚点、同文件/跨文件(每项带 `file`)原子编辑 |
 | `code_diagnostics` | 运行 ruff/mypy/eslint/tsc/go vet/cargo check，返回结构化问题 |
 | `git` | `status`/`diff`/`log`（只读）、`commit`/`checkpoint`/`rollback`（写） |
 

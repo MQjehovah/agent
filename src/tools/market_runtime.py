@@ -82,19 +82,19 @@ class MarketRuntimeTool(BuiltinTool):
         capability = (capability or "").strip()
         kind = (kind or "tool").strip().lower()
         if not capability:
-            return json.dumps({"ok": False, "error": "缺少 capability"},
+            return json.dumps({"success": False, "ok": False, "error": "缺少 capability"},
                               ensure_ascii=False)
 
         base, token, timeout = market_config()
         if not (base and token):
-            return json.dumps({"ok": False, "error": "能力市场未配置"},
+            return json.dumps({"success": False, "ok": False, "error": "能力市场未配置"},
                               ensure_ascii=False)
 
         # 用户身份调用: 无托管 token 一律 fail-closed(不得以服务身份越权执行), 并引导登录;
         # token 解析含同步阻塞(SSO 刷新/交换 + SQLite), 经线程池执行避免卡事件循环
         user_token, hint = await asyncio.to_thread(resolve_user_token_or_hint)
         if hint:
-            return json.dumps({"ok": False, "error": hint}, ensure_ascii=False)
+            return json.dumps({"success": False, "ok": False, "error": hint}, ensure_ascii=False)
 
         if kind == "agent":
             path = _AGENT_TASK_PATH.format(capability=capability)
@@ -121,7 +121,7 @@ class MarketRuntimeTool(BuiltinTool):
                 resp = await client.post(url, headers=headers, json=body)
         except httpx.HTTPError as e:
             logger.warning(f"市场运行时调用失败: {e}")
-            return json.dumps({"ok": False, "error": f"市场请求失败: {type(e).__name__}: {e}"},
+            return json.dumps({"success": False, "ok": False, "error": f"市场请求失败: {type(e).__name__}: {e}"},
                               ensure_ascii=False)
 
         try:
@@ -133,6 +133,7 @@ class MarketRuntimeTool(BuiltinTool):
         inner = payload.get("result") if isinstance(payload, dict) else None
         if inner is None:
             inner = payload
-        out = {"ok": 200 <= resp.status_code < 300, "status_code": resp.status_code,
+        ok = 200 <= resp.status_code < 300
+        out = {"success": ok, "ok": ok, "status_code": resp.status_code,
                "result": inner}
         return json.dumps(out, ensure_ascii=False)

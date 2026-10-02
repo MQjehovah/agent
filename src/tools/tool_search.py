@@ -5,6 +5,7 @@
 激活状态读写见 `agent.tool_search.ToolActivationStore`。
 """
 
+import json
 import logging
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -34,7 +35,7 @@ class SearchToolsTool(BuiltinTool):
 
     @property
     def name(self) -> str:
-        return "search_tools"
+        return "tool_search"
 
     @property
     def description(self) -> str:
@@ -66,19 +67,23 @@ class SearchToolsTool(BuiltinTool):
 
         query = str(kwargs.get("query") or "").strip()
         if not query:
-            return "参数 query 必须为非空字符串"
+            return json.dumps({"success": False, "error": "参数 query 必须为非空字符串"},
+                              ensure_ascii=False)
 
         provider = self._entries_provider
         if provider is None:
-            return "工具搜索不可用: 未配置远程工具源"
+            return json.dumps({"success": False, "error": "工具搜索不可用: 未配置远程工具源"},
+                              ensure_ascii=False)
         try:
             entries = list(provider() or [])
-        except Exception as e:  # noqa: BLE001 — 检索源异常以文本返回给模型
-            return f"工具搜索失败: {e}"
+        except Exception as e:  # noqa: BLE001 — 检索源异常以 JSON 错误返回给模型
+            return json.dumps({"success": False, "error": f"工具搜索失败: {e}"},
+                              ensure_ascii=False)
 
         hits, text = search_remote_tools(entries, query, limit=kwargs.get("limit"))
         if not hits:
-            return text
+            return json.dumps({"success": True, "text": text, "activated": []},
+                              ensure_ascii=False)
 
         activated: set[str] = set()
         if self._activator is not None:
@@ -88,6 +93,11 @@ class SearchToolsTool(BuiltinTool):
                 logger.warning(f"工具搜索激活失败(忽略): {e}")
         if activated:
             logger.info(f"工具搜索激活 {len(activated)} 个远程工具: {', '.join(sorted(activated))}")
-            return text
+            return json.dumps({"success": True, "text": text, "activated": sorted(activated)},
+                              ensure_ascii=False)
         # 无对话根/激活不可用: 不给出「已激活」的错误承诺
-        return text.replace(_ACTIVATED_NOTICE, "（当前会话未能激活，如需直接调用请重试）")
+        return json.dumps({
+            "success": True,
+            "text": text.replace(_ACTIVATED_NOTICE, "（当前会话未能激活，如需直接调用请重试）"),
+            "activated": [],
+        }, ensure_ascii=False)

@@ -159,7 +159,7 @@ class SandboxPolicy:
                     }
 
         # 路径检查（file_write 时检查目标路径）
-        if tool_name in ("file", "batch_edit", "edit"):
+        if tool_name in ("file", "edit", "apply_patch"):
             path = args.get("file", args.get("path", ""))
             if path:
                 for rp in profile.read_only_paths:
@@ -224,7 +224,7 @@ class SandboxPolicy:
             "shell": "shell",
             "file": "file_write",
             "edit": "file_write",
-            "batch_edit": "file_write",
+            "apply_patch": "file_write",
             "write": "file_write",
             "web_search": "network",
             "web_fetch": "network",

@@ -1245,7 +1245,7 @@ class TestSubagentTool:
         assert data["template"] == "analyst"
 
     def test_name(self):
-        assert self.tool.name == "subagent"
+        assert self.tool.name == "task"
 
     def test_has_required_params(self):
         params = self.tool.parameters
@@ -1526,40 +1526,6 @@ class TestHookManager:
         manager.register(HookEvent.PRE_TOOL_USE, good_hook)
 
         await manager.fire("pre_tool_use", tool_name="test")
-
-
-# ═══════════════════════════════════════════════════════════
-#  BatchEditTool
-# ═══════════════════════════════════════════════════════════
-
-class TestBatchEditTool:
-    def setup_method(self):
-        from tools.batch_edit import BatchEditTool
-        self.tool = BatchEditTool()
-
-    @pytest.mark.asyncio
-    async def test_uses_tool_workspace_and_preserves_untouched(self, tmp_path):
-        """未传 workspace 时使用工具自身工作目录；未命中行原样保留并返回 diff"""
-        (tmp_path / "a.txt").write_text("keep   \nfoo()\nkeep2\n")
-        self.tool.workspace = str(tmp_path)
-
-        r = await self.tool.execute(edits=[{"file": "a.txt", "old": "foo()", "new": "bar()"}])
-        data = json.loads(r)
-        assert data["success"] is True
-        assert data["success_count"] == 1
-        assert (tmp_path / "a.txt").read_text() == "keep   \nbar()\nkeep2\n"
-        assert data["diffs"][0]["diff"]
-
-    @pytest.mark.asyncio
-    async def test_stale_anchor_rejects_all(self, tmp_path):
-        """任一锚点未命中则全部拒绝，不写盘"""
-        (tmp_path / "a.txt").write_text("foo()\n")
-        self.tool.workspace = str(tmp_path)
-
-        r = await self.tool.execute(edits=[{"file": "a.txt", "old": "nope", "new": "x"}])
-        data = json.loads(r)
-        assert data["success"] is False
-        assert (tmp_path / "a.txt").read_text() == "foo()\n"
 
 
 # ═══════════════════════════════════════════════════════════

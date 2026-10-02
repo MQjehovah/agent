@@ -22,6 +22,7 @@
     ])
 """
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -137,7 +138,7 @@ def _read_text(path: str) -> tuple[str, str]:
 
 
 class EditTool(BuiltinTool):
-    """行级编辑工具 — SEARCH/REPLACE + 自动备份 + diff 输出"""
+    """行级编辑工具 — SEARCH/REPLACE + 行锚点 + 批量/跨文件 + 备份 + diff"""
 
     # 可撤销的最大编辑数
     MAX_EDIT_HISTORY = 50
@@ -148,24 +149,25 @@ class EditTool(BuiltinTool):
 
     @property
     def description(self) -> str:
-        return """精确的行级文件编辑工具。支持 SEARCH/REPLACE 模式、行号锚点、批量编辑。
+        return """精确的文件编辑工具。支持 SEARCH/REPLACE、行号锚点、批量与跨文件原子编辑。
 
 特性:
-1. SEARCH/REPLACE: 提供 old_text（文件中要替换的原文）和 new_text（替换后的内容）
-2. 自动模糊匹配: old_text 会自动处理缩进、空白、换行差异，不需要精确到字符
-3. 行号锚点: 可指定 line 参数精确定位到某行
-4. 批量编辑: 一次调用可对同一文件执行多个编辑（edits 参数）
-5. 自动备份: 每次编辑前自动备份，可通过 undo 工具撤销
-6. diff 输出: 返回 unified diff 展示具体变化
+1. SEARCH/REPLACE: 提供 old_text（要替换的原文）和 new_text（替换后的内容）
+2. 自动模糊匹配: old_text 自动处理缩进、空白、换行差异
+3. 行号锚点: line 参数在命中多处时取最近一处
+4. 批量编辑: edits 参数对同一文件多个编辑原子提交
+5. 跨文件编辑: edits 每项带 file 即按文件分组，全部校验通过后一次写入
+6. 自动备份 + diff 输出
 
 使用规则:
-- old_text 提供足够上下文使其在文件中唯一（推荐周围 2-3 行代码）
-- 修改前建议先用 file(read) 确认文件内容
-- 批量编辑（edits 参数）是原子的：全部成功或全部失败
+- old_text 提供足够上下文使其唯一（推荐周围 2-3 行）
+- 跨文件: edits=[{"file": "a.py", "old": "...", "new": "..."}, {"file": "b.py", ...}]
+- 可选 hash: 对 old 文本的 SHA256 前 16 位，校验锚点未过期
 
 单处编辑: {"path": "src/main.py", "old_text": "foo()", "new_text": "bar()"}
 行号锚点: {"path": "src/main.py", "old_text": "foo()", "new_text": "bar()", "line": 42}
-批量编辑: {"path": "src/main.py", "edits": [{"old": "foo()", "new": "bar()"}, ...]}"""
+同文件批量: {"path": "src/main.py", "edits": [{"old": "foo()", "new": "bar()"}]}
+跨文件批量: {"edits": [{"file": "a.py", "old": "x", "new": "y"}, {"file": "b.py", "old": "p", "new": "q"}]}"""
 
     @property
     def parameters(self) -> dict:
@@ -190,10 +192,12 @@ class EditTool(BuiltinTool):
                 },
                 "edits": {
                     "type": "array",
-                    "description": "批量编辑列表（可选，与 old_text/new_text 互斥）",
+                    "description": "批量编辑列表（可选，与 old_text/new_text 互斥）；每项可带 file 做跨文件",
                     "items": {
                         "type": "object",
                         "properties": {
+                            "file": {"type": "string", "description": "目标文件（跨文件编辑时使用；缺省用顶层 path）"},
+                            "hash": {"type": "string", "description": "old 文本 SHA256 前 16 位（可选锚点校验）"},
                             "old": {"type": "string", "description": "要被替换的原文"},
                             "new": {"type": "string", "description": "替换后的新文本"},
                         },
@@ -204,11 +208,16 @@ class EditTool(BuiltinTool):
                     "type": "boolean",
                     "description": "是否替换所有匹配项（默认仅替换第一个匹配）",
                     "default": False
+                },
+                "workspace": {
+                    "type": "string",
+                    "description": "跨文件编辑时的基目录（可选，缺省用工作区）"
                 }
             },
             "anyOf": [
                 {"required": ["path", "old_text", "new_text"]},
-                {"required": ["path", "edits"]}
+                {"required": ["path", "edits"]},
+                {"required": ["edits"]}
             ]
         }
 
@@ -219,15 +228,21 @@ class EditTool(BuiltinTool):
         line = kwargs.get("line", 0)
         edits = kwargs.get("edits")
         replace_all = kwargs.get("replace_all", False)
+        workspace = kwargs.get("workspace", "")
 
-        if not path:
-            return json.dumps({"success": False, "error": "文件路径不能为空"}, ensure_ascii=False)
-
-        # 批量模式
+        # 批量模式：任一项带 file → 跨文件；否则视为同一文件（path 必填）
         if edits is not None:
+            if not isinstance(edits, list) or not edits:
+                return self._error("edits 必须为非空数组")
+            if any(isinstance(e, dict) and (e.get("file") or e.get("path")) for e in edits):
+                return await self._execute_multi_file(edits, workspace)
+            if not path:
+                return self._error("同文件批量编辑需要提供 path，或为每个 edit 指定 file")
             return await self._execute_batch(path, edits)
 
         # 单处编辑模式
+        if not path:
+            return self._error("文件路径不能为空")
         if not old_text or new_text is None:
             return json.dumps({
                 "success": False,
@@ -365,6 +380,72 @@ class EditTool(BuiltinTool):
             "total": len(edits),
             "diff": diff,
         }, ensure_ascii=False, indent=2)
+
+    def _resolve_edit_path(self, file_path: str, workspace: str) -> str:
+        """跨文件编辑的路径解析：显式 workspace 优先，否则用工具工作区。"""
+        if workspace:
+            p = file_path if os.path.isabs(file_path) else os.path.join(workspace, file_path)
+            return os.path.normpath(p)
+        return self.resolve_path(file_path)
+
+    async def _execute_multi_file(self, edits: list[dict], workspace: str = "") -> str:
+        """跨文件原子编辑：全部校验通过后一次写入。"""
+        staged: dict[str, dict] = {}
+        for i, edit in enumerate(edits):
+            if not isinstance(edit, dict):
+                return self._error(f"第 {i+1} 个编辑格式非法")
+            file_path = str(edit.get("file") or edit.get("path") or "").strip()
+            old = edit.get("old", "")
+            new = edit.get("new", "")
+            expected_hash = str(edit.get("hash") or "")
+            if not file_path:
+                return self._error(f"第 {i+1} 个编辑缺少 file")
+            if not old or new is None:
+                return self._error(f"第 {i+1} 个编辑缺少 old/new")
+            full = self._resolve_edit_path(file_path, workspace)
+            if not self.is_path_allowed(full):
+                return self._error(f"第 {i+1} 个编辑路径超出工作目录范围: {file_path}")
+            if full not in staged:
+                if not os.path.isfile(full):
+                    return self._error(f"第 {i+1} 个编辑文件不存在: {file_path}")
+                try:
+                    content, encoding = _read_text(full)
+                except Exception as e:
+                    return self._error(f"第 {i+1} 个编辑读取失败: {e}")
+                staged[full] = {"content": content, "orig": content, "encoding": encoding}
+            state = staged[full]
+            if state["content"].count(old) != 1:
+                return self._error(f"第 {i+1} 个编辑的 old 在文件中不是唯一匹配: {file_path}")
+            if expected_hash and self._compute_hash(old) != expected_hash:
+                return self._error(f"第 {i+1} 个编辑锚点哈希不匹配: {file_path}")
+            state["content"] = state["content"].replace(old, new, 1)
+
+        diffs = []
+        for full, state in staged.items():
+            if state["content"] == state["orig"]:
+                continue
+            base = self.workspace or workspace or os.getcwd()
+            diffs.append({"file": os.path.relpath(full, base),
+                          "diff": _make_diff(full, state["orig"], state["content"])})
+            await self._backup(full, state["orig"])
+            try:
+                with open(full, "w", encoding=state["encoding"], newline="") as f:
+                    f.write(state["content"])
+            except Exception as e:
+                return self._error(f"写入文件失败 {full}: {e}")
+
+        if not diffs:
+            return self._error("批量编辑未产生任何变化（old 与 new 相同或未产生差异）")
+        return json.dumps({
+            "success": True,
+            "action": f"跨文件批量修改完成: {len(diffs)} 个文件",
+            "applied_files": [d["file"] for d in diffs],
+            "diffs": diffs,
+        }, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _compute_hash(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
     # ── 备份 ─────────────────────────────────────────
 

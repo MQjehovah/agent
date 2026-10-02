@@ -55,7 +55,7 @@ def _cache_put(cache: dict, key: tuple[str, str], value, expires_at: float, now:
 
 
 def _err(msg: str) -> str:
-    return json.dumps({"ok": False, "error": msg}, ensure_ascii=False)
+    return json.dumps({"success": False, "ok": False, "error": msg}, ensure_ascii=False)
 
 
 async def _fetch_skill_text(base: str, headers: dict, name: str, timeout: float, uid: str = "") -> str:
@@ -162,10 +162,10 @@ async def _run_transient(system_prompt: str, task: str, expert: str = "") -> dic
 
     parent = current_agent()
     if parent is None:
-        return {"ok": False, "error": "无法获取当前 agent 上下文"}
+        return {"success": False, "ok": False, "error": "无法获取当前 agent 上下文"}
     sm = getattr(parent, "subagent_manager", None)
     if sm is None:
-        return {"ok": False, "error": "子代理管理器不可用"}
+        return {"success": False, "ok": False, "error": "子代理管理器不可用"}
     rc = current_run()
     label = (expert or "市场专家").strip()
 
@@ -213,12 +213,12 @@ async def _run_transient(system_prompt: str, task: str, expert: str = "") -> dic
                 "status": "completed" if (output and not err) else "failed",
                 "result": (output or "")[:3000],
             })
-        return {"ok": not err, "expert_output": output, "error": err}
+        return {"success": not err, "ok": not err, "expert_output": output, "error": err}
     except Exception as exc:  # noqa: BLE001
         if hooks is not None and ev is not None:
             await hooks.fire(ev.SUBAGENT_RESULT, metadata={"name": label, "error": str(exc)})
         logger.warning("专家委派执行失败: %s", exc)
-        return {"ok": False, "error": f"专家执行失败: {exc}"}
+        return {"success": False, "ok": False, "error": f"专家执行失败: {exc}"}
 
 
 class MarketDelegateTool(BuiltinTool):

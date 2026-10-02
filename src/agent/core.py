@@ -513,7 +513,7 @@ class Agent:
         self.tool_denylist.update(["task_list", "task_get", "task_create", "task_cancel",
                                    "bind_session"])
 
-        # 渐进披露入口: search_tools 的检索源/激活回调按当前对话根读写(见 agent.tool_search)
+        # 渐进披露入口: tool_search 的检索源/激活回调按当前对话根读写(见 agent.tool_search)
         search_tool = self.tool_registry.get_tool(tool_search.SEARCH_TOOLS_NAME)
         if search_tool is not None and hasattr(search_tool, "configure"):
             search_tool.configure(
@@ -1160,7 +1160,7 @@ class Agent:
         return True
 
     def _remote_tool_entries(self) -> list[tool_search.ToolSearchEntry]:
-        """当前可用远程工具条目(search_tools 检索源; 断开/下线工具不参与检索)。"""
+        """当前可用远程工具条目(tool_search 检索源; 断开/下线工具不参与检索)。"""
         entries: list[tool_search.ToolSearchEntry] = []
         seen: set[str] = set()
         for tool_def, source, source_name in self._collect_tool_defs():
@@ -1198,7 +1198,7 @@ class Agent:
             return
         rc.tool_injection_sig = signature
         if progressive:
-            logger.info(f"工具注入: 核心 {core_count} + 激活 {active_count} + search_tools（渐进 {mode}）")
+            logger.info(f"工具注入: 核心 {core_count} + 激活 {active_count} + tool_search（渐进 {mode}）")
         else:
             logger.info(f"工具注入: 全量 {core_count + remote_count}（渐进未启用, 模式 {mode}）")
 
@@ -1207,7 +1207,7 @@ class Agent:
         """LLM 工具表(每轮组装, 已应用 deny 名单)。
 
         非渐进(off / auto 未达阈值 / 无对话根): 现状全量;
-        渐进(auto 达阈值 / always): 核心工具 + search_tools(内置表中) +
+        渐进(auto 达阈值 / always): 核心工具 + tool_search(内置表中) +
         该对话根已激活且当前可用的远程工具。激活状态见 agent.tool_search。
         """
         pairs = self._collect_tool_defs()

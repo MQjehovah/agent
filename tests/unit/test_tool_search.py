@@ -30,7 +30,7 @@ from agent.tool_search import (
     tool_search_threshold_from_env,
 )
 from storage.storage import Storage
-from tools.search_tools import SearchToolsTool
+from tools.tool_search import SearchToolsTool
 
 
 @pytest.fixture(autouse=True)
@@ -178,7 +178,7 @@ def test_search_remote_tools_empty_query_and_no_hit():
 
 def test_progressive_hint_lists_active_or_none():
     hinted = progressive_hint(["mcp_a", "mcp_b"])
-    assert "search_tools" in hinted
+    assert "tool_search" in hinted
     assert "已激活：mcp_a、mcp_b" in hinted
     assert "已激活：无" in progressive_hint([])
     assert "已激活：无" in progressive_hint([""])
@@ -428,7 +428,7 @@ def test_tool_injection_log_dedup(tmp_path, monkeypatch, caplog):
         _current_run.reset(token)
     msgs = [r.message for r in caplog.records if "工具注入" in r.message]
     assert len(msgs) == 1
-    assert msgs[0] == "工具注入: 核心 20 + 激活 0 + search_tools（渐进 auto）"
+    assert msgs[0] == "工具注入: 核心 20 + 激活 0 + tool_search（渐进 auto）"
 
 
 # ===== 5. 系统提示渐进说明 =====

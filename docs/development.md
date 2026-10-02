@@ -201,7 +201,7 @@ AgentSession
 | `code_preview` | `tools/code_preview.py` | 代码片段预览 |
 | `web_search` | `tools/web.py` | 多引擎搜索 (SearXNG/Tavily/Serper/Bing) |
 | `web_fetch` | `tools/web.py` | 网页抓取 |
-| `subagent` | `tools/subagent.py` | 子代理委派（实际逻辑在 agent.py） |
+| `task` | `tools/subagent.py` | 子代理委派（实际逻辑在 agent executor） |
 | `memory` | `tools/memory.py` | 记忆读写 |
 | `todowrite` | `tools/todo.py` | 任务列表管理 |
 | `ask_user` | `tools/ask_user.py` | 向用户提问（CLI 交互/auto 模式） |
@@ -224,7 +224,7 @@ ToolRegistry.auto_discover()  # AST 扫描 src/tools/*.py，实例化 BuiltinToo
 
 ### 7.1 个人子代理
 
-从 `config/agents/*/PROMPT.md` 加载（frontmatter 含 name/description）。通过 `subagent` 工具激活，复用 session：
+从 `config/agents/*/PROMPT.md` 加载（frontmatter 含 name/description）。通过 `task` 工具激活，复用 session：
 
 ```
 SubagentManager.get_or_create_subagent(template)
@@ -624,7 +624,7 @@ Layer 3: LLM 摘要 (compress_if_needed)
 
 | 工具 | 压缩策略 |
 |------|---------|
-| `subagent` | 提取 status + success，结果文本用 head_tail(65%头+35%尾) |
+| `task` | 提取 status + success，结果文本用 head_tail(65%头+35%尾) |
 | `knowledge_search` | 保留 Top 3，每条截断内容 |
 | `file_operation` | 保留头尾行 + 行数统计 |
 | `grep` | 保留前 N 条匹配（去掉 context 字段） |

@@ -180,7 +180,7 @@ class SubagentManager:
             "leader_prompt": prompt_body,
             "dir_name": dir_name,
             "tool_denylist": set(frontmatter.get("tool_denylist", [
-                "subagent", "knowledge_search", "web_search", "web_fetch",
+                "task", "knowledge_search", "web_search", "web_fetch",
                 "task_create", "task_list", "task_get", "task_cancel",
                 "ask_user", "memory",
             ])),
@@ -354,7 +354,7 @@ class SubagentManager:
         # 团队子 agent 只保留必要工具，砍掉无关工具定义节省 token
         team_config = self._team_configs.get(team_name, {})
         agent.tool_denylist = team_config.get("tool_denylist", {
-            "subagent", "knowledge_search", "web_search", "web_fetch",
+            "task", "knowledge_search", "web_search", "web_fetch",
             "task_create", "task_list", "task_get", "task_cancel",
             "ask_user", "memory",
         })
@@ -406,8 +406,8 @@ class SubagentManager:
             tag = "团队" if template_data.get("is_team") else "个人"
             desc = template_data.get("description", "")[:40]
             lines.append(f"| {template_data['name']} | {tag} | {desc} |")
-        lines.append("\n**调用方式**: subagent(template=\"名称\", task=\"...\")")
-        lines.append("**所有可用子代理已完整列出在上表中，不要自己去工作目录查找团队成员，直接使用上表中的名称调用 subagent 工具即可**")
+        lines.append("\n**调用方式**: task(template=\"名称\", task=\"...\")")
+        lines.append("**所有可用子代理已完整列出在上表中，不要自己去工作目录查找团队成员，直接使用上表中的名称调用 task 工具即可**")
         lines.append("**严禁编造不存在的template名称，template必须严格等于上表列出的名称之一**\n")
         return "\n".join(lines)
 

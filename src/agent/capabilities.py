@@ -8,7 +8,7 @@
 - ``permissionMode``  覆盖权限模式（default/smart/auto/plan，可选）
 
 约定：
-- 核心工具（``skill``/``search_tools``/``whoami``/``ask_user``）**恒定可用**，仅 `disallowedTools` 可显式移除。
+- 核心工具（``skill``/``tool_search``/``whoami``/``ask_user``）**恒定可用**，仅 `disallowedTools` 可显式移除。
 - 无任何字段 = 全量（零回归）。
 - 能力只能收紧，不能突破 RBAC。
 """
@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # 恒定注入的核心工具（除非显式 disallow）
-CORE_TOOLS = frozenset({"skill", "execute_skill", "search_tools", "whoami", "ask_user"})
+CORE_TOOLS = frozenset({"skill", "execute_skill", "tool_search", "whoami", "ask_user"})
 
 _MCP_SERVER_KEYS = ("mcpServers", "mcp_servers")
 _TOOLS_DENY_KEYS = ("disallowedTools", "disallowed_tools", "tool_denylist")

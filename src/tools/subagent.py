@@ -7,7 +7,7 @@ from . import BuiltinTool
 class SubagentTool(BuiltinTool):
     @property
     def name(self) -> str:
-        return "subagent"
+        return "task"
 
     @property
     def description(self) -> str:

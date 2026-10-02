@@ -2,7 +2,7 @@
 
 对齐 dashboard 已实现的模式(见 dashboard/electron/main/kernel/tool-search.ts):
 连接器/远程工具装多后不再每轮把全部远程工具定义塞给模型, 而是先发内置工具 +
-`search_tools`, 由模型按需检索, 命中后把远程工具「激活」进本对话(会话内粘住、
+`tool_search`, 由模型按需检索, 命中后把远程工具「激活」进本对话(会话内粘住、
 重启保留)。全部判定/检索/文案为纯函数, 便于离线单测; 激活持久化优先走
 `session_meta`(见 storage.get_active_tools/set_active_tools), 不可用时进程内内存兜底。
 """
@@ -17,11 +17,11 @@ from typing import Any
 
 logger = logging.getLogger("agent.tool_search")
 
-# search_tools 注册名(内置工具通道, 与 ask_user 同级)
-SEARCH_TOOLS_NAME = "search_tools"
+# tool_search 注册名(内置工具通道, 与 ask_user 同级)
+SEARCH_TOOLS_NAME = "tool_search"
 # auto 模式默认阈值: 远程工具数 > 40 时启用渐进披露
 DEFAULT_TOOL_SEARCH_THRESHOLD = 40
-# search_tools 的 limit 缺省值与夹紧范围(与 dashboard 一致)
+# tool_search 的 limit 缺省值与夹紧范围(与 dashboard 一致)
 SEARCH_TOOLS_DEFAULT_LIMIT = 8
 SEARCH_TOOLS_MAX_LIMIT = 20
 
@@ -182,7 +182,7 @@ def search_remote_tools(entries: Iterable[ToolSearchEntry], query: str,
 
 
 def format_search_result(hits: Iterable[ToolSearchHit]) -> str:
-    """search_tools 命中输出: 逐条「名称 —— [连接器 x] 描述」, 并说明已激活。"""
+    """tool_search 命中输出: 逐条「名称 —— [连接器 x] 描述」, 并说明已激活。"""
     items = list(hits or [])
     lines = [f"找到 {len(items)} 个匹配的远程工具（已激活，下一轮对话可直接调用）："]
     for hit in items:
@@ -197,7 +197,7 @@ def progressive_hint(active_names: Iterable[str]) -> str:
     names = [str(name).strip() for name in (active_names or []) if str(name).strip()]
     listing = "、".join(names) if names else "无"
     return (
-        "连接器的更多工具需先用 `search_tools` 搜索；已激活："
+        "连接器的更多工具需先用 `tool_search` 搜索；已激活："
         + listing
         + "。需要远程能力（远程终端/设备/市场等）而当前工具列表没有时，先搜索再调用。"
     )
@@ -210,7 +210,7 @@ class ToolActivationStore:
     - load: 进程内缓存命中直接返回; 未命中读 `storage.get_active_tools`(JSON 数组),
       storage 缺失/读取异常 → 返回空集且不缓存(下次可重试);
     - activate: 合并去重后先更新进程内缓存, 再写穿 storage(失败仅告警, 内存已生效);
-    - 仅 `search_tools` 增加; 远程工具暂不可用时注入前过滤, 不清理持久化
+    - 仅 `tool_search` 增加; 远程工具暂不可用时注入前过滤, 不清理持久化
       (server 恢复后自动重新可用)。
     """
 

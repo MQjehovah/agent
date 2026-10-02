@@ -3,7 +3,7 @@
 设计（对齐行业做法）：
 - 消息里只存引用：`{"type":"image_ref","ref":"store:<sha>.<ext>|<路径>","name":...}`（轻量、可落库不膨胀）。
 - 仅在**调用模型的那一刻**把「当前最后一轮用户消息」的引用物化成 data URL（见 materialize_messages）；
-  历史轮次的图片降级为文本占位（需要时由 `view_image` 工具按需重看），避免每轮重发像素。
+  历史轮次的图片降级为文本占位（需要时由 `read_image` 工具按需重看），避免每轮重发像素。
 """
 
 from __future__ import annotations
@@ -122,7 +122,7 @@ def materialize_messages(messages: list[dict], workspace: str = "") -> list[dict
                     else:
                         new_parts.append({"type": "text", "text": f"[图片无法加载：{name}]"})
                 else:
-                    new_parts.append({"type": "text", "text": f"[图片：{name}（如需重看可调用 view_image）]"})
+                    new_parts.append({"type": "text", "text": f"[图片：{name}（如需重看可调用 read_image）]"})
                 changed = True
             else:
                 new_parts.append(p)

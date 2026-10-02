@@ -5,6 +5,7 @@
 (见 agent.user_profile)。群聊下工具是显式调用, 仍返回触发人身份; 只含身份
 字段, 不含记忆/敏感数据。
 """
+import json
 import logging
 from typing import Any
 
@@ -50,4 +51,16 @@ class WhoamiTool(BuiltinTool):
             f"- 渠道：{profile['channel'] or _UNKNOWN}",
             f"- 用户 ID：{profile['uid'] or _UNKNOWN}",
         ]
-        return "\n".join(lines)
+        return json.dumps({
+            "success": True,
+            "text": "\n".join(lines),
+            "profile": {
+                "name": profile["name"],
+                "employee_id": profile["employee_id"],
+                "department": profile["department"],
+                "role": role,
+                "dingtalk": profile.get("dingtalk") or "",
+                "channel": profile["channel"],
+                "uid": profile["uid"],
+            },
+        }, ensure_ascii=False)
