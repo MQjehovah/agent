@@ -191,23 +191,17 @@ AgentSession
 
 ### 6.1 内置工具
 
-| 工具 | 文件 | 说明 |
-|------|------|------|
-| `file` | `tools/file.py` | 读/写/追加/删除/存在/列目录，50K 字符截断 |
-| `shell` | `tools/shell.py` | 命令执行，stdout 10K 截断 |
-| `grep` | `tools/grep.py` | 正则搜索，默认 50 条匹配上限（`limit`） |
-| `glob` | `tools/glob.py` | 文件模式匹配，默认 100 条上限（`limit`） |
-| `edit` | `tools/edit.py` | 精确字符串替换（`old_string`/`new_string`）+ 跨文件批量原子编辑 |
-| `apply_patch` | `tools/apply_patch.py` | git 风格 unified diff 原子落地 |
-| `code_search` | `tools/code_search.py` | Tree-sitter AST 定义/调用/引用 |
-| `web_search` | `tools/web.py` | 多引擎搜索 (SearXNG/Tavily/Serper/Bing) |
-| `web_fetch` | `tools/web.py` | 网页抓取 |
-| `task` | `tools/subagent.py` | 子代理委派（实际逻辑在 agent executor） |
-| `memory` | `tools/memory.py` | 记忆读写 |
-| `todowrite` | `tools/todo.py` | 任务列表管理 |
-| `ask_user` | `tools/ask_user.py` | 向用户提问（CLI 交互/auto 模式） |
-| `task_create/list/get/cancel` | `tools/task.py` | 异步任务管理 |
-| `knowledge_search` | `retrieval/__init__.py` | RAG 知识库检索 |
+| 分类 | 工具 |
+|------|------|
+| 文件/搜索/编辑 | `file` `edit` `apply_patch` `glob` `grep` `code_search` |
+| 质量/Git/执行 | `code_diagnostics` `git` `shell` |
+| Web/多模态 | `web_search` `web_fetch` `read_image` |
+| 编排/交互 | `task` `todowrite` `ask_user` `tool_search` |
+| 记忆/身份 | `memory` `whoami` |
+| 市场（配置齐备时） | `market_search` `market_runtime` `market_delegate` |
+
+> 共 21 个内置工具；另有动态工具：`skill`（技能）、`knowledge_search`（配置 RAG 时）、MCP（本地/平台）、插件（dingtalk/feishu/kanban/scheduler）。
+> **完整参数、动态工具、可见性/渐进披露、权限与按 agent 作用域见 [工具参考 tools.md](tools.md)。**
 
 ### 6.2 工具注册
 
@@ -219,7 +213,7 @@ ToolRegistry.auto_discover()  # AST 扫描 src/tools/*.py，实例化 BuiltinToo
 
 所有工具的 JSON Schema 作为 `tools` 参数传给 LLM，决定 LLM 可调用的工具集。团队子代理通过 `tool_denylist` 过滤工具。
 
-**文件**：`src/tools/` (13 个工具文件)
+**文件**：`src/tools/`（21 个内置工具，自动发现）
 
 ## 七、子代理与团队编排
 
