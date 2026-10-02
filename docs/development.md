@@ -193,7 +193,7 @@ AgentSession
 
 | 分类 | 工具 |
 |------|------|
-| 文件/搜索/编辑 | `file` `edit` `apply_patch` `glob` `grep` `code_search` |
+| 文件/搜索/编辑 | `file` `edit` `patch` `glob` `grep` `code_search` |
 | 质量/Git/执行 | `code_diagnostics` `git` `shell` |
 | Web/多模态 | `web_search` `web_fetch` `read_image` |
 | 编排/交互 | `task` `todowrite` `ask_user` `tool_search` |

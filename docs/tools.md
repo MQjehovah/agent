@@ -15,7 +15,7 @@
 |---|---|---|---|
 | `file` | `operation`(read/write/append/delete/exists/list), `path`, `content`, `encoding`, `offset`, `limit` | 通用文件读写；读默认 200 行、可 `offset`/`limit` 分段 | `tools/file.py` |
 | `edit` | `path`, `old_string`, `new_string`, `line`, `edits`(`[{file,old_string,new_string,hash}]`), `replace_all`, `workspace` | 精确字符串替换（原文偏移、保留 CRLF/行尾）；`edits` 每项可带 `file` 做跨文件原子编辑 | `tools/edit.py` |
-| `apply_patch` | `patch`, `dry_run` | 应用 git 风格 unified diff，原子落地；失败整体不写 | `tools/apply_patch.py` |
+| `patch` | `patch`, `dry_run` | 应用 git 风格 unified diff，原子落地；失败整体不写 | `tools/patch.py` |
 | `glob` | `pattern`, `path`, `limit` | 文件名 glob（`*`/`?`/`**`） | `tools/glob.py` |
 | `grep` | `pattern`, `path`, `file_pattern`, `case_insensitive`, `limit`, `context_lines` | 内容正则搜索（返回行号与上下文） | `tools/grep.py` |
 | `code_search` | `query`, `target`(definition/callers/references/all), `file`, `symbol_type`, `workspace` | Tree-sitter AST 定义/调用/引用（多语言） | `tools/code_search.py` |
@@ -79,11 +79,11 @@
 - **agent 能力作用域**（`PROMPT.md`/`TEAM.md` frontmatter，见 `agent/capabilities.py`）：`tools`(白名单, 省略=全量)、`disallowedTools`(黑名单, 优先)、`mcpServers`(允许的 MCP server 名)、`skills`(技能白名单)、`permissionMode`(default/smart/auto/plan)、`platform_mcp`(平台轨开关)。核心工具恒可用，仅 `disallowedTools` 可移除。
 - **双层强制**：暴露层 `Agent._collect_tool_defs` 四分支过滤 + 执行层 `execute_tool_safe` fail-closed。
 - **权限模式**：`default`(写确认)/`smart`(仅危险确认)/`auto`(全放行)/`plan`(只读)。
-- **写工具**（`security/permissions/rules.py:write_tools`）：`file`/`shell`/`edit`/`apply_patch`/`git`。
+- **写工具**（`security/permissions/rules.py:write_tools`）：`file`/`shell`/`edit`/`patch`/`git`。
 
 ## 七、变更记录（2026 标准化）
 
-- 直接改名（无别名）：`search_tools`→`tool_search`、`view_image`→`read_image`、`subagent`→`task`、`market_runtime`→`market_execute`（模块文件同步）。
+- 直接改名（无别名）：`search_tools`→`tool_search`、`view_image`→`read_image`、`subagent`→`task`、`market_runtime`→`market_execute`、`apply_patch`→`patch`（模块文件同步为 `tools/patch.py`）。
 - `market_delegate` 删除，能力并入 `market_execute`（`kind="agent"` + `capability="<专家名>"` 即委派专家）。
 - `batch_edit` 删除，能力并入 `edit`（跨文件 `edits` 带 `file`）。
 - `file` 删除 `preview`（与 `code_search` 重叠），精简为 read/write/append/delete/exists/list。

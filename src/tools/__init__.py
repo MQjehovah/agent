@@ -208,7 +208,7 @@ class ToolRegistry:
     async def _execute_in_worker(self, tool: BuiltinTool, name: str, args: dict) -> str:
         """在线程池中执行工具，避免同步阻塞卡死事件循环。
 
-        背景：多数工具（file/grep/glob/code_search/edit/apply_patch）内部是同步
+        背景：多数工具（file/grep/glob/code_search/edit/patch）内部是同步
         IO/CPU 密集（整文件读入、os.walk、subprocess.run、tree-sitter 解析）。
         若在主事件循环内直接 await，一个用户的工具操作会冻结所有用户的
         agent.run（LLM 流式响应、其他工具全部停摆）。
@@ -341,7 +341,7 @@ from .subagent import SubagentTool
 from .todo import TodoTool
 
 # 搜索与编辑工具
-from .apply_patch import ApplyPatchTool
+from .patch import PatchTool
 from .code_search import CodeSearchTool
 from .diagnostics import CodeDiagnosticsTool
 from .git import GitTool
@@ -357,7 +357,7 @@ __all__ = [
     'ToolRegistry', 'BuiltinTool', 'ToolDefinition',
     'AskUserTool', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
     'GrepTool', 'GlobTool', 'EditTool', 'CodeSearchTool',
-    'ApplyPatchTool', 'CodeDiagnosticsTool', 'GitTool',
+    'PatchTool', 'CodeDiagnosticsTool', 'GitTool',
     'SearchToolsTool', 'ViewImageTool', 'WhoamiTool',
     'WebSearchTool', 'WebFetchTool',
 ]

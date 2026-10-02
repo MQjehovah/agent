@@ -1424,13 +1424,13 @@ class TestHookManager:
 
 
 # ═══════════════════════════════════════════════════════════
-#  ApplyPatchTool
+#  PatchTool
 # ═══════════════════════════════════════════════════════════
 
-class TestApplyPatchTool:
+class TestPatchTool:
     def setup_method(self):
-        from tools.apply_patch import ApplyPatchTool
-        self.tool = ApplyPatchTool()
+        from tools.patch import PatchTool
+        self.tool = PatchTool()
 
     @pytest.mark.asyncio
     async def test_apply_single_file(self, tmp_path):

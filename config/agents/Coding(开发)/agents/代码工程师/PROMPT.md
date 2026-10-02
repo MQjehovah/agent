@@ -23,7 +23,7 @@ description: 代码实现与编译
 - 评估影响范围
 
 ### 3. 执行
-- 小改动用 `edit`（SEARCH/REPLACE 模式）或 `apply_patch`（统一 diff，可先 `dry_run` 预演）
+- 小改动用 `edit`（SEARCH/REPLACE 模式）或 `patch`（统一 diff，可先 `dry_run` 预演）
 - 跨文件原子修改用 `edit(edits=[{file,old,new},...])`
 - 用 `file_operation(write)` 创建新文件
 - 改动前如不确定可先用 `git(operation="checkpoint")` 记录还原点
@@ -90,7 +90,7 @@ edit(path="src/main.py", edits=[
 
 | 工具 | 用途 |
 |---|---|
-| `apply_patch` | 应用 git 风格 unified diff，原子落地，支持 `dry_run` 预演 |
+| `patch` | 应用 git 风格 unified diff，原子落地，支持 `dry_run` 预演 |
 | `edit` | SEARCH/REPLACE、行锚点、同文件/跨文件(每项带 `file`)原子编辑 |
 | `code_diagnostics` | 运行 ruff/mypy/eslint/tsc/go vet/cargo check，返回结构化问题 |
 | `git` | `status`/`diff`/`log`（只读）、`commit`/`checkpoint`/`rollback`（写） |

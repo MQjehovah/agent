@@ -27,7 +27,7 @@ _MCP_FAILURE_PREFIXES = ("执行失败", "MCP未连接", "MCP服务", "MCP [", "
 logger = logging.getLogger("agent.agent")
 
 # 写工具执行后自动追加“仅提示”诊断的工具名
-_DIAGNOSTIC_WRITE_TOOLS = frozenset({"edit", "apply_patch"})
+_DIAGNOSTIC_WRITE_TOOLS = frozenset({"edit", "patch"})
 
 
 def _diagnostics_enabled() -> bool:
@@ -46,7 +46,7 @@ def _touched_paths(name: str, args: dict, result: str) -> list[str]:
             for e in args.get("edits", []) or []:
                 if isinstance(e, dict) and (e.get("file") or e.get("path")):
                     paths.append(str(e.get("file") or e.get("path")))
-        elif name == "apply_patch":
+        elif name == "patch":
             parsed = json.loads(result)
             for rel in parsed.get("applied_files", []) or []:
                 paths.append(str(rel))

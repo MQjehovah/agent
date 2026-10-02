@@ -43,7 +43,7 @@ class PermissionConfig:
         "file",
         "shell",
         "edit",
-        "apply_patch",
+        "patch",
         "git",
     ])
     # SMART 模式(必要时询问): 命中以下片段的 shell 命令需用户确认

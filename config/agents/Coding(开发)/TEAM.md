@@ -72,7 +72,7 @@ members:
 ## 工具与验证纪律（所有角色必须遵守）
 
 1. **改代码前先定位**：`code_search` / `grep` 精确定位，禁止通读无关文件
-2. **改代码用专用工具**：`edit`（单文件或跨文件，`edits` 每项可带 `file`），统一 diff 用 `apply_patch`
+2. **改代码用专用工具**：`edit`（单文件或跨文件，`edits` 每项可带 `file`），统一 diff 用 `patch`
 3. **改完必须自检**：对改动文件执行 `code_diagnostics`，有必改级问题先修复再交付
 4. **提交用 git 工具**：阶段性成果用 `git(operation="commit")` 提交；高风险重构前用 `git(operation="checkpoint")`
 5. **测试工程师**：执行测试前先 `git(operation="diff")` 了解改动范围，测试失败给出精确复现

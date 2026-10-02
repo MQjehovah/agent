@@ -135,12 +135,12 @@ def _apply_file(original_lines: list[str], hunks: list[_Hunk]) -> tuple[list[str
     return result, ""
 
 
-class ApplyPatchTool(BuiltinTool):
+class PatchTool(BuiltinTool):
     """统一 diff 原子应用工具"""
 
     @property
     def name(self) -> str:
-        return "apply_patch"
+        return "patch"
 
     @property
     def description(self) -> str:
@@ -247,7 +247,7 @@ class ApplyPatchTool(BuiltinTool):
             except Exception as e:  # noqa: BLE001
                 return self._error(f"写入文件失败 {full}: {e}")
 
-        logger.info(f"[apply_patch] 已应用 {len(prepared)} 个文件")
+        logger.info(f"[patch] 已应用 {len(prepared)} 个文件")
         return json.dumps({
             "success": True,
             "action": f"已应用补丁: {len(prepared)} 个文件",
@@ -264,7 +264,7 @@ class ApplyPatchTool(BuiltinTool):
             if ws and os.path.exists(ws):
                 await UndoManager(ws).snapshot_before_edit(path, content)
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"[apply_patch] 快照失败(忽略) {path}: {e}")
+            logger.debug(f"[patch] 快照失败(忽略) {path}: {e}")
 
     @staticmethod
     def _error(msg: str) -> str:
