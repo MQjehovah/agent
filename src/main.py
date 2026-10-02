@@ -36,6 +36,21 @@ os.environ.setdefault("AGENT_LOG_DIR", _LOCAL_LOG if os.path.isdir(_LOCAL_LOG) e
 console = Console()
 
 
+async def _run_once(router, task: str) -> None:
+    """一次性执行任务（CLI 位置参数）：无需 TUI，跑完打印结果退出。
+
+    以 cli:admin / admin 身份运行（本机操作者），便于本地快速试用编码能力。
+    """
+    session_id = router.format_session_id("cli", uuid.uuid4().hex[:12])
+    result = await router.route(
+        task, channel="cli", session_id=session_id,
+        user_id="cli:admin", user_name="管理员",
+        role="admin", user_role="admin",
+    )
+    text = result.result if hasattr(result, "result") else str(result)
+    console.print(text)
+
+
 def _install_cli_confirm(agent, auto: bool = False) -> None:
     """交互式 CLI 下安装真实审批回调（写操作/计划）。
 
@@ -712,8 +727,11 @@ async def _main_with_args(args):
                 web_server.set_kanban(kanban_board)
             web_server.start()
 
+        task_text = " ".join(getattr(args, "task", []) or []).strip()
         if args.mode == "autonomous":
             await autonomous_mode(agent, shutdown_event, args)
+        elif task_text:
+            await _run_once(router, task_text)
         else:
             await interactive_mode(agent, shutdown_event, target_agent)
     except asyncio.CancelledError:
