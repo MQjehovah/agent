@@ -167,9 +167,7 @@ class AutoCreator:
             with open(prompt_file, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            mcp_file = os.path.join(agent_dir, "mcp_servers.json")
-            with open(mcp_file, "w", encoding="utf-8") as f:
-                json.dump([], f)
+            os.makedirs(os.path.join(agent_dir, "mcps"), exist_ok=True)
 
             skills_subdir = os.path.join(agent_dir, "skills")
             os.makedirs(skills_subdir, exist_ok=True)

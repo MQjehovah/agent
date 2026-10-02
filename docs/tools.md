@@ -46,11 +46,11 @@
 |---|---|---|
 | `skill` | 加载到技能目录时 | 加载技能正文；`<available_skills>` 按用户部门/角色 + agent 作用域过滤，执行前二次校验 |
 | `knowledge_search` | 配置 `RAG_BASE_URL` 时 | 按用户 token 调 RAG `/api/search` |
-| 本地 MCP 工具 | `config/mcp_servers.json` 中 `enabled: true` | 名称由 `list_tools` 决定；风险按注解映射；重名加 server 前缀；每次调用落 `mcp_calls` 审计 |
+| 本地 MCP 工具 | `config/mcps/<name>/server.json` 中 `enabled: true` | 名称由 `list_tools` 决定；风险按注解映射；重名加 server 前缀；每次调用落 `mcp_calls` 审计 |
 | 平台市场 MCP 工具 | 平台轨启用 | 暴露名 `platform__{能力}__{工具}`；按用户 token；周期刷新 |
 | 插件工具 | 插件启用 | 见下 |
 
-### 3.1 MCP 服务器（`config/mcp_servers.json`）
+### 3.1 MCP 服务器（`config/mcps/<name>/server.json`）
 
 - **默认启用**：`default`(数据库查询/邮件)、`dingtalk`、`rosiwit_cloud_remote`(设备控制)、`remote_terminal`(WS 终端, 300s)、`rosiwit_cloud_ticket`(BMS 工单)、`time`、`fetch`(SSRF 防护)。
 - **默认禁用**（需显式开启并配置）：`mysql_query`、`filesystem`、`git`、`postgres`、`gerrit`、`gitlab`、`jira`。

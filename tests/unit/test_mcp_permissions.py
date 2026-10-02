@@ -77,9 +77,15 @@ def _tool(name: str, annotations=None):
 
 
 def _write_config(tmp_path, entries: list[dict]) -> str:
-    path = tmp_path / "mcp_servers.json"
-    path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
-    return str(path)
+    mcps = tmp_path / "mcps"
+    for entry in entries:
+        d = mcps / entry["name"]
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "server.json").write_text(
+            json.dumps({k: v for k, v in entry.items() if k != "name"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    return str(mcps)
 
 
 async def test_connect_captures_annotations_and_applies_overrides(tmp_path, monkeypatch):

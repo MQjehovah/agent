@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "command": "python",
+  "args": [
+    "mcp_server/src/mysql_query.py"
+  ],
+  "env": {},
+  "description": "MySQL查询服务"
+}

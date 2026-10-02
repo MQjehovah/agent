@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "command": "python",
+  "args": [
+    "mcp_server/src/mcp_postgres.py"
+  ],
+  "env": {
+    "PG_MCP_DSN": "${PG_MCP_DSN}",
+    "PG_MCP_STATEMENT_TIMEOUT_MS": "10000",
+    "PG_MCP_MAX_ROWS": "200"
+  },
+  "description": "PostgreSQL 只读查询服务（默认禁用）- 单条 SELECT/WITH/EXPLAIN/SHOW/VALUES 查询与表结构查看；启用需将 enabled 改为 true 并在 .env 配置 PG_MCP_DSN；连接强制只读事务+语句超时+返回行数上限（默认 200，上限 1000）"
+}

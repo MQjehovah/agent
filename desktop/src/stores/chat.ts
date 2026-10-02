@@ -589,6 +589,34 @@ export const useChatStore = defineStore('chat', {
           if (hit) hit.result = (event.ok === false ? '[执行失败] ' : '') + truncateText(event.output ?? '', 4000)
           break
         }
+        case 'subagent_start':
+          target.subagentRunning = true
+          target.tools.push({ name: `子代理 ${event.name || ''}`.trim(), kind: 'subagent', ts: Date.now() })
+          break
+        case 'subagent_token':
+          // 团队专家成员执行期间的流式输出: 实时累积展示
+          target.subagentOutput += event.text ?? ''
+          break
+        case 'subagent_tool_call':
+          target.tools.push({ name: `子代理 ${event.name || ''} · ${event.tool || 'tool'}`, kind: 'subagent', ts: Date.now() })
+          break
+        case 'subagent_tool_result': {
+          const name = `子代理 ${event.name || ''} · ${event.tool || 'tool'}`
+          const hit = [...target.tools]
+            .reverse()
+            .find((t) => t.name === name && t.kind === 'subagent' && t.result === undefined)
+          if (hit) hit.result = (event.ok === false ? '[执行失败] ' : '') + truncateText(event.output ?? '', 4000)
+          break
+        }
+        case 'subagent_end': {
+          const name = `子代理 ${event.name || ''}`.trim()
+          const hit = [...target.tools]
+            .reverse()
+            .find((t) => t.name === name && t.kind === 'subagent' && t.result === undefined)
+          if (hit) hit.result = truncateText(event.output ?? '', 4000)
+          target.subagentRunning = false
+          break
+        }
         case 'permission_request':
           this.pendingPermission = {
             mode: 'local',

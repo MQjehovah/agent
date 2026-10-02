@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "command": "python",
+  "args": [
+    "mcp_server/src/gerrit.py"
+  ],
+  "env": {
+    "GERRIT_USERNAME": "s_software",
+    "GERRIT_HTTP_PASSWORD": ""
+  },
+  "description": "Gerrit 代码评审（变更/评审/仓库查询）—— 启用前在 .env 配置 GERRIT_HTTP_PASSWORD（可选 GERRIT_URL/GERRIT_USERNAME）"
+}

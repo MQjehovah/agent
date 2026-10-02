@@ -1,4 +1,6 @@
 import { readFile } from 'node:fs/promises'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Registry } from './registry'
 import type { ToolDefinition, ToolResult } from './types'
 
@@ -223,6 +225,99 @@ export function parseMcpConfig(raw: string): McpServerConfig[] {
   return out
 }
 
+/** 标准 mcpServers 单条(type/transport 归一)：url 默认 streamable http，command 默认 stdio */
+function normalizeStandardServer(name: string, raw: Record<string, unknown>): McpServerConfig | null {
+  const command = nonEmpty(raw.command)
+  const url = nonEmpty(raw.url)
+  let transport: McpServerConfig['transport']
+  const t = raw.type ?? raw.transport
+  if (t === 'stdio' || t === 'sse' || t === 'http') transport = t
+  else if (t === 'streamable-http' || t === 'streamable_http') transport = 'http'
+  else if (t !== undefined) return null // 未知 transport 视为非法
+  if (transport === undefined && url) transport = 'http' // 标准远程默认 streamable http
+  if (transport === undefined && command) transport = 'stdio' // 标准本地默认 stdio
+  return normalizeServer({
+    name,
+    command: raw.command,
+    args: raw.args,
+    env: raw.env,
+    cwd: raw.cwd,
+    url: raw.url,
+    headers: raw.headers,
+    transport
+  })
+}
+
+/**
+ * 解析标准 MCP 配置({ "mcpServers": { "<name>": { command|url, args, env, headers, ... } } })。
+ * 用于专家插件自带 .mcp.json；无 mcpServers 字段返回空数组，整份非对象抛中文错，
+ * 单条非法跳过（与 parseMcpConfig 同语义）。
+ */
+export function parseMcpServersJson(raw: string): McpServerConfig[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    throw new Error(`MCP 配置解析失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('MCP 配置无效: 顶层必须是对象')
+  }
+  const map = (parsed as { mcpServers?: unknown }).mcpServers
+  if (map === undefined) return []
+  if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+    throw new Error('MCP 配置无效: mcpServers 必须是对象')
+  }
+  const out: McpServerConfig[] = []
+  for (const [name, entry] of Object.entries(map as Record<string, unknown>)) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+    const cfg = normalizeStandardServer(name, entry as Record<string, unknown>)
+    if (cfg) out.push(cfg)
+  }
+  return out
+}
+
+/**
+ * 扫描 localagent/mcps/<name>/connection.json 得到服务端配置列表(每个 MCP 一个目录)。
+ * 目录名即 server 名(覆盖 connection.json 内 name);条目非法/损坏跳过。纯函数(同步 IO)。
+ */
+export function discoverMcpConfigs(mcpsDir: string): McpServerConfig[] {
+  if (!existsSync(mcpsDir)) return []
+  const out: McpServerConfig[] = []
+  const seen = new Set<string>()
+  for (const entry of readdirSync(mcpsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const file = join(mcpsDir, entry.name, 'connection.json')
+    if (!existsSync(file)) continue
+    let raw: unknown
+    try {
+      raw = JSON.parse(readFileSync(file, 'utf8'))
+    } catch {
+      continue
+    }
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue
+    const cfg = normalizeServer({ ...(raw as Record<string, unknown>), name: entry.name })
+    if (!cfg || seen.has(cfg.name)) continue
+    seen.add(cfg.name)
+    out.push(cfg)
+  }
+  return out
+}
+
+/** 读单个 MCP 目录的原始 connection.json(供调用方判定 kind:market-remote 等);缺失/损坏返回 null */
+export function readMcpConnectionFile(mcpsDir: string, name: string): Record<string, unknown> | null {
+  const file = join(mcpsDir, name, 'connection.json')
+  if (!existsSync(file)) return null
+  try {
+    const raw: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
 /** MCP 工具在注册表中的命名空间化名称 */
 export function mcpToolName(server: string, tool: string): string {
   return `mcp__${server}__${tool}`
@@ -429,8 +524,10 @@ async function substituteServerVars(
  */
 export async function connectMcpServers(opts: {
   registry: Registry
-  /** mcp.json 路径，不存在视为空配置 */
-  configPath: string
+  /** mcp.json 路径，不存在视为空配置；与 configs 二选一 */
+  configPath?: string
+  /** 直接提供配置列表(专家自带 .mcp.json 等)，提供时忽略 configPath */
+  configs?: McpServerConfig[]
   onStatus?: (msg: string) => void
   /** market-gateway 连接参数解析器（ipc 注入：marketUrl + gateway 受众平台 token Bearer） */
   resolveGateway?: ResolveMcpGateway
@@ -441,24 +538,27 @@ export async function connectMcpServers(opts: {
   /** 传输/客户端工厂；缺省动态加载 SDK 实现 */
   connector?: McpConnector
 }): Promise<McpConnection[]> {
-  const { registry, configPath, onStatus, resolveGateway, resolveVars } = opts
+  const { registry, onStatus, resolveGateway, resolveVars } = opts
   const status = (msg: string) => onStatus?.(msg)
   const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-  let raw: string
-  try {
-    raw = await readFile(configPath, 'utf8')
-  } catch {
-    status('MCP 配置不存在，跳过 MCP 服务端连接')
-    return []
-  }
-
   let configs: McpServerConfig[]
-  try {
-    configs = parseMcpConfig(raw)
-  } catch (e) {
-    status(`MCP 配置无效，跳过 MCP 服务端连接: ${errMessage(e)}`)
-    return []
+  if (opts.configs) {
+    configs = opts.configs
+  } else {
+    let raw: string
+    try {
+      raw = await readFile(opts.configPath!, 'utf8')
+    } catch {
+      status('MCP 配置不存在，跳过 MCP 服务端连接')
+      return []
+    }
+    try {
+      configs = parseMcpConfig(raw)
+    } catch (e) {
+      status(`MCP 配置无效，跳过 MCP 服务端连接: ${errMessage(e)}`)
+      return []
+    }
   }
 
   const connector = opts.connector ?? (await createSdkConnector())

@@ -1,11 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   connectMcpServers,
+  discoverMcpConfigs,
   parseMcpConfig,
+  parseMcpServersJson,
   mcpToolName,
   wrapMcpTool,
   type McpConnector,
@@ -723,4 +725,64 @@ test('mcp: connectMcpServers 透传 listTools 注解（readOnlyHint=true 注册�
   assert.equal(registry.get('mcp__cap__delete_device')!.kind, 'write')
   assert.equal(registry.get('mcp__cap__mutate')!.kind, 'write')
   assert.equal(registry.get('mcp__cap__plain')!.kind, 'write')
+})
+
+test('mcp: parseMcpServersJson 解析标准 mcpServers（command→stdio、url→http 默认、type 归一）', () => {
+  const raw = JSON.stringify({
+    mcpServers: {
+      fs: { command: 'npx', args: ['-y', 'server-fs'], env: { A: '1' } },
+      remote: { url: 'https://mcp.example.com/mcp' },
+      sse: { type: 'sse', url: 'http://10.0.0.5:9000/sse' }
+    }
+  })
+  assert.deepEqual(parseMcpServersJson(raw), [
+    { name: 'fs', command: 'npx', args: ['-y', 'server-fs'], env: { A: '1' }, transport: 'stdio' },
+    { name: 'remote', url: 'https://mcp.example.com/mcp', transport: 'http' },
+    { name: 'sse', url: 'http://10.0.0.5:9000/sse', transport: 'sse' }
+  ] as McpServerConfig[])
+})
+
+test('mcp: parseMcpServersJson 无 mcpServers 返回空，顶层非对象/非法 mcpServers 抛错，单条非法跳过', () => {
+  assert.deepEqual(parseMcpServersJson('{}'), [])
+  assert.throws(() => parseMcpServersJson('[]'), /顶层必须是对象/)
+  assert.throws(() => parseMcpServersJson('{"mcpServers":[]}'), /mcpServers 必须是对象/)
+  // 同 command 与 url 互斥、未知 transport、缺 name 的条目跳过
+  const raw = JSON.stringify({
+    mcpServers: {
+      bad: { command: 'x', url: 'https://x' },
+      badtr: { command: 'x', type: 'carrier-pigeon' },
+      ok: { command: 'uvx', args: ['demo'] }
+    }
+  })
+  assert.deepEqual(parseMcpServersJson(raw), [{ name: 'ok', command: 'uvx', args: ['demo'], transport: 'stdio' }])
+})
+
+test('mcp: discoverMcpConfigs 扫描 mcps/<name>/connection.json（目录名优先），非法条目跳过', (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcps-'))
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }))
+  const dir = join(dataDir, 'mcps')
+  mkdirSync(join(dir, 'alpha'), { recursive: true })
+  writeFileSync(join(dir, 'alpha', 'connection.json'), JSON.stringify({ command: 'uvx', args: ['demo'], name: 'IGNORED' }))
+  mkdirSync(join(dir, 'remote'), { recursive: true })
+  writeFileSync(join(dir, 'remote', 'connection.json'), JSON.stringify({ url: 'https://mcp.example.com/mcp' }))
+  mkdirSync(join(dir, 'broken'), { recursive: true })
+  writeFileSync(join(dir, 'broken', 'connection.json'), '{broken')
+  assert.deepEqual(discoverMcpConfigs(dir), [
+    { name: 'alpha', command: 'uvx', args: ['demo'] },
+    { name: 'remote', url: 'https://mcp.example.com/mcp' }
+  ] as McpServerConfig[])
+  assert.deepEqual(discoverMcpConfigs(join(dataDir, 'missing')), [])
+})
+
+test('mcp: connectMcpServers 接受内存 configs（不读文件）并可连接', async () => {
+  const registry = createRegistry()
+  const handles = await connectMcpServers({
+    registry,
+    configs: [{ name: 'mem', command: 'uvx', args: ['demo'], transport: 'stdio' }],
+    connector: {
+      connect: async () => fakeClient([{ name: 'ping', description: 'p' }]).client
+    }
+  })
+  assert.equal(handles.length, 1)
+  assert.ok(registry.get('mcp__mem__ping'))
 })

@@ -99,3 +99,39 @@ export function createSkillLoader(skillsDir: string): SkillLoader {
     }
   }
 }
+
+/**
+ * 合并多个技能加载器为单一视图：后者覆盖前者同名技能（用于「全局 + 专家」作用域）。
+ * 传空数组返回空加载器；body 惰性解析，保持与单目录加载器一致的可见性语义。
+ */
+export function mergeSkillLoaders(loaders: SkillLoader[]): SkillLoader {
+  function merged(): ParsedSkill[] {
+    const map = new Map<string, ParsedSkill>()
+    for (const loader of loaders) {
+      for (const meta of loader.listSkills()) {
+        let body = ''
+        try {
+          body = loader.getSkillBody(meta.name)
+        } catch {
+          body = ''
+        }
+        map.set(meta.name, { name: meta.name, description: meta.description, body })
+      }
+    }
+    return [...map.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  }
+  return {
+    listSkills: () => merged().map(s => ({ name: s.name, description: s.description })),
+    getSkillBody: name => {
+      const skill = merged().find(s => s.name === name)
+      if (!skill) throw new Error(`未找到技能: ${name}`)
+      return skill.body
+    },
+    systemPromptAddendum: () => {
+      const skills = merged()
+      if (!skills.length) return ''
+      const items = skills.map(s => `- ${s.name}：${s.description}`).join('\n')
+      return `## 可用技能\n\n以下技能可通过「/技能名」触发：\n\n${items}`
+    }
+  }
+}

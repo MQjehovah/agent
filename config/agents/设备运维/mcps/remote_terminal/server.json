@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "command": "python",
+  "args": [
+    "mcp_server/src/remote_terminal.py"
+  ],
+  "env": {
+    "WS_BASE_URL": "wss://dev.xzrobot.com:10000"
+  },
+  "description": "设备远程终端（可用进程环境 WS_BASE_URL 覆盖）"
+}

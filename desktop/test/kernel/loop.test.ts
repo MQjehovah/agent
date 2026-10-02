@@ -816,3 +816,69 @@ test('loop: 渐进模式(always, 远程为 0)仍只发内置+tool_search', async
   }
   assert.deepEqual((bodies[0].tools as Array<{ function: { name: string } }>).map(t => t.function.name), ['file_read'])
 })
+
+test('loop: 同轮多个 task 子代理并发执行', async () => {
+  let active = 0
+  let maxActive = 0
+  const taskTool: ToolDefinition = {
+    name: 'task',
+    description: '',
+    kind: 'read',
+    parameters: { type: 'object', properties: {} },
+    execute: async () => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise((r) => setTimeout(r, 30))
+      active--
+      return { ok: true, output: 'task done' }
+    }
+  }
+  const tools = [taskTool]
+  const registry = {
+    toOpenAiTools: () =>
+      tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })),
+    get: (n: string) => tools.find((t) => t.name === n)
+  } as unknown as Registry
+
+  const payload = {
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            { index: 0, id: 'c1', type: 'function', function: { name: 'task', arguments: '{"member":"a","task":"x"}' } },
+            { index: 1, id: 'c2', type: 'function', function: { name: 'task', arguments: '{"member":"b","task":"y"}' } }
+          ]
+        },
+        finish_reason: 'tool_calls'
+      }
+    ]
+  }
+  const encoder = new TextEncoder()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`))
+          c.close()
+        }
+      }),
+      { status: 200 }
+    )) as typeof fetch
+
+  const persisted: Array<Record<string, unknown>> = []
+  try {
+    await runAgentTurn(loopDeps({ registry, maxRounds: 1, persist: (m) => persisted.push(m) }), {
+      sessionId: 's1',
+      workspace: 'w',
+      model: 'm',
+      history: [],
+      userMessage: 'hi',
+      emit: () => {}
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+  assert.equal(maxActive, 2, '两个 task 子代理应并发执行')
+  assert.equal(persisted.filter((m) => m.role === 'tool').length, 2)
+})

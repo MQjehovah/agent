@@ -383,7 +383,7 @@ RetrievalTool (knowledge_search)
 
 ```
 MCPManager (mcps/manager.py)
-├─ 加载 config/mcp_servers.json
+├─ 加载 config/mcps/<name>/server.json
 ├─ 每个服务器: MCPServerConnection
 │   ├─ 启动子进程 / stdio 通信
 │   ├─ 健康检查 + 自动重连
@@ -709,7 +709,7 @@ config/
 ├── PROMPT.md            # 根 agent 系统提示词
 ├── agents/              # 子 agent / 团队定义
 ├── skills/              # 全局技能
-├── mcp_servers.json     # MCP 服务器配置
+├── mcps/                # MCP 服务器配置（每个 <name>/server.json）
 ├── schedules.json       # 定时任务
 ├── sandbox.json         # 沙箱配置（可选）
 ├── rbac.json            # RBAC 角色配置（可选）

@@ -19,27 +19,27 @@ const MAX_GREP_FILE_SIZE = 1024 * 1024
 /** 目录遍历时跳过的目录名：依赖目录与版本库内部对象对 LLM 无价值且体量巨大 */
 const SKIP_DIRS = new Set(['node_modules', '.git'])
 
-function ok(output: string): ToolResult {
+export function ok(output: string): ToolResult {
   return { ok: true, output }
 }
 
-function fail(output: string): ToolResult {
+export function fail(output: string): ToolResult {
   return { ok: false, output }
 }
 
 /** 统一把未知异常转成可读字符串 */
-function errMessage(e: unknown): string {
+export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
 /** 超长输出截断，附原始长度提示 */
-function truncate(text: string, max = MAX_OUTPUT): string {
+export function truncate(text: string, max = MAX_OUTPUT): string {
   if (text.length <= max) return text
   return text.slice(0, max) + `\n…[输出过长已截断，原始长度 ${text.length} 字符]`
 }
 
 /** 参数取非空字符串，非法返回 null（由各工具自行 fail） */
-function strArg(args: Record<string, unknown>, key: string): string | null {
+export function strArg(args: Record<string, unknown>, key: string): string | null {
   const v = args[key]
   return typeof v === 'string' && v.length > 0 ? v : null
 }
@@ -52,7 +52,7 @@ function strArg(args: Record<string, unknown>, key: string): string | null {
  * 3) 与「真实化的 workspace」做 isWithin 比较（workspace 本身也可能是符号链接路径）。
  * 通过校验后返回可用于 fs 操作的真实绝对路径；任何越界抛 PathEscapeError。
  */
-async function safeRealWithin(workspace: string, target: string): Promise<string> {
+export async function safeRealWithin(workspace: string, target: string): Promise<string> {
   const abs = resolveWithin(workspace, target)
   const realWs = await realpath(workspace)
   let probe = abs
@@ -81,7 +81,7 @@ async function safeRealWithin(workspace: string, target: string): Promise<string
  * 不进入 SKIP_DIRS，不跟随符号链接目录/文件（Dirent 的 isDirectory/isFile 对链接均为 false），
  * 从源头保证 glob/grep 不会借符号链接逃逸。
  */
-async function walkFiles(
+export async function walkFiles(
   root: string,
   visit: (rel: string, abs: string) => Promise<void> | void
 ): Promise<void> {
@@ -107,7 +107,7 @@ async function walkFiles(
 }
 
 /** 通配符转正则：** 跨目录段，* 与 ? 不跨 /；其余字符按字面量处理 */
-function globToRegex(pattern: string): RegExp {
+export function globToRegex(pattern: string): RegExp {
   let re = ''
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i]
@@ -133,7 +133,7 @@ function globToRegex(pattern: string): RegExp {
 }
 
 /** glob 匹配：无 / 的模式退化为对文件名匹配（如 *.ts 命中任意深度） */
-function globMatch(re: RegExp, pattern: string, rel: string): boolean {
+export function globMatch(re: RegExp, pattern: string, rel: string): boolean {
   return re.test(rel) || (!pattern.includes('/') && re.test(basename(rel)))
 }
 

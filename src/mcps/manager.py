@@ -17,7 +17,7 @@ logger = logging.getLogger("agent")
 McpRisk = Literal["read", "write", "destructive", "unknown"]
 MCP_RISK_LEVELS: tuple[str, ...] = ("read", "write", "destructive", "unknown")
 
-# MCP 连接配置（默认值；可在 config/mcp_servers.json 中按 server 覆盖）
+# MCP 连接配置（默认值；可在 config/mcps/<name>/server.json 中按 server 覆盖）
 MCP_CONNECT_TIMEOUT = 30  # 连接超时（秒）
 MCP_TOOL_TIMEOUT = 60  # 工具调用超时（秒）
 MCP_RECONNECT_DELAY = 5  # 重连延迟（秒）
@@ -525,14 +525,14 @@ class MCPManager:
         self._rebuild_tool_defs()
 
     def load_config(self) -> list[dict[str, Any]]:
-        """加载MCP配置文件"""
-        if not self.config_path or not os.path.exists(self.config_path):
-            logger.warning(f"MCP配置文件不存在: {self.config_path}")
+        """加载 MCP 配置目录（<config_path>/<name>/server.json）。"""
+        if not self.config_path or not os.path.isdir(self.config_path):
+            logger.warning(f"MCP 配置目录不存在: {self.config_path}")
             return []
 
-        with open(self.config_path, encoding="utf-8") as f:
-            configs = json.load(f)
+        from .config import load_mcp_dir
 
+        configs = load_mcp_dir(self.config_path)
         enabled = [c for c in configs if c.get("enabled", True)]
         self._config_data = configs
         logger.info(f"发现 {len(enabled)} 个启用的MCP服务")

@@ -1,5 +1,5 @@
 /**
- * 本机（stdio）连接器环境变量读写：编辑 localagent/mcp.json 单条 server 的 env。
+ * 本机（stdio）连接器环境变量读写：编辑 localagent/mcps/<name>/connection.json 的 env。
  *
  * 与平台密钥（market 侧、云端注入）分工：这里只影响 dashboard 本机拉起连接器时
  * 注入子进程的变量，例如把包内 ${DINGTALK_APP_SECRET} 占位符覆写成用户自己的值。
@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join } from 'node:path'
 import { assertSafeCapabilityName } from './installer'
 
-/** 内核托管的占位符值（mcp.json 里按字面量保存，连接时由主进程解析注入） */
+/** 内核托管的占位符值（connection.json 里按字面量保存，连接时由主进程解析注入） */
 const AUTO_ENV_VALUES = ['${MARKET_URL}', '${MARKET_TOKEN}']
 
 /** 环境变量键名：字母/下划线开头，后接字母/数字/下划线（与常见 POSIX 变量一致） */
@@ -59,8 +59,10 @@ export interface ConnectorEnvSnapshot {
   autoVars: string[]
 }
 
-function mcpConfigFilePath(dataDir: string): string {
-  return join(dataDir, 'localagent', 'mcp.json')
+/** 单个连接器目录里的 connection.json（localagent/mcps/<name>/connection.json） */
+function mcpConnectionFilePath(dataDir: string, name: string): string {
+  assertSafeCapabilityName(name)
+  return join(dataDir, 'localagent', 'mcps', name, 'connection.json')
 }
 
 /** env 只接受普通对象；非字符串值转字符串展示（写回时会被收敛为字符串） */
@@ -74,10 +76,10 @@ function normalizeEnv(value: unknown): Record<string, string> {
   return out
 }
 
-/** 读 mcp.json 顶层；缺失按空配置，损坏/形状非法抛中文错（不改动原文件） */
-function readMcpConfig(dataDir: string): { servers: Array<Record<string, unknown>> } {
-  const file = mcpConfigFilePath(dataDir)
-  if (!existsSync(file)) return { servers: [] }
+/** 读某连接器目录的 connection.json；缺失抛中文错，损坏/形状非法抛错（不改动原文件） */
+function readMcpConnection(dataDir: string, name: string): Record<string, unknown> {
+  const file = mcpConnectionFilePath(dataDir, name)
+  if (!existsSync(file)) throw new Error(`未找到连接器 ${name}（可能已被卸载）`)
   let parsed: unknown
   try {
     parsed = JSON.parse(readFileSync(file, 'utf8'))
@@ -87,19 +89,15 @@ function readMcpConfig(dataDir: string): { servers: Array<Record<string, unknown
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('本地 MCP 配置无效，未做改动: 顶层必须是对象')
   }
-  const servers = (parsed as { servers?: unknown }).servers
-  if (!Array.isArray(servers)) {
-    throw new Error('本地 MCP 配置无效，未做改动: servers 必须是数组')
-  }
-  return { servers: servers as Array<Record<string, unknown>> }
+  return parsed as Record<string, unknown>
 }
 
-/** 原子写回（同目录临时文件 + rename），避免半截 JSON */
-function writeMcpConfig(dataDir: string, config: { servers: Array<Record<string, unknown>> }): void {
-  const file = mcpConfigFilePath(dataDir)
+/** 原子写回单个连接器的 connection.json（同目录临时文件 + rename） */
+function writeMcpConnection(dataDir: string, name: string, conn: Record<string, unknown>): void {
+  const file = mcpConnectionFilePath(dataDir, name)
   mkdirSync(dirname(file), { recursive: true })
   const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+  writeFileSync(tmp, `${JSON.stringify(conn, null, 2)}\n`, 'utf8')
   try {
     renameSync(tmp, file)
   } catch (err) {
@@ -110,11 +108,8 @@ function writeMcpConfig(dataDir: string, config: { servers: Array<Record<string,
 
 /** 读某连接器当前 env 快照；连接器不存在抛中文错 */
 export function loadConnectorEnv(dataDir: string, name: string): ConnectorEnvSnapshot {
-  assertSafeCapabilityName(name)
-  const { servers } = readMcpConfig(dataDir)
-  const server = servers.find((item) => item?.name === name)
-  if (!server) throw new Error(`未找到连接器 ${name}（可能已被卸载）`)
-  const env = normalizeEnv(server.env)
+  const conn = readMcpConnection(dataDir, name)
+  const env = normalizeEnv(conn.env)
   return { env, autoVars: Object.keys(env).filter((key) => isAutoEnvValue(env[key])) }
 }
 
@@ -124,12 +119,9 @@ export function saveConnectorEnv(
   name: string,
   edited: Record<string, string>
 ): void {
-  assertSafeCapabilityName(name)
-  const config = readMcpConfig(dataDir)
-  const server = config.servers.find((item) => item?.name === name)
-  if (!server) throw new Error(`未找到连接器 ${name}（可能已被卸载）`)
-  const current = normalizeEnv(server.env)
+  const conn = readMcpConnection(dataDir, name)
+  const current = normalizeEnv(conn.env)
   const autoVars = Object.keys(current).filter((key) => isAutoEnvValue(current[key]))
-  server.env = mergeConnectorEnv(current, edited, autoVars)
-  writeMcpConfig(dataDir, config)
+  conn.env = mergeConnectorEnv(current, edited, autoVars)
+  writeMcpConnection(dataDir, name, conn)
 }

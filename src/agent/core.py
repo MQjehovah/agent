@@ -1,6 +1,5 @@
 import asyncio
 import contextvars
-import json
 import logging
 import os
 import platform
@@ -644,7 +643,7 @@ class Agent:
             await self._connect_mcp_servers(subagent=not use_platform, platform_config=platform_config)
             return
 
-        # 主 agent：读 config_dir/mcp_servers.json + 平台 MCP 轨(市场能力, 可配可关)
+        # 主 agent：读 config_dir/mcps/<name>/server.json + 平台 MCP 轨(市场能力, 可配可关)
         self.mcp_configs = self._filter_mcp_configs(self._read_mcp_config_file())
         if self.mcp_configs or use_platform:
             await self._connect_mcp_servers(subagent=False, platform_config=platform_config)
@@ -670,15 +669,13 @@ class Agent:
         return kept
 
     def _read_mcp_config_file(self) -> list:
-        """读取 config_dir/mcp_servers.json（主子代理共用）"""
-        mcp_file = os.path.join(self.config_dir, "mcp_servers.json")
-        if not os.path.exists(mcp_file):
-            return []
+        """读取 config_dir/mcps/<name>/server.json（主子代理共用）"""
         try:
-            with open(mcp_file, encoding="utf-8") as f:
-                return json.load(f)
+            from mcps import load_mcp_config
+
+            return load_mcp_config(self.config_dir)
         except Exception as e:
-            logger.error(f"Failed to load mcp_servers.json: {e}")
+            logger.error(f"Failed to load MCP config: {e}")
             return []
 
     async def _connect_mcp_servers(self, subagent: bool = False, platform_config=None):
@@ -690,8 +687,8 @@ class Agent:
           - ``both``: 本地 + 平台(旧行为)。
           - ``local``: 仅本地(不挂平台轨)。
         """
-        from mcps import MCPManager
-        self.mcp = MCPManager("")
+        from mcps import MCPManager, mcps_dir
+        self.mcp = MCPManager(mcps_dir(self.config_dir))
         # 内置/技能工具名先行登记, MCP 重名工具会被 manager 加 server 前缀(避免 LLM 400)
         self.mcp.set_reserved_names(self._non_mcp_tool_names())
 

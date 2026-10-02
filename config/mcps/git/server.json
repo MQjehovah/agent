@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "command": "python",
+  "args": [
+    "mcp_server/src/mcp_git.py"
+  ],
+  "env": {
+    "GIT_MCP_ROOTS": "",
+    "GIT_MCP_ALLOW_WRITE": "false"
+  },
+  "description": "受限 Git 仓库服务（默认禁用，只读为主）- status/log/diff/show/blame/branches 与写操作 add/commit/checkout/branch；启用需将 enabled 改为 true 并设置 GIT_MCP_ROOTS 为允许的仓库根目录绝对路径(逗号分隔，空=不可用)；写操作另需 GIT_MCP_ALLOW_WRITE=true，风险由操作人承担"
+}

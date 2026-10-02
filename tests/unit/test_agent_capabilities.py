@@ -98,11 +98,12 @@ def test_platform_mcp_counts_as_non_empty():
 
 
 def test_subagent_pool_mcp_resolution(tmp_path):
-    import json
     base = tmp_path / "agents"
     base.mkdir()
-    (tmp_path / "mcp_servers.json").write_text(
-        json.dumps([{"name": "gitlab"}, {"name": "jira"}]), encoding="utf-8")
+    for nm in ("gitlab", "jira"):
+        d = tmp_path / "mcps" / nm
+        d.mkdir(parents=True)
+        (d / "server.json").write_text("{}", encoding="utf-8")
     member_dir = base / "m" / "agents" / "M"
     member_dir.mkdir(parents=True)
 
@@ -110,8 +111,10 @@ def test_subagent_pool_mcp_resolution(tmp_path):
     mgr = SubagentManager(str(base))
     caps = Capabilities(mcp_servers=["gitlab"])
     assert [c["name"] for c in mgr._pool_mcp_for(caps, str(member_dir))] == ["gitlab"]
-    # 自带 mcp_servers.json 优先
-    (member_dir / "mcp_servers.json").write_text("[]", encoding="utf-8")
+    # 自带 mcps/ 优先
+    own = member_dir / "mcps" / "x"
+    own.mkdir(parents=True)
+    (own / "server.json").write_text("{}", encoding="utf-8")
     assert mgr._pool_mcp_for(caps, str(member_dir)) is None
     # 未指定 mcpServers → 不注入
     assert mgr._pool_mcp_for(Capabilities(), str(member_dir)) is None

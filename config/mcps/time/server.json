@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "command": "python",
+  "args": [
+    "mcp_server/src/mcp_time.py"
+  ],
+  "env": {},
+  "description": "时区时间服务（纯离线）- 当前时间/时区换算/时区名查询"
+}

@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "command": "python",
+  "args": [
+    "mcp_server/src/mcp_fetch.py"
+  ],
+  "env": {
+    "MCP_FETCH_TIMEOUT": "20",
+    "MCP_FETCH_MAX_BYTES": "2097152",
+    "MCP_FETCH_ALLOW_HOSTS": ""
+  },
+  "description": "网页抓取服务（只读+出网）- URL 转纯文本/Markdown 与 JSON 获取；私有/环回/链路本地/保留/CGNAT(100.64.0.0/10) 地址一律拒绝，内网指定主机需加入 MCP_FETCH_ALLOW_HOSTS 逗号白名单；不强制 robots.txt，企业部署建议用白名单限定目标"
+}

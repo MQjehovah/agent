@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "command": "python",
+  "args": [
+    "mcp_server/src/dingtalk.py"
+  ],
+  "env": {
+    "DINGTALK_APP_KEY": "ding3xmu1gbsy11jbks3",
+    "DINGTALK_AGENT_ID": "4389947271",
+    "DINGTALK_ROBOT_CODE": "ding3xmu1gbsy11jbks3"
+  },
+  "description": "钉钉消息推送；工单 ticket_id 场景禁止调用（评论失败不可降级钉钉）"
+}

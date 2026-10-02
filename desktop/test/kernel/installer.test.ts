@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { zipSync, strToU8 } from 'fflate'
@@ -19,22 +19,29 @@ function skillsDir(dataDir: string): string {
   return join(dataDir, 'localagent', 'skills')
 }
 
-function agentsDir(dataDir: string): string {
+function pluginsDir(dataDir: string): string {
   return join(dataDir, 'localagent', 'agents')
 }
 
+/** MCP 目录根(localagent/mcps)；断言「未写 MCP」时用它判存在性 */
 function mcpJsonPath(dataDir: string): string {
-  return join(dataDir, 'localagent', 'mcp.json')
+  return join(dataDir, 'localagent', 'mcps')
 }
 
+/** 读全部 mcps/<name>/connection.json 为数组 */
 function readMcpServers(dataDir: string): unknown[] {
-  return JSON.parse(readFileSync(mcpJsonPath(dataDir), 'utf8')).servers as unknown[]
+  const dir = mcpJsonPath(dataDir)
+  if (!existsSync(dir)) return []
+  return readdirSync(dir)
+    .filter((n) => existsSync(join(dir, n, 'connection.json')))
+    .map((n) => JSON.parse(readFileSync(join(dir, n, 'connection.json'), 'utf8')) as unknown)
 }
 
-/** 预置 mcp.json(自动建 localagent 目录),content 为原始字符串 */
-function writeMcpRaw(dataDir: string, content: string): void {
-  mkdirSync(join(dataDir, 'localagent'), { recursive: true })
-  writeFileSync(mcpJsonPath(dataDir), content)
+function readMcpConn(dataDir: string, name: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(mcpJsonPath(dataDir), name, 'connection.json'), 'utf8')) as Record<
+    string,
+    unknown
+  >
 }
 
 function readSkill(dataDir: string, name: string): string {
@@ -180,18 +187,9 @@ test('installer 恶意能力包(含 zip-slip)整体折叠为 ok:false 且不外�
 
 // ---------- mcp ----------
 
-test('installer mcp：connection.json 可本地 spawn 时写 command/args 条目，覆盖同名并保留其它', async (t) => {
+test('installer mcp：connection.json 可本地 spawn 时写 mcps/<name>/connection.json', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'inst-mcp-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
-  writeMcpRaw(
-    dataDir,
-    JSON.stringify({
-      servers: [
-        { name: 'keep-me', command: 'npx', args: ['-y', 'some-server'] },
-        { name: 'demo-mcp', command: 'old', args: ['old-arg'] }
-      ]
-    })
-  )
   const artifact = makeZip({
     'mcp.json': '{"name":"demo-mcp"}',
     'connection.json': JSON.stringify({ transport: 'stdio', command: 'python', args: ['-m', 'demo_mcp'] }),
@@ -200,14 +198,11 @@ test('installer mcp：connection.json 可本地 spawn 时写 command/args 条目
   })
   const res = await install(dataDir, 'mcp', 'demo-mcp', artifact, { version: '2.0.0' })
   assert.equal(res.ok, true)
-  const servers = readMcpServers(dataDir) as Array<Record<string, unknown>>
-  assert.equal(servers.length, 2, '同名条目应覆盖而非追加')
-  const keep = servers.find((s) => s.name === 'keep-me')
-  assert.deepEqual(keep, { name: 'keep-me', command: 'npx', args: ['-y', 'some-server'] })
-  const installed = servers.find((s) => s.name === 'demo-mcp')
-  assert.equal(installed?.command, 'python')
-  assert.deepEqual(installed?.args, ['-m', 'demo_mcp'])
-  assert.equal(installed?.source, 'capability: demo-mcp@2.0.0')
+  const item = readMcpConn(dataDir, 'demo-mcp')
+  assert.equal(item.command, 'python')
+  assert.deepEqual(item.args, ['-m', 'demo_mcp'])
+  assert.equal(item.source, 'capability: demo-mcp@2.0.0')
+  assert.equal(readMcpServers(dataDir).length, 1)
 })
 
 test('installer mcp：gateway 连接落 kind:market-gateway 条目（运行时由平台网关解析 url/headers）', async (t) => {
@@ -325,18 +320,13 @@ test('installer mcp：connection.json 非对象或 transport 不受支持时报�
   assert.ok(badTransport.output.includes('transport'), badTransport.output)
 })
 
-test('installer mcp：现有 mcp.json 损坏时报错且不改动原文件', async (t) => {
+test('installer mcp：重装同名覆盖整目录 connection.json', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'inst-mcp7-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
-  writeMcpRaw(dataDir, '{broken json')
-  const res = await install(
-    dataDir,
-    'mcp',
-    'x',
-    makeZip({ 'connection.json': JSON.stringify({ transport: 'stdio', command: 'python', args: [] }) })
-  )
-  assert.equal(res.ok, false)
-  assert.equal(readFileSync(mcpJsonPath(dataDir), 'utf8'), '{broken json')
+  await install(dataDir, 'mcp', 'm', makeZip({ 'connection.json': JSON.stringify({ transport: 'stdio', command: 'a', args: [] }) }))
+  await install(dataDir, 'mcp', 'm', makeZip({ 'connection.json': JSON.stringify({ transport: 'stdio', command: 'b', args: [] }) }))
+  assert.equal(readMcpConn(dataDir, 'm').command, 'b')
+  assert.equal(readMcpServers(dataDir).length, 1)
 })
 
 test('installer mcp：无既有 mcp.json 时新建', async (t) => {
@@ -385,7 +375,7 @@ test('installer mcp platform 模式：输出标准占位符条目(transport:http
     headers: { Authorization: 'Bearer ${MARKET_TOKEN}' }
   })
   assert.ok(
-    !existsSync(join(dataDir, 'localagent', 'mcp-servers', 'plat-stdio')),
+    !existsSync(join(dataDir, 'localagent', 'mcps', 'plat-stdio', 'server.py')),
     'platform 模式不应解压实现文件'
   )
   const unknownTransport = makeZip({
@@ -458,8 +448,8 @@ test('installer mcp local 模式：解压 implementation/** 并改写 args 为�
   const res = await install(dataDir, 'mcp', 'time-local', artifact, { mode: 'local' })
   assert.equal(res.ok, true, res.output)
   const item = (readMcpServers(dataDir) as Array<Record<string, unknown>>).find((s) => s.name === 'time-local')
-  const dir = join(dataDir, 'localagent', 'mcp-servers', 'time-local')
-  assert.ok(existsSync(join(dir, 'server.py')), 'implementation 文件应解压到 mcp-servers/<name>')
+  const dir = join(dataDir, 'localagent', 'mcps', 'time-local')
+  assert.ok(existsSync(join(dir, 'server.py')), 'implementation 文件应解压到 mcps/<name>')
   assert.ok(existsSync(join(dir, 'lib', 'helper.py')), '嵌套实现文件保留相对目录结构')
   const args = item?.args as string[]
   assert.ok(isAbsolute(args[0]), `args 应改写为绝对路径: ${args[0]}`)
@@ -507,7 +497,7 @@ test('installer mcp local 模式：http 无 headers 写 url 条目', async (t) =
   assert.equal(item?.url, 'http://10.0.0.5:9000/stream')
 })
 
-test('uninstall mcp：同时清理本地安装解压目录 mcp-servers/<name>', async (t) => {
+test('uninstall mcp：整目录清理(含本地实现) mcps/<name>', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'un-mcp-local-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
   const artifact = makeZip({
@@ -519,7 +509,7 @@ test('uninstall mcp：同时清理本地安装解压目录 mcp-servers/<name>', 
     'implementation/server.py': 'print(1)'
   })
   await install(dataDir, 'mcp', 'time-local', artifact, { mode: 'local' })
-  const dir = join(dataDir, 'localagent', 'mcp-servers', 'time-local')
+  const dir = join(dataDir, 'localagent', 'mcps', 'time-local')
   assert.ok(existsSync(dir))
   const res = await uninstallCapability({ dataDir, type: 'mcp', name: 'time-local' })
   assert.equal(res.ok, true)
@@ -528,32 +518,73 @@ test('uninstall mcp：同时清理本地安装解压目录 mcp-servers/<name>', 
   assert.equal(servers.find((s) => s.name === 'time-local'), undefined)
 })
 
-// ---------- agent ----------
+// ---------- agent(专家插件) ----------
 
-test('installer agent：agent.json + PROMPT.md(+TEAM.md) 落到本地人设目录', async (t) => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'inst-agent-'))
+test('installer agent：plugin.json + skills/agents/mcps 整包落到专家插件目录', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'inst-plugin-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
+  const manifest = '{"name":"customer-bot","description":"客服","version":"0.2.0"}'
+  const agentMd = '---\ndescription: 客服\n---\n你是客服助手'
   const artifact = makeZip({
-    'agent.json': '{"name":"customer-bot","description":"客服"}',
-    'PROMPT.md': '# 你是客服助手',
+    'plugin.json': manifest,
+    'agents/customer-bot.md': agentMd,
+    'skills/qa/SKILL.md': '---\nname: qa\ndescription: 问答\n---\n正文',
+    'mcps/demo/connection.json': '{"command":"npx","args":["-y","demo"]}',
     'TEAM.md': '# 团队'
   })
   const res = await install(dataDir, 'agent', 'customer-bot', artifact, { version: '0.2.0' })
-  assert.equal(res.ok, true)
-  const dir = join(agentsDir(dataDir), 'customer-bot')
-  assert.equal(readFileSync(join(dir, 'agent.json'), 'utf8'), '{"name":"customer-bot","description":"客服"}')
-  assert.equal(readFileSync(join(dir, 'PROMPT.md'), 'utf8'), '# 你是客服助手')
-  assert.equal(readFileSync(join(dir, 'TEAM.md'), 'utf8'), '# 团队')
+  assert.equal(res.ok, true, res.output)
+  const dir = join(pluginsDir(dataDir), 'customer-bot')
+  assert.equal(readFileSync(join(dir, 'plugin.json'), 'utf8'), manifest)
+  assert.equal(readFileSync(join(dir, 'agents', 'customer-bot.md'), 'utf8'), agentMd)
+  assert.ok(existsSync(join(dir, 'skills', 'qa', 'SKILL.md')), '自带技能应落插件目录')
+  assert.ok(existsSync(join(dir, 'mcps', 'demo', 'connection.json')), '自带 MCP 落专家目录 mcps/')
+  assert.ok(existsSync(join(dir, 'TEAM.md')), '团队文件落插件目录')
   assert.ok(res.output.includes('customer-bot'), res.output)
 })
 
-test('installer agent：包缺少 PROMPT.md 时报错且不落目录', async (t) => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'inst-agent2-'))
+test('installer agent：包缺少 plugin.json 时报错且不落目录', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'inst-plugin2-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
-  const res = await install(dataDir, 'agent', 'customer-bot', makeZip({ 'agent.json': '{}' }))
+  const res = await install(dataDir, 'agent', 'customer-bot', makeZip({ 'PROMPT.md': '# p' }))
   assert.equal(res.ok, false)
-  assert.ok(res.output.includes('PROMPT.md'), res.output)
-  assert.ok(!existsSync(join(agentsDir(dataDir), 'customer-bot')))
+  assert.ok(res.output.includes('plugin.json'), res.output)
+  assert.ok(!existsSync(join(pluginsDir(dataDir), 'customer-bot')))
+})
+
+test('installer agent：plugin.json 非对象/解析失败时报错', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'inst-plugin3-'))
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }))
+  const notObject = await install(dataDir, 'agent', 'x', makeZip({ 'plugin.json': '[]' }))
+  assert.equal(notObject.ok, false)
+  assert.ok(notObject.output.includes('JSON 对象'), notObject.output)
+  const badJson = await install(dataDir, 'agent', 'y', makeZip({ 'plugin.json': '{broken' }))
+  assert.equal(badJson.ok, false)
+  assert.ok(badJson.output.includes('解析失败'), badJson.output)
+})
+
+test('installer agent：白名单外的顶层条目被拒绝', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'inst-plugin4-'))
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }))
+  const res = await install(dataDir, 'agent', 'x', makeZip({ 'plugin.json': '{}', 'evil/run.py': 'x' }))
+  assert.equal(res.ok, false)
+  assert.ok(res.output.includes('不允许的条目'), res.output)
+  assert.ok(!existsSync(join(pluginsDir(dataDir), 'x')))
+})
+
+test('installer agent：自带技能缺 front-matter 时补 name/description', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'inst-plugin5-'))
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }))
+  const res = await install(
+    dataDir,
+    'agent',
+    'p',
+    makeZip({ 'plugin.json': '{"name":"p","description":"描述"}', 'skills/qa/SKILL.md': '# 无 front matter' })
+  )
+  assert.equal(res.ok, true, res.output)
+  const text = readFileSync(join(pluginsDir(dataDir), 'p', 'skills', 'qa', 'SKILL.md'), 'utf8')
+  assert.ok(text.startsWith('---\n'), text)
+  assert.ok(text.includes('name: qa'), text)
 })
 
 // ---------- tool ----------
@@ -601,44 +632,45 @@ test('uninstall skill：未安装时幂等返回 ok:true', async (t) => {
   assert.ok(res.output.includes('未发现'), res.output)
 })
 
-test('uninstall mcp：仅移除同名条目并保留其它', async (t) => {
+test('uninstall mcp：删除该 MCP 目录并保留其它', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'un-mcp-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
-  writeMcpRaw(
-    dataDir,
-    JSON.stringify({
-      servers: [
-        { name: 'keep', command: 'npx' },
-        { name: 'demo-mcp', kind: 'market-remote', source: 'capability: demo-mcp@1.0.0' }
-      ]
-    })
-  )
+  await install(dataDir, 'mcp', 'keep', makeZip({ 'connection.json': JSON.stringify({ transport: 'stdio', command: 'npx' }) }))
+  await install(dataDir, 'mcp', 'demo-mcp', makeZip({ 'connection.json': JSON.stringify({ transport: 'stdio', command: 'npx' }) }))
   const res = await uninstallCapability({ dataDir, type: 'mcp', name: 'demo-mcp' })
   assert.equal(res.ok, true)
+  assert.ok(!existsSync(join(mcpJsonPath(dataDir), 'demo-mcp')))
   const servers = readMcpServers(dataDir) as Array<Record<string, unknown>>
   assert.equal(servers.length, 1)
   assert.equal(servers[0].name, 'keep')
 })
 
-test('uninstall mcp：无对应条目时配置保持不变', async (t) => {
+test('uninstall mcp：未安装时幂等返回 ok:true', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'un-mcp2-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
-  const original = JSON.stringify({ servers: [{ name: 'keep', command: 'npx' }] })
-  writeMcpRaw(dataDir, original)
   const res = await uninstallCapability({ dataDir, type: 'mcp', name: 'ghost' })
   assert.equal(res.ok, true)
   assert.ok(res.output.includes('未发现'), res.output)
-  assert.equal(readFileSync(mcpJsonPath(dataDir), 'utf8'), original)
 })
 
-test('uninstall agent：删除本地人设目录', async (t) => {
+test('uninstall agent：删除专家插件目录(含自带 skills/mcp)', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'un-agent-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
-  await install(dataDir, 'agent', 'customer-bot', makeZip({ 'agent.json': '{}', 'PROMPT.md': '# p' }))
-  assert.ok(existsSync(join(agentsDir(dataDir), 'customer-bot')))
+  await install(
+    dataDir,
+    'agent',
+    'customer-bot',
+    makeZip({
+      'plugin.json': '{}',
+      'agents/customer-bot.md': '# p',
+      'skills/qa/SKILL.md': '---\nname: qa\ndescription: d\n---\nbody'
+    })
+  )
+  const dir = join(pluginsDir(dataDir), 'customer-bot')
+  assert.ok(existsSync(dir))
   const res = await uninstallCapability({ dataDir, type: 'agent', name: 'customer-bot' })
   assert.equal(res.ok, true)
-  assert.ok(!existsSync(join(agentsDir(dataDir), 'customer-bot')))
+  assert.ok(!existsSync(dir), '卸载专家应整目录删除')
 })
 
 test('uninstall tool：返回 ok:false 提示远程摘除', async (t) => {
@@ -767,21 +799,11 @@ test('removeDirWithRetry：ENOTFOUND/ENOENT 视为成功且不重试', async () 
   assert.equal(enoentCalls, 1)
 })
 
-test('uninstall mcp：目录删除失败仍移除配置条目并附中文提示', async (t) => {
+test('uninstall mcp：目录删除失败时附中文提示且不抛错', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'un-mcp-busy-'))
   t.after(() => rmSync(dataDir, { recursive: true, force: true }))
-  writeMcpRaw(
-    dataDir,
-    JSON.stringify({
-      servers: [
-        { name: 'busy-mcp', command: 'npx', env: { A: '1' } },
-        { name: 'keep-mcp', command: 'npx' }
-      ]
-    })
-  )
-  const localDir = join(dataDir, 'localagent', 'mcp-servers', 'busy-mcp')
-  mkdirSync(localDir, { recursive: true })
-  writeFileSync(join(localDir, 'server.py'), 'print(1)')
+  await install(dataDir, 'mcp', 'busy-mcp', makeZip({ 'connection.json': JSON.stringify({ transport: 'stdio', command: 'npx' }) }))
+  await install(dataDir, 'mcp', 'keep-mcp', makeZip({ 'connection.json': JSON.stringify({ transport: 'stdio', command: 'npx' }) }))
 
   const res = await uninstallCapability({
     dataDir,
@@ -790,12 +812,11 @@ test('uninstall mcp：目录删除失败仍移除配置条目并附中文提示'
     removeDirImpl: async () => ({ ok: false, error: 'EPERM: simulated lock' })
   })
   assert.equal(res.ok, true)
-  assert.ok(res.output.includes('已移除 MCP 配置条目 busy-mcp'), res.output)
   assert.ok(res.output.includes('本地文件被占用未能删除'), res.output)
   assert.ok(res.output.includes('重启 dashboard 后可重试/手动清理'), res.output)
-  const servers = readMcpServers(dataDir) as Array<Record<string, unknown>>
-  assert.ok(!servers.some((s) => s.name === 'busy-mcp'))
-  assert.ok(servers.some((s) => s.name === 'keep-mcp'), '其它条目应保留')
+  // 删除失败时目录仍在；其它 MCP 不受影响
+  assert.ok(existsSync(join(mcpJsonPath(dataDir), 'busy-mcp')))
+  assert.ok(existsSync(join(mcpJsonPath(dataDir), 'keep-mcp', 'connection.json')))
 })
 
 // ---------- mcp: 标准 server.json ----------

@@ -1,8 +1,9 @@
 /**
  * 本地能力安装器:把 market 下载的能力包安全地落到 GATEWAY_DATA_DIR/localagent 下。
  *   skill → localagent/skills/<name>/SKILL.md(缺 front-matter 则补 name/description)
- *   mcp   → 读包内 connection.json,写/更新 localagent/mcp.json(server 名 = 能力名,覆盖同名、保留其它)
- *   agent → agent.json + PROMPT.md(+TEAM.md) → localagent/agents/<name>/
+ *   mcp   → 读包内 connection.json/server.json,落 localagent/mcps/<name>/connection.json(+本地实现)
+ *   agent → 专家:整包解压到 localagent/agents/<name>/
+ *           (根 plugin.json + skills/<n>/SKILL.md + agents/<n>.md + mcps/<m>/connection.json + TEAM.md)
  *   tool  → 不落盘,走市场侧远程适配(见市场页说明)
  * 一切异常折叠为 {ok,output} 返回,不向外抛;zip 解包防 zip-slip。
  */
@@ -69,17 +70,34 @@ function skillsRoot(dataDir: string): string {
   return join(dataDir, 'localagent', 'skills')
 }
 
-function agentsRoot(dataDir: string): string {
+/** 专家目录(localagent/agents/<专家名>/xxx):自带 skills/agents/mcps,卸载=整目录删除 */
+function pluginsRoot(dataDir: string): string {
   return join(dataDir, 'localagent', 'agents')
 }
 
-function mcpConfigPath(dataDir: string): string {
-  return join(dataDir, 'localagent', 'mcp.json')
+/** 专家包允许的顶层条目:根清单/团队/人设 + 标准组件目录;其余一律拒绝(防未知注入) */
+const PLUGIN_TOP_FILES = new Set(['plugin.json', 'TEAM.md', 'README.md', 'PROMPT.md'])
+const PLUGIN_TOP_DIRS = new Set(['skills', 'agents', 'mcps', '.claude-plugin', 'commands', 'hooks'])
+
+/** 校验专家包条目在允许的白名单内(越界抛中文错,拒绝整包) */
+function assertPluginEntries(names: Iterable<string>): void {
+  for (const raw of names) {
+    const norm = raw.replace(/\\/g, '/')
+    if (norm.endsWith('/')) continue
+    const top = norm.split('/')[0]
+    if (PLUGIN_TOP_FILES.has(top) || PLUGIN_TOP_DIRS.has(top)) continue
+    throw new Error(`专家包含不允许的条目：${raw}`)
+  }
 }
 
-/** 本地安装的 MCP 实现文件解压目录(mcp-servers/<能力名>) */
-function mcpServersRoot(dataDir: string): string {
-  return join(dataDir, 'localagent', 'mcp-servers')
+/** MCP 目录根(localagent/mcps) */
+function mcpsRoot(dataDir: string): string {
+  return join(dataDir, 'localagent', 'mcps')
+}
+
+/** 单个 MCP 能力目录(localagent/mcps/<能力名>):connection.json + 本地实现文件,卸载=删目录 */
+function mcpDir(dataDir: string, name: string): string {
+  return join(mcpsRoot(dataDir), name)
 }
 
 // ---- 名称 / zip 路径安全 ----
@@ -420,7 +438,7 @@ function rewriteLocalScriptArg(dir: string, arg: string): string {
 /**
  * local 模式:按包内 connection.json 生成本地可直接拉起的条目。
  * - stdio:command 必填;args 引用包内实现(implementation/** 或包内相对脚本路径)时,
- *   解压到 localagent/mcp-servers/<name>/ 并把 args 改写为绝对路径,cwd 缺省指向解压目录;
+ *   解压到 localagent/mcps/<name>/ 并把 args 改写为绝对路径,cwd 缺省指向解压目录;
  *   env 原样写入(含 ${VAR} 占位符保留,本地安装不解析占位符)。
  * - http/streamable_http/sse:url 必填且无自定义 headers。
  * - gateway 或信息不足 → 抛「该能力包未提供本地实现，仅支持平台桥接」。
@@ -458,7 +476,7 @@ async function localMcpEntry(
       if (args.length > 0) item.args = args
       if (env) item.env = env
       if (needsPackageCode) {
-        const dir = join(mcpServersRoot(dataDir), base.name)
+        const dir = mcpDir(dataDir, base.name)
         await rm(dir, { recursive: true, force: true })
         await mkdir(dir, { recursive: true })
         await extractLocalPackageFiles(files, dir, args)
@@ -487,29 +505,6 @@ async function localMcpEntry(
     default:
       throw new Error(`connection.json 的 transport 不受支持: ${transport}`)
   }
-}
-
-/** 解析既有 mcp.json;缺失返回空配置,损坏抛中文错(不改动原文件) */
-async function loadMcpConfig(configPath: string): Promise<{ servers: unknown[] }> {
-  if (!existsSync(configPath)) return { servers: [] }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(await readFile(configPath, 'utf8'))
-  } catch (e) {
-    throw new Error(`本地 MCP 配置解析失败，未做改动: ${e instanceof Error ? e.message : String(e)}`)
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('本地 MCP 配置无效，未做改动: 顶层必须是对象')
-  }
-  const servers = (parsed as { servers?: unknown }).servers
-  if (!Array.isArray(servers)) throw new Error('本地 MCP 配置无效，未做改动: servers 必须是数组')
-  return parsed as { servers: unknown[] }
-}
-
-/** 合并写回:去掉与能力名同名的旧条目后追加新条目(覆盖同名、保留其它),JSON 2 空格缩进 */
-async function saveMcpConfig(configPath: string, servers: unknown[]): Promise<void> {
-  await mkdir(dirname(configPath), { recursive: true })
-  await writeFile(configPath, `${JSON.stringify({ servers }, null, 2)}\n`, 'utf8')
 }
 
 /**
@@ -583,32 +578,56 @@ async function installMcp(
       ...(item.cwd ? { cwd: item.cwd } : {})
     })
   }
-  const configPath = mcpConfigPath(dataDir)
-  const config = await loadMcpConfig(configPath)
-  const next = (config.servers as unknown[]).filter((s) => {
-    const nm = (s as { name?: unknown })?.name
-    return typeof nm !== 'string' || nm !== opts.name
-  })
-  next.push(item)
-  await saveMcpConfig(configPath, next)
+  // 每个 MCP 一个目录:mcps/<name>/connection.json(本地实现文件已在 localMcpEntry 解压到同目录)
+  const dir = mcpDir(dataDir, opts.name)
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'connection.json'), `${JSON.stringify(item, null, 2)}\n`, 'utf8')
   return item
 }
 
 // ---- agent ----
 
-async function installAgent(dataDir: string, opts: InstallCapabilityOptions): Promise<void> {
+/**
+ * 安装专家插件:整包安全解压到 plugins/<name>/,校验根 plugin.json + 顶层白名单条目。
+ * 包内 skills/agents/mcps/TEAM.md 原样落盘(加载见内核会话绑定);随专家目录,
+ * 卸载即整目录删除,不写全局 skills/ 与 mcps/。
+ */
+async function installPlugin(dataDir: string, opts: InstallCapabilityOptions): Promise<void> {
   assertSafeCapabilityName(opts.name)
   const files = openZip(opts.artifact)
-  const agentJson = files.get('agent.json')
-  const prompt = files.get('PROMPT.md')
-  if (!agentJson) throw new Error('智能体包缺少 agent.json')
-  if (!prompt) throw new Error('智能体包缺少 PROMPT.md')
-  const dir = join(agentsRoot(dataDir), opts.name)
-  await mkdir(dir, { recursive: true })
-  await writeFile(join(dir, 'agent.json'), agentJson)
-  await writeFile(join(dir, 'PROMPT.md'), prompt)
-  const team = files.get('TEAM.md')
-  if (team) await writeFile(join(dir, 'TEAM.md'), team)
+  const manifest = files.get('plugin.json')
+  if (!manifest) throw new Error('专家包缺少 plugin.json')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(Buffer.from(manifest).toString('utf8'))
+  } catch (e) {
+    throw new Error(`plugin.json 解析失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('plugin.json 顶层必须是 JSON 对象')
+  }
+  assertPluginEntries(files.keys())
+  await unzipSafe(opts.artifact, join(pluginsRoot(dataDir), opts.name))
+  await ensureBundledSkillFrontMatter(join(pluginsRoot(dataDir), opts.name), opts.name, opts.description)
+}
+
+/** 专家自带技能缺 front-matter 时补 name/description(与全局技能装法一致,保证加载器可见) */
+async function ensureBundledSkillFrontMatter(
+  dir: string,
+  pluginName: string,
+  fallbackDescription?: string
+): Promise<void> {
+  const skillsDir = join(dir, 'skills')
+  if (!existsSync(skillsDir)) return
+  for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const skillPath = join(skillsDir, entry.name, 'SKILL.md')
+    if (!existsSync(skillPath)) continue
+    const raw = await readFile(skillPath, 'utf8')
+    const description = fallbackDescription?.trim() || `专家 ${pluginName} 的技能`
+    const ensured = ensureSkillFrontMatter({ name: entry.name, description, content: raw })
+    if (ensured !== raw) await writeFile(skillPath, ensured, 'utf8')
+  }
 }
 
 // ---- 卸载 ----
@@ -667,29 +686,14 @@ async function uninstallMcp(
   name: string,
   removeDir: (dir: string) => Promise<RemoveDirResult> = removeDirWithRetry
 ): Promise<InstallResult> {
-  // 本地安装解压出的实现文件目录(存在才清理;删除失败不阻断条目卸载,只在输出里提示原因)
-  const localDir = join(mcpServersRoot(dataDir), name)
-  const hadLocalFiles = existsSync(localDir)
-  const removal: RemoveDirResult = hadLocalFiles ? await removeDir(localDir) : { ok: true }
-  const localSuffix = hadLocalFiles ? '（含本地安装文件）' : ''
+  // 整个 MCP 目录(connection.json + 本地实现文件)随卸载删除;删除失败不阻断,只在输出里提示原因
+  const dir = mcpDir(dataDir, name)
+  if (!existsSync(dir)) return { ok: true, output: `未发现本地 MCP ${name}，无需卸载` }
+  const removal = await removeDir(dir)
   const busyWarn = removal.ok
     ? ''
-    : `（本地文件被占用未能删除：${localDir}，重启 dashboard 后可重试/手动清理）`
-  const configPath = mcpConfigPath(dataDir)
-  if (!existsSync(configPath)) {
-    return { ok: true, output: `本地 MCP 配置不存在，无需卸载${busyWarn}` }
-  }
-  const config = await loadMcpConfig(configPath)
-  const before = config.servers.length
-  const next = config.servers.filter((s) => {
-    const nm = (s as { name?: unknown })?.name
-    return typeof nm !== 'string' || nm !== name
-  })
-  if (next.length === before) {
-    return { ok: true, output: `本地 MCP 配置中未发现 ${name}${busyWarn}` }
-  }
-  await saveMcpConfig(configPath, next)
-  return { ok: true, output: `已移除 MCP 配置条目 ${name}${localSuffix}${busyWarn}` }
+    : `（本地文件被占用未能删除：${dir}，重启 dashboard 后可重试/手动清理）`
+  return { ok: true, output: `已卸载 MCP ${name}${busyWarn}` }
 }
 
 // ---- 入口 ----
@@ -765,8 +769,13 @@ export async function installCapability(opts: InstallCapabilityOptions): Promise
           : { ok: true, output: `MCP ${name}@${version} 已写入本地 MCP 配置` }
       }
       case 'agent': {
-        await installAgent(dataDir, opts)
-        return { ok: true, output: `智能体 ${name}@${version} 已安装为本地人设` }
+        await installPlugin(dataDir, opts)
+        return {
+          ok: true,
+          output:
+            `专家 ${name}@${version} 已安装为本地插件（自带 skills/agents/mcps 落在专家目录，` +
+            '不写全局；卸载即整目录删除）'
+        }
       }
       case 'tool':
         return { ok: false, output: 'tool 类走远程适配，见市场页说明（本地不落盘）' }
@@ -793,10 +802,10 @@ export async function uninstallCapability(opts: UninstallCapabilityOptions): Pro
         return { ok: true, output: `已卸载技能 ${name}` }
       }
       case 'agent': {
-        const dir = join(agentsRoot(dataDir), name)
-        if (!existsSync(dir)) return { ok: true, output: `未发现本地智能体 ${name}，无需卸载` }
+        const dir = join(pluginsRoot(dataDir), name)
+        if (!existsSync(dir)) return { ok: true, output: `未发现本地专家 ${name}，无需卸载` }
         await rm(dir, { recursive: true, force: true })
-        return { ok: true, output: `已卸载智能体 ${name}` }
+        return { ok: true, output: `已卸载专家 ${name}（含自带 skills/agents/mcps）` }
       }
       case 'mcp':
         return await uninstallMcp(dataDir, name, opts.removeDirImpl)

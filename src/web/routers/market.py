@@ -12,9 +12,7 @@
 管理端本地 MCP 配置读写全局 `config/mcp_servers.json`(白名单字段), 写后 reload。
 """
 
-import json
 import logging
-import os
 from typing import Any
 
 import httpx
@@ -486,27 +484,22 @@ def build_market_router(server) -> APIRouter:
             return None, JSONResponse({"error": "Forbidden"}, status_code=403)
         return u, None
 
-    def _local_mcp_path() -> str:
+    def _local_config_dir() -> str:
         agent = getattr(server, "agent", None)
         config_dir = str(getattr(agent, "config_dir", "") or "")
         if not config_dir:
             raise RuntimeError("Agent 未初始化")
-        return os.path.join(config_dir, "mcp_servers.json")
+        return config_dir
 
     def _read_local_mcp() -> list[dict]:
-        path = _local_mcp_path()
-        if not os.path.exists(path):
-            return []
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+        from mcps import load_mcp_config
+
+        return load_mcp_config(_local_config_dir())
 
     def _write_local_mcp(entries: list[dict]) -> None:
-        path = _local_mcp_path()
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(entries, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        from mcps import write_mcp_dir
+
+        write_mcp_dir(_local_config_dir(), entries)
 
     def _sanitize_local_mcp(entry: dict) -> dict:
         return {k: entry[k] for k in _LOCAL_MCP_FIELDS if k in entry}

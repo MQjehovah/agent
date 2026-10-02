@@ -21,7 +21,19 @@ declare global {
   interface LocalAgentEventPayload {
     /** permission_request 事件可能条件性省略，其余变体必有 */
     streamId?: string
-    type: 'token' | 'reasoning' | 'tool_call' | 'tool_result' | 'permission_request' | 'done' | 'error'
+    type:
+      | 'token'
+      | 'reasoning'
+      | 'tool_call'
+      | 'tool_result'
+      | 'permission_request'
+      | 'subagent_start'
+      | 'subagent_token'
+      | 'subagent_tool_call'
+      | 'subagent_tool_result'
+      | 'subagent_end'
+      | 'done'
+      | 'error'
     text?: string
     name?: string
     args?: string

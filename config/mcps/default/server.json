@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "command": "python",
+  "args": [
+    "mcp_server/src/default.py"
+  ],
+  "env": {
+    "SMTP_HOST": "smtp.qiye.aliyun.com",
+    "SMTP_PORT": "465",
+    "SMTP_USERNAME": "shuzizhongtai@xzrobot.com",
+    "SMTP_PASSWORD": "${SMTP_PASSWORD}",
+    "SMTP_FROM_NAME": "数字中台"
+  },
+  "description": "默认MCP服务 - 数据库查询和邮件发送"
+}

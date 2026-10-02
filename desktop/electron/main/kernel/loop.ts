@@ -282,24 +282,9 @@ export async function runAgentTurn(deps: LoopDeps, input: RunTurnInput): Promise
       if (outcome.finishReason === 'tool_calls' || toolCalls.length) {
         const toLocal = outcome.toLocal
         const localCalls = toolCalls.map(tc => ({ ...tc, name: toLocal.get(tc.name) ?? tc.name }))
-        const results: Array<{ call: ToolCall; localName: string; output: string; ok: boolean }> = []
-        let aborted = false
-        for (const call of toolCalls) {
-          if (input.signal?.aborted) {
-            aborted = true
-            break
-          }
-          const localName = toLocal.get(call.name) ?? call.name
-          safeEmit({ type: 'tool_call', name: localName, args: call.arguments })
-          const result = await execToolCall(deps, input, call, toLocal)
-          if (input.signal?.aborted) {
-            // 执行期间被中止：结果不 emit/不落盘，与既有中止语义一致
-            aborted = true
-            break
-          }
-          safeEmit({ type: 'tool_result', name: localName, output: result.output, ok: result.ok })
-          results.push({ call, localName, output: result.output, ok: result.ok })
-        }
+        // 逐个执行，全部成功才落盘；纯只读工具 / 团队 task 之间无写依赖时按上限并发(P4 团队增强)。
+        // 中止语义：执行期间被中止则半截工具轮整体不落盘(与既有语义一致)。
+        const { results, aborted } = await executeCalls(deps, input, toolCalls, toLocal, safeEmit)
         if (aborted) {
           safeEmit({ type: 'done' })
           return
@@ -432,6 +417,68 @@ function consumeLine(line: string, outcome: RoundOutcome, emit: (e: AgentEvent) 
       }
     }
   }
+}
+
+/** 同轮工具并发上限（只读 / 团队 task） */
+const MAX_PARALLEL_TOOLS = 4
+
+/**
+ * 执行一轮的全部工具调用，返回按原始顺序的结果与是否被中止。
+ * - 纯只读工具 / 团队 `task` 之间无写依赖：按 MAX_PARALLEL_TOOLS 并发，缩短多子代理/多检索等待；
+ * - 含写工具（或单个调用）时保持逐个串行，避免写-读竞态；
+ * - 中止语义：任一时刻检测到 signal 中止即停止派发，返回 aborted（调用方整轮不落盘）。
+ */
+async function executeCalls(
+  deps: LoopDeps,
+  input: RunTurnInput,
+  toolCalls: ToolCall[],
+  toLocal: Map<string, string>,
+  emit: (e: AgentEvent) => void
+): Promise<{ results: Array<{ call: ToolCall; localName: string; output: string; ok: boolean }>; aborted: boolean }> {
+  const planned = toolCalls.map((call) => ({ call, localName: toLocal.get(call.name) ?? call.name }))
+  // 仅团队 task 调用之间并行；其余(含只读)保持逐个串行，保留「中止即不再执行剩余工具」的既有语义
+  const parallelSafe = planned.length > 1 && planned.every(({ localName }) => localName === 'task')
+
+  if (!parallelSafe) {
+    const results: Array<{ call: ToolCall; localName: string; output: string; ok: boolean }> = []
+    for (const { call, localName } of planned) {
+      if (input.signal?.aborted) return { results, aborted: true }
+      emit({ type: 'tool_call', name: localName, args: call.arguments })
+      const result = await execToolCall(deps, input, call, toLocal)
+      if (input.signal?.aborted) return { results, aborted: true }
+      emit({ type: 'tool_result', name: localName, output: result.output, ok: result.ok })
+      results.push({ call, localName, output: result.output, ok: result.ok })
+    }
+    return { results, aborted: false }
+  }
+
+  // 并发：先统一 emit tool_call，再按上限并发执行，结果按原索引回填(保证与 tool 消息配对)
+  for (const { call, localName } of planned) emit({ type: 'tool_call', name: localName, args: call.arguments })
+  const results: Array<{ call: ToolCall; localName: string; output: string; ok: boolean }> = new Array(planned.length)
+  let cursor = 0
+  let aborted = false
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (aborted || input.signal?.aborted) {
+        aborted = true
+        return
+      }
+      const i = cursor++
+      if (i >= planned.length) return
+      const { call, localName } = planned[i]
+      const result = await execToolCall(deps, input, call, toLocal)
+      if (input.signal?.aborted) {
+        aborted = true
+        return
+      }
+      emit({ type: 'tool_result', name: localName, output: result.output, ok: result.ok })
+      results[i] = { call, localName, output: result.output, ok: result.ok }
+    }
+  }
+  const workers = Math.min(MAX_PARALLEL_TOOLS, planned.length)
+  await Promise.all(Array.from({ length: workers }, () => worker()))
+  if (aborted) return { results: results.filter(Boolean), aborted: true }
+  return { results, aborted: false }
 }
 
 /** 执行单个工具调用：未知工具/用户拒绝/非法参数/执行异常均折叠为 ok:false 的工具结果；provider 名先解析回本地名 */

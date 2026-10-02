@@ -5,7 +5,6 @@
 """
 import asyncio
 import difflib
-import json
 import logging
 import os
 import time
@@ -64,7 +63,7 @@ class SubagentManager:
         self._team_run_locks: dict[str, asyncio.Lock] = {}
         # 全局并发信号量(懒创建; None=未初始化, False=不限制)
         self._run_sem: asyncio.Semaphore | None | bool = None
-        # root MCP 服务器池(懒读: <base_dir>/../mcp_servers.json), 供子代理按名引用
+        # root MCP 服务器池(懒读: <base_dir>/../mcps/<name>/server.json), 供子代理按名引用
         self._mcp_pool: list[dict[str, Any]] | None = None
         self._cleanup_task = None
         self._load_all()
@@ -72,30 +71,28 @@ class SubagentManager:
     # ── 按 agent 作用域的 MCP 池解析 ───────────────────
 
     def _mcp_pool_configs(self) -> list[dict[str, Any]]:
-        """读取 root MCP 池（config/mcp_servers.json，即 base_dir 的上一级）。"""
+        """读取 root MCP 池（config/mcps/<name>/server.json，即 base_dir 的上一级/config）。"""
         if self._mcp_pool is None:
             self._mcp_pool = []
             try:
-                path = os.path.join(os.path.dirname(os.path.abspath(self.base_dir)), "mcp_servers.json")
-                if os.path.exists(path):
-                    with open(path, encoding="utf-8") as f:
-                        data = json.load(f)
-                    if isinstance(data, list):
-                        self._mcp_pool = data
+                from mcps import load_mcp_config
+
+                root_config = os.path.dirname(os.path.abspath(self.base_dir))
+                self._mcp_pool = load_mcp_config(root_config)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"读取 root MCP 池失败(按空处理): {e}")
         return self._mcp_pool
 
     def _pool_mcp_for(self, caps, config_dir: str) -> list[dict[str, Any]] | None:
-        """子代理未自带 mcp_servers.json 且 frontmatter 指定 mcpServers 时, 从 root 池按名取。
+        """子代理未自带 mcps/ 且 frontmatter 指定 mcpServers 时, 从 root 池按名取。
 
-        返回 None 表示不注入(让 Agent 走自带文件/默认)。
+        返回 None 表示不注入(让 Agent 走自带目录/默认)。
         """
         if caps is None or getattr(caps, "mcp_servers", None) is None:
             return None
-        own = os.path.join(config_dir, "mcp_servers.json") if config_dir else ""
-        if own and os.path.exists(own):
-            return None  # 自带配置优先
+        own_dir = os.path.join(config_dir, "mcps") if config_dir else ""
+        if own_dir and os.path.isdir(own_dir):
+            return None  # 自带配置优先（空目录也算自带，保持旧 file-exists 语义）
         allowed = set(caps.mcp_servers)
         return [c for c in self._mcp_pool_configs() if str(c.get("name", "")) in allowed]
 

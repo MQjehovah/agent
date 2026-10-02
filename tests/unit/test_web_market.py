@@ -379,7 +379,7 @@ def test_admin_local_mcp_requires_perm(env, monkeypatch):
 
 def test_admin_local_mcp_upsert_get_delete(env):
     server, store, client, market, uid = env
-    path = os.path.join(server.agent.config_dir, "mcp_servers.json")
+    server_file = os.path.join(server.agent.config_dir, "mcps", "demo", "server.json")
 
     r = client.put("/api/admin/local-mcp/demo", json={
         "name": "ignored", "command": "python", "args": ["x.py"], "enabled": True,
@@ -390,9 +390,9 @@ def test_admin_local_mcp_upsert_get_delete(env):
     assert entry["name"] == "demo" and "evil" not in entry
     assert entry["risk_overrides"] == {"t": "read"}
     assert server.agent.mcp.reloads == 1
-    with open(path, encoding="utf-8") as f:
+    with open(server_file, encoding="utf-8") as f:
         stored = json.load(f)
-    assert stored == [entry]
+    assert stored == {k: v for k, v in entry.items() if k != "name"}
 
     r = client.get("/api/admin/local-mcp/demo")
     assert r.status_code == 200 and r.json()["server"]["command"] == "python"
@@ -402,13 +402,14 @@ def test_admin_local_mcp_upsert_get_delete(env):
 
     r = client.put("/api/admin/local-mcp/demo", json={"command": "node"})
     assert r.status_code == 200
-    with open(path, encoding="utf-8") as f:
+    with open(server_file, encoding="utf-8") as f:
         stored = json.load(f)
-    assert len(stored) == 1 and stored[0]["name"] == "demo" and stored[0]["command"] == "node"
-    assert "args" not in stored[0]                     # 覆盖更新: 未提供字段不再保留
+    assert stored.get("command") == "node"
+    assert "args" not in stored                        # 覆盖更新: 未提供字段不再保留
 
     r = client.delete("/api/admin/local-mcp/demo")
     assert r.status_code == 200
     assert server.agent.mcp.reloads == 3
+    assert not os.path.exists(server_file)
     assert client.get("/api/admin/local-mcp/demo").status_code == 404
     assert client.delete("/api/admin/local-mcp/demo").status_code == 404

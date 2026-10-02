@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "command": "python",
+  "args": [
+    "mcp_server/src/jira.py"
+  ],
+  "env": {
+    "JIRA_USERNAME": "s_software",
+    "JIRA_TOKEN": ""
+  },
+  "description": "Jira 研发管理（Issue/评论/查询）—— 启用前在 .env 配置 JIRA_TOKEN 或 JIRA_PASSWORD（可选 JIRA_URL/JIRA_USERNAME）"
+}

@@ -56,5 +56,11 @@ export type AgentEvent =
   | { type: 'tool_call'; name: string; args: string }
   | { type: 'tool_result'; name: string; output: string; ok: boolean }
   | { type: 'permission_request'; requestId: string; sessionId: string; tool: string; summary: string; streamId?: string }
+  /** 团队专家：成员子代理生命周期与流式输出(仅团队专家会话) */
+  | { type: 'subagent_start'; name: string }
+  | { type: 'subagent_token'; name: string; text: string }
+  | { type: 'subagent_tool_call'; name: string; tool: string; args: string }
+  | { type: 'subagent_tool_result'; name: string; tool: string; output: string; ok: boolean }
+  | { type: 'subagent_end'; name: string; output: string }
   | { type: 'done' }
   | { type: 'error'; message: string }

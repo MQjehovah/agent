@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createSkillLoader } from '../../electron/main/kernel/skills'
+import { createSkillLoader, mergeSkillLoaders } from '../../electron/main/kernel/skills'
 
 /** 建一个临时 skills 目录，用完由测试末尾统一清理 */
 function makeSkillsDir(): string {
@@ -192,4 +192,35 @@ test('skills: description 带成对引号的值去掉引号', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('skills: mergeSkillLoaders 后者覆盖同名，正文与清单按名合并', () => {
+  const globalDir = makeSkillsDir()
+  const expertDir = makeSkillsDir()
+  try {
+    writeSkill(globalDir, 'shared', 'name: shared\ndescription: 全局版', '全局正文')
+    writeSkill(globalDir, 'only-global', 'name: only-global\ndescription: 仅全局', 'G')
+    writeSkill(expertDir, 'shared', 'name: shared\ndescription: 专家版', '专家正文')
+    writeSkill(expertDir, 'only-expert', 'name: only-expert\ndescription: 仅专家', 'E')
+    const merged = mergeSkillLoaders([createSkillLoader(globalDir), createSkillLoader(expertDir)])
+    assert.deepEqual(merged.listSkills(), [
+      { name: 'only-expert', description: '仅专家' },
+      { name: 'only-global', description: '仅全局' },
+      { name: 'shared', description: '专家版' }
+    ])
+    assert.equal(merged.getSkillBody('shared'), '专家正文')
+    assert.equal(merged.getSkillBody('only-global'), 'G')
+    assert.throws(() => merged.getSkillBody('missing'), /未找到技能/)
+    assert.ok(merged.systemPromptAddendum().includes('only-expert'))
+  } finally {
+    rmSync(globalDir, { recursive: true, force: true })
+    rmSync(expertDir, { recursive: true, force: true })
+  }
+})
+
+test('skills: mergeSkillLoaders 空数组返回空加载器', () => {
+  const merged = mergeSkillLoaders([])
+  assert.deepEqual(merged.listSkills(), [])
+  assert.equal(merged.systemPromptAddendum(), '')
+  assert.throws(() => merged.getSkillBody('x'), /未找到技能/)
 })

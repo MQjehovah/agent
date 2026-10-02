@@ -31,7 +31,14 @@ import {
   type ExportSession
 } from './export'
 import { createPermissions, type PermissionGateway, type PermissionDecision, type PermissionRequest } from './permissions'
-import { connectMcpServers, parseMcpConfig, type McpConnection, type McpGatewayTarget, type McpServerConfig } from './mcp'
+import {
+  connectMcpServers,
+  discoverMcpConfigs,
+  readMcpConnectionFile,
+  type McpConnection,
+  type McpGatewayTarget,
+  type McpServerConfig
+} from './mcp'
 import { createMarketClient, type MarketCapability, type MarketCapabilityType, type MarketClient } from './market'
 import { installCapability, uninstallCapability, shouldRefuseRemoteInstall, assertSafeCapabilityName, type InstallResult, type McpInstallMode } from './installer'
 import { createMarketTool, createMarketToolInvoker } from './market-tools'
@@ -60,6 +67,8 @@ import {
   type ToolSearchEntry
 } from './tool-search'
 import { createRagSearcher } from './rag'
+import { createTaskTool, listTeamMembers, readMemberPrompt } from './subagent'
+import { codingTools } from './coding-tools'
 import { builtinTools, kbSearchTool } from './tools'
 import { importAttachments, parseAttachImportPayload } from './attachment-import'
 import { uploadAttachmentsToAgent } from './attachment-upload'
@@ -81,8 +90,8 @@ import {
   type PickedPathsStore
 } from './attachment-tokens'
 import { buildSystemPrompt, runAgentTurn } from './loop'
-import { createSkillLoader, type SkillLoader } from './skills'
-import type { AgentEvent, ChatMessage } from './types'
+import { createSkillLoader, mergeSkillLoaders, type SkillLoader } from './skills'
+import type { AgentEvent, ChatMessage, ToolDefinition } from './types'
 
 /**
  * agent 内核与 Electron IPC 的装配层：
@@ -145,6 +154,8 @@ function ensureRegistry(): Registry {
   if (!registry) {
     const reg = createRegistry()
     for (const tool of builtinTools) reg.register(tool)
+    // 本地编码底座工具: patch / git / repo_map / rename_symbol / code_diagnostics
+    for (const tool of codingTools) reg.register(tool)
     // kb_search 依赖注入：RAG 直连实现带 gateway 受众平台 token（语义同 upstream 的 authFor('rag')），
     // 由 rag.ts 的可注入工厂构造，fetch/token/地址都可测；tools.ts 保持不碰 identity/upstream 的纯度
     reg.register(
@@ -209,7 +220,7 @@ function ensureMcp(reg: Registry): Promise<McpConnection[]> {
     const disabled = loadDisabled(dataDir)
     mcpPromise = connectMcpServers({
       registry: reg,
-      configPath: join(dataDir, 'localagent', 'mcp.json'),
+      configs: discoverMcpConfigs(join(dataDir, 'localagent', 'mcps')),
       resolveGateway: resolveMarketGateway,
       resolveVars: resolveMcpVar,
       isDisabled: (name) => disabled.has(name),
@@ -270,13 +281,89 @@ export async function invalidateMcpConnections(): Promise<void> {
   for (const h of stale) void h.close().catch(() => {})
 }
 
+// ---- 专家(插件)会话作用域: 自带 MCP overlay + 技能, 组合成独立 registry 视图 ----
+
+/** 专家名 → 自带 MCP 的 overlay registry(仅含该专家的 mcp__ 工具)，懒连接并缓存 */
+const expertMcp = new Map<string, Promise<Registry>>()
+/** 专家名 → 其 MCP 连接句柄(退出/卸载时按专家关闭) */
+const expertMcpHandles = new Map<string, McpConnection[]>()
+
+/**
+ * 连接专家自带 MCP：读 agents/<expert>/mcps/<server>/connection.json，注册进独立 overlay registry。
+ * 缺失/损坏/连接失败一律降级为空 overlay(不影响基座工具)；进程内按专家缓存，避免每轮重连。
+ */
+async function ensureExpertMcp(expert: string): Promise<Registry> {
+  const cached = expertMcp.get(expert)
+  if (cached) return cached
+  const pending = (async () => {
+    const reg = createRegistry()
+    const configs = discoverMcpConfigs(join(localPluginsDir(), expert, 'mcps'))
+    if (!configs.length) return reg
+    try {
+      const handles = await connectMcpServers({
+        registry: reg,
+        configs,
+        resolveVars: resolveMcpVar,
+        onStatus: (msg) => console.log(`[kernel] expert:${expert} ${msg}`)
+      })
+      expertMcpHandles.set(expert, handles)
+    } catch (err) {
+      console.warn(`[kernel] 专家 ${expert} MCP 连接失败(忽略): ${err instanceof Error ? err.message : String(err)}`)
+    }
+    return reg
+  })()
+  expertMcp.set(expert, pending)
+  return pending
+}
+
+/** 失效专家 MCP overlay(插件重装/卸载后调用)：等结算→清缓存→关闭该专家句柄 */
+async function invalidateExpertMcp(expert: string): Promise<void> {
+  const pending = expertMcp.get(expert)
+  if (pending) await pending.catch(() => {})
+  expertMcp.delete(expert)
+  const handles = expertMcpHandles.get(expert) ?? []
+  expertMcpHandles.delete(expert)
+  for (const h of handles) void h.close().catch(() => {})
+}
+
+/** base + overlay 合并工具列表(overlay=专家优先，同名去重) */
+function composedTools(base: Registry, overlay: Registry): ToolDefinition[] {
+  const out = base.list()
+  const names = new Set(out.map((t) => t.name))
+  for (const t of overlay.list()) if (!names.has(t.name)) out.push(t)
+  return out
+}
+
+/** 组合成独立 registry 视图：get/list 合并 base 与 overlay，写入委托 overlay(连接期注册) */
+function composeRegistry(base: Registry, overlay: Registry): Registry {
+  return {
+    register: (tool) => overlay.register(tool),
+    unregister: (name) => overlay.unregister(name),
+    get: (name) => overlay.get(name) ?? base.get(name),
+    list: () => composedTools(base, overlay),
+    toOpenAiTools: () =>
+      composedTools(base, overlay).map((t) => ({
+        type: 'function',
+        function: { name: t.name, description: t.description, parameters: t.parameters }
+      }))
+  }
+}
+
+/** 会话技能视图：全局技能 + 专家 plugins/<expert>/skills(专家覆盖同名)；无专家时等同全局 */
+function skillsForSession(session: LocalSession): SkillLoader {
+  const expert = session.persona?.name
+  if (!expert) return skills
+  return mergeSkillLoaders([skills, createSkillLoader(join(localPluginsDir(), expert, 'skills'))])
+}
+
 // ---- 市场能力 IPC 支持：client 现读配置/身份、远程 tool 适配、本地清单与人设 ----
 
 function gatewayDataDir(): string {
   return process.env.GATEWAY_DATA_DIR!
 }
 
-function localAgentsDir(): string {
+/** 专家目录:localagent/agents/<专家名>/xxx(根 plugin.json + skills/ + agents/ + mcps/) */
+function localPluginsDir(): string {
   return join(gatewayDataDir(), 'localagent', 'agents')
 }
 
@@ -369,34 +456,16 @@ interface McpStatusItem {
 }
 
 function listMcpStatus(): McpStatusItem[] {
-  const configPath = join(gatewayDataDir(), 'localagent', 'mcp.json')
-  if (!existsSync(configPath)) return []
-  let servers: McpServerConfig[] = []
-  try {
-    servers = parseMcpConfig(readFileSync(configPath, 'utf8'))
-  } catch {
-    return []
-  }
-  // market-remote 无 command/url，parseMcpConfig 不保留，这里再读一次原始 JSON 取标记；
-  // market-gateway 由 parseMcpConfig 保留 kind，可直接判断
-  const remoteNames = new Set<string>()
-  try {
-    const raw = JSON.parse(readFileSync(configPath, 'utf8')) as {
-      servers?: Array<{ name?: string; kind?: string }>
-    }
-    for (const item of raw.servers ?? []) {
-      if (item?.kind === 'market-remote' && item.name) remoteNames.add(String(item.name))
-    }
-  } catch {
-    // 原始解析失败时按普通连接展示
-  }
+  const mcpsDir = join(gatewayDataDir(), 'localagent', 'mcps')
+  const servers: McpServerConfig[] = discoverMcpConfigs(mcpsDir)
   const connected = new Set(mcpHandles.map((h) => h.server))
   const disabled = loadDisabled(gatewayDataDir())
   return servers.map((s) => {
-    // 平台网关 = 旧 kind:'market-gateway' 条目，或新占位符形态（url 含 ${MARKET_URL}）；
-    // market-remote 标记继续兜底（解析器不保留该 kind，保留原逻辑不回归）
+    // 平台网关 = kind:'market-gateway'，或占位符形态（url 含 ${MARKET_URL}）；
+    // market-remote 标记兜底（原始 connection.json 的 kind）
+    const raw = readMcpConnectionFile(mcpsDir, s.name)
     const platformBridge =
-      s.kind === 'market-gateway' || remoteNames.has(s.name) ||
+      s.kind === 'market-gateway' || raw?.kind === 'market-remote' ||
       (typeof s.url === 'string' && s.url.includes('${MARKET_URL}'))
     return {
       name: s.name,
@@ -465,25 +534,25 @@ async function handleMcpEnvSet(
   return { ok: true, name }
 }
 
-/** 扫 localagent/agents 下各子目录列人设；agent.json 存在则容错读 description，损坏/缺失不阻塞 */
+/** 扫 localagent/plugins 下各专家插件列人设；根 plugin.json 存在则容错读 description，损坏/缺失不阻塞 */
 function listLocalPersonas(): LocalPersonaInfo[] {
-  const dir = localAgentsDir()
+  const dir = localPluginsDir()
   if (!existsSync(dir)) return []
   const out: LocalPersonaInfo[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const item: LocalPersonaInfo = { name: entry.name }
-    const agentFile = join(dir, entry.name, 'agent.json')
-    if (existsSync(agentFile)) {
+    const manifest = join(dir, entry.name, 'plugin.json')
+    if (existsSync(manifest)) {
       try {
-        const parsed: unknown = JSON.parse(readFileSync(agentFile, 'utf8'))
+        const parsed: unknown = JSON.parse(readFileSync(manifest, 'utf8'))
         const desc =
           typeof parsed === 'object' && parsed !== null
             ? (parsed as Record<string, unknown>).description
             : undefined
         if (typeof desc === 'string' && desc.trim()) item.description = desc.trim()
       } catch {
-        // agent.json 损坏仅该条描述缺失，仍保留名字
+        // plugin.json 损坏仅该条描述缺失，仍保留名字
       }
     }
     out.push(item)
@@ -501,18 +570,50 @@ function assertSafePersonaName(name: string): void {
   }
 }
 
-/** 读人设 PROMPT.md（新建本地会话选用市场 agent 人设时用）；缺失给清晰中文错误 */
+/** 去掉 markdown front-matter(开头 `---` 围栏到闭合 `---`),其余原样返回并 trim */
+function stripFrontMatter(text: string): string {
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/)
+  if (lines[0]?.trim() !== '---') return text.trim()
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') return lines.slice(i + 1).join('\n').trim()
+  }
+  return text.trim()
+}
+
+/**
+ * 读专家提示词（新建本地会话选用市场专家时用）:优先 agents/<name>.md 正文，
+ * 兼容插件内首个 agents/*.md，再退 PROMPT.md；缺失给清晰中文错误。
+ */
 function readPersona(name: string): { name: string; prompt: string } {
   assertSafePersonaName(name)
-  const file = join(localAgentsDir(), name, 'PROMPT.md')
-  let raw: string
-  try {
-    raw = readFileSync(file, 'utf8')
-  } catch {
-    throw new Error(`本地未安装人设「${name}」，请先在能力市场安装对应的 agent 能力`)
+  const dir = join(localPluginsDir(), name)
+  let raw: string | null = null
+  for (const file of [join(dir, 'agents', `${name}.md`), join(dir, 'PROMPT.md')]) {
+    try {
+      raw = readFileSync(file, 'utf8')
+      break
+    } catch {
+      // 尝试下一个候选
+    }
   }
-  const prompt = raw.trim()
-  if (!prompt) throw new Error(`人设「${name}」的 PROMPT.md 为空`)
+  if (raw === null) {
+    const agentsDir = join(dir, 'agents')
+    if (existsSync(agentsDir)) {
+      const first = readdirSync(agentsDir).find((f) => f.toLowerCase().endsWith('.md'))
+      if (first) {
+        try {
+          raw = readFileSync(join(agentsDir, first), 'utf8')
+        } catch {
+          // 忽略，落到下方未安装错误
+        }
+      }
+    }
+  }
+  if (raw === null) {
+    throw new Error(`本地未安装专家「${name}」，请先在能力市场安装对应的 agent 能力`)
+  }
+  const prompt = stripFrontMatter(raw)
+  if (!prompt) throw new Error(`专家「${name}」的提示词为空`)
   return { name, prompt }
 }
 
@@ -530,7 +631,7 @@ interface InstalledCapabilityItem {
   mode?: 'platform' | 'local'
 }
 
-/** 本地已安装能力清单：skill/agent 扫目录、mcp 扫 mcp.json 的 capability 来源条目、tool 以本地安装清单为准 */
+/** 本地已安装能力清单：skill/agent 扫目录、mcp 扫 mcps/<name>/connection.json、tool 以本地安装清单为准 */
 function handleMarketListInstalled(): InstalledCapabilityItem[] {
   const dataDir = gatewayDataDir()
   const items: InstalledCapabilityItem[] = []
@@ -544,36 +645,22 @@ function handleMarketListInstalled(): InstalledCapabilityItem[] {
     if (p.description) item.description = p.description
     items.push(item)
   }
-  // mcp：mcp.json 里 source 形如 `capability: <name>@<version>` 的条目
-  const mcpFile = join(dataDir, 'localagent', 'mcp.json')
-  if (existsSync(mcpFile)) {
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(mcpFile, 'utf8'))
-      const servers =
-        typeof parsed === 'object' && parsed !== null ? (parsed as { servers?: unknown }).servers : null
-      if (Array.isArray(servers)) {
-        for (const raw of servers) {
-          const entry = raw as { name?: unknown; source?: unknown; kind?: unknown; command?: unknown; url?: unknown }
-          const source = typeof entry.source === 'string' ? entry.source : ''
-          if (!source.startsWith('capability:')) continue
-          const name = typeof entry.name === 'string' ? entry.name : ''
-          if (!name) continue
-          const item: InstalledCapabilityItem = { type: 'mcp', name }
-          const at = source.lastIndexOf('@')
-          const version = at > 0 ? source.slice(at + 1).trim() : ''
-          if (version) item.version = version
-          // 当前模式：旧 kind:market-gateway 或新占位符 url（含 ${MARKET_URL}）=平台桥接；
-          // command/url=本地安装；market-remote 等无法判定则不带
-          if (entry.kind === 'market-gateway' || (typeof entry.url === 'string' && entry.url.includes('${MARKET_URL}'))) {
-            item.mode = 'platform'
-          } else if (typeof entry.command === 'string' || typeof entry.url === 'string') {
-            item.mode = 'local'
-          }
-          items.push(item)
-        }
-      }
-    } catch {
-      // mcp.json 损坏只跳过该来源，不影响其余清单
+  // mcp：mcps/<name>/connection.json，source 形如 `capability: <name>@<version>`
+  const mcpsDir = join(dataDir, 'localagent', 'mcps')
+  if (existsSync(mcpsDir)) {
+    for (const entry of readdirSync(mcpsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const raw = readMcpConnectionFile(mcpsDir, entry.name)
+      if (!raw) continue
+      const item: InstalledCapabilityItem = { type: 'mcp', name: entry.name }
+      const source = typeof raw.source === 'string' ? raw.source : ''
+      const at = source.lastIndexOf('@')
+      const version = at > 0 ? source.slice(at + 1).trim() : ''
+      if (version) item.version = version
+      const url = typeof raw.url === 'string' ? raw.url : ''
+      if (raw.kind === 'market-gateway' || url.includes('${MARKET_URL}')) item.mode = 'platform'
+      else if (typeof raw.command === 'string' || url) item.mode = 'local'
+      items.push(item)
     }
   }
   // tool：以本地安装清单为准（重启后 registry 尚未构建也能列全），
@@ -690,6 +777,8 @@ async function handleMarketInstall(
     throw new Error(res.output)
   }
   if (cap.type === 'mcp') await invalidateMcpConnections()
+  // 专家插件(重)安装后，失效其 MCP overlay，下一轮 chat 按新包重连
+  if (cap.type === 'agent') await invalidateExpertMcp(name)
   return res
 }
 
@@ -734,6 +823,8 @@ async function handleMarketUninstall(
     // 卸载后该连接器的工具不再注册：同步从各会话激活集剔除
     pruneActivatedRemoteTools((toolName) => toolName.startsWith(`${MCP_TOOL_PREFIX}${name}__`))
   }
+  // 卸载专家：关闭其自带 MCP 连接
+  if (type === 'agent') await invalidateExpertMcp(name)
   return res
 }
 
@@ -1048,7 +1139,7 @@ function handleSessionCreate(
   touchWorkspace(workspace)
   const model =
     typeof payload?.model === 'string' && payload.model.trim() ? payload.model.trim() : getConfig().localModel
-  // 可选人设：personaName 指向本地 agents/<name>，读 PROMPT.md 组装；不带则行为与旧版一致
+  // 可选专家：personaName 指向本地 plugins/<name>，读 agents/<name>.md 正文组装；不带则行为与旧版一致
   const personaName = typeof payload?.personaName === 'string' ? payload.personaName.trim() : ''
   const persona = personaName ? readPersona(personaName) : undefined
   return store.createSession({
@@ -1108,7 +1199,7 @@ async function executeLocalTurn(
   // key 缺失时用已存 SSO 凭据自动重试交换(自愈),仍失败才报错(编排层负责 release claim)
   const gatewayKey = await ensureGatewayKey()
 
-  const reg = ensureRegistry()
+  const base = ensureRegistry()
   // MCP 工具注册进 registry 后再开跑（首次 chat 时才真正连接）
   // 连接前先续期 SSO access_token(仅剩 <60s 才真刷新);令牌轮换则失效旧连接,
   // 避免平台桥接拿着过期 MARKET_TOKEN 收到 401「登录状态无效或已过期」;
@@ -1124,11 +1215,76 @@ async function executeLocalTurn(
       console.warn('[kernel] gateway token 强换失败(重连时按需自愈):', (err as Error).message)
     }
   }
-  await ensureMcp(reg)
+  await ensureMcp(base)
+
+  // 会话级专家：独立 registry 视图 = 全局基座 + 专家自带 MCP(懒连接、按专家缓存)
+  const expert = session.persona?.name
+  const sessionSkills = skillsForSession(session)
 
   const emit = (e: AgentEvent): void => {
     if (!sender.isDestroyed()) {
       sender.send('localagent:event', { streamId, ...e })
+    }
+  }
+
+  const expertReg = expert ? composeRegistry(base, await ensureExpertMcp(expert)) : base
+  const runModel = resolveRunModel(session.model, getConfig().localModel)
+  // 团队专家(TEAM.md)：注入 task 工具，模型可把子任务派给成员子代理(递归 runAgentTurn)
+  let reg = expertReg
+  const pluginDir = expert ? join(localPluginsDir(), expert) : ''
+  if (expert && existsSync(join(pluginDir, 'TEAM.md'))) {
+    const members = listTeamMembers(pluginDir, expert)
+    if (members.length) {
+      const runTeamMember = async (member: string, task: string): Promise<{ ok: boolean; output: string }> => {
+        emit({ type: 'subagent_start', name: member })
+        const memberPrompt = readMemberPrompt(pluginDir, member)
+        let acc = ''
+        let subError = ''
+        const nestedEmit = (e: AgentEvent): void => {
+          if (e.type === 'token') {
+            acc += e.text
+            emit({ type: 'subagent_token', name: member, text: e.text })
+          } else if (e.type === 'tool_call') {
+            emit({ type: 'subagent_tool_call', name: member, tool: e.name, args: e.args })
+          } else if (e.type === 'tool_result') {
+            emit({ type: 'subagent_tool_result', name: member, tool: e.name, output: e.output, ok: e.ok })
+          } else if (e.type === 'error') {
+            subError = e.message
+          }
+        }
+        try {
+          await runAgentTurn(
+            {
+              apiKey: gatewayKey,
+              baseUrl: getConfig().gatewayUrl.replace(/\/+$/, ''),
+              registry: expertReg,
+              permissions,
+              systemPrompt: memberPrompt,
+              maxRounds: 40,
+              resolveSkill: (name) => sessionSkills.getSkillBody(name),
+              persist: () => {}
+            },
+            {
+              // 成员复用父会话 sessionId：权限请求经父 sender 派发，UI 才能弹确认
+              sessionId: session.id,
+              workspace: session.workspace,
+              model: runModel,
+              history: [],
+              userMessage: task,
+              emit: nestedEmit,
+              signal: controller.signal
+            }
+          )
+        } catch (err) {
+          subError = err instanceof Error ? err.message : String(err)
+        }
+        emit({ type: 'subagent_end', name: member, output: acc })
+        if (subError) return { ok: false, output: acc ? `${acc}\n[error] ${subError}` : `[error] ${subError}` }
+        return { ok: true, output: acc || '(无输出)' }
+      }
+      const turnOverlay = createRegistry()
+      turnOverlay.register(createTaskTool({ members, run: runTeamMember }))
+      reg = composeRegistry(expertReg, turnOverlay)
     }
   }
 
@@ -1140,10 +1296,12 @@ async function executeLocalTurn(
   if (session.systemPrompt?.trim()) systemParts.push(session.systemPrompt)
   // 渐进披露：每轮由 loop 现算是否只发内置 + 已激活远程工具；开启时在系统提示追加「先搜索再调用」说明
   const toolSearch = {
+    // 专家会话不分发渐进披露：专家自带 MCP 工具直接全量可见（tool_search 仅索引基座远程工具）
     progressive: () =>
+      !expert &&
       shouldUseProgressive(
         normalizeToolSearchMode(getConfig().localAgentToolSearch),
-        remoteToolEntries(reg).length
+        remoteToolEntries(base).length
       ),
     activeNames: () => store.getActiveRemoteTools(session.id)
   }
@@ -1151,7 +1309,7 @@ async function executeLocalTurn(
   // 当前用户画像放最前：persona/BASE 之前可见；无身份信息则不改动既有拼装
   const userProfileLine = buildUserProfileLine(identity.user)
   if (userProfileLine) systemParts.unshift(userProfileLine)
-  const systemPrompt = buildSystemPrompt(systemParts.join('\n\n'), skills.systemPromptAddendum())
+  const systemPrompt = buildSystemPrompt(systemParts.join('\n\n'), sessionSkills.systemPromptAddendum())
 
   // fire and forget：loop 内部已把一切异常折叠为 error 事件，这里 .catch 兜底
   void runAgentTurn(
@@ -1163,13 +1321,14 @@ async function executeLocalTurn(
       systemPrompt,
       toolSearch,
       maxRounds: MAX_ROUNDS,
+      resolveSkill: (name) => sessionSkills.getSkillBody(name),
       persist: (msg) => store.appendMessage(session.id, msg)
     },
     {
       sessionId: session.id,
       workspace: session.workspace,
       // 模型: 会话级优先(用户可在输入区切换), 缺省回退系统设置的默认模型
-      model: resolveRunModel(session.model, getConfig().localModel),
+      model: runModel,
       history: options.history,
       userMessage,
       skipPersistUserMessage: options.skipPersistUserMessage,
@@ -1504,7 +1663,8 @@ export function registerKernelIpc(): void {
 
   // MCP 连接句柄在退出时统一关闭；once 自包含在本模块，index.ts 无需关心
   app.once('will-quit', () => {
-    void Promise.allSettled(mcpHandles.map((h) => h.close()))
+    const expertHandles = [...expertMcpHandles.values()].flat()
+    void Promise.allSettled([...mcpHandles, ...expertHandles].map((h) => h.close()))
   })
 
   // 退出删除临时会话(仅本地): 本次运行内可回看, 退出即删; 崩溃时由下次启动清理兜底
