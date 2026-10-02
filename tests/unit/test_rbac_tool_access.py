@@ -56,7 +56,6 @@ def _risk_resolver(name):
     ("read", "read"),
     ("exists", "read"),
     ("list", "read"),
-    ("preview", "read"),
     ("READ", "read"),          # 大小写不敏感
     ("write", "write"),
     ("delete", "write"),

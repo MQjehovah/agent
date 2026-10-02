@@ -8,7 +8,7 @@ from .rules import PermissionConfig
 logger = logging.getLogger("agent.permissions")
 
 # 只读判定: file 操作集合(classify_access 使用; 与 check() 既有分支互不影响)
-FILE_READ_OPERATIONS = ("read", "exists", "list", "preview")
+FILE_READ_OPERATIONS = ("read", "exists", "list")
 
 # 纯读取类 shell 命令前缀(DEFAULT 分支与 classify_access 共用, 避免复制漂移)
 READ_SHELL_PREFIXES = (
@@ -130,7 +130,7 @@ class PermissionChecker:
         if self.config.mode == PermissionMode.SMART:
             if tool_name == "file":
                 op = str(arguments.get("operation", "")).lower()
-                if op in ("read", "exists", "list", "preview"):
+                if op in ("read", "exists", "list"):
                     return PermissionCheckResult(allowed=True)
                 if op in self.config.dangerous_file_ops:
                     return PermissionCheckResult(allowed=True, reason="需要用户确认")

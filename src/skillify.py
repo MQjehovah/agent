@@ -15,8 +15,6 @@ import logging
 import os
 import re
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Optional
 
 logger = logging.getLogger("agent.skillify")
 
@@ -226,7 +224,6 @@ class Skillifier:
             "grep": "搜索代码",
             "glob": "查找文件",
             "edit": "修改文件",
-            "file(preview)": "阅读代码",
             "web_search": "搜索网络",
             "web_fetch": "抓取网页",
             "task": "委派子代理",
