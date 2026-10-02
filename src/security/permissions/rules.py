@@ -43,6 +43,9 @@ class PermissionConfig:
         "file",
         "shell",
         "edit",
+        "batch_edit",
+        "apply_patch",
+        "git",
     ])
     # SMART 模式(必要时询问): 命中以下片段的 shell 命令需用户确认
     dangerous_commands: list = field(default_factory=lambda: [

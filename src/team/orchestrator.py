@@ -24,6 +24,12 @@ from team.pipeline_builder import build_pipeline, generate_pipeline_async
 logger = logging.getLogger("agent.team.orchestrator")
 
 
+def _team_worktree_enabled() -> bool:
+    """团队级 worktree 隔离开关（AGENT_TEAM_WORKTREE，默认关）。"""
+    val = (os.environ.get("AGENT_TEAM_WORKTREE", "0") or "0").strip().lower()
+    return val in ("1", "true", "on", "yes")
+
+
 def _extract_json_from_llm(content: str) -> str:
     content = content.strip()
     if content.startswith("```"):
@@ -143,44 +149,78 @@ class TeamOrchestrator:
     async def run(self, task: str) -> str:
         self.context = TeamContext(self.team_name, task)
         self._resolve_workspace()
-        self.context.set_blackboard("工作目录", self.workspace)
-        self.context.set_blackboard("团队名称", self.team_name)
+        await self._prepare_worktree()
+        try:
+            self.context.set_blackboard("工作目录", self.workspace)
+            self.context.set_blackboard("团队名称", self.team_name)
 
-        # 动态构建流水线
-        if self.pipeline_mode == "auto":
-            self.pipeline_stages = await generate_pipeline_async(
-                task, self.members, self.llm
-            )
-        else:
-            self.pipeline_stages = build_pipeline(
-                task, self.members, mode=self.pipeline_mode
-            )
+            # 动态构建流水线
+            if self.pipeline_mode == "auto":
+                self.pipeline_stages = await generate_pipeline_async(
+                    task, self.members, self.llm
+                )
+            else:
+                self.pipeline_stages = build_pipeline(
+                    task, self.members, mode=self.pipeline_mode
+                )
 
-        stage_names = [s["stage"] for s in self.pipeline_stages]
-        logger.info(
-            f"团队 [{self.team_name}] 流水线: {stage_names}"
-            f" (mode={self.pipeline_mode}, parallel={self._enable_parallel})")
+            stage_names = [s["stage"] for s in self.pipeline_stages]
+            logger.info(
+                f"团队 [{self.team_name}] 流水线: {stage_names}"
+                f" (mode={self.pipeline_mode}, parallel={self._enable_parallel})")
 
-        if not self.pipeline_stages:
+            if not self.pipeline_stages:
+                if self.progress_callback:
+                    self.progress_callback(f"{self.team_name}|chat", "start", self.team_name, None)
+                result = await self._run_direct_chat(self.context.original_task)
+                if self.progress_callback:
+                    summary = (result or "")[:200].strip()
+                    self.progress_callback(f"{self.team_name}|chat", "stage_done", summary, None)
+                return result
+
             if self.progress_callback:
-                self.progress_callback(f"{self.team_name}|chat", "start", self.team_name, None)
-            result = await self._run_direct_chat(self.context.original_task)
-            if self.progress_callback:
-                summary = (result or "")[:200].strip()
-                self.progress_callback(f"{self.team_name}|chat", "stage_done", summary, None)
-            return result
+                self.progress_callback("pipeline", "start", stage_names, None)
 
-        if self.progress_callback:
-            self.progress_callback("pipeline", "start", stage_names, None)
+            # Leader 审核流水线配置
+            if self.leader and self.leader in self.members:
+                self.pipeline_stages = await self._leader_review_pipeline()
 
-        # Leader 审核流水线配置
-        if self.leader and self.leader in self.members:
-            self.pipeline_stages = await self._leader_review_pipeline()
+            # 使用 DAG 引擎执行（v2.0 并行增强）
+            await self._execute_with_dag()
 
-        # 使用 DAG 引擎执行（v2.0 并行增强）
-        await self._execute_with_dag()
+            return self._build_report()
+        finally:
+            await self._cleanup_worktree()
 
-        return self._build_report()
+    async def _prepare_worktree(self):
+        """启用团队级隔离时为整轮团队运行创建一个共享 worktree（所有阶段共用）。"""
+        self._run_worktree = None
+        if not _team_worktree_enabled():
+            return
+        try:
+            from worktree import WorktreeManager
+            mgr = self._worktree_manager or WorktreeManager(self.workspace)
+            if not mgr.is_git:
+                logger.info("[team] 非 Git 仓库，跳过 worktree 隔离")
+                return
+            wt = await mgr.create_worktree(role=self.team_name or "team")
+            self.workspace = wt
+            self._run_worktree = (mgr, wt)
+            logger.info(f"[team] 使用隔离 worktree: {wt}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[team] worktree 创建失败，使用共享工作区: {e}")
+
+    async def _cleanup_worktree(self):
+        pair = getattr(self, "_run_worktree", None)
+        if not pair:
+            return
+        mgr, wt = pair
+        self._run_worktree = None
+        try:
+            await mgr.cleanup_worktree_by_path(wt)
+            logger.info(f"[team] 已清理 worktree: {wt}")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[team] worktree 清理失败: {e}")
 
     # ── DAG 执行引擎（v2.0 并行版本） ─────────────────
 
@@ -593,6 +633,7 @@ class TeamOrchestrator:
             agent = await self.subagent_manager._create_team_subagent(
                 self.team_name, role, client=self.llm,
                 parent_agent=None, max_iterations=max_iter,
+                workspace=self.workspace,
             )
 
             # ── v2.0: 集成 tracing ──

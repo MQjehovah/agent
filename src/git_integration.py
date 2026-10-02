@@ -25,7 +25,6 @@ import os
 import subprocess
 import time
 from datetime import datetime
-from typing import Optional
 
 logger = logging.getLogger("agent.git_integration")
 
@@ -53,7 +52,7 @@ class GitIntegration:
 
     # ── 核心接口 ───────────────────────────────────────
 
-    async def auto_commit(self, stage: str, role: str, description: str = "") -> Optional[str]:
+    async def auto_commit(self, stage: str, role: str, description: str = "") -> str | None:
         """阶段完成后自动创建原子提交
 
         Args:
@@ -119,7 +118,7 @@ class GitIntegration:
             return False
 
         try:
-            # 获取当前状态
+            # 记录当前 HEAD/分支作为还原点（不回滚工作区、不 stash，避免误伤未提交改动）
             branch = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=self.workspace, capture_output=True, text=True, timeout=10,
@@ -128,23 +127,15 @@ class GitIntegration:
                 ["git", "rev-parse", "HEAD"],
                 cwd=self.workspace, capture_output=True, text=True, timeout=10,
             ).stdout.strip()
-
-            # 先把当前改动 stash 起来
-            stash_result = subprocess.run(
-                ["git", "stash", "push", "-m", f"checkpoint:{name}"],
-                cwd=self.workspace, capture_output=True, text=True, timeout=10,
-            )
-            # stash 完后立刻 pop 回来（我们的目的是记录状态，不是真 stash）
-            if "No local changes" not in stash_result.stderr:
-                subprocess.run(["git", "stash", "apply", "stash@{0}"],
-                              cwd=self.workspace, capture_output=True, timeout=10)
+            if not head:
+                logger.warning("[git] 检查点创建失败: 无法解析 HEAD（仓库可能尚无提交）")
+                return False
 
             checkpoint = {
                 "name": name,
                 "timestamp": time.time(),
                 "branch": branch,
                 "head": head,
-                "stash_ref": f"stash@{{{name}}}",
             }
 
             # 持久化到文件
@@ -402,7 +393,7 @@ class GitIntegration:
             except Exception as e:
                 logger.debug(f"加载检查点失败: {e}")
 
-    def _find_checkpoint(self, name: str) -> Optional[dict]:
+    def _find_checkpoint(self, name: str) -> dict | None:
         """按名称查找检查点"""
         checkpoints = self.get_checkpoints()
         for cp in checkpoints:

@@ -23,11 +23,13 @@ description: 代码实现与编译
 - 评估影响范围
 
 ### 3. 执行
-- 用 `edit` 工具修改代码（SEARCH/REPLACE 模式）
+- 小改动用 `edit`（SEARCH/REPLACE 模式）或 `apply_patch`（统一 diff，可先 `dry_run` 预演）
+- 跨文件原子修改用 `batch_edit`
 - 用 `file_operation(write)` 创建新文件
-- 改完后自己用 `file_operation(read)` 验证结果
+- 改动前如不确定可先用 `git(operation="checkpoint")` 记录还原点
 
 ### 4. 观察
+- 用 `code_diagnostics(path="<改动的文件>")` 跑 linter/类型检查，确认未引入新问题
 - 读取修改后的文件确认内容正确
 - 运行编译/测试验证
 
@@ -83,6 +85,20 @@ edit(path="src/main.py", edits=[
 - 比逐个 edit 更高效
 
 **关于 batch_edit**：跨多个文件的原子修改用 `batch_edit`，单文件用 `edit`。
+
+### 代码工具（优先使用）
+
+| 工具 | 用途 |
+|---|---|
+| `apply_patch` | 应用 git 风格 unified diff，原子落地，支持 `dry_run` 预演 |
+| `batch_edit` | 跨文件 hash 锚点原子编辑 |
+| `code_diagnostics` | 运行 ruff/mypy/eslint/tsc/go vet/cargo check，返回结构化问题 |
+| `git` | `status`/`diff`/`log`（只读）、`commit`/`checkpoint`/`rollback`（写） |
+
+**强制纪律**：
+1. 改完代码后，必须对改动文件跑一次 `code_diagnostics`；有“必改”级问题先修复
+2. 一批改动完成、测试通过后，用 `git(operation="commit", message="feat/fix(...): ...")` 提交
+3. 高风险重构前先 `git(operation="checkpoint", name="before_refactor")`
 
 ### 错误恢复
 

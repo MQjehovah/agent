@@ -24,6 +24,87 @@ _MCP_FAILURE_PREFIXES = ("执行失败", "MCP未连接", "MCP服务", "MCP [", "
 
 logger = logging.getLogger("agent.agent")
 
+# 写工具执行后自动追加“仅提示”诊断的工具名
+_DIAGNOSTIC_WRITE_TOOLS = frozenset({"edit", "batch_edit", "apply_patch"})
+
+
+def _diagnostics_enabled() -> bool:
+    """写后诊断开关（AGENT_POST_EDIT_DIAGNOSTICS，默认开）。"""
+    val = (os.environ.get("AGENT_POST_EDIT_DIAGNOSTICS", "1") or "1").strip().lower()
+    return val not in ("0", "false", "off", "no")
+
+
+def _touched_paths(name: str, args: dict, result: str) -> list[str]:
+    """从写工具的参数/结果推断本次改动的相对路径列表。"""
+    paths: list[str] = []
+    try:
+        if name == "edit" and args.get("path"):
+            paths.append(str(args["path"]))
+        elif name == "batch_edit":
+            for e in args.get("edits", []) or []:
+                if e.get("file"):
+                    paths.append(str(e["file"]))
+        elif name == "apply_patch":
+            parsed = json.loads(result)
+            for rel in parsed.get("applied_files", []) or []:
+                paths.append(str(rel))
+    except Exception:  # noqa: BLE001
+        return []
+    return paths
+
+
+async def _maybe_append_diagnostics(agent, name: str, args: dict, result: str) -> str:
+    """写工具成功后追加诊断（仅提示，绝不阻断）；任何异常都保持原结果。"""
+    if name not in _DIAGNOSTIC_WRITE_TOOLS or not _diagnostics_enabled():
+        return result
+    try:
+        parsed = json.loads(result)
+        if not parsed.get("success"):
+            return result
+        paths = _touched_paths(name, args, result)
+        if not paths:
+            return result
+        from tools.diagnostics import advisory_for_paths
+        workspace = getattr(agent, "workspace", "") or os.getcwd()
+        advisory = await advisory_for_paths(workspace, paths)
+        if advisory:
+            return f"{result}\n\n{advisory}"
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[诊断] 写后诊断跳过: {e}")
+    return result
+
+
+def _auto_checkpoint_enabled() -> bool:
+    """首次写操作前自动建 Git 检查点开关（AGENT_AUTO_GIT_CHECKPOINT，默认开）。"""
+    val = (os.environ.get("AGENT_AUTO_GIT_CHECKPOINT", "1") or "1").strip().lower()
+    return val not in ("0", "false", "off", "no")
+
+
+async def _maybe_auto_checkpoint(agent, name: str, args: dict) -> None:
+    """本轮首次写操作前记录一个 Git 还原点（每 run 一次），非 Git 仓库静默跳过。"""
+    if not _auto_checkpoint_enabled():
+        return
+    try:
+        if agent.permission.classify_access(name, args) == "read":
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    rc = _current_run()
+    if rc is not None and getattr(rc, "_auto_ckpt", False):
+        return
+    workspace = getattr(agent, "workspace", "") or os.getcwd()
+    try:
+        from git_integration import GitIntegration
+        git = GitIntegration(workspace)
+        if not git.is_available:
+            return
+        await git.create_checkpoint(f"auto:{getattr(rc, 'run_id', '') or 'run'}")
+        if rc is not None:
+            with contextlib.suppress(Exception):
+                rc._auto_ckpt = True
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[git] 自动检查点跳过: {e}")
+
 
 def _mark_run_sensitive_if_hit(agent, name: str) -> None:
     """命中敏感清单或 destructive MCP 工具 → 给当前 run 打「含敏感产出」标记(保守: 调过即敏感)。
@@ -181,6 +262,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
     await agent.hooks.fire(agent._hook_event.TOOL_START, tool_name=name, arguments=args)
 
     _mark_run_sensitive_if_hit(agent, name)
+    await _maybe_auto_checkpoint(agent, name, args)
 
     try:
         result = await execute_tool(agent, name, args)
@@ -213,6 +295,7 @@ async def execute_tool_safe(agent, name: str, args: dict) -> str:
             result = compress_tool_result(name, result, MAX_TOOL_OUTPUT_CHARS)
             logger.debug(f"[工具压缩] {name}: {original_len} -> {len(result)} chars")
 
+        result = await _maybe_append_diagnostics(agent, name, args, result)
         return result
     except asyncio.CancelledError:
         logger.warning(f"工具调用被取消: {name}")

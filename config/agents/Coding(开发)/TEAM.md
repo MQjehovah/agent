@@ -1,5 +1,5 @@
 ---
-name: AI开发团队
+name: Coding(开发)
 description: 多角色协作的 AI 软件开发团队，覆盖需求→设计→编码→测试→安全→部署→文档全流程
 pipeline_mode: auto
 members:
@@ -18,7 +18,7 @@ members:
   - name: 文档专员
     role: 技术文档生成与更新
 ---
-# AI 开发团队
+# Coding(开发)
 
 本团队包含 7 个专业角色，通过阶段化流水线协作完成软件开发项目。
 
@@ -68,6 +68,14 @@ members:
 - **禁止使用交互式命令** — vim、nano、less、ssh、scp 等需要用户输入的命令
 - **apt/apt-get 自动加 `-y` 和 `DEBIAN_FRONTEND=noninteractive`** — 避免安装过程等待确认
 - 如需安装系统级依赖，在文档中说明，由人工执行
+
+## 工具与验证纪律（所有角色必须遵守）
+
+1. **改代码前先定位**：`code_search` / `grep` 精确定位，禁止通读无关文件
+2. **改代码用专用工具**：单文件用 `edit`，跨文件原子改动用 `batch_edit`，统一 diff 用 `apply_patch`
+3. **改完必须自检**：对改动文件执行 `code_diagnostics`，有必改级问题先修复再交付
+4. **提交用 git 工具**：阶段性成果用 `git(operation="commit")` 提交；高风险重构前用 `git(operation="checkpoint")`
+5. **测试工程师**：执行测试前先 `git(operation="diff")` 了解改动范围，测试失败给出精确复现
 
 ## 角色边界（严格遵守）
 

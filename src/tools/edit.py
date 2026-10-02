@@ -32,10 +32,80 @@ from . import BuiltinTool
 logger = logging.getLogger("agent.tools")
 
 
-def _normalize(text: str) -> str:
-    """标准化文本用于匹配（统一换行、去掉行尾空白）"""
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    return "\n".join(line.rstrip() for line in lines)
+def _content_lines(content: str) -> list[tuple[int, int, str]]:
+    """把内容切成 (起始偏移, 结束偏移, 行文本) 列表。
+
+    行文本不含行尾（\\n 与 \\r 均被剥离），偏移指向原始 content，供按行匹配后
+    在原文上做精确替换——绝不重写未命中区域，从而保留 CRLF/行尾空白等原始字节。
+    """
+    lines: list[tuple[int, int, str]] = []
+    for m in re.finditer(r"[^\n]*\n|[^\n]+$", content):
+        raw = m.group()
+        text = raw[:-1] if raw.endswith("\n") else raw
+        if text.endswith("\r"):
+            text = text[:-1]
+        lines.append((m.start(), m.start() + len(text), text))
+    return lines
+
+
+def _split_old_lines(old: str) -> list[str]:
+    """把 old_text 统一换行后切行（去掉末尾换行产生的空行）。"""
+    text = old.replace("\r\n", "\n").replace("\r", "\n")
+    if text.endswith("\n"):
+        text = text[:-1]
+    return text.split("\n")
+
+
+def _block_spans(content: str, old: str, collapse: bool) -> list[tuple[int, int]]:
+    """按行匹配 old_text，返回原文中每处匹配的 (start, end) 偏移。
+
+    collapse=False: 仅忽略行尾空白与换行差异；
+    collapse=True : 折叠所有空白（容忍缩进差异），更宽松的兜底。
+    """
+    old_lines = _split_old_lines(old)
+    if not old_lines or (len(old_lines) == 1 and old_lines[0] == ""):
+        return []
+    clines = _content_lines(content)
+    n = len(old_lines)
+
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", s).strip() if collapse else s.rstrip()
+
+    want = [norm(line) for line in old_lines]
+    spans: list[tuple[int, int]] = []
+    for i in range(0, len(clines) - n + 1):
+        if all(norm(clines[i + j][2]) == want[j] for j in range(n)):
+            spans.append((clines[i][0], clines[i + n - 1][1]))
+    return spans
+
+
+def _locate_spans(content: str, old: str) -> list[tuple[int, int]]:
+    """定位 old_text 在 content 中的所有匹配偏移。
+
+    优先级：精确子串 → 行尾空白/换行容忍 → 全空白折叠。返回原文偏移，
+    调用方据此在原字符串上替换，避免整文件规范化写回。
+    """
+    if not old:
+        return []
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        idx = content.find(old, start)
+        if idx < 0:
+            break
+        spans.append((idx, idx + len(old)))
+        start = idx + max(1, len(old))
+    if spans:
+        return spans
+    spans = _block_spans(content, old, collapse=False)
+    if spans:
+        return spans
+    return _block_spans(content, old, collapse=True)
+
+
+def _line_of(content: str, offset: int) -> int:
+    """返回偏移所在的 1 基行号。"""
+    return content.count("\n", 0, offset) + 1
 
 
 def _make_diff(file_path: str, old_content: str, new_content: str) -> str:
@@ -48,6 +118,22 @@ def _make_diff(file_path: str, old_content: str, new_content: str) -> str:
         tofile=f"b/{rel_path}",
     )
     return "".join(diff)
+
+
+def _read_text(path: str) -> tuple[str, str]:
+    """读取文本并返回 (内容, 编码)。
+
+    优先 UTF-8，失败回退 GBK/CP936，最后 Latin-1；写回时沿用探测到的编码，
+    避免把非 UTF-8 文件（如 Windows 本地编码）误读成乱码或改写成 UTF-8。
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+    for enc in ("utf-8", "gbk", "cp936"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1"), "latin-1"
 
 
 class EditTool(BuiltinTool):
@@ -131,7 +217,7 @@ class EditTool(BuiltinTool):
         old_text = kwargs.get("old_text", "")
         new_text = kwargs.get("new_text", "")
         line = kwargs.get("line", 0)
-        edits = kwargs.get("edits", None)
+        edits = kwargs.get("edits")
         replace_all = kwargs.get("replace_all", False)
 
         if not path:
@@ -163,47 +249,50 @@ class EditTool(BuiltinTool):
             return self._error(f"路径是目录: {path}")
 
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                content = f.read()
+            content, encoding = _read_text(path)
         except Exception as e:
             return self._error(f"读取文件失败: {e}")
 
-        normalized_content = _normalize(content)
-        normalized_old = _normalize(old_text)
-
-        # 行号锚点辅助匹配
-        match_start = self._find_match(normalized_content, normalized_old, line)
-        if match_start is None:
+        # 在原文上定位（返回原始偏移），替换只动命中区间，保留其余原始字节
+        spans = _locate_spans(content, old_text)
+        if not spans:
             hint = self._build_mismatch_hint(content, old_text)
             return json.dumps({
                 "success": False, "error": "未找到匹配的文本",
                 "hint": hint
             }, ensure_ascii=False)
 
-        # 检查是否唯一
-        count = list(self._find_all_matches(normalized_content, normalized_old))
-        if len(count) > 1 and not replace_all:
-            if not line:
-                return json.dumps({
-                    "success": False, "error": f"找到 {len(count)} 处匹配，请用 line 参数指定行号或设置 replace_all=true"
-                }, ensure_ascii=False)
-
-        # 执行替换
-        normalized_new = _normalize(new_text)
-        if replace_all:
-            new_normalized = normalized_content.replace(normalized_old, normalized_new)
+        if line and line > 0:
+            # 行号锚点：命中多处时取离锚点最近的一处
+            anchor = int(line)
+            chosen = [min(spans, key=lambda s: abs(_line_of(content, s[0]) - anchor))]
+        elif replace_all:
+            chosen = list(spans)
         else:
-            new_normalized = normalized_content.replace(normalized_old, normalized_new, 1)
+            if len(spans) > 1:
+                return json.dumps({
+                    "success": False,
+                    "error": f"找到 {len(spans)} 处匹配，请用 line 参数指定行号或设置 replace_all=true"
+                }, ensure_ascii=False)
+            chosen = spans
+
+        # 逆序替换，偏移互不影响
+        new_content = content
+        for s, e in sorted(chosen, key=lambda s: s[0], reverse=True):
+            new_content = new_content[:s] + new_text + new_content[e:]
+
+        if new_content == content:
+            return self._error("编辑后内容未发生变化（old_text 与 new_text 相同或未产生差异）")
 
         # 生成 diff
-        diff = _make_diff(path, content, new_normalized)
+        diff = _make_diff(path, content, new_content)
 
         # 自动备份
         await self._backup(path, content)
 
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(new_normalized)
+            with open(path, "w", encoding=encoding, newline="") as f:
+                f.write(new_content)
         except Exception as e:
             return self._error(f"写入文件失败: {e}")
 
@@ -211,6 +300,7 @@ class EditTool(BuiltinTool):
             "success": True,
             "path": path,
             "action": f"已修改 {path}",
+            "replacements": len(chosen),
             "diff": diff,
             "hint": "如需撤销此修改，请使用 edit 工具还原，或通过 git checkout 恢复"
         }, ensure_ascii=False, indent=2)
@@ -227,34 +317,33 @@ class EditTool(BuiltinTool):
 
         # 读取原始内容
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                original_content = f.read()
+            original_content, encoding = _read_text(path)
         except Exception as e:
             return self._error(f"读取文件失败: {e}")
 
-        # 逐个应用编辑
+        # 逐个应用编辑（在原文上按偏移替换，保留未命中区域原始字节）
         content = original_content
-        applied = []
+        applied = 0
         for i, edit in enumerate(edits):
             old = edit.get("old", "")
             new = edit.get("new", "")
             if not old or new is None:
                 continue
 
-            normalized_content = _normalize(content)
-            normalized_old = _normalize(old)
-
-            match_start = self._find_match(normalized_content, normalized_old, 0)
-            if match_start is None:
+            spans = _locate_spans(content, old)
+            if not spans:
                 return json.dumps({
                     "success": False,
                     "error": f"第 {i+1} 个编辑未找到匹配: {old[:50]}",
-                    "applied": i
+                    "applied": applied
                 }, ensure_ascii=False)
 
-            normalized_new = _normalize(new)
-            content = normalized_content.replace(normalized_old, normalized_new, 1)
-            applied.append(i + 1)
+            s, e = spans[0]
+            content = content[:s] + new + content[e:]
+            applied += 1
+
+        if content == original_content:
+            return self._error("批量编辑未产生任何变化（old 与 new 相同或未产生差异）")
 
         # 生成 diff
         diff = _make_diff(path, original_content, content)
@@ -263,7 +352,7 @@ class EditTool(BuiltinTool):
         await self._backup(path, original_content)
 
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding=encoding, newline="") as f:
                 f.write(content)
         except Exception as e:
             return self._error(f"写入文件失败: {e}")
@@ -271,69 +360,19 @@ class EditTool(BuiltinTool):
         return json.dumps({
             "success": True,
             "path": path,
-            "action": f"批量修改完成: {len(applied)}/{len(edits)} 处",
-            "applied": len(applied),
+            "action": f"批量修改完成: {applied}/{len(edits)} 处",
+            "applied": applied,
             "total": len(edits),
             "diff": diff,
         }, ensure_ascii=False, indent=2)
-
-    # ── 匹配逻辑 ─────────────────────────────────────
-
-    def _find_match(self, content: str, old_text: str, line: int = 0) -> int | None:
-        """在 content 中查找 old_text，返回匹配起始位置或 None"""
-        if line > 0:
-            # 行号锚点模式：只在指定行附近搜索
-            content_lines = content.split("\n")
-            start_line = max(0, line - 3)
-            end_line = min(len(content_lines), line + 2)
-            old_lines = old_text.split("\n")
-            search_len = sum(len(l) + 1 for l in content_lines[:end_line])
-            start_offset = sum(len(l) + 1 for l in content_lines[:start_line])
-            search_zone = content[start_offset:search_len]
-            idx = search_zone.find(old_text)
-            if idx >= 0:
-                return start_offset + idx
-            # 行号锚点放宽匹配：只匹配第一行
-            first_line = old_lines[0].strip() if old_lines else ""
-            if first_line:
-                for i in range(start_line, min(end_line, len(content_lines))):
-                    if first_line in content_lines[i]:
-                        return sum(len(l) + 1 for l in content_lines[:i])
-            return None
-
-        # 普通模式：全局匹配
-        idx = content.find(old_text)
-        if idx >= 0:
-            return idx
-
-        # 放宽匹配：去空白后尝试
-        stripped_content = re.sub(r'\s+', ' ', content)
-        stripped_old = re.sub(r'\s+', ' ', old_text)
-        idx = stripped_content.find(stripped_old)
-        if idx >= 0:
-            return idx
-
-        return None
-
-    def _find_all_matches(self, content: str, old_text: str) -> list[int]:
-        """返回所有匹配位置"""
-        positions = []
-        start = 0
-        while True:
-            idx = content.find(old_text, start)
-            if idx < 0:
-                break
-            positions.append(idx)
-            start = idx + 1
-        return positions
 
     # ── 备份 ─────────────────────────────────────────
 
     async def _backup(self, path: str, content: str):
         """编辑前自动备份"""
         try:
-            from undo_manager import UndoManager
             from agent.core import current_run
+            from undo_manager import UndoManager
             rc = current_run()
             ws = self.workspace or (rc.task_dir if rc else "")
             if ws and os.path.exists(ws):

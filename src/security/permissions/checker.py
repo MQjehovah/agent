@@ -17,6 +17,20 @@ READ_SHELL_PREFIXES = (
     "dir ", "more ", "less ", "stat ", "wc ",
 )
 
+# git 工具的操作分级: 只读 / 破坏性 / 其余按写
+GIT_READ_OPS = ("status", "diff", "log")
+GIT_DESTRUCTIVE_OPS = ("rollback",)
+
+
+def _git_access(arguments: dict) -> str:
+    """把 git 工具调用归类为 read / write / destructive。"""
+    op = str((arguments or {}).get("operation", "") or "").strip().lower()
+    if op in GIT_READ_OPS:
+        return "read"
+    if op in GIT_DESTRUCTIVE_OPS:
+        return "destructive"
+    return "write"
+
 
 class PermissionCheckResult:
     def __init__(self, allowed: bool, reason: str = ""):
@@ -62,6 +76,8 @@ class PermissionChecker:
                 if command.startswith(prefix):
                     return "read"
             return "write"
+        if tool_name == "git":
+            return "read" if _git_access(arguments) == "read" else "write"
         mcp_risk = self._mcp_risk(tool_name)
         if mcp_risk is not None:
             return "read" if mcp_risk == "read" else "write"
@@ -91,6 +107,13 @@ class PermissionChecker:
                 return PermissionCheckResult(
                     allowed=False,
                     reason=f"PLAN 模式禁止执行写操作: {tool_name}.{op}"
+                )
+            if tool_name == "git":
+                if _git_access(arguments) == "read":
+                    return PermissionCheckResult(allowed=True)
+                return PermissionCheckResult(
+                    allowed=False,
+                    reason=f"PLAN 模式禁止执行写类 git 操作: {arguments.get('operation')}"
                 )
             if tool_name in self.config.write_tools:
                 return PermissionCheckResult(
@@ -126,6 +149,11 @@ class PermissionChecker:
                 for frag in self.config.dangerous_commands:
                     if frag in command:
                         return PermissionCheckResult(allowed=True, reason="需要用户确认")
+                return PermissionCheckResult(allowed=True)
+            if tool_name == "git":
+                # 只读放行；破坏性(回滚)确认；其余写操作放行
+                if _git_access(arguments) == "destructive":
+                    return PermissionCheckResult(allowed=True, reason="需要用户确认")
                 return PermissionCheckResult(allowed=True)
             if mcp_risk == "destructive":
                 return PermissionCheckResult(allowed=True, reason="需要用户确认")
@@ -170,6 +198,9 @@ class PermissionChecker:
                 for prefix in READ_SHELL_PREFIXES:
                     if command.startswith(prefix):
                         return PermissionCheckResult(allowed=True)
+            elif tool_name == "git":
+                if _git_access(arguments) == "read":
+                    return PermissionCheckResult(allowed=True)
             return PermissionCheckResult(
                 allowed=True,
                 reason="需要用户确认"

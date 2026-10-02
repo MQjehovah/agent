@@ -134,7 +134,7 @@ def current_agent() -> "Agent | None":
 
 
 # 本地专家/技能取舍(收口到市场): market(默认) / both / local
-_LOCAL_EXPERTS_KEEP = {"AI开发团队"}
+_LOCAL_EXPERTS_KEEP = {"Coding(开发)"}
 
 
 def _local_experts_mode() -> str:
@@ -250,9 +250,9 @@ class Agent:
         self._team_config: dict = {}
         self._team_members: dict = {}
 
-        # ── v2.0: Plan Mode ──
+        # ── v2.0: Plan Mode（默认关闭；由 CLI `/plan on` 或显式开启）──
         self._plan_mode = None
-        self._enable_plan_mode = True
+        self._enable_plan_mode = False
         self._plan_mode_config = {
             "auto_plan": True,               # 自动判断是否进入 Plan Mode
             "require_approval": True,         # 是否需要用户审批

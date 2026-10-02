@@ -288,6 +288,7 @@ class SubagentManager:
         client=None,
         parent_agent=None,
         max_iterations: int = 0,
+        workspace: str | None = None,
     ) -> "Agent":
         """
         创建团队成员的子代理实例（不使用 templates 注册）。
@@ -297,6 +298,7 @@ class SubagentManager:
             member_name: 成员目录名
             client: LLM客户端
             parent_agent: 父代理
+            workspace: 显式工作区（如团队级 worktree）；缺省用成员模板/父工作区
 
         Returns:
             Agent 实例
@@ -310,7 +312,8 @@ class SubagentManager:
                 raise ValueError(f"团队 {team_name} 中未找到成员 {member_name}")
             self._team_member_cache[cache_key] = template_data
 
-        workspace = self._team_member_cache[cache_key].get("workspace") or self.parent_workspace or os.getcwd()
+        workspace = (workspace or self._team_member_cache[cache_key].get("workspace")
+                     or self.parent_workspace or os.getcwd())
         config_dir = self._team_member_cache[cache_key].get("config_dir", "")
 
         agent = Agent(

@@ -17,9 +17,9 @@ import hashlib
 import json
 import logging
 import os
-import re
 
 from tools import BuiltinTool
+from tools.edit import _make_diff, _read_text
 
 logger = logging.getLogger("agent.tools.batch_edit")
 
@@ -95,7 +95,7 @@ batch_edit 适用于跨多个文件的原子修改。
             return json.dumps({"success": False, "error": "缺少 edits 参数"}, ensure_ascii=False)
 
         if not workspace:
-            workspace = os.getcwd()
+            workspace = self.workspace or os.getcwd()
 
         # 第一阶段：验证所有编辑的锚点
         validation = self._validate_all(edits, workspace)
@@ -108,6 +108,9 @@ batch_edit 适用于跨多个文件的原子修改。
                 "failed_edits": validation.get("failed_edits", []),
                 "hint": "文件内容已被修改，锚点失效。请重新读取文件获取最新的内容后再提交编辑。",
             }, ensure_ascii=False)
+
+        # 验证通过：执行前对每个目标文件拍快照（支持撤销）
+        await self._snapshot_all(edits, workspace)
 
         # 第二阶段：执行所有编辑（已通过验证）
         results = self._apply_all(edits, workspace)
@@ -126,6 +129,10 @@ batch_edit 适用于跨多个文件的原子修改。
 
         if fail_count > 0:
             response["failed_edits"] = [r for r in results if not r["success"]]
+        else:
+            response["diffs"] = [
+                {"file": r["file"], "diff": r["diff"]} for r in results if r.get("diff")
+            ]
 
         return json.dumps(response, ensure_ascii=False, indent=2)
 
@@ -213,13 +220,12 @@ batch_edit 适用于跨多个文件的原子修改。
             full_path = self._resolve_path(file_path, workspace)
 
             try:
-                with open(full_path, encoding="utf-8", errors="replace") as f:
-                    content = f.read()
+                content, encoding = _read_text(full_path)
 
-                # 执行替换（此时已验证 old_text 唯一）
+                # 执行替换（此时已验证 old_text 唯一，原样保留未命中区域）
                 new_content = content.replace(old_text, new_text, 1)
 
-                with open(full_path, "w", encoding="utf-8") as f:
+                with open(full_path, "w", encoding=encoding, newline="") as f:
                     f.write(new_content)
 
                 results.append({
@@ -227,6 +233,7 @@ batch_edit 适用于跨多个文件的原子修改。
                     "file": file_path,
                     "old_length": len(old_text),
                     "new_length": len(new_text),
+                    "diff": _make_diff(full_path, content, new_content),
                 })
 
                 logger.info(f"[batch_edit] 已修改 {file_path}: {len(old_text)} → {len(new_text)} 字符")
@@ -242,6 +249,25 @@ batch_edit 适用于跨多个文件的原子修改。
         return results
 
     # ── 辅助 ───────────────────────────────────────────
+
+    async def _snapshot_all(self, edits: list[dict], workspace: str):
+        """编辑写盘前为每个目标文件拍快照（同一文件只拍一次），失败静默。"""
+        seen: set[str] = set()
+        for edit in edits:
+            full_path = self._resolve_path(edit["file"], workspace)
+            if full_path in seen or not os.path.isfile(full_path):
+                continue
+            seen.add(full_path)
+            try:
+                content, _ = _read_text(full_path)
+                from agent.core import current_run
+                from undo_manager import UndoManager
+                rc = current_run()
+                ws = self.workspace or (rc.task_dir if rc else "")
+                if ws and os.path.exists(ws):
+                    await UndoManager(ws).snapshot_before_edit(full_path, content)
+            except Exception as e:
+                logger.debug(f"[batch_edit] 快照失败(忽略) {full_path}: {e}")
 
     @staticmethod
     def _resolve_path(file_path: str, workspace: str) -> str:

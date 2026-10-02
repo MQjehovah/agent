@@ -272,6 +272,62 @@ class TestEditTool:
         content = test_file.read_text()
         assert "    return 1" in content
 
+    @pytest.mark.asyncio
+    async def test_line_anchor_targets_nearest_occurrence(self, tmp_path):
+        """行号锚点应命中锚点最近的一处，而不是文件首个匹配"""
+        test_file = tmp_path / "anchor.txt"
+        test_file.write_text("x = 1\ndo()\nx = 1\ndo()\n")
+
+        r = await self.tool.execute(
+            path=str(test_file),
+            old_text="x = 1",
+            new_text="x = 2",
+            line=3,
+        )
+        data = json.loads(r)
+        assert data["success"] is True
+        assert data["replacements"] == 1
+        assert test_file.read_text() == "x = 1\ndo()\nx = 2\ndo()\n"
+
+    @pytest.mark.asyncio
+    async def test_preserves_crlf_and_trailing_whitespace(self, tmp_path):
+        """编辑只动命中区间：不重写整文件，保留 CRLF 与他人行尾空白"""
+        test_file = tmp_path / "preserve.txt"
+        test_file.write_bytes(b"a  \r\nb  \r\nc\r\n")
+
+        r = await self.tool.execute(path=str(test_file), old_text="b", new_text="B")
+        assert json.loads(r)["success"] is True
+        assert test_file.read_bytes() == b"a  \r\nB  \r\nc\r\n"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_collapse_match_changes_content(self, tmp_path):
+        """折叠空白兜底命中后必须真实改写（不产生空 diff 的假成功）"""
+        test_file = tmp_path / "collapse.txt"
+        test_file.write_text("value   =   1\n")
+
+        r = await self.tool.execute(
+            path=str(test_file),
+            old_text="value = 1",
+            new_text="value = 2",
+        )
+        data = json.loads(r)
+        assert data["success"] is True
+        assert test_file.read_text() == "value = 2\n"
+
+    @pytest.mark.asyncio
+    async def test_batch_preserves_untouched_lines(self, tmp_path):
+        """批量编辑逐条按偏移替换，未命中行原样保留"""
+        test_file = tmp_path / "batch.txt"
+        test_file.write_text("keep   \nfoo()\nkeep2\n")
+
+        r = await self.tool.execute(
+            path=str(test_file),
+            edits=[{"old": "foo()", "new": "bar()"}],
+        )
+        data = json.loads(r)
+        assert data["success"] is True
+        assert test_file.read_text() == "keep   \nbar()\nkeep2\n"
+
 
 # ═══════════════════════════════════════════════════════════
 #  FileTool
@@ -361,7 +417,7 @@ class TestFileTool:
     @pytest.mark.asyncio
     async def test_read_empty_file(self, tmp_path):
         test_file = str(tmp_path / "empty.txt")
-        with open(test_file, "w") as f:
+        with open(test_file, "w"):
             pass
 
         r = await self.tool.execute(operation="read", path=test_file)
@@ -1343,6 +1399,68 @@ class TestPermissionChecker:
         outside = checker.check("file", {"operation": "write", "path": str(tmp_path / "other.txt")})
         assert "确认" in outside.reason
 
+    def test_git_permission_by_operation(self):
+        from security.permissions import PermissionChecker, PermissionConfig, PermissionMode
+        default = PermissionChecker(PermissionConfig(mode=PermissionMode.DEFAULT))
+        plan = PermissionChecker(PermissionConfig(mode=PermissionMode.PLAN))
+        smart = PermissionChecker(PermissionConfig(mode=PermissionMode.SMART))
+
+        # default: 只读放行，写需确认
+        assert default.check("git", {"operation": "status"}).reason == ""
+        assert "确认" in default.check("git", {"operation": "commit", "message": "x"}).reason
+        # plan: 只读放行，写阻断
+        assert plan.check("git", {"operation": "log"}).allowed is True
+        assert plan.check("git", {"operation": "commit", "message": "x"}).allowed is False
+        # smart: rollback 需确认，commit 放行
+        assert "确认" in smart.check("git", {"operation": "rollback", "name": "c"}).reason
+        assert smart.check("git", {"operation": "commit", "message": "x"}).reason == ""
+        # classify_access 只读归类
+        assert default.classify_access("git", {"operation": "diff"}) == "read"
+        assert default.classify_access("git", {"operation": "commit"}) == "write"
+
+
+# ═══════════════════════════════════════════════════════════
+#  GitTool
+# ═══════════════════════════════════════════════════════════
+
+def _init_git_repo(path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=path, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "t@t.local"], cwd=path, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "tester"], cwd=path, capture_output=True, text=True)
+
+
+class TestGitTool:
+    def setup_method(self):
+        from tools.git import GitTool
+        self.tool = GitTool()
+
+    @pytest.mark.asyncio
+    async def test_non_git_repo_errors(self, tmp_path):
+        self.tool.workspace = str(tmp_path)
+        data = json.loads(await self.tool.execute(operation="status"))
+        assert data["success"] is False
+        assert "Git" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_status_and_commit(self, tmp_path):
+        if not __import__("shutil").which("git"):
+            pytest.skip("git not installed")
+        _init_git_repo(str(tmp_path))
+        (tmp_path / "a.txt").write_text("hello\n")
+        self.tool.workspace = str(tmp_path)
+
+        status = json.loads(await self.tool.execute(operation="status"))
+        assert status["success"] is True
+
+        commit = json.loads(await self.tool.execute(operation="commit", message="feat: add a"))
+        assert commit["success"] is True
+        assert commit["commit"]
+
+        log = json.loads(await self.tool.execute(operation="log"))
+        assert log["success"] is True
+        assert "feat: add a" in log["output"]
+
 
 # ═══════════════════════════════════════════════════════════
 #  UsageTracker (existing)
@@ -1408,3 +1526,163 @@ class TestHookManager:
         manager.register(HookEvent.PRE_TOOL_USE, good_hook)
 
         await manager.fire("pre_tool_use", tool_name="test")
+
+
+# ═══════════════════════════════════════════════════════════
+#  BatchEditTool
+# ═══════════════════════════════════════════════════════════
+
+class TestBatchEditTool:
+    def setup_method(self):
+        from tools.batch_edit import BatchEditTool
+        self.tool = BatchEditTool()
+
+    @pytest.mark.asyncio
+    async def test_uses_tool_workspace_and_preserves_untouched(self, tmp_path):
+        """未传 workspace 时使用工具自身工作目录；未命中行原样保留并返回 diff"""
+        (tmp_path / "a.txt").write_text("keep   \nfoo()\nkeep2\n")
+        self.tool.workspace = str(tmp_path)
+
+        r = await self.tool.execute(edits=[{"file": "a.txt", "old": "foo()", "new": "bar()"}])
+        data = json.loads(r)
+        assert data["success"] is True
+        assert data["success_count"] == 1
+        assert (tmp_path / "a.txt").read_text() == "keep   \nbar()\nkeep2\n"
+        assert data["diffs"][0]["diff"]
+
+    @pytest.mark.asyncio
+    async def test_stale_anchor_rejects_all(self, tmp_path):
+        """任一锚点未命中则全部拒绝，不写盘"""
+        (tmp_path / "a.txt").write_text("foo()\n")
+        self.tool.workspace = str(tmp_path)
+
+        r = await self.tool.execute(edits=[{"file": "a.txt", "old": "nope", "new": "x"}])
+        data = json.loads(r)
+        assert data["success"] is False
+        assert (tmp_path / "a.txt").read_text() == "foo()\n"
+
+
+# ═══════════════════════════════════════════════════════════
+#  ApplyPatchTool
+# ═══════════════════════════════════════════════════════════
+
+class TestApplyPatchTool:
+    def setup_method(self):
+        from tools.apply_patch import ApplyPatchTool
+        self.tool = ApplyPatchTool()
+
+    @pytest.mark.asyncio
+    async def test_apply_single_file(self, tmp_path):
+        (tmp_path / "a.txt").write_text("one\ntwo\nthree\n")
+        self.tool.workspace = str(tmp_path)
+        patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n"
+
+        r = await self.tool.execute(patch=patch)
+        data = json.loads(r)
+        assert data["success"] is True
+        assert (tmp_path / "a.txt").read_text() == "one\nTWO\nthree\n"
+
+    @pytest.mark.asyncio
+    async def test_context_mismatch_rejects(self, tmp_path):
+        (tmp_path / "b.txt").write_text("hello\n")
+        self.tool.workspace = str(tmp_path)
+        patch = "--- a/b.txt\n+++ b/b.txt\n@@ -1,1 +1,2 @@\n nope\n+added\n"
+
+        r = await self.tool.execute(patch=patch)
+        data = json.loads(r)
+        assert data["success"] is False
+        assert (tmp_path / "b.txt").read_text() == "hello\n"
+
+    @pytest.mark.asyncio
+    async def test_multifile_atomic(self, tmp_path):
+        (tmp_path / "ok.txt").write_text("keep\nfoo()\n")
+        (tmp_path / "bad.txt").write_text("other\n")
+        self.tool.workspace = str(tmp_path)
+        patch = (
+            "--- a/ok.txt\n+++ b/ok.txt\n@@ -1,2 +1,2 @@\n keep\n-foo()\n+bar()\n"
+            "--- a/bad.txt\n+++ b/bad.txt\n@@ -1,1 +1,2 @@\n WRONG\n+added\n"
+        )
+
+        r = await self.tool.execute(patch=patch)
+        data = json.loads(r)
+        assert data["success"] is False
+        assert (tmp_path / "ok.txt").read_text() == "keep\nfoo()\n"
+        assert (tmp_path / "bad.txt").read_text() == "other\n"
+
+    @pytest.mark.asyncio
+    async def test_dry_run_does_not_write(self, tmp_path):
+        (tmp_path / "c.txt").write_text("x\ny\n")
+        self.tool.workspace = str(tmp_path)
+        patch = "--- a/c.txt\n+++ b/c.txt\n@@ -1,2 +1,2 @@\n x\n-y\n+Y\n"
+
+        r = await self.tool.execute(patch=patch, dry_run=True)
+        data = json.loads(r)
+        assert data["success"] is True
+        assert data["dry_run"] is True
+        assert (tmp_path / "c.txt").read_text() == "x\ny\n"
+
+
+# ═══════════════════════════════════════════════════════════
+#  CodeDiagnosticsTool
+# ═══════════════════════════════════════════════════════════
+
+class TestDiagnostics:
+    def test_detect_languages(self, tmp_path):
+        from tools.diagnostics import detect_languages
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        (tmp_path / "package.json").write_text("{}\n")
+        assert detect_languages(str(tmp_path)) == ["python", "node"]
+
+    def test_detect_languages_empty(self, tmp_path):
+        from tools.diagnostics import detect_languages
+        assert detect_languages(str(tmp_path)) == []
+
+    def test_parse_ruff(self):
+        from tools.diagnostics import _parse_ruff
+        payload = json.dumps([{
+            "filename": "a.py", "code": "F401", "message": "unused import",
+            "location": {"row": 3, "column": 1},
+        }])
+        issues = _parse_ruff(payload)
+        assert issues[0]["file"] == "a.py"
+        assert issues[0]["line"] == 3
+        assert issues[0]["severity"] == "error"
+        assert issues[0]["code"] == "F401"
+
+    def test_parse_mypy(self):
+        from tools.diagnostics import _parse_mypy
+        issues = _parse_mypy("a.py:4:2: error: Incompatible types  [assignment]")
+        assert issues[0]["line"] == 4 and issues[0]["severity"] == "error"
+
+    def test_parse_tsc(self):
+        from tools.diagnostics import _parse_tsc
+        issues = _parse_tsc("src/a.ts(10,5): error TS2322: Type 'x' is not assignable")
+        assert issues[0]["file"] == "src/a.ts" and issues[0]["line"] == 10
+
+    def test_format_advisory(self):
+        from tools.diagnostics import format_advisory
+        result = {"results": [{"tool": "ruff", "status": "issues", "issue_count": 1,
+                               "issues": [{"file": "a.py", "line": 1, "col": 1,
+                                           "severity": "error", "code": "F401", "message": "unused"}]}]}
+        text = format_advisory(result)
+        assert "ruff" in text and "a.py:1:1" in text
+        assert format_advisory({"results": [{"tool": "ruff", "status": "ok", "issues": []}]}) == ""
+
+    @pytest.mark.asyncio
+    async def test_tool_returns_structured_result(self, tmp_path):
+        import importlib.util
+        if importlib.util.find_spec("ruff") is None:
+            pytest.skip("ruff not installed")
+        from tools.diagnostics import CodeDiagnosticsTool
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\nversion='0'\n")
+        (tmp_path / "bad.py").write_text("import os\n")
+        tool = CodeDiagnosticsTool()
+        tool.workspace = str(tmp_path)
+
+        r = await tool.execute(path="bad.py")
+        data = json.loads(r)
+        assert data["success"] is True
+        ruff = next(res for res in data["results"] if res["tool"] == "ruff")
+        assert ruff["status"] in ("issues", "ok")
+        if ruff["status"] == "issues":
+            assert any(i["code"] == "F401" for i in ruff["issues"])

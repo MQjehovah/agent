@@ -43,8 +43,8 @@ class TestTeamSubagent:
     """团队子代理功能测试"""
 
     def test_scan_teams_returns_team(self, tmp_path):
-        """Verify scan_teams identifies AI开发团队 with its members"""
-        _create_team_dir(tmp_path, "AI开发团队", {
+        """Verify scan_teams identifies Coding(开发) with its members"""
+        _create_team_dir(tmp_path, "Coding(开发)", {
             "前端开发": "---\nname: 前端开发\ndescription: 前端开发工程师\n---\n你负责前端开发。",
             "后端开发": "---\nname: 后端开发\ndescription: 后端开发工程师\n---\n你负责后端开发。",
         })
@@ -53,15 +53,15 @@ class TestTeamSubagent:
         manager = SubagentManager(os.path.join(tmp_path, "agents"))
 
         teams = manager.scan_teams()
-        assert "AI开发团队" in teams
-        assert "前端开发" in teams["AI开发团队"]
-        assert "后端开发" in teams["AI开发团队"]
+        assert "Coding(开发)" in teams
+        assert "前端开发" in teams["Coding(开发)"]
+        assert "后端开发" in teams["Coding(开发)"]
 
     def test_scan_teams_skips_non_team(self, tmp_path):
         """Verify regular agent dirs (设备运维) don't appear as teams"""
         _create_agent_dir(tmp_path, "设备运维",
                           "---\nname: 设备运维\ndescription: 设备运维专家\n---\n你负责设备运维。")
-        _create_team_dir(tmp_path, "AI开发团队", {
+        _create_team_dir(tmp_path, "Coding(开发)", {
             "前端开发": "---\nname: 前端开发\ndescription: 前端开发工程师\n---\n你负责前端开发。",
         })
 
@@ -70,7 +70,7 @@ class TestTeamSubagent:
 
         teams = manager.scan_teams()
         assert "设备运维" not in teams
-        assert "AI开发团队" in teams
+        assert "Coding(开发)" in teams
 
     def test_scan_teams_skips_agents_outside_members(self, tmp_path):
         """Verify a dir with TEAM.md but no members/ is not treated as team"""
@@ -87,27 +87,27 @@ class TestTeamSubagent:
 
     def test_get_team_member_template_loads_prompt(self, tmp_path):
         """Verify get_team_member_template returns frontmatter correctly"""
-        _create_team_dir(tmp_path, "AI开发团队", {
+        _create_team_dir(tmp_path, "Coding(开发)", {
             "前端开发": "---\nname: 前端开发\ndescription: 前端开发工程师\n---\n你负责前端开发。",
         })
 
         from subagent_manager import SubagentManager
         manager = SubagentManager(os.path.join(tmp_path, "agents"))
 
-        tmpl = manager.get_team_member_template("AI开发团队", "前端开发")
+        tmpl = manager.get_team_member_template("Coding(开发)", "前端开发")
         assert tmpl is not None
         assert tmpl["name"] == "前端开发"
         assert tmpl["description"] == "前端开发工程师"
-        assert tmpl["prompt_dir"].endswith(os.path.join("AI开发团队", "members", "前端开发"))
+        assert tmpl["prompt_dir"].endswith(os.path.join("Coding(开发)", "members", "前端开发"))
 
     def test_get_team_member_template_nonexistent(self, tmp_path):
         """Verify get_team_member_template returns None for missing member"""
-        _create_team_dir(tmp_path, "AI开发团队", {})
+        _create_team_dir(tmp_path, "Coding(开发)", {})
 
         from subagent_manager import SubagentManager
         manager = SubagentManager(os.path.join(tmp_path, "agents"))
 
-        tmpl = manager.get_team_member_template("AI开发团队", "不存在成员")
+        tmpl = manager.get_team_member_template("Coding(开发)", "不存在成员")
         assert tmpl is None
 
     def test_existing_agents_still_work(self, tmp_path):
@@ -116,7 +116,7 @@ class TestTeamSubagent:
                           "---\nname: 设备运维\ndescription: 设备运维专家\n---\n你负责设备运维。")
         _create_agent_dir(tmp_path, "售后客服",
                           "---\nname: 售后客服\ndescription: 售后客服\n---\n你负责售后客服。")
-        _create_team_dir(tmp_path, "AI开发团队", {
+        _create_team_dir(tmp_path, "Coding(开发)", {
             "前端开发": "---\nname: 前端开发\ndescription: 前端开发工程师\n---\n你负责前端开发。",
         })
 
@@ -128,13 +128,13 @@ class TestTeamSubagent:
         assert "售后客服" in manager.templates
 
         # 验证团队目录不出现在模板中
-        assert "AI开发团队" not in manager.templates
+        assert "Coding(开发)" not in manager.templates
         assert "前端开发" not in manager.templates
 
     @pytest.mark.asyncio
     async def test_run_team_agent(self, tmp_path):
         """Verify run_team_agent delegates to _create_team_subagent and runs the agent"""
-        _create_team_dir(tmp_path, "AI开发团队", {
+        _create_team_dir(tmp_path, "Coding(开发)", {
             "算法研究员": "---\nname: 算法研究员\ndescription: AI算法研究员\n---\n你负责算法研究。",
         })
 
@@ -148,10 +148,10 @@ class TestTeamSubagent:
         mock_agent.run = AsyncMock(return_value=AgentResult(agent_id="test", status="success", result="研究成果"))
 
         with patch.object(manager, "_create_team_subagent", new=AsyncMock(return_value=mock_agent)) as mock_create:
-            result = await manager.run_team_agent("AI开发团队", "算法研究员", "研究新算法")
+            result = await manager.run_team_agent("Coding(开发)", "算法研究员", "研究新算法")
 
         mock_create.assert_called_once_with(
-            "AI开发团队", "算法研究员",
+            "Coding(开发)", "算法研究员",
             client=None, parent_agent=None,
         )
         mock_agent.run.assert_called_once_with("研究新算法")
@@ -162,7 +162,7 @@ class TestTeamSubagent:
         """Verify team member templates don't leak into self.templates"""
         _create_agent_dir(tmp_path, "设备运维",
                           "---\nname: 设备运维\ndescription: 设备运维专家\n---\n你负责设备运维。")
-        _create_team_dir(tmp_path, "AI开发团队", {
+        _create_team_dir(tmp_path, "Coding(开发)", {
             "算法研究员": "---\nname: 算法研究员\ndescription: AI算法研究员\n---\n你负责算法研究。",
         })
 
@@ -177,7 +177,7 @@ class TestTeamSubagent:
         mock_agent.run = AsyncMock(return_value=AgentResult(agent_id="test", status="success", result="研究成果"))
 
         with patch.object(manager, "_create_team_subagent", new=AsyncMock(return_value=mock_agent)):
-            await manager.run_team_agent("AI开发团队", "算法研究员", "研究新算法")
+            await manager.run_team_agent("Coding(开发)", "算法研究员", "研究新算法")
 
         assert manager.templates == original_templates
-        assert "AI开发团队/算法研究员" not in manager.templates
+        assert "Coding(开发)/算法研究员" not in manager.templates

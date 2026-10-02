@@ -257,7 +257,7 @@ class CodeSearchTool(BuiltinTool):
             return json.dumps({"success": False, "error": "缺少 query 参数"}, ensure_ascii=False)
 
         if not workspace:
-            workspace = os.getcwd()
+            workspace = self.workspace or os.getcwd()
 
         result = {
             "query": query,
@@ -322,7 +322,7 @@ class CodeSearchTool(BuiltinTool):
                 continue
             try:
                 q = lang.query(qdef["query"])
-                for node, cap_name in q.captures(root):
+                for node, _cap_name in q.captures(root):
                     name = node.text.decode("utf-8") if node.text else ""
                     if name == query:
                         start_row, start_col = node.start_point
@@ -355,7 +355,7 @@ class CodeSearchTool(BuiltinTool):
         for qdef in call_queries:
             try:
                 q = lang.query(qdef["query"])
-                for node, cap_name in q.captures(root):
+                for node, _cap_name in q.captures(root):
                     name = node.text.decode("utf-8") if node.text else ""
                     if name == query:
                         start_row, start_col = node.start_point

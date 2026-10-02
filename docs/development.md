@@ -234,7 +234,7 @@ SubagentManager.get_or_create_subagent(template)
 
 ### 7.2 团队编排
 
-`config/agents/AI开发团队/` 包含 `TEAM.md` + `agents/` 子目录（7 个角色）。
+`config/agents/Coding(开发)/` 包含 `TEAM.md` + `agents/` 子目录（7 个角色）。
 
 ```
 TEAM.md (pipeline_mode: auto/feedback/default)
