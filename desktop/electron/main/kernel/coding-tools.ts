@@ -399,7 +399,7 @@ function runShell(cwd: string, command: string, timeoutSec: number): Promise<Too
   })
 }
 
-const codeDiagnosticsTool: ToolDefinition = {
+export const codeDiagnosticsTool: ToolDefinition = {
   name: 'code_diagnostics',
   description:
     '对工作区工程做静态检查，按工程类型自动选择命令(Node: tsc --noEmit；Python: ruff check；Go: go vet；Rust: cargo check)。返回诊断输出(截断)。',

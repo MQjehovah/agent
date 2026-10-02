@@ -48,6 +48,14 @@ export interface ChatMessage {
   name?: string
 }
 
+/** 写后诊断单条问题（LSP 或回退诊断） */
+export interface DiagnosticIssue {
+  line: number
+  character: number
+  severity: string
+  message: string
+}
+
 /** 内核向 UI 派发的事件流 */
 export type AgentEvent =
   | { type: 'token'; text: string }

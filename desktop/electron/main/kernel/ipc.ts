@@ -69,6 +69,7 @@ import {
 import { createRagSearcher } from './rag'
 import { createTaskTool, listTeamMembers, readMemberPrompt } from './subagent'
 import { codingTools } from './coding-tools'
+import { lspTool, lspDiagnostics, shutdownAllLsp } from './lsp'
 import { builtinTools, kbSearchTool } from './tools'
 import { importAttachments, parseAttachImportPayload } from './attachment-import'
 import { uploadAttachmentsToAgent } from './attachment-upload'
@@ -110,6 +111,9 @@ const BASE_SYSTEM_PROMPT =
 /** 传给 loop 的上下文预算与轮数上限 */
 const MAX_CONTEXT_CHARS = 96_000
 const MAX_ROUNDS = 100
+
+/** 写后诊断模式：off(默认) / advisory / block；经 LSP 取诊断（无 LSP 不触发） */
+const POST_EDIT_DIAGNOSTICS_MODE = (process.env.AGENT_POST_EDIT_DIAGNOSTICS || 'off').trim().toLowerCase()
 
 /** registry 工具名前缀：MCP 工具（mcp.ts mcpToolName）与市场远程工具（market-tools.ts）的公共约定 */
 const MCP_TOOL_PREFIX = 'mcp__'
@@ -154,8 +158,9 @@ function ensureRegistry(): Registry {
   if (!registry) {
     const reg = createRegistry()
     for (const tool of builtinTools) reg.register(tool)
-    // 本地编码底座工具: patch / git / repo_map / rename_symbol / code_diagnostics
+    // 本地编码底座工具: patch / git / repo_map / rename_symbol / code_diagnostics / lsp
     for (const tool of codingTools) reg.register(tool)
+    reg.register(lspTool)
     // kb_search 依赖注入：RAG 直连实现带 gateway 受众平台 token（语义同 upstream 的 authFor('rag')），
     // 由 rag.ts 的可注入工厂构造，fetch/token/地址都可测；tools.ts 保持不碰 identity/upstream 的纯度
     reg.register(
@@ -1235,52 +1240,79 @@ async function executeLocalTurn(
   if (expert && existsSync(join(pluginDir, 'TEAM.md'))) {
     const members = listTeamMembers(pluginDir, expert)
     if (members.length) {
+      // 团队共享上下文（blackboard）：前序成员结果摘要注入后序成员，形成"工业级"接力
+      const board: Array<{ member: string; output: string }> = []
+      const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) + '…' : s)
       const runTeamMember = async (member: string, task: string): Promise<{ ok: boolean; output: string }> => {
-        emit({ type: 'subagent_start', name: member })
         const memberPrompt = readMemberPrompt(pluginDir, member)
-        let acc = ''
-        let subError = ''
-        const nestedEmit = (e: AgentEvent): void => {
-          if (e.type === 'token') {
-            acc += e.text
-            emit({ type: 'subagent_token', name: member, text: e.text })
-          } else if (e.type === 'tool_call') {
-            emit({ type: 'subagent_tool_call', name: member, tool: e.name, args: e.args })
-          } else if (e.type === 'tool_result') {
-            emit({ type: 'subagent_tool_result', name: member, tool: e.name, output: e.output, ok: e.ok })
-          } else if (e.type === 'error') {
-            subError = e.message
+        emit({ type: 'subagent_start', name: member })
+        const MAX_ATTEMPTS = 2
+        let lastError = ''
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+          if (attempt > 1) {
+            emit({
+              type: 'subagent_token',
+              name: member,
+              text: `\n[重试 ${attempt - 1}/${MAX_ATTEMPTS - 1}] 上一轮失败：${lastError}\n`
+            })
           }
-        }
-        try {
-          await runAgentTurn(
-            {
-              apiKey: gatewayKey,
-              baseUrl: getConfig().gatewayUrl.replace(/\/+$/, ''),
-              registry: expertReg,
-              permissions,
-              systemPrompt: memberPrompt,
-              maxRounds: 40,
-              resolveSkill: (name) => sessionSkills.getSkillBody(name),
-              persist: () => {}
-            },
-            {
-              // 成员复用父会话 sessionId：权限请求经父 sender 派发，UI 才能弹确认
-              sessionId: session.id,
-              workspace: session.workspace,
-              model: runModel,
-              history: [],
-              userMessage: task,
-              emit: nestedEmit,
-              signal: controller.signal
+          const boardContext = board.length
+            ? '\n\n## 团队共享上下文（前序成员结果摘要）\n' +
+              board
+                .slice(-4)
+                .map((b) => `### ${b.member}\n${clip(b.output, 1500)}`)
+                .join('\n\n')
+            : ''
+          let acc = ''
+          let subError = ''
+          const nestedEmit = (e: AgentEvent): void => {
+            if (e.type === 'token') {
+              acc += e.text
+              emit({ type: 'subagent_token', name: member, text: e.text })
+            } else if (e.type === 'tool_call') {
+              emit({ type: 'subagent_tool_call', name: member, tool: e.name, args: e.args })
+            } else if (e.type === 'tool_result') {
+              emit({ type: 'subagent_tool_result', name: member, tool: e.name, output: e.output, ok: e.ok })
+            } else if (e.type === 'error') {
+              subError = e.message
             }
-          )
-        } catch (err) {
-          subError = err instanceof Error ? err.message : String(err)
+          }
+          try {
+            await runAgentTurn(
+              {
+                apiKey: gatewayKey,
+                baseUrl: getConfig().gatewayUrl.replace(/\/+$/, ''),
+                registry: expertReg,
+                permissions,
+                systemPrompt: memberPrompt + boardContext,
+                maxRounds: 40,
+                resolveSkill: (name) => sessionSkills.getSkillBody(name),
+                persist: () => {}
+              },
+              {
+                // 成员复用父会话 sessionId：权限请求经父 sender 派发，UI 才能弹确认
+                sessionId: session.id,
+                workspace: session.workspace,
+                model: runModel,
+                history: [],
+                userMessage: task,
+                emit: nestedEmit,
+                signal: controller.signal
+              }
+            )
+          } catch (err) {
+            subError = err instanceof Error ? err.message : String(err)
+          }
+          if (!subError && acc.trim()) {
+            board.push({ member, output: acc })
+            emit({ type: 'subagent_end', name: member, output: acc })
+            return { ok: true, output: acc }
+          }
+          lastError = subError || '(空输出)'
         }
-        emit({ type: 'subagent_end', name: member, output: acc })
-        if (subError) return { ok: false, output: acc ? `${acc}\n[error] ${subError}` : `[error] ${subError}` }
-        return { ok: true, output: acc || '(无输出)' }
+        const out = `成员 ${member} 执行失败（已重试 ${MAX_ATTEMPTS - 1} 次）：${lastError}`
+        emit({ type: 'subagent_end', name: member, output: out })
+        return { ok: false, output: out }
       }
       const turnOverlay = createRegistry()
       turnOverlay.register(createTaskTool({ members, run: runTeamMember }))
@@ -1322,6 +1354,8 @@ async function executeLocalTurn(
       toolSearch,
       maxRounds: MAX_ROUNDS,
       resolveSkill: (name) => sessionSkills.getSkillBody(name),
+      postEditDiagnostics: POST_EDIT_DIAGNOSTICS_MODE === 'off' ? undefined : lspDiagnostics,
+      postEditDiagnosticsMode: POST_EDIT_DIAGNOSTICS_MODE === 'block' ? 'block' : 'advisory',
       persist: (msg) => store.appendMessage(session.id, msg)
     },
     {
@@ -1665,6 +1699,7 @@ export function registerKernelIpc(): void {
   app.once('will-quit', () => {
     const expertHandles = [...expertMcpHandles.values()].flat()
     void Promise.allSettled([...mcpHandles, ...expertHandles].map((h) => h.close()))
+    shutdownAllLsp()
   })
 
   // 退出删除临时会话(仅本地): 本次运行内可回看, 退出即删; 崩溃时由下次启动清理兜底

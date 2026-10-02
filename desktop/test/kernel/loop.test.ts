@@ -882,3 +882,69 @@ test('loop: 同轮多个 task 子代理并发执行', async () => {
   assert.equal(maxActive, 2, '两个 task 子代理应并发执行')
   assert.equal(persisted.filter((m) => m.role === 'tool').length, 2)
 })
+
+test('loop: 写后诊断 advisory 追加提示不阻断，block 标记成功=false', async () => {
+  const writeTool: ToolDefinition = {
+    name: 'file_write',
+    description: '',
+    kind: 'write',
+    parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } },
+    execute: async () => ({ ok: true, output: '已写入 a.ts' })
+  }
+  const registry = {
+    toOpenAiTools: () => [
+      { type: 'function', function: { name: 'file_write', description: '', parameters: {} } }
+    ],
+    get: (n: string) => (n === 'file_write' ? writeTool : undefined)
+  } as unknown as Registry
+  const permissions = { ask: async () => true, needsAsk: () => false } as unknown as PermissionGateway
+  const payload = {
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            { index: 0, id: 'c1', type: 'function', function: { name: 'file_write', arguments: '{"path":"a.ts","content":"x"}' } }
+          ]
+        },
+        finish_reason: 'tool_calls'
+      }
+    ]
+  }
+  for (const mode of ['advisory', 'block'] as const) {
+    const sent: { messages: Array<Record<string, unknown>> } = { messages: [] }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = stubSseFetch([payload], sent)
+    const events: AgentEvent[] = []
+    try {
+      await runAgentTurn(
+        loopDeps({
+          registry,
+          permissions,
+          maxRounds: 1,
+          postEditDiagnostics: async () => [
+            { line: 1, character: 1, severity: 'error', message: '类型错误' }
+          ],
+          postEditDiagnosticsMode: mode
+        }),
+        {
+          sessionId: 's1',
+          workspace: 'w',
+          model: 'm',
+          history: [],
+          userMessage: '写文件',
+          emit: (e) => {
+            events.push(e)
+          }
+        }
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    const tr = events.find((e) => e.type === 'tool_result') as
+      | { type: 'tool_result'; ok: boolean; output: string }
+      | undefined
+    assert.ok(tr, '应有 tool_result 事件')
+    assert.ok(tr.output.includes('写后诊断'), tr.output)
+    assert.equal(tr.ok, mode === 'advisory')
+  }
+})

@@ -1,7 +1,7 @@
 import type { PermissionGateway } from './permissions'
 import type { Registry } from './registry'
 import type { StoredMessage } from './session'
-import type { AgentEvent, ChatMessage, ToolCall, ToolResult } from './types'
+import type { AgentEvent, ChatMessage, DiagnosticIssue, ToolCall, ToolResult } from './types'
 import { buildToolNameMaps, toProviderToolName } from './tool-names'
 import { selectRoundTools } from './tool-search'
 import { buildWireContent } from './image-wire'
@@ -148,6 +148,12 @@ export interface LoopDeps {
    * 缺省不传时保持旧行为（每轮全量发送注册表工具）。
    */
   toolSearch?: ToolSearchHooks
+  /**
+   * 写后诊断（编码深度）：写文件工具成功后取该文件的语言问题（LSP）。
+   * 缺省不传 = 关闭；advisory 追加提示、block 追加并标记失败。仅对 file_write/file_edit 生效。
+   */
+  postEditDiagnostics?: (workspace: string, path: string) => Promise<DiagnosticIssue[]>
+  postEditDiagnosticsMode?: 'advisory' | 'block'
 }
 
 /** 渐进披露钩子：progressive 决定本轮是否只发内置 + 已激活远程工具，activeNames 提供本会话激活集 */
@@ -503,10 +509,44 @@ async function execToolCall(
     return { ok: false, output: '工具参数不是合法 JSON' }
   }
   try {
-    return await tool.execute(args, { workspace: input.workspace, sessionId: input.sessionId })
+    const result = await tool.execute(args, { workspace: input.workspace, sessionId: input.sessionId })
+    return await applyPostEditDiagnostics(deps, input, localName, args, result)
   } catch (err) {
     return { ok: false, output: `工具执行异常: ${errMsg(err)}` }
   }
+}
+
+/** 写文件工具（写后诊断仅对它们生效） */
+const POST_EDIT_TOOLS = new Set(['file_write', 'file_edit'])
+
+/** 写后诊断：仅当注入 postEditDiagnostics 且为写文件工具、参数含 path 时生效 */
+async function applyPostEditDiagnostics(
+  deps: LoopDeps,
+  input: RunTurnInput,
+  localName: string,
+  args: Record<string, unknown>,
+  result: ToolResult
+): Promise<ToolResult> {
+  if (!deps.postEditDiagnostics || !POST_EDIT_TOOLS.has(localName)) return result
+  const path = typeof args.path === 'string' ? args.path : ''
+  if (!path) return result
+  let issues: DiagnosticIssue[]
+  try {
+    issues = await deps.postEditDiagnostics(input.workspace, path)
+  } catch {
+    return result
+  }
+  const errors = issues.filter((i) => i.severity === 'error')
+  if (!errors.length) return result
+  const note = errors
+    .slice(0, 20)
+    .map((i) => `  ${i.line}:${i.character} ${i.message}`)
+    .join('\n')
+  const suffix = `\n\n[写后诊断] ${path} 发现 ${errors.length} 个错误：\n${note}`
+  if (deps.postEditDiagnosticsMode === 'block') {
+    return { ok: false, output: result.output + suffix }
+  }
+  return { ok: result.ok, output: result.output + suffix }
 }
 
 function isAbortError(err: unknown): boolean {
