@@ -25,7 +25,7 @@ DEFAULT_TOOL_TIMEOUT = 180.0
 # 已选择的回答无法回传(线上 ask 卡死/空错误)。故 ask_user 豁免为更长值:
 # max(600s 兜底, AGENT_WEB_ASK_TIMEOUT + 60s 余量), 保证 bridge 自身先超时回落
 # 默认值, 工具侧硬超时只做兜底。其它工具保持默认 180s。
-_TOOL_TIMEOUT_OVERRIDES = {"ask_user": 600.0, "market_delegate": 600.0}
+_TOOL_TIMEOUT_OVERRIDES = {"ask_user": 600.0, "market_execute": 600.0}
 _ASK_TIMEOUT_MARGIN = 60.0
 
 
@@ -70,7 +70,7 @@ class BuiltinTool(ABC):
     temp_dir: str = ""
     # True = 在主事件循环内联执行(不丢工具线程池)。适用于需要访问主循环绑定对象
     # (子代理/会话 asyncio.Lock、事件循环内共享状态)的纯 async 网络型工具——
-    # 否则临时线程循环会抛 "Lock ... is bound to a different event loop"。见 market_delegate。
+    # 否则临时线程循环会抛 "Lock ... is bound to a different event loop"。
     run_on_main_loop: bool = False
 
     @property
@@ -191,8 +191,8 @@ class ToolRegistry:
         tool = self._tools[name]
         try:
             if getattr(tool, "run_on_main_loop", False):
-                # 主循环内联执行(纯 async 网络型工具, 不做同步阻塞): 供 market_delegate
-                # 等需访问主循环绑定对象的工具使用, 避免跨事件循环的锁错误。
+                # 主循环内联执行(纯 async 网络型工具, 不做同步阻塞): 供需访问主循环
+                # 绑定对象的工具使用, 避免跨事件循环的锁错误。
                 return await asyncio.wait_for(
                     tool.execute(**args), timeout=resolve_tool_timeout(name, self._tool_timeout)
                 )

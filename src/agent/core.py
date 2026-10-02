@@ -523,7 +523,7 @@ class Agent:
 
         self._init_retrieval()
 
-        self._init_market_runtime()
+        self._init_market_tools()
 
         self._init_code_quality()
 
@@ -544,21 +544,19 @@ class Agent:
         self.tool_registry.register_tool(tool)
         logger.info(f"Agent [{self.name}] RAG 知识库已接入(用户 token): {rag_url}")
 
-    def _init_market_runtime(self):
+    def _init_market_tools(self):
         """市场工具(用户身份): 仅市场配置齐备时保留。
 
         - ``market_search``: 按用户视角检索市场目录(发现层);
-        - ``market_runtime``: 按用户 token 调用 /api/runtime/*(执行层);
-        - ``market_delegate``: 委派专家(本机子代理执行; persona/技能/连接器清单同样按用户 token 拉取)。
-        三者逐请求携带当前用户的下游 token(aud=gateway), 无托管时 fail-closed 并引导登录; 未配置市场时移除。
+        - ``market_execute``: 按用户 token 调用 /api/runtime/*(执行层; kind=agent 即委派专家)。
+        两者逐请求携带当前用户的下游 token(aud=gateway), 无托管时 fail-closed 并引导登录; 未配置市场时移除。
         """
         from mcps.platform import PlatformMCPConfig
         if PlatformMCPConfig.from_env().enabled:
-            logger.info("市场工具已启用: market_search(检索) + market_runtime(执行) + market_delegate(委派, 用户 token)")
+            logger.info("市场工具已启用: market_search(检索) + market_execute(执行/委派, 用户 token)")
             return
-        self.tool_registry.unregister_tool("market_runtime")
+        self.tool_registry.unregister_tool("market_execute")
         self.tool_registry.unregister_tool("market_search")
-        self.tool_registry.unregister_tool("market_delegate")
 
     def _init_code_quality(self):
         """初始化代码质量相关模块"""
@@ -843,7 +841,7 @@ class Agent:
         if os.path.exists(agents_dir):
             self.subagent_manager = SubagentManager(agents_dir, parent_workspace=self.workspace)
             self.subagent_manager._parent_agent = self
-            # 专家收口: 根 agent / worker 仅保留本地团队(白名单), 其余专家走市场(market_search/market_delegate)。
+            # 专家收口: 根 agent / worker 仅保留本地团队(白名单), 其余专家走市场(market_search/market_execute)。
             if self._local_cutoff():
                 templates = getattr(self.subagent_manager, "templates", {}) or {}
                 removed = [n for n in list(templates) if n not in _LOCAL_EXPERTS_KEEP]

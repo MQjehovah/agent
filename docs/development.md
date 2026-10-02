@@ -198,9 +198,9 @@ AgentSession
 | Web/多模态 | `web_search` `web_fetch` `read_image` |
 | 编排/交互 | `task` `todowrite` `ask_user` `tool_search` |
 | 记忆/身份 | `memory` `whoami` |
-| 市场（配置齐备时） | `market_search` `market_runtime` `market_delegate` |
+| 市场（配置齐备时） | `market_search` `market_execute` |
 
-> 共 21 个内置工具；另有动态工具：`skill`（技能）、`knowledge_search`（配置 RAG 时）、MCP（本地/平台）、插件（dingtalk/feishu/kanban/scheduler）。
+> 共 20 个内置工具；另有动态工具：`skill`（技能）、`knowledge_search`（配置 RAG 时）、MCP（本地/平台）、插件（dingtalk/feishu/kanban/scheduler）。
 > **完整参数、动态工具、可见性/渐进披露、权限与按 agent 作用域见 [工具参考 tools.md](tools.md)。**
 
 ### 6.2 工具注册
@@ -213,7 +213,7 @@ ToolRegistry.auto_discover()  # AST 扫描 src/tools/*.py，实例化 BuiltinToo
 
 所有工具的 JSON Schema 作为 `tools` 参数传给 LLM，决定 LLM 可调用的工具集。团队子代理通过 `tool_denylist` 过滤工具。
 
-**文件**：`src/tools/`（21 个内置工具，自动发现）
+**文件**：`src/tools/`（20 个内置工具，自动发现）
 
 ## 七、子代理与团队编排
 

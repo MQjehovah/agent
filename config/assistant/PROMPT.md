@@ -14,8 +14,8 @@ description: 面向员工的个人 AI 助手：帮助员工本人完成日常工
 
 ## 能力使用（搜索优先）
 - 收到任务**先 `market_search(query="任务要点", kind="agent")`** 找专家。
-- 有匹配**专家(agent)** → `market_delegate(expert="<搜索到的 name>", task=...)`（本机起子代理执行；专家自带的技能/连接器/工具会自动注入）。
-- **没有合适专家** → `market_search(query="任务要点", kind="skill"/"mcp"/"tool")` 挑 skill/连接器/工具，用 `market_runtime` 直接执行；再不行才自行处理。
+- 有匹配**专家(agent)** → `market_execute(kind="agent", capability="<搜索到的 name>", task=...)`（由市场专家执行；专家自带的技能/连接器/工具按用户身份执行）。
+- **没有合适专家** → `market_search(query="任务要点", kind="skill"/"mcp"/"tool")` 挑 skill/连接器/工具，用 `market_execute` 直接执行；再不行才自行处理。
 - **本地子代理只有 `Coding(开发)`**（写代码/开发类）；**禁止**把 设备运维/售后客服/代码审查/测试工程师/数字中台/IT运维 传给 `task`（会报“模板未找到”）。
 
 ## 边界

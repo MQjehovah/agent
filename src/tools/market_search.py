@@ -2,7 +2,7 @@
 
 按要办的事(task/关键词)在市场检索可用能力(agent/skill/mcp/tool/workflow),
 逐请求携带当前提问者的**用户 token**(Bearer, audience=gateway), 由市场按用户
-视角过滤可见性与归因; 命中后可用 ``market_runtime`` 执行。无托管 token 时
+视角过滤可见性与归因; 命中后可用 ``market_execute`` 执行。无托管 token 时
 fail-closed 并引导用户先登录完成身份授权。
 """
 
@@ -34,7 +34,7 @@ class MarketSearchTool(BuiltinTool):
         return (
             "在能力市场按要办的事检索可用能力(以当前提问者视角): 返回 agent(专家)/skill(技能)/"
             "mcp(连接器)/tool(工具) 清单及简介。用于**先发现再调用**——找到合适的后，"
-            "用 market_runtime 执行(kind=tool/mcp/skill/agent)。"
+            "用 market_execute 执行(kind=tool/mcp/skill/agent)。"
             "每条结果带 joined 标记: joined=true 表示已开通可直接调用; joined=false 表示未开通,"
             "**不要调用**(会 403), 应提示用户到能力市场「加入我的能力」或让管理员配置。"
             "可用 `kind` 只看某一类(如先 kind=\"agent\" 找专家；没有再 kind=\"skill\"/\"mcp\"/\"tool\")。"
@@ -137,7 +137,7 @@ class MarketSearchTool(BuiltinTool):
                   if not i.get("joined")]
         if locked:
             out["note"] = (
-                "以下能力未开通(joined=false), 不可用 market_runtime 调用: "
+                "以下能力未开通(joined=false), 不可用 market_execute 调用: "
                 + ", ".join(locked[:10])
                 + "。请提示用户到能力市场「加入我的能力」或让管理员配置后再使用。"
             )

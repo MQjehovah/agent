@@ -1,4 +1,4 @@
-"""能力市场共享工具: 市场配置读取(供 market_search / market_runtime / market_delegate 复用)。
+"""能力市场共享工具: 市场配置读取(供 market_search / market_execute 复用)。
 
 用户 token 解析公共件已抽到 ``tools/user_token.py``(知识检索工具等共用)。
 """

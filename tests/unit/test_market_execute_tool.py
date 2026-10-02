@@ -1,8 +1,8 @@
-"""市场运行时工具(用户身份)单测。
+"""市场执行工具(用户身份)单测。
 
 覆盖:
 - 逐请求携带用户 token(Bearer, aud=gateway)调用 /api/runtime/*, 不再带服务令牌 / X-Act-As-Sub;
-- tool/mcp/skill/agent 四类端点与请求体;
+- tool/mcp/skill/agent 四类端点与请求体（agent 即委派专家）;
 - 无托管 token / uid 解析失败时 fail-closed 并返回统一引导登录文案; 市场未配置时返回错误。
 """
 import json
@@ -14,8 +14,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 import pytest  # noqa: E402
 
 from agent.core import RunContext, _current_run  # noqa: E402
-from tools import market_runtime as mrt  # noqa: E402
-from tools.market_runtime import MarketRuntimeTool  # noqa: E402
+from tools import market_execute as me  # noqa: E402
+from tools.market_execute import MarketExecuteTool  # noqa: E402
 from web.sso_tokens import USER_TOKEN_HINT as _HINT  # noqa: E402
 
 
@@ -64,12 +64,12 @@ def hosted_token(monkeypatch):
     return "user-tok-7"
 
 
-def test_market_runtime_tool_schema_is_object():
+def test_market_execute_tool_schema_is_object():
     """回归: 工具 parameters 必须是完整 JSON Schema(type=object/properties/required)。
 
     曾因只返回字段字典导致 LLM 报 `type: null`。
     """
-    tool = MarketRuntimeTool()
+    tool = MarketExecuteTool()
     params = tool.parameters
     assert params.get("type") == "object"
     assert isinstance(params.get("properties"), dict)
@@ -77,6 +77,7 @@ def test_market_runtime_tool_schema_is_object():
     assert params.get("required") == ["capability"]
     definition = tool.get_definition()
     assert definition["function"]["parameters"] == params
+    assert tool.name == "market_execute"
 
 
 async def _run_with(user_id: str, coro_factory):
@@ -88,15 +89,16 @@ async def _run_with(user_id: str, coro_factory):
         _current_run.reset(token)
 
 
-async def test_market_runtime_tool_sends_user_token(monkeypatch, hosted_token):
-    monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
-    tool = MarketRuntimeTool()
+async def test_market_execute_tool_sends_user_token(monkeypatch, hosted_token):
+    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
+    tool = MarketExecuteTool()
     out = await _run_with(
         "web:7",
         lambda: tool.execute(capability="某工具", kind="tool", tool="t", params={"a": 1}),
     )
     payload = json.loads(out)
     assert payload["ok"] is True
+    assert payload["success"] is True
 
     cap = _FakeClient.captured
     assert cap["url"] == "http://market.local/api/runtime/tools/某工具/invoke"
@@ -105,9 +107,9 @@ async def test_market_runtime_tool_sends_user_token(monkeypatch, hosted_token):
     assert cap["json"] == {"tool": "t", "params": {"a": 1}}
 
 
-async def test_market_runtime_tool_agent_mode(monkeypatch, hosted_token):
-    monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
-    tool = MarketRuntimeTool()
+async def test_market_execute_tool_agent_mode(monkeypatch, hosted_token):
+    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
+    tool = MarketExecuteTool()
     await _run_with(
         "web:7",
         lambda: tool.execute(capability="某专家", kind="agent", task="帮我看看"),
@@ -117,9 +119,9 @@ async def test_market_runtime_tool_agent_mode(monkeypatch, hosted_token):
     assert cap["json"] == {"task": "帮我看看"}
 
 
-async def test_market_runtime_tool_mcp_mode(monkeypatch, hosted_token):
-    monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
-    tool = MarketRuntimeTool()
+async def test_market_execute_tool_mcp_mode(monkeypatch, hosted_token):
+    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
+    tool = MarketExecuteTool()
     await _run_with(
         "web:7",
         lambda: tool.execute(capability="某连接器", kind="mcp", tool="t", params={"x": 2}),
@@ -129,9 +131,9 @@ async def test_market_runtime_tool_mcp_mode(monkeypatch, hosted_token):
     assert cap["json"] == {"tool": "t", "params": {"x": 2}}
 
 
-async def test_market_runtime_tool_skill_mode(monkeypatch, hosted_token):
-    monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
-    tool = MarketRuntimeTool()
+async def test_market_execute_tool_skill_mode(monkeypatch, hosted_token):
+    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
+    tool = MarketExecuteTool()
     await _run_with(
         "web:7",
         lambda: tool.execute(capability="某技能", kind="skill", task="写周报"),
@@ -141,10 +143,10 @@ async def test_market_runtime_tool_skill_mode(monkeypatch, hosted_token):
     assert cap["json"] == {"context": "写周报"}
 
 
-async def test_market_runtime_tool_requires_numeric_uid(monkeypatch):
+async def test_market_execute_tool_requires_numeric_uid(monkeypatch):
     """uid 解析失败(空/中文旧账号名) → fail-closed 统一引导登录, 不发请求。"""
-    monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
-    tool = MarketRuntimeTool()
+    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
+    tool = MarketExecuteTool()
     for user_id in ("", "web:朱尚荣", "web:0"):
         out = await _run_with(
             user_id, lambda: tool.execute(capability="某工具", kind="tool", tool="t")
@@ -155,13 +157,13 @@ async def test_market_runtime_tool_requires_numeric_uid(monkeypatch):
     assert _FakeClient.captured == {}
 
 
-async def test_market_runtime_tool_requires_hosted_token(monkeypatch):
+async def test_market_execute_tool_requires_hosted_token(monkeypatch):
     from web import sso_tokens
 
-    monkeypatch.setattr(mrt.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
     monkeypatch.setattr(sso_tokens, "get_downstream_token",
                         lambda uid, audience="", **kwargs: "")
-    tool = MarketRuntimeTool()
+    tool = MarketExecuteTool()
     out = await _run_with(
         "web:7", lambda: tool.execute(capability="某工具", kind="tool", tool="t")
     )
@@ -171,10 +173,10 @@ async def test_market_runtime_tool_requires_hosted_token(monkeypatch):
     assert _FakeClient.captured == {}
 
 
-async def test_market_runtime_tool_disabled_without_config(monkeypatch):
+async def test_market_execute_tool_disabled_without_config(monkeypatch):
     monkeypatch.delenv("MARKET_BASE_URL", raising=False)
     monkeypatch.delenv("MARKET_SERVICE_TOKEN", raising=False)
-    tool = MarketRuntimeTool()
+    tool = MarketExecuteTool()
     out = await _run_with(
         "web:7",
         lambda: tool.execute(capability="某工具", kind="tool", tool="t"),

@@ -9,7 +9,7 @@
 - **执行闸门**：所有工具调用经 `agent/executor.py:execute_tool_safe`（权限 → RBAC → 审批 → 沙箱 → 审计 → 执行 → 后置钩子），不可绕过。
 - **渐进披露**：核心工具恒注入；远程工具（MCP/插件/市场）在数量超过阈值（`AGENT_TOOL_SEARCH_THRESHOLD`，默认 40）时经 `tool_search` 检索激活。
 
-## 二、内置工具（21 个，核心恒注入）
+## 二、内置工具（20 个，核心恒注入）
 
 | 工具 | 参数 | 用途 | 文件 |
 |---|---|---|---|
@@ -32,10 +32,9 @@
 | `whoami` | — | 当前用户身份画像（姓名/工号/部门/角色/钉钉 userId/渠道/uid） | `tools/whoami.py` |
 | `tool_search` | `query`, `limit` | 在远程工具中检索并激活 | `tools/tool_search.py` |
 | `market_search` | `query`, `kind`(agent/skill/mcp/tool/all), `limit` | 能力市场发现（按用户 token） | `tools/market_search.py` |
-| `market_runtime` | `capability`, `kind`(tool/mcp/skill/agent), `tool`, `params`, `task` | 执行市场能力（按用户 token） | `tools/market_runtime.py` |
-| `market_delegate` | `expert`, `task` | 委派市场专家（本机子代理执行） | `tools/market_delegate.py` |
+| `market_execute` | `capability`, `kind`(tool/mcp/skill/agent), `tool`, `params`, `task` | 执行市场能力（按用户 token）；`kind="agent"` 即委派专家 | `tools/market_execute.py` |
 
-> `market_*` 仅在市场配置齐备（`MARKET_BASE_URL` + `MARKET_SERVICE_TOKEN`）时保留；否则启动时从工具表移除。
+> `market_*`（`market_search`/`market_execute`）仅在市场配置齐备（`MARKET_BASE_URL` + `MARKET_SERVICE_TOKEN`）时保留；否则启动时从工具表移除。
 
 ## 三、动态 / 条件工具
 
@@ -84,7 +83,8 @@
 
 ## 七、变更记录（2026 标准化）
 
-- 直接改名（无别名）：`search_tools`→`tool_search`、`view_image`→`read_image`、`subagent`→`task`（模块文件同步）。
+- 直接改名（无别名）：`search_tools`→`tool_search`、`view_image`→`read_image`、`subagent`→`task`、`market_runtime`→`market_execute`（模块文件同步）。
+- `market_delegate` 删除，能力并入 `market_execute`（`kind="agent"` + `capability="<专家名>"` 即委派专家）。
 - `batch_edit` 删除，能力并入 `edit`（跨文件 `edits` 带 `file`）。
 - `file` 删除 `preview`（与 `code_search` 重叠），精简为 read/write/append/delete/exists/list。
 - 返回信封统一为 `success`（`market_*`/`read_image` 兼容保留 `ok`）。

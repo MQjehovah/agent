@@ -1,4 +1,11 @@
-"""能力市场云端运行时工具(用户身份): 按当前提问者的用户 token 调用市场能力。
+"""能力市场执行工具(用户身份): 按当前提问者的用户 token 调用市场能力。
+
+`kind` 支持四类能力:
+- ``tool``  : 调用市场工具能力（``/api/runtime/tools/{capability}/invoke``）
+- ``mcp``   : 调用连接器能力暴露的工具（``/api/runtime/mcp/{capability}/call``）
+- ``skill`` : 激活技能（``/api/runtime/skills/{capability}/activate``）
+- ``agent`` : 向某专家(agent)下发任务（``/api/runtime/agents/{capability}/tasks``）——
+  即「capability 指向一个 agent」的委派路径（原 ``market_delegate`` 的能力已并入此处）。
 
 与平台 MCP 轨(mcps/platform.py)的区别:
 - 平台 MCP 轨是**持久会话**连接, 用户 token 每 worker 恒定(随周期刷新轮换重连), 适合服务面/全局能力;
@@ -6,7 +13,7 @@
   (Bearer, audience=gateway), 由市场按用户身份鉴权与归因; 适合"零号员工"等全局单例
   为不同提问者执行**用户级**能力。无托管 token 时 fail-closed 并引导用户先登录授权。
 
-仅当市场配置齐备(MARKET_BASE_URL + MARKET_SERVICE_TOKEN)时保留, 见 Agent._init_market_runtime;
+仅当市场配置齐备(MARKET_BASE_URL + MARKET_SERVICE_TOKEN)时保留, 见 Agent._init_market_tools;
 MARKET_SERVICE_TOKEN 仅作启用门禁, 调用不再使用(逐请求携带用户 token)。
 """
 
@@ -29,20 +36,20 @@ _MCP_CALL_PATH = "/api/runtime/mcp/{capability}/call"
 _SKILL_ACTIVATE_PATH = "/api/runtime/skills/{capability}/activate"
 
 
-class MarketRuntimeTool(BuiltinTool):
-    """按用户身份调用市场能力(工具 / 连接器 / 技能 / Agent)。"""
+class MarketExecuteTool(BuiltinTool):
+    """按用户身份执行市场能力(工具 / 连接器 / 技能 / Agent 专家)。"""
 
     @property
     def name(self) -> str:
-        return "market_runtime"
+        return "market_execute"
 
     @property
     def description(self) -> str:
         return (
-            "逐请求以当前提问者的用户 token 调用能力市场的云端能力: "
+            "逐请求以当前提问者的用户 token 执行能力市场的云端能力: "
             "kind=tool 调用工具能力(params 为参数对象); kind=mcp 调用连接器能力暴露的工具"
             "(tool 指定工具名, params 为参数对象); kind=skill 激活技能(返回技能说明文本, task 为使用场景); "
-            "kind=agent 向某 Agent 下发任务(task)。"
+            "kind=agent 把任务下发给市场专家(agent): capability=专家名, task=任务描述(即委派专家)。"
             "仅能使用提问者本人有权访问的能力, 不会越权。"
         )
 
@@ -53,12 +60,12 @@ class MarketRuntimeTool(BuiltinTool):
             "properties": {
                 "capability": {
                     "type": "string",
-                    "description": "能力名称(市场中的 name), 如某工具/某 Agent/某技能",
+                    "description": "能力名称(市场中的 name): 工具/连接器/技能/专家(agent)名",
                 },
                 "kind": {
                     "type": "string",
                     "enum": ["tool", "mcp", "skill", "agent"],
-                    "description": "能力类型: tool=工具(默认), mcp=连接器, skill=技能, agent=下发 Agent 任务",
+                    "description": "能力类型: tool=工具(默认), mcp=连接器, skill=技能, agent=委派专家",
                 },
                 "tool": {
                     "type": "string",
@@ -70,7 +77,7 @@ class MarketRuntimeTool(BuiltinTool):
                 },
                 "task": {
                     "type": "string",
-                    "description": "kind=agent 时的任务描述; kind=skill 时的使用场景(可选)",
+                    "description": "kind=agent 时交给专家的任务描述; kind=skill 时的使用场景(可选)",
                 },
             },
             "required": ["capability"],
@@ -120,7 +127,7 @@ class MarketRuntimeTool(BuiltinTool):
             async with httpx.AsyncClient(timeout=call_timeout) as client:
                 resp = await client.post(url, headers=headers, json=body)
         except httpx.HTTPError as e:
-            logger.warning(f"市场运行时调用失败: {e}")
+            logger.warning(f"市场执行调用失败: {e}")
             return json.dumps({"success": False, "ok": False, "error": f"市场请求失败: {type(e).__name__}: {e}"},
                               ensure_ascii=False)
 

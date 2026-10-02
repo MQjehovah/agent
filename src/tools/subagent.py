@@ -45,7 +45,7 @@ class SubagentTool(BuiltinTool):
                 },
                 "template": {
                     "type": "string",
-                    "description": "使用的模板名称。**本地仅 `Coding(开发)`**；其它专家（设备运维/售后客服/代码审查/测试工程师/数字中台/IT运维）已不在本地，请改用 market_delegate。严禁编造不存在的名称！"
+                    "description": "使用的模板名称。**本地仅 `Coding(开发)`**；其它专家（设备运维/售后客服/代码审查/测试工程师/数字中台/IT运维）已不在本地，请改用 market_execute(kind=\"agent\") 委派。严禁编造不存在的名称！"
                 },
                 "name": {
                     "type": "string",
