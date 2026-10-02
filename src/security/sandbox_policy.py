@@ -222,6 +222,7 @@ class SandboxPolicy:
         """将工具名归类为策略类别"""
         category_map = {
             "shell": "shell",
+            "terminal": "shell",
             "file": "file_write",
             "edit": "file_write",
             "patch": "file_write",

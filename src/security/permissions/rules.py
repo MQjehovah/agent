@@ -42,6 +42,7 @@ class PermissionConfig:
     write_tools: list = field(default_factory=lambda: [
         "file",
         "shell",
+        "terminal",
         "edit",
         "patch",
         "git",

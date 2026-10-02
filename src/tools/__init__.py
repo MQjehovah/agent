@@ -338,6 +338,7 @@ from .glob import GlobTool
 from .memory import MemoryTool
 from .shell import ShellTool
 from .subagent import SubagentTool
+from .terminal import TerminalTool
 from .todo import TodoTool
 
 # 搜索与编辑工具
@@ -346,6 +347,7 @@ from .code_search import CodeSearchTool
 from .diagnostics import CodeDiagnosticsTool
 from .git import GitTool
 from .grep import GrepTool
+from .repo_map import RepoMapTool
 
 # Web / 多模态 / 身份 / 渐进披露
 from .read_image import ViewImageTool
@@ -356,7 +358,8 @@ from .whoami import WhoamiTool
 __all__ = [
     'ToolRegistry', 'BuiltinTool', 'ToolDefinition',
     'AskUserTool', 'TodoTool', 'FileTool', 'SubagentTool', 'MemoryTool', 'ShellTool',
-    'GrepTool', 'GlobTool', 'EditTool', 'CodeSearchTool',
+    'TerminalTool',
+    'GrepTool', 'GlobTool', 'EditTool', 'CodeSearchTool', 'RepoMapTool',
     'PatchTool', 'CodeDiagnosticsTool', 'GitTool',
     'SearchToolsTool', 'ViewImageTool', 'WhoamiTool',
     'WebSearchTool', 'WebFetchTool',
