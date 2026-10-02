@@ -30,6 +30,20 @@ def _team_worktree_enabled() -> bool:
     return val in ("1", "true", "on", "yes")
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 def _extract_json_from_llm(content: str) -> str:
     content = content.strip()
     if content.startswith("```"):
@@ -145,6 +159,9 @@ class TeamOrchestrator:
         self._worktree_manager = worktree_manager
         self._max_parallel = max_parallel
         self._enable_parallel = enable_parallel
+        # ── 失败恢复（工业级）：阶段失败自动重试 + 退避；上游失败则下游阻塞 ──
+        self._max_stage_retries = max(0, _env_int("AGENT_TEAM_STAGE_RETRIES", 2))
+        self._retry_backoff = max(0.0, _env_float("AGENT_TEAM_RETRY_BACKOFF", 2.0))
 
     async def run(self, task: str) -> str:
         self.context = TeamContext(self.team_name, task)
@@ -248,6 +265,17 @@ class TeamOrchestrator:
                     await asyncio.sleep(0.1)
                     total_attempts += 1
                     continue
+                # 上游阶段最终失败 → 依赖无法满足：剩余 pending 标记为 blocked（不空转）
+                blocked = [n for n in self.dag.nodes.values() if n.status == "pending"]
+                for n in blocked:
+                    n.status = "blocked"
+                    n.error = "上游阶段失败，依赖未满足"
+                    self.context.set_stage_status(n.id, "blocked")
+                if blocked:
+                    logger.warning(
+                        f"团队 [{self.team_name}] {len(blocked)} 个阶段因上游失败被阻塞: "
+                        f"{[n.id for n in blocked]}"
+                    )
                 break
 
             # ── v2.0: 并行执行就绪节点（使用 AgentPool） ──
@@ -274,7 +302,7 @@ class TeamOrchestrator:
         for i, node in enumerate(nodes):
             result = results[i]
             if isinstance(result, Exception):
-                self._handle_stage_failure(node, str(result))
+                await self._handle_stage_failure(node, str(result))
             else:
                 success, should_feedback = result
                 if success:
@@ -287,7 +315,7 @@ class TeamOrchestrator:
                     else:
                         self._handle_stage_success(node)
                 else:
-                    self._handle_stage_failure(node, "stage failed")
+                    await self._handle_stage_failure(node, "stage failed")
 
     async def _execute_sequential_stages(self, nodes: list[DAGNode]):
         """顺序执行阶段（回退模式）"""
@@ -298,7 +326,7 @@ class TeamOrchestrator:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             result = results[0]
             if isinstance(result, Exception):
-                self._handle_stage_failure(node, str(result))
+                await self._handle_stage_failure(node, str(result))
             else:
                 success, should_feedback = result
                 if success:
@@ -311,17 +339,35 @@ class TeamOrchestrator:
                     else:
                         self._handle_stage_success(node)
                 else:
-                    self._handle_stage_failure(node, "stage failed")
+                    await self._handle_stage_failure(node, "stage failed")
 
     def _handle_stage_success(self, node: DAGNode):
         self.dag.mark_completed(node.id, "ok")
         self.context.set_stage_status(node.id, "completed")
         self._completed_stages.add(node.id)
 
-    def _handle_stage_failure(self, node: DAGNode, error: str):
+    async def _handle_stage_failure(self, node: DAGNode, error: str):
+        """阶段失败恢复：未达重试上限 → 回退 pending 并退避重试；超限 → 标记 failed。"""
+        target = self.dag.nodes[node.id]
+        if target.attempts <= self._max_stage_retries:
+            target.status = "pending"
+            target.error = error
+            self.context.set_stage_status(node.id, "retrying")
+            self.context.set_blackboard(
+                f"{node.id}_retry", f"第{target.attempts}次尝试失败，将重试：{error[:200]}"
+            )
+            logger.warning(
+                f"阶段 [{node.id}] 第 {target.attempts} 次尝试失败，重试"
+                f"（上限 {self._max_stage_retries}）：{error[:120]}"
+            )
+            backoff = self._retry_backoff * max(1, target.attempts)
+            if backoff > 0:
+                await asyncio.sleep(backoff)
+            return
         self.dag.mark_failed(node.id, error)
         self.context.set_stage_status(node.id, "failed")
-        logger.error(f"阶段 [{node.id}] 失败: {error}")
+        self.context.set_blackboard(f"{node.id}_error", error[:500])
+        logger.error(f"阶段 [{node.id}] 失败（已重试 {target.attempts - 1} 次）: {error}")
 
     # ── v2.0: 带 AgentPool + Worktree 的阶段执行 ──────
 
