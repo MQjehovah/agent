@@ -13,7 +13,7 @@ logger = logging.getLogger("agent.tools.compressor")
 MAX_OUTPUT_CHARS = int(os.environ.get("MAX_TOOL_OUTPUT_CHARS", 4000))
 
 # 这些工具的结果需要跨轮次完整保留，不压缩
-_KEEP_FULL = {"skill", "execute_skill", "ask_user", "todo_write", "todowrite"}
+_KEEP_FULL = {"skill", "execute_skill", "ask_user", "todowrite"}
 
 
 def compress_tool_result(tool_name: str, result: str, budget: int = None) -> str:

@@ -26,7 +26,7 @@
 | `web_fetch` | `url`, `max_chars` | 抓取 URL 转文本 | `tools/web.py` |
 | `read_image` | `ref`, `question` | 查看附件/工作区图片（视觉模型 + OCR） | `tools/read_image.py` |
 | `task` | `task`, `template`, `name`, `session_id`, `system_prompt`, `tools`, `mcp_servers`, `keep_alive` | 子代理/团队委派（真实调度在内核 `execute_subagent`） | `tools/subagent.py` |
-| `todowrite` | `todos`(`[{id,content,status,priority}]`), `filter_status` | 待办列表（整体替换） | `tools/todo.py` |
+| `todowrite` | `todos`(`[{id?,content,status?,priority?}]`) | 待办列表（**整表替换**；每次传当前全部任务；校验 status/priority，失败不落盘） | `tools/todo.py` |
 | `ask_user` | `question`, `options`, `default` | 向用户提问/确认（多渠道桥接） | `tools/ask_user.py` |
 | `memory` | `action`(save/search/list), `content`, `category`, `query`, `memory_type` | 长期记忆读写（按 `owner_id` 隔离） | `tools/memory.py` |
 | `whoami` | — | 当前用户身份画像（姓名/工号/部门/角色/钉钉 userId/渠道/uid） | `tools/whoami.py` |

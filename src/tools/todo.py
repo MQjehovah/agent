@@ -1,14 +1,16 @@
 import json
-import uuid
-import os
 import logging
-from dataclasses import dataclass, field, asdict
+import os
+import uuid
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Dict, List, Any, Optional
 
 from . import BuiltinTool
 
 logger = logging.getLogger("agent.tools")
+
+VALID_STATUSES = ("pending", "in_progress", "completed", "cancelled")
+VALID_PRIORITIES = ("high", "medium", "low")
 
 
 @dataclass
@@ -21,16 +23,24 @@ class TodoItem:
 
 
 class TodoTool(BuiltinTool):
+    """待办列表工具（整表替换语义，对齐 Claude Code TodoWrite）。"""
+
     @property
     def name(self) -> str:
         return "todowrite"
 
     @property
     def description(self) -> str:
-        return "任务追踪工具。每次调用传入当前所有待办事项的完整列表，会替换整个列表。用于展示当前任务进度。"
+        return (
+            "待办列表工具。每次调用传入**当前所有**待办事项的完整列表，替换整个列表"
+            "（不是增量更新：每次都要把已有项连同新状态一起重发）。\n"
+            "用途：多步骤任务的进度展示与自我跟踪；简单/单步任务不必使用。\n"
+            "约定：同一时刻至多一个 `in_progress`；开始一项就置为 in_progress，完成立即置 completed，"
+            "不在计划中但已放弃的置 cancelled。"
+        )
 
     @property
-    def parameters(self) -> Dict[str, Any]:
+    def parameters(self) -> dict:
         return {
             "type": "object",
             "properties": {
@@ -40,133 +50,128 @@ class TodoTool(BuiltinTool):
                     "items": {
                         "type": "object",
                         "properties": {
-                            "id": {
-                                "type": "string",
-                                "description": "已有任务的ID（更新时使用）"
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "任务内容"
-                            },
+                            "id": {"type": "string", "description": "已有任务的 ID（可选；缺省自动生成）"},
+                            "content": {"type": "string", "description": "任务内容（必需）"},
                             "status": {
                                 "type": "string",
-                                "enum": ["pending", "in_progress", "completed", "cancelled"],
-                                "description": "任务状态"
+                                "enum": list(VALID_STATUSES),
+                                "description": "任务状态（默认 pending）",
                             },
                             "priority": {
                                 "type": "string",
-                                "enum": ["high", "medium", "low"],
-                                "description": "任务优先级"
-                            }
+                                "enum": list(VALID_PRIORITIES),
+                                "description": "优先级（默认 medium）",
+                            },
                         },
-                        "required": ["content"]
-                    }
-                },
-                "filter_status": {
-                    "type": "string",
-                    "enum": ["pending", "in_progress", "completed", "cancelled", "all"],
-                    "description": "按状态过滤（返回结果中只包含该状态的任务）",
-                    "default": "all"
+                        "required": ["content"],
+                    },
                 }
             },
-            "required": ["todos"]
+            "required": ["todos"],
         }
 
     def __init__(self, persist_path: str = None):
-        self._todos: Dict[str, TodoItem] = {}
+        self._todos: dict[str, TodoItem] = {}
         self._persist_path = persist_path
         if persist_path and os.path.exists(persist_path):
             self._load()
 
+    # ── 持久化 ───────────────────────────────────────
+
     def _load(self):
         try:
-            with open(self._persist_path, "r", encoding="utf-8") as f:
+            with open(self._persist_path, encoding="utf-8") as f:
                 data = json.load(f)
             for item in data:
                 self._todos[item["id"]] = TodoItem(**item)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"加载 todo 数据失败: {e}")
 
     def _save(self):
-        if self._persist_path:
-            try:
-                with open(self._persist_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        [asdict(t) for t in self._todos.values()],
-                        f, ensure_ascii=False, indent=2
-                    )
-            except Exception as e:
-                logger.warning(f"保存 todo 数据失败: {e}")
+        if not self._persist_path:
+            return
+        try:
+            with open(self._persist_path, "w", encoding="utf-8") as f:
+                json.dump([asdict(t) for t in self._todos.values()], f,
+                          ensure_ascii=False, indent=2)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"保存 todo 数据失败: {e}")
 
-    async def execute(self, todos: List[Dict], filter_status: str = "all") -> str:
-        new_todos = {}
-        for todo_data in todos:
-            content = todo_data.get("content")
-            if not content:
-                continue
-            todo_id = todo_data.get("id") or str(uuid.uuid4())[:8]
+    # ── 工具入口：整表替换 ───────────────────────────
+
+    async def execute(self, todos: list[dict] = None, **kwargs) -> str:
+        if not isinstance(todos, list):
+            return self._error("todos 必须是数组")
+
+        new_todos: dict[str, TodoItem] = {}
+        for i, item in enumerate(todos):
+            if not isinstance(item, dict):
+                return self._error(f"第 {i + 1} 项必须是对象")
+            content = item.get("content")
+            if not isinstance(content, str) or not content.strip():
+                return self._error(f"第 {i + 1} 项缺少非空 content")
+            status = item.get("status", "pending")
+            if status not in VALID_STATUSES:
+                return self._error(
+                    f"第 {i + 1} 项 status 非法: {status!r}（可选 {', '.join(VALID_STATUSES)}）")
+            priority = item.get("priority", "medium")
+            if priority not in VALID_PRIORITIES:
+                return self._error(
+                    f"第 {i + 1} 项 priority 非法: {priority!r}（可选 {', '.join(VALID_PRIORITIES)}）")
+            todo_id = str(item.get("id") or uuid.uuid4().hex[:8])
+            if todo_id in new_todos:
+                return self._error(f"重复的 id: {todo_id}")
             new_todos[todo_id] = TodoItem(
-                id=todo_id,
-                content=content,
-                status=todo_data.get("status", "pending"),
-                priority=todo_data.get("priority", "medium"),
-            )
+                id=todo_id, content=content, status=status, priority=priority)
+
         self._todos = new_todos
         self._save()
 
-        result_todos = self._get_filtered_todos(filter_status)
-
-        result = {
+        return json.dumps({
             "success": True,
             "message": f"已更新待办列表，共 {len(self._todos)} 项",
             "total_count": len(self._todos),
-            "filtered_count": len(result_todos),
-            "todos": [asdict(todo) for todo in result_todos]
-        }
+            "todos": [asdict(t) for t in self._todos.values()],
+        }, ensure_ascii=False)
 
-        return json.dumps(result, ensure_ascii=False)
+    # ── 读取/维护（供 Web/任务面板与测试使用，非 LLM 工具） ──
 
-    def _get_filtered_todos(self, filter_status: str) -> List[TodoItem]:
+    def _get_filtered_todos(self, filter_status: str = "all") -> list[TodoItem]:
         if filter_status == "all":
             return list(self._todos.values())
         return [t for t in self._todos.values() if t.status == filter_status]
 
+    def get_todos(self, filter_status: str = "all") -> list[dict]:
+        return [asdict(todo) for todo in self._get_filtered_todos(filter_status)]
+
     def add_todo(self, content: str, priority: str = "medium") -> str:
-        todo_id = str(uuid.uuid4())[:8]
+        todo_id = uuid.uuid4().hex[:8]
         self._todos[todo_id] = TodoItem(
-            id=todo_id,
-            content=content,
-            status="pending",
-            priority=priority
-        )
+            id=todo_id, content=content, status="pending",
+            priority=priority if priority in VALID_PRIORITIES else "medium")
         self._save()
         return todo_id
 
     def update_status(self, todo_id: str, status: str) -> bool:
-        if todo_id not in self._todos:
-            return False
-        valid_statuses = ["pending", "in_progress", "completed", "cancelled"]
-        if status not in valid_statuses:
+        if todo_id not in self._todos or status not in VALID_STATUSES:
             return False
         self._todos[todo_id].status = status
         self._save()
         return True
 
-    def get_todos(self, filter_status: str = "all") -> List[Dict]:
-        return [asdict(todo) for todo in self._get_filtered_todos(filter_status)]
-
     def clear_completed(self) -> int:
-        completed_ids = [
-            todo_id for todo_id, todo in self._todos.items()
-            if todo.status == "completed"
-        ]
-        for todo_id in completed_ids:
-            del self._todos[todo_id]
+        completed = [tid for tid, t in self._todos.items() if t.status == "completed"]
+        for tid in completed:
+            del self._todos[tid]
         self._save()
-        return len(completed_ids)
+        return len(completed)
 
     def clear_all(self) -> int:
         count = len(self._todos)
         self._todos.clear()
         self._save()
         return count
+
+    @staticmethod
+    def _error(msg: str) -> str:
+        return json.dumps({"success": False, "error": msg}, ensure_ascii=False)

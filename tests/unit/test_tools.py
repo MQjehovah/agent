@@ -769,7 +769,8 @@ class TestTodoTool:
         r = await self.tool.execute(todos=[{"content": "任务一"}])
         data = json.loads(r)
         assert data["success"] is True
-        assert data["filtered_count"] == 1
+        assert data["total_count"] == 1
+        assert data["todos"][0]["status"] == "pending"
 
     @pytest.mark.asyncio
     async def test_add_multiple(self):
@@ -780,54 +781,76 @@ class TestTodoTool:
         ])
         data = json.loads(r)
         assert data["success"] is True
-        assert data["filtered_count"] == 3
+        assert data["total_count"] == 3
 
     @pytest.mark.asyncio
-    async def test_update_status(self):
-        r = await self.tool.execute(todos=[{"content": "任务一"}])
-        todo_id = json.loads(r)["todos"][0]["id"]
-
-        r = await self.tool.execute(todos=[{"id": todo_id, "status": "completed"}])
+    async def test_replace_whole_list(self):
+        """整表替换：第二次调用替换第一次（旧项消失）。"""
+        await self.tool.execute(todos=[{"content": "a"}, {"content": "b"}])
+        r = await self.tool.execute(todos=[{"content": "c", "status": "completed"}])
         data = json.loads(r)
-        assert data["success"] is True
-
-        todos = self.tool.get_todos()
-        assert todos[0]["status"] == "completed"
+        assert data["total_count"] == 1
+        assert data["todos"][0]["content"] == "c"
+        assert data["todos"][0]["status"] == "completed"
+        assert len(self.tool.get_todos()) == 1
 
     @pytest.mark.asyncio
-    async def test_update_priority(self):
-        r = await self.tool.execute(todos=[{"content": "任务一"}])
-        todo_id = json.loads(r)["todos"][0]["id"]
+    async def test_status_and_priority_preserved(self):
+        r = await self.tool.execute(todos=[{
+            "content": "urgent task",
+            "status": "in_progress",
+            "priority": "high",
+        }])
+        todo = json.loads(r)["todos"][0]
+        assert todo["status"] == "in_progress"
+        assert todo["priority"] == "high"
 
-        r = await self.tool.execute(todos=[{"id": todo_id, "priority": "high"}])
+    @pytest.mark.asyncio
+    async def test_invalid_status_rejected(self):
+        r = await self.tool.execute(todos=[{"content": "x", "status": "bogus"}])
         data = json.loads(r)
-        assert data["success"] is True
-
-        todos = self.tool.get_todos()
-        assert todos[0]["priority"] == "high"
+        assert data["success"] is False
+        assert "status" in data["error"]
+        assert self.tool.get_todos() == []   # 失败不落盘/不改变状态
 
     @pytest.mark.asyncio
-    async def test_filter_by_status(self):
+    async def test_invalid_priority_rejected(self):
+        r = await self.tool.execute(todos=[{"content": "x", "priority": "urgent"}])
+        data = json.loads(r)
+        assert data["success"] is False
+        assert "priority" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_content_rejected(self):
+        """缺 content 的项不再被静默丢弃，而是整体拒绝。"""
+        r = await self.tool.execute(todos=[{"content": "ok"}, {"status": "completed"}])
+        data = json.loads(r)
+        assert data["success"] is False
+        assert "content" in data["error"]
+        assert self.tool.get_todos() == []
+
+    @pytest.mark.asyncio
+    async def test_todos_not_list_rejected(self):
+        r = await self.tool.execute(todos={"content": "x"})
+        assert json.loads(r)["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_duplicate_id_rejected(self):
+        r = await self.tool.execute(todos=[
+            {"id": "d1", "content": "a"},
+            {"id": "d1", "content": "b"},
+        ])
+        assert json.loads(r)["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_todos_filter(self):
         await self.tool.execute(todos=[
             {"content": "pending_task"},
             {"content": "done_task", "status": "completed"},
         ])
-
-        r = await self.tool.execute(todos=[], filter_status="completed")
-        data = json.loads(r)
-        assert data["filtered_count"] == 1
-        assert data["todos"][0]["content"] == "done_task"
-
-    @pytest.mark.asyncio
-    async def test_filter_all(self):
-        await self.tool.execute(todos=[
-            {"content": "t1", "status": "pending"},
-            {"content": "t2", "status": "completed"},
-        ])
-
-        r = await self.tool.execute(todos=[], filter_status="all")
-        data = json.loads(r)
-        assert data["filtered_count"] == 2
+        assert len(self.tool.get_todos("all")) == 2
+        done = self.tool.get_todos("completed")
+        assert len(done) == 1 and done[0]["content"] == "done_task"
 
     @pytest.mark.asyncio
     async def test_clear_completed(self):
@@ -835,36 +858,14 @@ class TestTodoTool:
             {"content": "t1", "status": "completed"},
             {"content": "t2", "status": "pending"},
         ])
-
-        count = self.tool.clear_completed()
-        assert count == 1
+        assert self.tool.clear_completed() == 1
         assert len(self.tool.get_todos()) == 1
 
     @pytest.mark.asyncio
     async def test_clear_all(self):
         await self.tool.execute(todos=[{"content": "t1"}, {"content": "t2"}])
-        count = self.tool.clear_all()
-        assert count == 2
+        assert self.tool.clear_all() == 2
         assert len(self.tool.get_todos()) == 0
-
-    @pytest.mark.asyncio
-    async def test_add_with_status_and_priority(self):
-        r = await self.tool.execute(todos=[{
-            "content": "urgent task",
-            "status": "in_progress",
-            "priority": "high"
-        }])
-        data = json.loads(r)
-        assert data["success"] is True
-        todo = data["todos"][0]
-        assert todo["status"] == "in_progress"
-        assert todo["priority"] == "high"
-
-    @pytest.mark.asyncio
-    async def test_invalid_id_update_ignored(self):
-        r = await self.tool.execute(todos=[{"id": "nonexistent", "status": "completed"}])
-        data = json.loads(r)
-        assert data["success"] is True
 
     @pytest.mark.asyncio
     async def test_persistence(self, tmp_path):
