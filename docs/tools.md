@@ -9,7 +9,7 @@
 - **执行闸门**：所有工具调用经 `agent/executor.py:execute_tool_safe`（权限 → RBAC → 审批 → 沙箱 → 审计 → 执行 → 后置钩子），不可绕过。
 - **渐进披露**：核心工具恒注入；远程工具（MCP/插件/市场）在数量超过阈值（`AGENT_TOOL_SEARCH_THRESHOLD`，默认 40）时经 `tool_search` 检索激活。
 
-## 二、内置工具（20 个，核心恒注入）
+## 二、内置工具（24 个，核心恒注入）
 
 | 工具 | 参数 | 用途 | 文件 |
 |---|---|---|---|
@@ -20,8 +20,12 @@
 | `grep` | `pattern`, `path`, `file_pattern`, `case_insensitive`, `limit`, `context_lines` | 内容正则搜索（返回行号与上下文） | `tools/grep.py` |
 | `code_search` | `query`, `target`(definition/callers/references/all), `file`, `symbol_type`, `workspace` | Tree-sitter AST 定义/调用/引用（多语言） | `tools/code_search.py` |
 | `code_diagnostics` | `path`, `languages`, `timeout` | 按项目类型跑 ruff/mypy/eslint/tsc/go vet/cargo check，结构化问题 | `tools/diagnostics.py` |
+| `lsp` | `operation`(diagnostics/hover/definition/references/rename), `file`, `line`, `character`, `new_name` | 语言服务器查询（实时诊断/hover/跳转/引用/重命名）；无服务器时 diagnostics 回退 code_diagnostics | `tools/lsp.py` |
+| `repo_map` | `path`, `max_files`, `max_symbols` | 仓库符号地图（tree-sitter 抽符号+行号，回退正则），快速了解结构 | `tools/repo_map.py` |
+| `rename_symbol` | `symbol`, `new_name`, `path`, `file`, `line`, `character`, `apply` | 符号级重命名（LSP 优先 / 整词回退，`apply=false` 预演） | `tools/rename_symbol.py` |
 | `git` | `operation`(status/diff/log/commit/checkpoint/rollback), `message`, `path`, `staged`, `limit`, `name`, `all` | Git 操作；`rollback` 破坏性 | `tools/git.py` |
 | `shell` | `command`, `timeout`, `cwd`, `env`, `max_chars` | 执行命令；默认 30s、输出截断、危险命令黑名单 | `tools/shell.py` |
+| `terminal` | `operation`(start/read/write/stop/list), `command`, `session_id`, `input`, `cwd`, `env` | 后台/流式终端：长任务启动、增量读取、写 stdin、停止 | `tools/terminal.py` |
 | `web_search` | `query`, `limit` | 多引擎搜索（SearXNG/Tavily/Serper/Bing） | `tools/web.py` |
 | `web_fetch` | `url`, `max_chars` | 抓取 URL 转文本 | `tools/web.py` |
 | `read_image` | `ref`, `question` | 查看附件/工作区图片（视觉模型 + OCR） | `tools/read_image.py` |
@@ -79,7 +83,7 @@
 - **agent 能力作用域**（`PROMPT.md`/`TEAM.md` frontmatter，见 `agent/capabilities.py`）：`tools`(白名单, 省略=全量)、`disallowedTools`(黑名单, 优先)、`mcpServers`(允许的 MCP server 名)、`skills`(技能白名单)、`permissionMode`(default/smart/auto/plan)、`platform_mcp`(平台轨开关)。核心工具恒可用，仅 `disallowedTools` 可移除。
 - **双层强制**：暴露层 `Agent._collect_tool_defs` 四分支过滤 + 执行层 `execute_tool_safe` fail-closed。
 - **权限模式**：`default`(写确认)/`smart`(仅危险确认)/`auto`(全放行)/`plan`(只读)。
-- **写工具**（`security/permissions/rules.py:write_tools`）：`file`/`shell`/`edit`/`patch`/`git`。
+- **写工具**（`security/permissions/rules.py:write_tools`）：`file`/`shell`/`terminal`/`edit`/`patch`/`rename_symbol`/`git`。
 
 ## 七、变更记录（2026 标准化）
 
@@ -89,3 +93,4 @@
 - `file` 删除 `preview`（与 `code_search` 重叠），精简为 read/write/append/delete/exists/list。
 - 返回信封统一为 `success`（`market_*`/`read_image` 兼容保留 `ok`）。
 - 参数命名统一（见 §五）。
+- 编码深度补齐：新增 `terminal`（后台/流式）、`repo_map`（符号地图）、`lsp`（LSP 查询）、`rename_symbol`（符号级重命名）；写后诊断新增 `block` 模式；普通 subagent 写隔离（`AGENT_SUBAGENT_WORKTREE`）；CLI 交互审批（`--auto`/`--plan`）。
