@@ -26,8 +26,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="hello world",
-            new_text="hello python"
+            old_string="hello world",
+            new_string="hello python"
         )
         data = json.loads(r)
         assert data["success"] is True
@@ -40,8 +40,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="aaa",
-            new_text="bbb",
+            old_string="aaa",
+            new_string="bbb",
             replace_all=True
         )
         data = json.loads(r)
@@ -55,8 +55,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="nonexistent",
-            new_text="replacement"
+            old_string="nonexistent",
+            new_string="replacement"
         )
         data = json.loads(r)
         assert data["success"] is False
@@ -69,8 +69,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="aaa",
-            new_text="bbb"
+            old_string="aaa",
+            new_string="bbb"
         )
         data = json.loads(r)
         assert data["success"] is False
@@ -78,14 +78,14 @@ class TestEditTool:
 
     @pytest.mark.asyncio
     async def test_trailing_whitespace_tolerated(self, tmp_path):
-        """文件有尾部空白，old_text 没有尾部空白，应该仍能匹配"""
+        """文件有尾部空白，old_string 没有尾部空白，应该仍能匹配"""
         test_file = tmp_path / "trailing.txt"
         test_file.write_text("def hello():   \n    print('hi')   \n")
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="def hello():\n    print('hi')",
-            new_text="def hello():\n    print('hello')"
+            old_string="def hello():\n    print('hi')",
+            new_string="def hello():\n    print('hello')"
         )
         data = json.loads(r)
         assert data["success"] is True
@@ -95,29 +95,29 @@ class TestEditTool:
 
     @pytest.mark.asyncio
     async def test_crlf_tolerated(self, tmp_path):
-        """文件使用 CRLF 换行，old_text 使用 LF，应该仍能匹配"""
+        """文件使用 CRLF 换行，old_string 使用 LF，应该仍能匹配"""
         test_file = tmp_path / "crlf.txt"
         test_file.write_bytes(b"line one\r\nline two\r\nline three\r\n")
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="line two",
-            new_text="line 2"
+            old_string="line two",
+            new_string="line 2"
         )
         data = json.loads(r)
         assert data["success"] is True
         assert "line 2" in test_file.read_text()
 
     @pytest.mark.asyncio
-    async def test_old_text_with_trailing_whitespace(self, tmp_path):
-        """old_text 有尾部空白，文件没有，也应该匹配"""
+    async def test_old_string_with_trailing_whitespace(self, tmp_path):
+        """old_string 有尾部空白，文件没有，也应该匹配"""
         test_file = tmp_path / "clean.txt"
         test_file.write_text("hello world\nfoo bar\n")
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="hello world   ",
-            new_text="hello python"
+            old_string="hello world   ",
+            new_string="hello python"
         )
         data = json.loads(r)
         assert data["success"] is True
@@ -130,8 +130,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="def foo():\n    pass",
-            new_text="def foo():\n    return 42"
+            old_string="def foo():\n    pass",
+            new_string="def foo():\n    return 42"
         )
         data = json.loads(r)
         assert data["success"] is True
@@ -147,8 +147,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="你好世界",
-            new_text="你好Python"
+            old_string="你好世界",
+            new_string="你好Python"
         )
         data = json.loads(r)
         assert data["success"] is True
@@ -162,21 +162,21 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text='value = "hello\\nworld"',
-            new_text='value = "hello\\npython"'
+            old_string='value = "hello\\nworld"',
+            new_string='value = "hello\\npython"'
         )
         data = json.loads(r)
         assert data["success"] is True
 
     @pytest.mark.asyncio
-    async def test_empty_old_text(self, tmp_path):
+    async def test_empty_old_string(self, tmp_path):
         test_file = tmp_path / "empty.txt"
         test_file.write_text("content\n")
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="",
-            new_text="new"
+            old_string="",
+            new_string="new_string"
         )
         data = json.loads(r)
         assert data["success"] is False
@@ -188,8 +188,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="abc",
-            new_text="abc"
+            old_string="abc",
+            new_string="abc"
         )
         data = json.loads(r)
         assert data["success"] is False
@@ -198,8 +198,8 @@ class TestEditTool:
     async def test_file_not_found(self):
         r = await self.tool.execute(
             path="/nonexistent/file.txt",
-            old_text="foo",
-            new_text="bar"
+            old_string="foo",
+            new_string="bar"
         )
         data = json.loads(r)
         assert data["success"] is False
@@ -209,8 +209,8 @@ class TestEditTool:
     async def test_directory_path(self, tmp_path):
         r = await self.tool.execute(
             path=str(tmp_path),
-            old_text="foo",
-            new_text="bar"
+            old_string="foo",
+            new_string="bar"
         )
         data = json.loads(r)
         assert data["success"] is False
@@ -224,8 +224,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="def hello_worl():\n    print('hello')",
-            new_text="def hello():\n    pass"
+            old_string="def hello_worl():\n    print('hello')",
+            new_string="def hello():\n    pass"
         )
         data = json.loads(r)
         assert data["success"] is False
@@ -235,7 +235,7 @@ class TestEditTool:
 
     @pytest.mark.asyncio
     async def test_empty_path(self, tmp_path):
-        r = await self.tool.execute(path="", old_text="a", new_text="b")
+        r = await self.tool.execute(path="", old_string="a", new_string="b")
         data = json.loads(r)
         assert data["success"] is False
 
@@ -247,8 +247,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="prefix_aaa",
-            new_text="ccc",
+            old_string="prefix_aaa",
+            new_string="ccc",
             replace_all=False
         )
         data = json.loads(r)
@@ -264,8 +264,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="pass",
-            new_text="return 1"
+            old_string="pass",
+            new_string="return 1"
         )
         data = json.loads(r)
         assert data["success"] is True
@@ -280,8 +280,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="x = 1",
-            new_text="x = 2",
+            old_string="x = 1",
+            new_string="x = 2",
             line=3,
         )
         data = json.loads(r)
@@ -295,7 +295,7 @@ class TestEditTool:
         test_file = tmp_path / "preserve.txt"
         test_file.write_bytes(b"a  \r\nb  \r\nc\r\n")
 
-        r = await self.tool.execute(path=str(test_file), old_text="b", new_text="B")
+        r = await self.tool.execute(path=str(test_file), old_string="b", new_string="B")
         assert json.loads(r)["success"] is True
         assert test_file.read_bytes() == b"a  \r\nB  \r\nc\r\n"
 
@@ -307,8 +307,8 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            old_text="value = 1",
-            new_text="value = 2",
+            old_string="value = 1",
+            new_string="value = 2",
         )
         data = json.loads(r)
         assert data["success"] is True
@@ -322,7 +322,7 @@ class TestEditTool:
 
         r = await self.tool.execute(
             path=str(test_file),
-            edits=[{"old": "foo()", "new": "bar()"}],
+            edits=[{"old_string": "foo()", "new_string": "bar()"}],
         )
         data = json.loads(r)
         assert data["success"] is True
@@ -545,7 +545,7 @@ class TestShellTool:
 
     @pytest.mark.asyncio
     async def test_output_truncation(self):
-        r = await self.tool.execute(command="python3 -c \"print('x' * 20000)\"", max_output=100)
+        r = await self.tool.execute(command="python3 -c \"print('x' * 20000)\"", max_chars=100)
         data = json.loads(r)
         assert "截断" in data["stdout"]
 
@@ -655,7 +655,7 @@ class TestGrepTool:
         test_file = tmp_path / "many.txt"
         test_file.write_text("match\n" * 20)
 
-        r = await self.tool.execute(pattern="match", path=str(tmp_path), max_results=5)
+        r = await self.tool.execute(pattern="match", path=str(tmp_path), limit=5)
         data = json.loads(r)
         assert data["total_matches"] <= 5
         assert data["truncated"] is True
@@ -731,7 +731,7 @@ class TestGlobTool:
         for i in range(20):
             (tmp_path / f"file_{i:02d}.txt").write_text("")
 
-        r = await self.tool.execute(pattern="*.txt", path=str(tmp_path), max_results=5)
+        r = await self.tool.execute(pattern="*.txt", path=str(tmp_path), limit=5)
         data = json.loads(r)
         assert data["count"] == 5
 
@@ -1132,11 +1132,12 @@ class TestSubagentTool:
         self.tool = SubagentTool()
 
     @pytest.mark.asyncio
-    async def test_execute_returns_args(self):
+    async def test_execute_requires_kernel(self):
+        """task 由内核调度；直接 execute 应返回明确错误而非回显参数。"""
         r = await self.tool.execute(task="测试任务", template="analyst")
         data = json.loads(r)
-        assert data["task"] == "测试任务"
-        assert data["template"] == "analyst"
+        assert data["success"] is False
+        assert "内核" in data["error"]
 
     def test_name(self):
         assert self.tool.name == "task"
@@ -1190,8 +1191,8 @@ class TestToolRegistry:
 
         r = await self.registry.execute("edit", {
             "path": str(test_file),
-            "old_text": "hello",
-            "new_text": "world"
+            "old_string": "hello",
+            "new_string": "world"
         })
         data = json.loads(r)
         assert data["success"] is True

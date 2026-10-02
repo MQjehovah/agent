@@ -105,7 +105,7 @@ class WebSearchTool(BuiltinTool):
                     "type": "string",
                     "description": "搜索关键词"
                 },
-                "max_results": {
+                "limit": {
                     "type": "integer",
                     "description": "最大返回结果数",
                     "default": 10
@@ -116,7 +116,7 @@ class WebSearchTool(BuiltinTool):
 
     async def execute(self, **kwargs) -> str:
         query = kwargs.get("query", "")
-        max_results = kwargs.get("max_results", 10)
+        max_results = kwargs.get("limit", 10)
 
         if not query:
             return json.dumps({"success": False, "error": "搜索关键词不能为空"}, ensure_ascii=False)
@@ -505,7 +505,7 @@ class WebFetchTool(BuiltinTool):
                     "type": "string",
                     "description": "要获取的网页URL"
                 },
-                "max_length": {
+                "max_chars": {
                     "type": "integer",
                     "description": "返回内容的最大字符数",
                     "default": 10000
@@ -516,7 +516,7 @@ class WebFetchTool(BuiltinTool):
 
     async def execute(self, **kwargs) -> str:
         url = kwargs.get("url", "")
-        max_length = kwargs.get("max_length", 10000)
+        max_length = kwargs.get("max_chars", 10000)
 
         if not url:
             return json.dumps({"success": False, "error": "URL不能为空"}, ensure_ascii=False)

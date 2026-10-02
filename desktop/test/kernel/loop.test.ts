@@ -682,16 +682,16 @@ function remoteToolDefs(n: number, executed: string[]): ToolDefinition[] {
   return Array.from({ length: n }, (_, i) => toolDef(`mcp__srv${i}__tool${i}`, executed))
 }
 
-test('loop: 渐进披露每轮重组——41 个远程工具只发内置+search_tools，激活后下一轮带上新工具', async () => {
+test('loop: 渐进披露每轮重组——41 个远程工具只发内置+tool_search，激活后下一轮带上新工具', async () => {
   const executed: string[] = []
   const active: string[] = []
   const searchTool: ToolDefinition = {
-    name: 'search_tools',
+    name: 'tool_search',
     description: '搜索远程工具',
     kind: 'read',
     parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
     execute: async () => {
-      executed.push('search_tools')
+      executed.push('tool_search')
       // 模拟 ipc 侧激活：命中 2 个已注册工具 + 1 个已失效（不在 registry，应被组装过滤）
       active.push('mcp__srv0__tool0', 'market:market_search', 'mcp__gone__x')
       return { ok: true, output: '已激活' }
@@ -708,7 +708,7 @@ test('loop: 渐进披露每轮重组——41 个远程工具只发内置+search_
   const originalFetch = globalThis.fetch
   globalThis.fetch = stubSseRounds([
     [
-      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'search_tools', arguments: '{"query":"终端"}' } }] }, finish_reason: null }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'tool_search', arguments: '{"query":"终端"}' } }] }, finish_reason: null }] },
       { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
     ],
     [
@@ -742,15 +742,15 @@ test('loop: 渐进披露每轮重组——41 个远程工具只发内置+search_
   }
   const namesOf = (i: number): string[] =>
     (bodies[i].tools as Array<{ function: { name: string } }>).map(t => t.function.name)
-  // 第 1 轮：只发内置 file_read + search_tools，41 个远程工具不发
-  assert.deepEqual(namesOf(0), ['file_read', 'search_tools'])
+  // 第 1 轮：只发内置 file_read + tool_search，41 个远程工具不发
+  assert.deepEqual(namesOf(0), ['file_read', 'tool_search'])
   // 激活的 2 个在 registry 中存在，第 2 轮带上；mcp__gone__x 未注册被过滤
-  assert.deepEqual(namesOf(1).sort(), ['file_read', 'market_market_search', 'mcp__srv0__tool0', 'search_tools'])
+  assert.deepEqual(namesOf(1).sort(), ['file_read', 'market_market_search', 'mcp__srv0__tool0', 'tool_search'])
   // provider 名映射覆盖激活后的工具：market_market_search 解析回本地名执行
-  assert.deepEqual(executed, ['search_tools', 'market:market_search'])
+  assert.deepEqual(executed, ['tool_search', 'market:market_search'])
   assert.ok(events.some(e => e.type === 'tool_call' && e.name === 'market:market_search'))
   // 第 3 轮仍只发内置 + 已激活的 2 个（会话内粘住）
-  assert.deepEqual(namesOf(2).sort(), ['file_read', 'market_market_search', 'mcp__srv0__tool0', 'search_tools'])
+  assert.deepEqual(namesOf(2).sort(), ['file_read', 'market_market_search', 'mcp__srv0__tool0', 'tool_search'])
   for (const body of bodies) {
     for (const t of body.tools as Array<{ function: { name: string } }>) {
       assert.match(t.function.name, LEGAL_TOOL_NAME)
@@ -793,7 +793,7 @@ test('loop: 未启用渐进(off/未注入)时每轮全量发送注册表工具',
   assert.equal((bodies[1].tools as unknown[]).length, 42)
 })
 
-test('loop: 渐进模式(always, 远程为 0)仍只发内置+search_tools', async () => {
+test('loop: 渐进模式(always, 远程为 0)仍只发内置+tool_search', async () => {
   const executed: string[] = []
   const registry = registryOf([toolDef('file_read', executed)])
   const bodies: Array<Record<string, unknown>> = []

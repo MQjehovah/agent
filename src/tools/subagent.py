@@ -87,4 +87,9 @@ class SubagentTool(BuiltinTool):
         }
 
     async def execute(self, **kwargs) -> str:
-        return json.dumps(kwargs, ensure_ascii=False)
+        # 真实调度在 agent 内核 `executor.execute_tool` 中拦截本工具名处理；
+        # 正常情况下不会走到这里。返回明确错误而非回显参数，避免误用。
+        return json.dumps({
+            "success": False,
+            "error": "task 工具由 agent 内核直接调度，无法直接执行",
+        }, ensure_ascii=False)

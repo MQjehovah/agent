@@ -23,8 +23,8 @@ async def test_cross_file_edit(tmp_path):
     t = _tool(tmp_path)
 
     r = await t.execute(edits=[
-        {"file": "a.txt", "old": "foo", "new": "FOO"},
-        {"file": "b.txt", "old": "bar", "new": "BAR"},
+        {"file": "a.txt", "old_string": "foo", "new_string": "FOO"},
+        {"file": "b.txt", "old_string": "bar", "new_string": "BAR"},
     ])
     data = json.loads(r)
     assert data["success"] is True
@@ -40,8 +40,8 @@ async def test_cross_file_atomic_rejects_all_on_bad_anchor(tmp_path):
     t = _tool(tmp_path)
 
     r = await t.execute(edits=[
-        {"file": "a.txt", "old": "foo", "new": "FOO"},
-        {"file": "b.txt", "old": "NOPE", "new": "X"},
+        {"file": "a.txt", "old_string": "foo", "new_string": "FOO"},
+        {"file": "b.txt", "old_string": "NOPE", "new_string": "X"},
     ])
     data = json.loads(r)
     assert data["success"] is False
@@ -54,7 +54,7 @@ async def test_cross_file_hash_mismatch_rejected(tmp_path):
     (tmp_path / "a.txt").write_text("foo\n", encoding="utf-8")
     t = _tool(tmp_path)
     r = await t.execute(edits=[
-        {"file": "a.txt", "old": "foo", "new": "FOO", "hash": "deadbeefdeadbeef"},
+        {"file": "a.txt", "old_string": "foo", "new_string": "FOO", "hash": "deadbeefdeadbeef"},
     ])
     assert json.loads(r)["success"] is False
 
@@ -62,14 +62,14 @@ async def test_cross_file_hash_mismatch_rejected(tmp_path):
 @pytest.mark.asyncio
 async def test_cross_file_path_escape_rejected(tmp_path):
     t = _tool(tmp_path)
-    r = await t.execute(edits=[{"file": "../outside.txt", "old": "x", "new": "y"}])
+    r = await t.execute(edits=[{"file": "../outside.txt", "old_string": "x", "new_string": "y"}])
     assert json.loads(r)["success"] is False
 
 
 def test_same_file_edits_without_path_errors(tmp_path):
     t = _tool(tmp_path)
     import asyncio
-    out = asyncio.run(t.execute(edits=[{"old": "a", "new": "b"}]))
+    out = asyncio.run(t.execute(edits=[{"old_string": "a", "new_string": "b"}]))
     assert json.loads(out)["success"] is False
 
 

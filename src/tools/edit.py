@@ -10,15 +10,15 @@
 
 用法:
     # 单处替换
-    edit(path="src/main.py", old_text="foo()", new_text="bar()")
+    edit(path="src/main.py", old_string="foo()", new_string="bar()")
 
     # 带行号锚点的替换
-    edit(path="src/main.py", old_text="foo()", new_text="bar()", line=42)
+    edit(path="src/main.py", old_string="foo()", new_string="bar()", line=42)
 
     # 多次替换（原子提交）
     edit(path="src/main.py", edits=[
-        {"old": "foo()", "new": "bar()"},
-        {"old": "old_func", "new": "new_func"},
+        {"old_string": "foo()", "new_string": "bar()"},
+        {"old_string": "old_func", "new_string": "new_func"},
     ])
 """
 import difflib
@@ -50,7 +50,7 @@ def _content_lines(content: str) -> list[tuple[int, int, str]]:
 
 
 def _split_old_lines(old: str) -> list[str]:
-    """把 old_text 统一换行后切行（去掉末尾换行产生的空行）。"""
+    """把 old_string 统一换行后切行（去掉末尾换行产生的空行）。"""
     text = old.replace("\r\n", "\n").replace("\r", "\n")
     if text.endswith("\n"):
         text = text[:-1]
@@ -58,7 +58,7 @@ def _split_old_lines(old: str) -> list[str]:
 
 
 def _block_spans(content: str, old: str, collapse: bool) -> list[tuple[int, int]]:
-    """按行匹配 old_text，返回原文中每处匹配的 (start, end) 偏移。
+    """按行匹配 old_string，返回原文中每处匹配的 (start, end) 偏移。
 
     collapse=False: 仅忽略行尾空白与换行差异；
     collapse=True : 折叠所有空白（容忍缩进差异），更宽松的兜底。
@@ -81,7 +81,7 @@ def _block_spans(content: str, old: str, collapse: bool) -> list[tuple[int, int]
 
 
 def _locate_spans(content: str, old: str) -> list[tuple[int, int]]:
-    """定位 old_text 在 content 中的所有匹配偏移。
+    """定位 old_string 在 content 中的所有匹配偏移。
 
     优先级：精确子串 → 行尾空白/换行容忍 → 全空白折叠。返回原文偏移，
     调用方据此在原字符串上替换，避免整文件规范化写回。
@@ -152,22 +152,22 @@ class EditTool(BuiltinTool):
         return """精确的文件编辑工具。支持 SEARCH/REPLACE、行号锚点、批量与跨文件原子编辑。
 
 特性:
-1. SEARCH/REPLACE: 提供 old_text（要替换的原文）和 new_text（替换后的内容）
-2. 自动模糊匹配: old_text 自动处理缩进、空白、换行差异
+1. SEARCH/REPLACE: 提供 old_string（要替换的原文）和 new_string（替换后的内容）
+2. 自动模糊匹配: old_string 自动处理缩进、空白、换行差异
 3. 行号锚点: line 参数在命中多处时取最近一处
 4. 批量编辑: edits 参数对同一文件多个编辑原子提交
 5. 跨文件编辑: edits 每项带 file 即按文件分组，全部校验通过后一次写入
 6. 自动备份 + diff 输出
 
 使用规则:
-- old_text 提供足够上下文使其唯一（推荐周围 2-3 行）
-- 跨文件: edits=[{"file": "a.py", "old": "...", "new": "..."}, {"file": "b.py", ...}]
+- old_string 提供足够上下文使其唯一（推荐周围 2-3 行）
+- 跨文件: edits=[{"file": "a.py", "old_string": "...", "new_string": "..."}, {"file": "b.py", ...}]
 - 可选 hash: 对 old 文本的 SHA256 前 16 位，校验锚点未过期
 
-单处编辑: {"path": "src/main.py", "old_text": "foo()", "new_text": "bar()"}
-行号锚点: {"path": "src/main.py", "old_text": "foo()", "new_text": "bar()", "line": 42}
-同文件批量: {"path": "src/main.py", "edits": [{"old": "foo()", "new": "bar()"}]}
-跨文件批量: {"edits": [{"file": "a.py", "old": "x", "new": "y"}, {"file": "b.py", "old": "p", "new": "q"}]}"""
+单处编辑: {"path": "src/main.py", "old_string": "foo()", "new_string": "bar()"}
+行号锚点: {"path": "src/main.py", "old_string": "foo()", "new_string": "bar()", "line": 42}
+同文件批量: {"path": "src/main.py", "edits": [{"old_string": "foo()", "new_string": "bar()"}]}
+跨文件批量: {"edits": [{"file": "a.py", "old_string": "x", "new_string": "y"}, {"file": "b.py", "old_string": "p", "new_string": "q"}]}"""
 
     @property
     def parameters(self) -> dict:
@@ -178,11 +178,11 @@ class EditTool(BuiltinTool):
                     "type": "string",
                     "description": "要编辑的文件路径"
                 },
-                "old_text": {
+                "old_string": {
                     "type": "string",
                     "description": "要被替换的原文（提供足够上下文使匹配唯一）"
                 },
-                "new_text": {
+                "new_string": {
                     "type": "string",
                     "description": "替换后的新文本"
                 },
@@ -192,16 +192,16 @@ class EditTool(BuiltinTool):
                 },
                 "edits": {
                     "type": "array",
-                    "description": "批量编辑列表（可选，与 old_text/new_text 互斥）；每项可带 file 做跨文件",
+                    "description": "批量编辑列表（可选，与 old_string/new_string 互斥）；每项可带 file 做跨文件",
                     "items": {
                         "type": "object",
                         "properties": {
                             "file": {"type": "string", "description": "目标文件（跨文件编辑时使用；缺省用顶层 path）"},
                             "hash": {"type": "string", "description": "old 文本 SHA256 前 16 位（可选锚点校验）"},
-                            "old": {"type": "string", "description": "要被替换的原文"},
-                            "new": {"type": "string", "description": "替换后的新文本"},
+                            "old_string": {"type": "string", "description": "要被替换的原文"},
+                            "new_string": {"type": "string", "description": "替换后的新文本"},
                         },
-                        "required": ["old", "new"]
+                        "required": ["old_string", "new_string"]
                     }
                 },
                 "replace_all": {
@@ -215,7 +215,7 @@ class EditTool(BuiltinTool):
                 }
             },
             "anyOf": [
-                {"required": ["path", "old_text", "new_text"]},
+                {"required": ["path", "old_string", "new_string"]},
                 {"required": ["path", "edits"]},
                 {"required": ["edits"]}
             ]
@@ -223,8 +223,8 @@ class EditTool(BuiltinTool):
 
     async def execute(self, **kwargs) -> str:
         path = kwargs.get("path", "")
-        old_text = kwargs.get("old_text", "")
-        new_text = kwargs.get("new_text", "")
+        old_string = kwargs.get("old_string", "")
+        new_string = kwargs.get("new_string", "")
         line = kwargs.get("line", 0)
         edits = kwargs.get("edits")
         replace_all = kwargs.get("replace_all", False)
@@ -243,15 +243,15 @@ class EditTool(BuiltinTool):
         # 单处编辑模式
         if not path:
             return self._error("文件路径不能为空")
-        if not old_text or new_text is None:
+        if not old_string or new_string is None:
             return json.dumps({
                 "success": False,
-                "error": "请提供 old_text 和 new_text，或使用 edits 进行批量编辑"
+                "error": "请提供 old_string 和 new_string，或使用 edits 进行批量编辑"
             }, ensure_ascii=False)
 
-        return await self._execute_single(path, old_text, new_text, line, replace_all)
+        return await self._execute_single(path, old_string, new_string, line, replace_all)
 
-    async def _execute_single(self, path: str, old_text: str, new_text: str,
+    async def _execute_single(self, path: str, old_string: str, new_string: str,
                                line: int = 0, replace_all: bool = False) -> str:
         """单处编辑"""
         path = self.resolve_path(path)
@@ -269,9 +269,9 @@ class EditTool(BuiltinTool):
             return self._error(f"读取文件失败: {e}")
 
         # 在原文上定位（返回原始偏移），替换只动命中区间，保留其余原始字节
-        spans = _locate_spans(content, old_text)
+        spans = _locate_spans(content, old_string)
         if not spans:
-            hint = self._build_mismatch_hint(content, old_text)
+            hint = self._build_mismatch_hint(content, old_string)
             return json.dumps({
                 "success": False, "error": "未找到匹配的文本",
                 "hint": hint
@@ -294,10 +294,10 @@ class EditTool(BuiltinTool):
         # 逆序替换，偏移互不影响
         new_content = content
         for s, e in sorted(chosen, key=lambda s: s[0], reverse=True):
-            new_content = new_content[:s] + new_text + new_content[e:]
+            new_content = new_content[:s] + new_string + new_content[e:]
 
         if new_content == content:
-            return self._error("编辑后内容未发生变化（old_text 与 new_text 相同或未产生差异）")
+            return self._error("编辑后内容未发生变化（old_string 与 new_string 相同或未产生差异）")
 
         # 生成 diff
         diff = _make_diff(path, content, new_content)
@@ -340,8 +340,8 @@ class EditTool(BuiltinTool):
         content = original_content
         applied = 0
         for i, edit in enumerate(edits):
-            old = edit.get("old", "")
-            new = edit.get("new", "")
+            old = edit.get("old_string", "")
+            new = edit.get("new_string", "")
             if not old or new is None:
                 continue
 
@@ -395,8 +395,8 @@ class EditTool(BuiltinTool):
             if not isinstance(edit, dict):
                 return self._error(f"第 {i+1} 个编辑格式非法")
             file_path = str(edit.get("file") or edit.get("path") or "").strip()
-            old = edit.get("old", "")
-            new = edit.get("new", "")
+            old = edit.get("old_string", "")
+            new = edit.get("new_string", "")
             expected_hash = str(edit.get("hash") or "")
             if not file_path:
                 return self._error(f"第 {i+1} 个编辑缺少 file")
@@ -464,11 +464,11 @@ class EditTool(BuiltinTool):
 
     # ── 辅助 ─────────────────────────────────────────
 
-    def _build_mismatch_hint(self, content: str, old_text: str) -> str:
+    def _build_mismatch_hint(self, content: str, old_string: str) -> str:
         """匹配失败时提供附近内容的提示"""
-        if not old_text.strip():
+        if not old_string.strip():
             return ""
-        first_line = old_text.strip().split("\n")[0].strip()
+        first_line = old_string.strip().split("\n")[0].strip()
         if not first_line:
             return ""
 
@@ -512,7 +512,7 @@ class EditTool(BuiltinTool):
         if best_score > 0.3 and best_text:
             return (
                 f"最相似的内容在第 {best_line} 行附近：\n{best_text}\n"
-                f"请对比 old_text 与文件实际内容，注意空白、缩进、引号等差异。"
+                f"请对比 old_string 与文件实际内容，注意空白、缩进、引号等差异。"
             )
         return ""
 

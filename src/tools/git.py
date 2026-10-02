@@ -74,7 +74,7 @@ operation（必填）:
                 "message": {"type": "string", "description": "commit 提交信息（operation=commit 时必填）"},
                 "path": {"type": "string", "description": "限定文件路径（相对工作区；status/diff/commit 可用）"},
                 "staged": {"type": "boolean", "description": "diff 是否查看暂存区（默认 false）", "default": False},
-                "count": {"type": "integer", "description": "log 返回条数（默认 10）", "default": 10},
+                "limit": {"type": "integer", "description": "log 返回条数（默认 10）", "default": 10},
                 "name": {"type": "string", "description": "检查点名称（checkpoint/rollback）"},
                 "all": {"type": "boolean", "description": "commit 是否暂存全部改动（默认 true）", "default": True},
             },
@@ -95,7 +95,7 @@ operation（必填）:
         if operation == "diff":
             return self._diff(workspace, kwargs)
         if operation == "log":
-            return self._log(workspace, kwargs.get("count", 10))
+            return self._log(workspace, kwargs.get("limit", 10))
         if operation == "commit":
             return self._commit(workspace, kwargs)
         if operation == "checkpoint":

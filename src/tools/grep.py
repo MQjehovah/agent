@@ -70,7 +70,7 @@ class GrepTool(BuiltinTool):
                     "description": "是否忽略大小写",
                     "default": False
                 },
-                "max_results": {
+                "limit": {
                     "type": "integer",
                     "description": "最大返回结果数",
                     "default": 50
@@ -89,7 +89,7 @@ class GrepTool(BuiltinTool):
         search_path = kwargs.get("path", self.workspace or os.getcwd())
         file_pattern = kwargs.get("file_pattern", "*")
         case_insensitive = kwargs.get("case_insensitive", False)
-        max_results = kwargs.get("max_results", 50)
+        max_results = kwargs.get("limit", 50)
         context_lines = kwargs.get("context_lines", 2)
 
         if not pattern:

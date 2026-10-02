@@ -2,8 +2,8 @@ import type { ToolDefinition } from './types'
 
 /**
  * 本地 agent 渐进披露（工具搜索）纯逻辑：
- * 连接器装多后不再每轮把全部远程工具定义发给模型，而是先发内置工具 + search_tools，
- * 由模型按需调用 search_tools 检索，命中后把远程工具「激活」进本会话（会话内粘住）。
+ * 连接器装多后不再每轮把全部远程工具定义发给模型，而是先发内置工具 + tool_search，
+ * 由模型按需调用 tool_search 检索，命中后把远程工具「激活」进本会话（会话内粘住）。
  * 全部为纯函数/工厂，无 IO，便于离线单测；配置读取与会话持久化由 ipc 层注入。
  */
 
@@ -11,12 +11,12 @@ export type ToolSearchMode = 'auto' | 'always' | 'off'
 
 /** auto 模式的默认阈值：已注册远程工具数 > 40 时启用渐进披露 */
 export const TOOL_SEARCH_THRESHOLD = 40
-/** search_tools 的 limit 缺省值与夹紧范围 */
-export const SEARCH_TOOLS_DEFAULT_LIMIT = 8
-export const SEARCH_TOOLS_MAX_LIMIT = 20
+/** tool_search 的 limit 缺省值与夹紧范围 */
+export const TOOL_SEARCH_DEFAULT_LIMIT = 8
+export const TOOL_SEARCH_MAX_LIMIT = 20
 
-/** search_tools 注册名（渐进模式下由内置工具通道恒发） */
-export const SEARCH_TOOLS_NAME = 'search_tools'
+/** tool_search 注册名（渐进模式下由内置工具通道恒发） */
+export const TOOL_SEARCH_NAME = 'tool_search'
 
 /**
  * 远程工具判定：连接器注册进 registry 的工具——
@@ -71,8 +71,8 @@ export interface ToolSearchHit {
 export function clampLimit(limit?: number): number {
   const n = typeof limit === 'number' && Number.isFinite(limit)
     ? Math.floor(limit)
-    : SEARCH_TOOLS_DEFAULT_LIMIT
-  return Math.min(Math.max(n, 1), SEARCH_TOOLS_MAX_LIMIT)
+    : TOOL_SEARCH_DEFAULT_LIMIT
+  return Math.min(Math.max(n, 1), TOOL_SEARCH_MAX_LIMIT)
 }
 
 /**
@@ -111,7 +111,7 @@ export function searchRemoteTools(
   return hits.slice(0, clampLimit(limit))
 }
 
-/** search_tools 输出：逐条「名称 —— [连接器 x] 描述」，并说明命中工具已激活、下一轮可直接调用 */
+/** tool_search 输出：逐条「名称 —— [连接器 x] 描述」，并说明命中工具已激活、下一轮可直接调用 */
 export function formatSearchResult(hits: readonly ToolSearchHit[]): string {
   const lines = hits.map((hit) => {
     const connector = connectorOf(hit.name)
@@ -127,13 +127,13 @@ export function progressiveHint(activeNames: readonly string[]): string {
   const names = activeNames.map((n) => String(n ?? '').trim()).filter(Boolean)
   const list = names.length > 0 ? names.join('、') : '无'
   return (
-    '连接器的更多工具需先用 `search_tools` 搜索；已激活：' +
+    '连接器的更多工具需先用 `tool_search` 搜索；已激活：' +
     list +
     '。需要远程能力（远程终端/设备/市场等）而当前工具列表没有时，先搜索再调用。'
   )
 }
 
-/** 每轮发送给模型的工具组装：非渐进=全量；渐进=非远程工具（含内置与 search_tools）+ 本会话已激活且仍注册的远程工具 */
+/** 每轮发送给模型的工具组装：非渐进=全量；渐进=非远程工具（含内置与 tool_search）+ 本会话已激活且仍注册的远程工具 */
 export function selectRoundTools<T extends { function: { name: string } }>(
   all: readonly T[],
   progressive: boolean,
@@ -151,10 +151,10 @@ export interface SearchToolsDeps {
   activate(names: string[], sessionId: string): string[]
 }
 
-/** 构造 search_tools 工具（kind: read，不触发权限确认）：检索 → 激活 → 文本清单 */
+/** 构造 tool_search 工具（kind: read，不触发权限确认）：检索 → 激活 → 文本清单 */
 export function createSearchToolsTool(deps: SearchToolsDeps): ToolDefinition {
   return {
-    name: SEARCH_TOOLS_NAME,
+    name: TOOL_SEARCH_NAME,
     description:
       '在已启用连接器的远程工具（MCP / 市场远程能力）中按关键词搜索。命中的工具会立即激活，下一轮对话即可直接调用；' +
       '当需要远程能力（远程终端/设备/市场等）而当前工具列表里没有时，先用本工具搜索。',
@@ -165,7 +165,7 @@ export function createSearchToolsTool(deps: SearchToolsDeps): ToolDefinition {
         query: { type: 'string', description: '搜索关键词（工具名/功能描述/连接器名，空格分隔多个词）' },
         limit: {
           type: 'integer',
-          description: `最多返回条数（1-${SEARCH_TOOLS_MAX_LIMIT}），缺省 ${SEARCH_TOOLS_DEFAULT_LIMIT}`
+          description: `最多返回条数（1-${TOOL_SEARCH_MAX_LIMIT}），缺省 ${TOOL_SEARCH_DEFAULT_LIMIT}`
         }
       },
       required: ['query']

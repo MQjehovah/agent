@@ -41,7 +41,7 @@ class GlobTool(BuiltinTool):
                     "type": "string",
                     "description": "搜索的根目录，默认当前工作目录"
                 },
-                "max_results": {
+                "limit": {
                     "type": "integer",
                     "description": "最大返回文件数",
                     "default": 100
@@ -53,7 +53,7 @@ class GlobTool(BuiltinTool):
     async def execute(self, **kwargs) -> str:
         pattern = kwargs.get("pattern", "")
         search_path = kwargs.get("path", self.workspace or os.getcwd())
-        max_results = kwargs.get("max_results", 100)
+        max_results = kwargs.get("limit", 100)
 
         if not pattern:
             return json.dumps({"success": False, "error": "模式不能为空"}, ensure_ascii=False)

@@ -20,7 +20,7 @@ export interface LocalSession {
   /** 可选的人设：来自本地 agents 目录的市场 agent 能力，chat 时 prompt 作为 systemPrompt 前缀 */
   persona?: { name: string; prompt: string }
   /**
-   * 渐进披露(工具搜索)：本会话已激活的远程工具名，search_tools 命中后写入，会话内粘住；
+   * 渐进披露(工具搜索)：本会话已激活的远程工具名，tool_search 命中后写入，会话内粘住；
    * 新会话缺省空数组，缺失/损坏一律按空处理（旧 meta 兼容）
    */
   activeRemoteTools?: string[]

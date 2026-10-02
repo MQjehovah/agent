@@ -82,7 +82,7 @@ class ShellTool(BuiltinTool):
                     "description": "环境变量，如 {'DEBUG': '1'}",
                     "default": {}
                 },
-                "max_output": {
+                "max_chars": {
                     "type": "integer",
                     "description": "输出最大字符数，默认10000",
                     "default": 10000
@@ -96,7 +96,7 @@ class ShellTool(BuiltinTool):
         timeout = kwargs.get("timeout", 30)
         cwd = kwargs.get("cwd") or self.temp_dir or self.workspace or None
         extra_env = kwargs.get("env", {})
-        max_output = kwargs.get("max_output", 10000)
+        max_output = kwargs.get("max_chars", 10000)
 
         if not command:
             return json.dumps({"success": False, "error": "命令不能为空"}, ensure_ascii=False)

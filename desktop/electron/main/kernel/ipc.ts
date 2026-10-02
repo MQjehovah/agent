@@ -155,7 +155,7 @@ function ensureRegistry(): Registry {
         })
       )
     )
-    // 渐进披露入口：search_tools 检索已注册远程工具并把命中项激活进当前会话（ctx.sessionId），
+    // 渐进披露入口：tool_search 检索已注册远程工具并把命中项激活进当前会话（ctx.sessionId），
     // 写入会话 meta（会话内粘住）；loop 每轮重组工具列表，下一轮即可直接调用
     reg.register(
       createSearchToolsTool({

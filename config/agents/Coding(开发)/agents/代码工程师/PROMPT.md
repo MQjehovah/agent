@@ -63,22 +63,22 @@ description: 代码实现与编译
 
 **模式一：单处替换（最常用）**
 ```
-edit(path="src/main.py", old_text="要替换的原文", new_text="替换后的内容")
+edit(path="src/main.py", old_string="要替换的原文", new_string="替换后的内容")
 ```
-- old_text 提供周围 2-3 行代码，确保匹配唯一
+- old_string 提供周围 2-3 行代码，确保匹配唯一
 - 工具会自动处理空白和换行差异
 
 **模式二：行号锚点（多处匹配时使用）**
 ```
-edit(path="src/main.py", old_text="foo()", new_text="bar()", line=42)
+edit(path="src/main.py", old_string="foo()", new_string="bar()", line=42)
 ```
-- 当 old_text 在文件中有多处匹配时，用 line 指定附近行号
+- 当 old_string 在文件中有多处匹配时，用 line 指定附近行号
 
 **模式三：批量编辑（同一个文件的多次修改）**
 ```
 edit(path="src/main.py", edits=[
-    {"old": "foo()", "new": "bar()"},
-    {"old": "old_func", "new": "new_func"},
+    {"old_string": "foo()", "new_string": "bar()"},
+    {"old_string": "old_func", "new_string": "new_func"},
 ])
 ```
 - 批量编辑是原子提交：全部成功或全部失败
@@ -104,7 +104,7 @@ edit(path="src/main.py", edits=[
 
 | 情况 | 操作 |
 |---|---|
-| `edit` 匹配失败 | 用 hint 中的附近行号修正 old_text |
+| `edit` 匹配失败 | 用 hint 中的附近行号修正 old_string |
 | 编译错误 | 读错误信息定位问题代码，修正后重试 |
 | 相同工具连续 2 次失败 | 换方案，不要盲目重试 |
 | 测试不通过 | 分析失败原因，修改实现后重测 |

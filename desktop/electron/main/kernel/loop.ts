@@ -9,7 +9,7 @@ import { buildWireContent } from './image-wire'
 /**
  * agent 工具调用循环：经 gateway 网关的 OpenAI 兼容 SSE 流驱动多轮对话，
  * 模型发起 tool_calls 时按注册表执行工具并把结果回填，直至最终作答或轮次用尽。
- * 工具列表每轮重算：连接器很多时按 ToolSearchHooks 走渐进披露（内置 + search_tools + 已激活远程工具）。
+ * 工具列表每轮重算：连接器很多时按 ToolSearchHooks 走渐进披露（内置 + tool_search + 已激活远程工具）。
  * SSE 解析与 tool_calls 拼装为纯函数便于离线单测；完整网络循环由真机冒烟覆盖。
  */
 
@@ -144,7 +144,7 @@ export interface LoopDeps {
    */
   resolveSkill?: (name: string) => string | null
   /**
-   * 渐进披露（工具搜索）钩子：每轮组装工具前现调，search_tools 激活的远程工具当轮即进入下一轮请求；
+   * 渐进披露（工具搜索）钩子：每轮组装工具前现调，tool_search 激活的远程工具当轮即进入下一轮请求；
    * 缺省不传时保持旧行为（每轮全量发送注册表工具）。
    */
   toolSearch?: ToolSearchHooks
@@ -330,8 +330,8 @@ export async function runAgentTurn(deps: LoopDeps, input: RunTurnInput): Promise
 async function streamRound(deps: LoopDeps, input: RunTurnInput, messages: ChatMessage[], emit: (e: AgentEvent) => void): Promise<RoundOutcome> {
   // 请求边界：把注册表本地工具名（file.read / 中文 MCP 名 / market:<name> 等）收敛为 provider 合法名；
   // 旧历史里的非法名由 toWireMessages 按同一规则 sanitize 兜底。映射只作用于 wire，存储与 UI 保持本地名。
-  // 渐进披露：每轮按 toolSearch 钩子现算——只发内置工具 + search_tools + 本会话已激活的远程工具，
-  // search_tools 激活后下一轮重组即生效；缺省钩子时保持全量（现状）。
+  // 渐进披露：每轮按 toolSearch 钩子现算——只发内置工具 + tool_search + 本会话已激活的远程工具，
+  // tool_search 激活后下一轮重组即生效；缺省钩子时保持全量（现状）。
   const openAiTools = selectRoundTools(
     deps.registry.toOpenAiTools(),
     deps.toolSearch?.progressive() ?? false,

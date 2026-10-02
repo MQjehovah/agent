@@ -147,7 +147,7 @@ class ErrorClassifier:
 
         # 4. 根据工具参数启发式
         if tool_name == "edit" and args:
-            if "old" in args and args["old"] not in self._get_file_content(args.get("file", "")):
+            if "old_string" in args and args["old_string"] not in self._get_file_content(args.get("file", "")):
                 return ErrorType.SYNTAX
 
         return ErrorType.UNKNOWN

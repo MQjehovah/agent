@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  SEARCH_TOOLS_DEFAULT_LIMIT,
-  SEARCH_TOOLS_MAX_LIMIT,
+  TOOL_SEARCH_DEFAULT_LIMIT,
+  TOOL_SEARCH_MAX_LIMIT,
   TOOL_SEARCH_THRESHOLD,
   clampLimit,
   connectorOf,
@@ -32,7 +32,7 @@ test('tool-search: isRemoteTool 按 mcp__ / market: 前缀判定远程工具', (
   assert.equal(isRemoteTool('mcp__remote_terminal__connect_terminal'), true)
   assert.equal(isRemoteTool('market:market_search'), true)
   assert.equal(isRemoteTool('file_read'), false)
-  assert.equal(isRemoteTool('search_tools'), false)
+  assert.equal(isRemoteTool('tool_search'), false)
   assert.equal(isRemoteTool('kb_search'), false)
   assert.equal(isRemoteTool(''), false)
 })
@@ -127,14 +127,14 @@ test('tool-search: searchRemoteTools limit 缺省 8，夹紧 1..20', () => {
     name: `mcp__srv__tool_${String(i).padStart(2, '0')}`,
     description: '通用工具'
   }))
-  assert.equal(searchRemoteTools(many, 'tool').length, SEARCH_TOOLS_DEFAULT_LIMIT)
-  assert.equal(searchRemoteTools(many, 'tool', 100).length, SEARCH_TOOLS_MAX_LIMIT)
+  assert.equal(searchRemoteTools(many, 'tool').length, TOOL_SEARCH_DEFAULT_LIMIT)
+  assert.equal(searchRemoteTools(many, 'tool', 100).length, TOOL_SEARCH_MAX_LIMIT)
   assert.equal(searchRemoteTools(many, 'tool', 0).length, 1)
   assert.equal(searchRemoteTools(many, 'tool', -5).length, 1)
   assert.equal(searchRemoteTools(many, 'tool', 3).length, 3)
-  assert.equal(clampLimit(undefined), SEARCH_TOOLS_DEFAULT_LIMIT)
+  assert.equal(clampLimit(undefined), TOOL_SEARCH_DEFAULT_LIMIT)
   assert.equal(clampLimit(0), 1)
-  assert.equal(clampLimit(999), SEARCH_TOOLS_MAX_LIMIT)
+  assert.equal(clampLimit(999), TOOL_SEARCH_MAX_LIMIT)
 })
 
 test('tool-search: formatSearchResult 输出名称 —— [连接器 x] 描述，并说明已激活', () => {
@@ -147,7 +147,7 @@ test('tool-search: formatSearchResult 输出名称 —— [连接器 x] 描述�
 test('tool-search: progressiveHint 空激活集写「无」，非空写列表', () => {
   const empty = progressiveHint([])
   assert.match(empty, /已激活：无/)
-  assert.match(empty, /search_tools/)
+  assert.match(empty, /tool_search/)
   assert.match(empty, /先搜索再调用/)
   const some = progressiveHint(['mcp__a__x', 'market:b'])
   assert.match(some, /已激活：mcp__a__x、market:b/)
@@ -158,7 +158,7 @@ test('tool-search: selectRoundTools 非渐进=全量；渐进=非远程 + 已激
   const wrap = (name: string) => ({ type: 'function' as const, function: { name, description: '', parameters: {} } })
   const all = [
     wrap('file_read'),
-    wrap('search_tools'),
+    wrap('tool_search'),
     wrap('mcp__remote_terminal__connect_terminal'),
     wrap('market:market_search')
   ]
@@ -168,13 +168,13 @@ test('tool-search: selectRoundTools 非渐进=全量；渐进=非远程 + 已激
   )
   assert.deepEqual(
     selectRoundTools(all, true, []).map((t) => t.function.name),
-    ['file_read', 'search_tools']
+    ['file_read', 'tool_search']
   )
   assert.deepEqual(
     selectRoundTools(all, true, ['mcp__remote_terminal__connect_terminal', 'mcp__gone__x']).map(
       (t) => t.function.name
     ),
-    ['file_read', 'search_tools', 'mcp__remote_terminal__connect_terminal']
+    ['file_read', 'tool_search', 'mcp__remote_terminal__connect_terminal']
   )
 })
 
@@ -238,7 +238,7 @@ test('tool-search: createSearchToolsTool limit 透传并夹紧，activate 抛错
     }
   })
   await tool.execute({ query: 'tool', limit: 999 }, CTX)
-  assert.equal(lastCount, SEARCH_TOOLS_MAX_LIMIT)
+  assert.equal(lastCount, TOOL_SEARCH_MAX_LIMIT)
 
   const broken = createSearchToolsTool({
     listRemote: () => many,
