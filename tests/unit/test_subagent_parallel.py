@@ -93,3 +93,41 @@ async def test_team_run_lock_serializes(tmp_path):
     lock = mgr.team_run_lock("conv|Team")
     assert lock is mgr.team_run_lock("conv|Team")
     assert lock is not mgr.team_run_lock("conv|Other")
+
+
+def test_worktree_enabled_env(monkeypatch):
+    monkeypatch.delenv("AGENT_SUBAGENT_WORKTREE", raising=False)
+    assert SubagentManager._worktree_enabled() is False
+    monkeypatch.setenv("AGENT_SUBAGENT_WORKTREE", "1")
+    assert SubagentManager._worktree_enabled() is True
+
+
+@pytest.mark.asyncio
+async def test_maybe_worktree_git(tmp_path):
+    import shutil
+    import subprocess
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.local"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+
+    base = tmp_path / "agents"
+    base.mkdir()
+    mgr = SubagentManager(str(base))
+    wm, wt, ws = await mgr._maybe_worktree(str(tmp_path), "coder")
+    assert wm is not None and wt and ws == wt and os.path.isdir(wt)
+    await wm.cleanup_worktree_by_path(wt)
+    assert not os.path.isdir(wt)
+
+
+@pytest.mark.asyncio
+async def test_maybe_worktree_non_git(tmp_path):
+    base = tmp_path / "agents"
+    base.mkdir()
+    mgr = SubagentManager(str(base))
+    wm, wt, ws = await mgr._maybe_worktree(str(tmp_path), "coder")
+    assert wm is None and wt == "" and ws == str(tmp_path)

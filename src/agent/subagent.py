@@ -34,6 +34,9 @@ class SubagentInstance:
     # 运行串行锁: 同一实例(同对话同模板/同名)并发的 run 串行, 避免同一 session 上下文互相污染;
     # 不同实例(不同 name)各持各的锁 → 仍可并行。
     run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # 子代理写隔离(G)使用的 worktree 句柄(未启用为空)
+    worktree_manager: Any = None
+    worktree_path: str = ""
 
 
 class SubagentManager:
@@ -127,6 +130,26 @@ class SubagentManager:
             limit = self._parallel_limit()
             self._run_sem = asyncio.Semaphore(limit) if limit > 0 else False
         return self._run_sem if self._run_sem is not False else None
+
+    @staticmethod
+    def _worktree_enabled() -> bool:
+        """子代理写隔离开关: AGENT_SUBAGENT_WORKTREE=1 时每个子代理独立 worktree。"""
+        val = (os.environ.get("AGENT_SUBAGENT_WORKTREE", "0") or "0").strip().lower()
+        return val in ("1", "true", "on", "yes")
+
+    async def _maybe_worktree(self, workspace: str, role: str) -> tuple[Any, str, str]:
+        """为子代理分配独立 worktree; 非 git 仓库/失败时回退共享工作区。"""
+        try:
+            from worktree import WorktreeManager
+            mgr = WorktreeManager(workspace)
+            if not mgr.is_git:
+                return None, "", workspace
+            wt = await mgr.create_worktree(role=role or "subagent")
+            logger.info(f"子代理写隔离 worktree: {wt} (role={role})")
+            return mgr, wt, wt
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"子代理 worktree 创建失败, 回退共享工作区: {e}")
+            return None, "", workspace
 
     def _load_all(self):
         """加载所有子代理模板（包括个人和团队）"""
@@ -737,6 +760,13 @@ class SubagentManager:
         workspace = template_data.get("workspace") or self.parent_workspace or os.getcwd()
         config_dir = template_data.get("config_dir", "")
 
+        # 子代理写隔离(可选): AGENT_SUBAGENT_WORKTREE=1 且父工作区为 git 仓库时,
+        # 为每个子代理分配独立 worktree(避免并行写冲突); 结束清理。
+        wt_manager = None
+        wt_path = ""
+        if not _dynamic and self._worktree_enabled():
+            wt_manager, wt_path, workspace = await self._maybe_worktree(workspace, template_name)
+
         # 未显式传 mcp_servers 时, 若模板 frontmatter 指定 mcpServers 且未自带文件, 从 root 池按名取
         effective_mcp = mcp_servers
         if effective_mcp is None and not _dynamic:
@@ -776,6 +806,8 @@ class SubagentManager:
             template=template_name,
             session_id=new_session_id,
             conversation_id=_conv,
+            worktree_manager=wt_manager,
+            worktree_path=wt_path,
         )
 
         async with self._lock:
@@ -848,6 +880,12 @@ class SubagentManager:
                 del self._name_to_session[instance.template]
 
         await instance.agent.cleanup()
+        if instance.worktree_manager and instance.worktree_path:
+            try:
+                await instance.worktree_manager.cleanup_worktree_by_path(instance.worktree_path)
+                logger.info(f"已清理子代理 worktree: {instance.worktree_path}")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"子代理 worktree 清理失败: {e}")
         logger.info(f"清理子代理: template={instance.template}, session={session_id}")
 
     async def cleanup_all(self):
