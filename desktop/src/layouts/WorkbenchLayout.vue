@@ -85,7 +85,12 @@ async function handleQuickPrompt(text: string): Promise<void> {
 
 /** 通知点击打开会话:优先查已加载列表,未收录的在线会话回退拉取历史 */
 async function handleOpenSession(sessionId: string): Promise<void> {
-  if (!sessionId || chat.streaming) return
+  if (!sessionId) return
+  // 已在本地载入(含后台在跑)的会话直接切换, 保留其实时气泡
+  if (chat.focus(sessionId)) {
+    void router.push('/chat')
+    return
+  }
   const hit = sessionsStore.sessions.find((s) => s.id === sessionId)
   if (hit) {
     await openSession(hit)
@@ -154,7 +159,11 @@ const sessionsCollapsed = ref(false)
 
 /** 打开会话:本地会话切到本地模式,agent 会话走 HTTP 历史 */
 async function openSession(s: SessionListItem) {
-  if (chat.streaming) return
+  // 已载入(含后台在跑)的会话: 只切换不重载, 保留实时气泡
+  if (chat.focus(s.id)) {
+    void router.push('/chat')
+    return
+  }
   try {
     if (s.mode === 'local') {
       await chat.loadLocalMessages(s.id, { workspace: s.workspace, ephemeral: s.ephemeral })
@@ -226,7 +235,8 @@ async function removeSession(s: SessionListItem) {
     return
   }
   try {
-    if (chat.sessionId === s.id) chat.newSession()
+    // 丢弃本地运行时状态(在跑会话会先中止); 若为当前会话则回到空态
+    chat.dropConversation(s.id)
     await sessionsStore.remove(s.id, s.mode)
     ElMessage.success('已删除')
   } catch (err) {
@@ -418,6 +428,19 @@ async function doLogout() {
               >
                 <el-icon :size="13" class="side-session-icon"><FolderOpened /></el-icon>
                 <span class="side-session-name">{{ s.title }}</span>
+                <el-icon
+                  v-if="chat.conversations[s.id]?.streaming"
+                  :size="12"
+                  class="is-loading side-session-run"
+                  title="运行中"
+                >
+                  <Loading />
+                </el-icon>
+                <span
+                  v-else-if="chat.conversations[s.id]?.pendingPermission"
+                  class="side-session-ask"
+                  title="等待你确认"
+                >待确认</span>
                 <span
                   v-if="s.mode !== 'local'"
                   class="side-session-chan"

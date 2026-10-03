@@ -91,9 +91,13 @@ async function openSession(s: SessionListItem) {
 
 /** 继续对话:本地会话切到本地模式并回放历史 */
 function continueSession(s: SessionListItem) {
-  if (chat.streaming) return
   if (!canContinueInDesktop(s)) {
     ElMessage.info('该会话来自钉钉等外部渠道，仅支持查看历史，请在对应渠道继续对话')
+    return
+  }
+  // 已载入(含后台在跑)的会话直接切换, 保留实时气泡
+  if (chat.focus(s.id)) {
+    void router.push('/chat')
     return
   }
   if (s.mode === 'local') {
@@ -119,7 +123,8 @@ async function removeSession(s: SessionListItem) {
     return
   }
   try {
-    if (chat.sessionId === s.id) chat.newSession()
+    // 丢弃本地运行时状态(在跑会话会先中止); 若为当前会话则回到空态
+    chat.dropConversation(s.id)
     await sessionsStore.remove(s.id, s.mode)
     ElMessage.success('已删除')
   } catch (err) {

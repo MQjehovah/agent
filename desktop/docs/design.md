@@ -171,6 +171,7 @@ dashboard/
   - 输入框(Enter 发送 / Shift+Enter 换行)、停止按钮(中断 SSE);
   - 消息流:Markdown 渲染、代码高亮、工具调用/思考过程折叠展示(agent SSE 事件已含事件流);
   - 新会话/续聊:`session_id` 贯穿;
+  - **多会话并跑**:store 按会话 id 分桶(各持独立 `messages`/`streaming`/权限弹窗),后台会话的流继续更新自己的气泡;运行中切到其它会话/其它页面均不打断,可随时切回查看最新状态(侧栏以「运行中/待确认」徽标提示)。流由主进程 + Pinia store 持有,与视图组件生命周期解耦;
   - **本地模式附件**:选文件后复制进会话工作区 `.attachments/`,以相对路径文本随消息发送(kernel `file_read` 可读);远程模式入口置灰;
 - **SessionsView**:调 `GET /agent/api/sessions` 列表,查看历史消息、删除会话;
 - **KnowledgeView / MarketView / UsageView**:知识库(rag)浏览、能力市场浏览/订阅、个人用量视图;

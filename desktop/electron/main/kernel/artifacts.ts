@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from 'node:fs/promises'
+import { readFile, readdir, rm, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { getConfig } from '../store'
 import { freshAgentJwt } from '../identity'
@@ -51,11 +51,11 @@ export function kindOf(name: string): 'text' | 'image' | 'other' {
   return 'other'
 }
 
-async function agentRequest(path: string): Promise<Response> {
+async function agentRequest(path: string, method = 'GET'): Promise<Response> {
   const jwt = await freshAgentJwt()
   if (!jwt) throw new Error('请先完成企业 SSO 登录')
   const base = getConfig().agentUrl.replace(/\/+$/, '')
-  const res = await fetch(`${base}${path}`, { headers: { authorization: `Bearer ${jwt}` } })
+  const res = await fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${jwt}` } })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     let reason = `读取失败(HTTP ${res.status})`
@@ -123,6 +123,19 @@ export async function listLocalArtifacts(workspace: string, limit = 200): Promis
   await walk(workspace, 0)
   out.sort((a, b) => (a.modified < b.modified ? 1 : -1))
   return out.slice(0, limit)
+}
+
+/** 删除在线产物(agent 侧「我的工作区」) */
+export async function deleteAgentArtifact(relPath: string): Promise<void> {
+  await agentRequest(`/api/workspace/my/file?path=${encodeURIComponent(relPath)}`, 'DELETE')
+}
+
+/** 删除离线产物(限定在会话工作区内, 仅文件) */
+export async function deleteLocalArtifact(workspace: string, relPath: string): Promise<void> {
+  const target = resolveWithin(workspace, relPath)
+  const info = await stat(target).catch(() => null)
+  if (!info?.isFile()) throw new Error('文件不存在')
+  await rm(target)
 }
 
 /** 离线产物内容(限定在会话工作区内) */

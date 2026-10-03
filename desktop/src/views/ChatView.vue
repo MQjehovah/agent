@@ -39,6 +39,14 @@ const attaching = ref(false)
 const dragging = ref(false)
 /** 产物面板(Canvas)开关 */
 const artifactsOpen = ref(false)
+/** 在线反问(ask_user)弹窗中用户自定义答复 */
+const customAnswer = ref('')
+
+// 每次弹出新的反问时清空上一轮的自定义答复
+watch(
+  () => chat.pendingPermission?.requestId,
+  () => { customAnswer.value = '' }
+)
 
 /** 当前在线会话是否为"只读渠道"(钉钉等外部渠道): 仅可查看, 不可在 dashboard 续聊 */
 const readOnlyChannel = computed(
@@ -70,9 +78,8 @@ async function send() {
   }
 }
 
-/** 顶部快捷: 新建对话(清空当前会话, 保持当前模式) */
+/** 顶部快捷: 新建对话(切到空白会话; 原在跑会话转入后台继续运行) */
 function newChat(): void {
-  if (chat.streaming) return
   chat.newSession()
   input.value = ''
 }
@@ -697,6 +704,14 @@ function respond(decision: string) {
   chat.respondPermission(decision).catch((err: Error) => ElMessage.error(err.message))
 }
 
+/** 提交用户自定义答复(在线反问) */
+function submitCustomAnswer() {
+  const text = customAnswer.value.trim()
+  if (!text) return
+  customAnswer.value = ''
+  respond(text)
+}
+
 /** 运行中的工具(尚无结果) */
 function pendingTools(m: UiMessage): ToolTrace[] {
   return m.tools.filter((t) => t.result === undefined)
@@ -874,16 +889,18 @@ watch(
   () => scheduleScroll()
 )
 
-// 流式期间显示"工作中 Xs"
+// 流式期间显示"工作中 Xs"; 切换到后台在跑会话时按该会话开始时间校正计时
 watch(
-  () => chat.streaming,
-  (on) => {
+  () => [chat.streaming, chat.sessionId] as const,
+  ([on]) => {
     if (elapsedTimer) {
       window.clearInterval(elapsedTimer)
       elapsedTimer = undefined
     }
     if (on) {
-      elapsed.value = 0
+      elapsed.value = chat.activeStartedAt
+        ? Math.max(0, Math.floor((Date.now() - chat.activeStartedAt) / 1000))
+        : 0
       elapsedTimer = window.setInterval(() => {
         elapsed.value += 1
       }, 1000)
@@ -1579,7 +1596,7 @@ const isLocal = computed(() => chat.sessionMode === 'local')
     <el-dialog
       :model-value="!!chat.pendingPermission"
       title="权限确认"
-      width="480px"
+      width="520px"
       align-center
       :close-on-click-modal="false"
       :close-on-press-escape="false"
@@ -1589,20 +1606,43 @@ const isLocal = computed(() => chat.sessionMode === 'local')
         <p v-if="chat.pendingPermission.tool" class="perm-tool">工具:<b>{{ chat.pendingPermission.tool }}</b></p>
         <pre class="perm-summary">{{ chat.pendingPermission.summary || '(无参数摘要)' }}</pre>
         <p class="perm-hint">
-          {{ chat.pendingPermission.mode === 'online' ? '请选择如何处理该请求。' : '该工具会改动你的工作区,请确认是否允许执行。' }}
+          {{ chat.pendingPermission.mode === 'online' ? '请选择如何处理该请求，或在下方输入你自己的答复。' : '该工具会改动你的工作区,请确认是否允许执行。' }}
         </p>
-      </div>
-      <template #footer>
-        <template v-if="chat.pendingPermission?.mode === 'online'">
-          <el-button
+        <div
+          v-if="chat.pendingPermission.mode === 'online'"
+          class="perm-options"
+        >
+          <button
             v-for="opt in chat.pendingPermission.options?.length ? chat.pendingPermission.options : ['允许', '拒绝']"
             :key="opt"
-            :type="opt === '允许' ? 'primary' : opt === '拒绝' ? 'danger' : 'default'"
-            :plain="opt !== '允许'"
+            type="button"
+            class="perm-option"
+            :class="{ 'is-allow': opt === '允许', 'is-deny': opt === '拒绝' }"
             @click="respond(opt)"
           >
             {{ opt }}
-          </el-button>
+          </button>
+        </div>
+      </div>
+      <template #footer>
+        <template v-if="chat.pendingPermission?.mode === 'online'">
+          <div class="perm-answer">
+            <el-input
+              v-model="customAnswer"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              resize="none"
+              placeholder="输入自定义答复…（Ctrl/⌘ + Enter 提交）"
+              @keydown.enter.exact.prevent="submitCustomAnswer"
+            />
+            <el-button
+              type="primary"
+              :disabled="!customAnswer.trim()"
+              @click="submitCustomAnswer"
+            >
+              提交
+            </el-button>
+          </div>
         </template>
         <template v-else>
           <el-button type="danger" plain @click="respond('deny')">拒绝</el-button>
@@ -2005,6 +2045,89 @@ const isLocal = computed(() => chat.sessionMode === 'local')
   flex: none;
   font-size: 11px;
   color: var(--el-text-color-secondary);
+}
+
+/* 权限确认 / 在线反问弹窗 */
+.perm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.perm-tool {
+  margin: 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+.perm-tool b {
+  color: var(--el-text-color-primary);
+}
+.perm-summary {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--el-text-color-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 42vh;
+  overflow: auto;
+}
+.perm-hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--el-text-color-secondary);
+}
+.perm-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.perm-option {
+  width: 100%;
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--el-border-color);
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  white-space: normal;
+  word-break: break-word;
+}
+.perm-option:hover {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+.perm-option.is-allow:hover {
+  border-color: var(--el-color-success);
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
+}
+.perm-option.is-deny:hover {
+  border-color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+}
+.perm-answer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+}
+.perm-answer :deep(.el-textarea) {
+  flex: 1;
+}
+.perm-answer :deep(.el-textarea__inner) {
+  padding: 5px 11px;
 }
 </style>
 

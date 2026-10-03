@@ -31,6 +31,7 @@ const ALLOWED_CHANNELS = new Set([
   'artifact:read',
   'artifact:reveal',
   'artifact:open',
+  'artifact:delete',
   'localagent:chat',
   'localagent:stop',
   'localagent:regenerate',

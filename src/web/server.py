@@ -3355,6 +3355,35 @@ class WebServer:
                 return JSONResponse({"error": "文件不存在"}, status_code=404)
             return FileResponse(target)
 
+        @self._app.delete("/api/workspace/my/file")
+        async def delete_my_workspace_file(path: str = Query(...), request: Request = None):
+            """删除「我的工作区」里的文件(产物面板); 路径必须落在自己的工作区内"""
+            if not self.agent:
+                return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+            try:
+                auth = await _get_auth(request)
+            except Exception:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            root = os.path.realpath(_user_workspace_dir(str(auth.get("uid", "anon"))))
+            target = os.path.realpath(os.path.join(root, str(path or "")))
+            if target == root or not target.startswith(root + os.sep):
+                return JSONResponse({"error": "路径越界"}, status_code=400)
+            if not os.path.isfile(target):
+                return JSONResponse({"error": "文件不存在"}, status_code=404)
+            try:
+                os.remove(target)
+            except OSError as e:
+                return JSONResponse({"error": f"删除失败: {e}"}, status_code=500)
+            # 顺带清理空目录(不越出 root)
+            parent = os.path.dirname(target)
+            while parent != root and parent.startswith(root + os.sep):
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    break
+                parent = os.path.dirname(parent)
+            return {"ok": True, "relPath": str(path)}
+
         @self._app.post("/api/workspace/upload")
         async def workspace_upload(request: Request):
             """上传对话附件, 返回 file 工具可直接读取的相对路径(uploads/xxx)"""

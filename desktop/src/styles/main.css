@@ -375,6 +375,24 @@ html.dark {
   transform: rotate(180deg);
 }
 
+/* 运行中/待确认徽标(多会话并跑时标记后台会话状态) */
+.side-session-run {
+  flex: none;
+  color: var(--el-color-primary);
+}
+
+.side-session-ask {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
+  border: 1px solid var(--el-color-danger-light-7);
+  white-space: nowrap;
+}
+
 /* 临时会话徽标(D3) */
 .side-session-tag {
   flex: none;

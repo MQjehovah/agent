@@ -76,6 +76,8 @@ import { uploadAttachmentsToAgent } from './attachment-upload'
 import { ALLOWED_EXTS, MAX_ATTACHMENT_BYTES, sanitizeAttachmentName } from './attachments'
 import { resolveWithin } from './pathsafe'
 import {
+  deleteAgentArtifact,
+  deleteLocalArtifact,
   listAgentArtifacts,
   listLocalArtifacts,
   readAgentArtifact,
@@ -1119,6 +1121,20 @@ async function handleArtifactOpen(
   return shell.openPath(resolveWithin(workspace, String(payload?.relPath ?? '')))
 }
 
+/** 删除产物(在线: 服务端「我的工作区」; 离线: 本地会话工作区) */
+async function handleArtifactDelete(
+  _event: IpcMainInvokeEvent,
+  payload?: { mode?: string; sessionId?: string; relPath?: string }
+): Promise<void> {
+  const relPath = String(payload?.relPath ?? '')
+  if (!relPath) throw new Error('缺少文件路径')
+  if (payload?.mode === 'local') {
+    await deleteLocalArtifact(localWorkspaceFor(String(payload?.sessionId ?? '')), relPath)
+    return
+  }
+  await deleteAgentArtifact(relPath)
+}
+
 function handleSessionCreate(
   _event: IpcMainInvokeEvent,
   payload?: {
@@ -1620,6 +1636,7 @@ export function registerKernelIpc(): void {
   ipcMain.handle('artifact:read', handleArtifactRead)
   ipcMain.handle('artifact:reveal', handleArtifactReveal)
   ipcMain.handle('artifact:open', handleArtifactOpen)
+  ipcMain.handle('artifact:delete', handleArtifactDelete)
   ipcMain.handle('localagent:attach:import', handleAttachImport)
   ipcMain.handle('localagent:chat', handleChat)
   // 消息级操作(仅本地会话): 重新生成 / 编辑重发, 复用 chat 的流式事件机制
