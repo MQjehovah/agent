@@ -18,7 +18,9 @@ from plugins.dingtalk.confirm import (
     CardActionRegistry,
     create_card_confirmer,
     parse_card_action,
+    parse_confirm_reply,
     parse_out_track_id,
+    resolve_confirm_timeout,
 )
 from plugins.dingtalk.groups import groups_file_path, upsert_group_entry
 
@@ -221,6 +223,8 @@ class DingTalkPlugin(BasePlugin):
         self._card_callback_ready = False
         # 本轮确认卡片发送失败(渠道不可用)的会话: 最终回复改用明确文案
         self._confirm_unavailable: set[str] = set()
+        # 文本兜底确认: 触发人 staff_id → 待裁决 request_id(互动卡片不可用时使用)
+        self._text_confirm_by_staff: dict[str, str] = {}
         self._card_template_id = (
             os.environ.get("DINGTALK_CONFIRM_CARD_TEMPLATE_ID", "").strip()
             or DEFAULT_CARD_TEMPLATE_ID
@@ -492,15 +496,55 @@ class DingTalkPlugin(BasePlugin):
         """为一次钉钉 run 创建 on_confirm 回调(绑定触发人与会话上下文)。"""
         context = f"渠道: 钉钉 / 会话: {session_id}" + (f" / 用户: {user_name}" if user_name else "")
 
-        async def _send(request_id: str, payload: dict) -> bool:
+        async def _send_card(request_id: str, payload: dict) -> bool:
             return await self._send_confirm_card(request_id, payload, local_user_id)
 
+        async def _send_text(request_id: str, payload: dict) -> bool:
+            return await self._send_confirm_text(request_id, payload, local_user_id)
+
         return create_card_confirmer(
-            send_card=_send,
+            send_card=_send_card,
+            send_text=_send_text,
             wait_action=self._wait_card_action,
+            register=self._card_actions.register,
+            cancel=self._card_actions.cancel,
             audit=self._make_confirm_audit(session_id),
             context=context,
         )
+
+    async def _send_confirm_text(self, request_id: str, payload: dict,
+                                 local_user_id: str) -> bool:
+        """文本兜底确认: 互动卡片不可用时, 私聊触发人让其回复「同意/拒绝」。
+
+        发送成功后登记 staff_id → request_id; 触发人在任意会话回复确认词即裁决
+        (见 ``resolve_text_confirm`` / ``_async_process`` 的会话锁前拦截)。
+        """
+        staff_id = self._get_dingtalk_staff_id(local_user_id)
+        if not staff_id:
+            logger.warning(f"触发人未绑定钉钉 staff id, 无法发文本确认: {local_user_id}")
+            return False
+        body = str(payload.get("staticMsgContent", "") or "").strip()
+        timeout = int(resolve_confirm_timeout())
+        text = (
+            "⚠️ 工具执行确认\n"
+            f"{body}\n\n"
+            f"请直接回复「同意」执行，或「拒绝」取消（{timeout} 秒内有效）。"
+        )
+        status = await self._send_text(text, local_user_id)
+        ok = str(status).startswith("消息已发送")
+        if ok:
+            self._text_confirm_by_staff[str(staff_id)] = str(request_id)
+            logger.info(f"文本确认已发往触发人私聊: {local_user_id} request_id={request_id}")
+        else:
+            logger.error(f"文本确认发送失败: {status}")
+        return ok
+
+    def resolve_text_confirm(self, staff_id: str, approved: bool) -> bool:
+        """文本确认回复裁决: 命中该触发人的待确认即消费并唤醒等待者。"""
+        request_id = self._text_confirm_by_staff.pop(str(staff_id), None)
+        if not request_id:
+            return False
+        return self._card_actions.resolve(request_id, approved)
 
     async def _send_confirm_card(self, request_id: str, payload: dict,
                                  local_user_id: str) -> bool:
@@ -1096,9 +1140,41 @@ class AgentChatbotHandler:
 
         return ack_message
 
+    def _maybe_handle_text_confirm(self, callback_message) -> bool:
+        """会话锁之前拦截「文本兜底确认」回复。
+
+        正在等待确认的 run 持有该会话锁; 若把确认回复排进同一会话队列会造成死锁,
+        因此在获取锁之前先行解析: 命中待确认(按触发人 staff_id)→ 裁决并 ACK。
+        非确认词/无待确认 → 返回 False, 照常进入正常处理。
+        """
+        try:
+            import dingtalk_stream
+            data = getattr(callback_message, "data", None) or {}
+            incoming = dingtalk_stream.ChatbotMessage.from_dict(data)
+            text_obj = getattr(incoming, "text", None)
+            content = (getattr(text_obj, "content", "") or "").strip() if text_obj else ""
+            verdict = parse_confirm_reply(content)
+            if verdict is None:
+                return False
+            staff_id = (getattr(incoming, "sender_staff_id", "")
+                        or getattr(incoming, "sender_id", "") or "")
+            if not staff_id:
+                return False
+            if not self.plugin.resolve_text_confirm(str(staff_id), verdict):
+                return False
+            self.reply_text("✅ 已同意，工具继续执行。" if verdict else "🚫 已拒绝。", incoming)
+            self.logger.info(f"文本确认回复已裁决: staff_id={staff_id} approved={verdict}")
+            return True
+        except Exception as e:
+            self.logger.error(f"文本确认拦截失败(转正常处理): {e!r}")
+            return False
+
     async def _async_process(self, callback_message):
         # 同会话串行:快速连发时同一 conversation 的消息排队处理,
         # 避免并发跑同一个 agent 会话导致上下文/worker 竞争报错。
+        # 例外: 文本确认回复必须在锁之前裁决, 否则与等待确认的 run 死锁。
+        if self._maybe_handle_text_confirm(callback_message):
+            return
         conv_id = ""
         try:
             data = getattr(callback_message, "data", None) or {}

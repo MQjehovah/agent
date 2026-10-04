@@ -53,6 +53,30 @@ DEFAULT_ARG_SUMMARY_CHARS = 280
 _APPROVE_WORDS = frozenset({"agree", "allow", "approve", "approved", "accept", "confirm", "同意", "允许"})
 _REJECT_WORDS = frozenset({"reject", "deny", "denied", "refuse", "refused", "拒绝"})
 
+# 文本兜底确认: 用户直接回复的同意/拒绝词(仅在存在待确认请求时生效)
+_TEXT_APPROVE_WORDS = frozenset({
+    "同意", "允许", "确认", "执行", "可以", "好的", "好", "是", "继续",
+    "ok", "okay", "yes", "y", "allow", "agree", "approve", "confirm",
+})
+_TEXT_REJECT_WORDS = frozenset({
+    "拒绝", "取消", "不要", "不同意", "否", "不", "停止", "cancel", "no", "n", "deny", "reject",
+})
+
+
+def parse_confirm_reply(text) -> "bool | None":
+    """解析用户文本回复: True=同意 / False=拒绝 / None=非确认词(照常处理)。
+
+    仅用于互动卡片不可用时的文本兜底; 非确认词返回 None, 不影响正常对话。
+    """
+    value = str(text or "").strip().lower()
+    if not value:
+        return None
+    if value in _TEXT_APPROVE_WORDS:
+        return True
+    if value in _TEXT_REJECT_WORDS:
+        return False
+    return None
+
 
 def resolve_confirm_timeout(value=None, default: float = DEFAULT_CONFIRM_TIMEOUT) -> float:
     """解析确认超时(秒): 显式值 > ``DINGTALK_CONFIRM_TIMEOUT`` > 默认; 非法回退默认。"""
@@ -196,6 +220,9 @@ def create_card_confirmer(
     send_card: "Callable[[str, dict], Awaitable[bool]]",
     wait_action: "Callable[[str, float], Awaitable[bool | None]]",
     audit: "Callable[[str, bool, str], None]",
+    send_text: "Callable[[str, dict], Awaitable[bool]] | None" = None,
+    register: "Callable[[str], None] | None" = None,
+    cancel: "Callable[[str], None] | None" = None,
     timeout_seconds: "float | None" = None,
     now: "Callable[[], float] | None" = None,
     context: str = "",
@@ -206,8 +233,11 @@ def create_card_confirmer(
 
     Args:
         send_card: 发送确认卡片, 返回 False 表示发送/渠道不可用(fail-closed);
-        wait_action: 等待按钮回调, None=超时/未获得裁决;
+        wait_action: 等待裁决(卡片点击或文本回复), None=超时/未获得裁决;
         audit: 审计回调 ``(tool, ok, detail)``, detail ∈ approved/rejected/timeout/send_failed;
+        send_text: 互动卡片不可用(如应用缺卡片权限)时的文本兜底, 返回 False 表示也不可用;
+        register: 发送前登记待裁决(request_id), 必须在发送前调用以免漏掉极快的回复;
+        cancel: 发送彻底失败时释放登记, 避免残留;
         timeout_seconds: 显式超时; None 时读 ``DINGTALK_CONFIRM_TIMEOUT``(非法回退 120);
         now: 时钟注入(默认 ``time.time``), 供 request_id/测试使用;
         context: 卡片正文附带的连接器/会话上下文;
@@ -230,12 +260,32 @@ def create_card_confirmer(
         request_id = _new_request_id()
         payload = build_confirm_card_payload(
             tool, args, request_id=request_id, context=context, max_arg_chars=max_arg_chars)
+        # 先登记再发送: 否则极快的卡片点击/文本回复会因无登记而丢失
+        if register is not None:
+            try:
+                register(request_id)
+            except Exception as e:
+                logger.warning(f"确认登记失败(忽略): {e!r}")
         try:
             sent = await send_card(request_id, payload)
         except Exception as e:
             logger.error(f"确认卡片发送异常: {e!r}")
             sent = False
+        # 卡片不可用(如应用缺 Card.Instance.Write 权限)时退回文本确认
+        if not sent and send_text is not None:
+            try:
+                sent = await send_text(request_id, payload)
+                if sent:
+                    logger.info(f"确认卡片不可用, 已改用文本确认: request_id={request_id}")
+            except Exception as e:
+                logger.error(f"文本兜底确认发送异常: {e!r}")
+                sent = False
         if not sent:
+            if cancel is not None:
+                try:
+                    cancel(request_id)
+                except Exception as e:
+                    logger.warning(f"确认登记取消失败(忽略): {e!r}")
             _emit(tool, False, "send_failed")
             return False
         try:

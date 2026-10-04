@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from plugins.dingtalk import CardActionHandler, DingTalkPlugin  # noqa: E402
+from plugins.dingtalk import AgentChatbotHandler, CardActionHandler, DingTalkPlugin  # noqa: E402
 from plugins.dingtalk.confirm import (  # noqa: E402
     AGREE_ACTION_ID,
     CONFIRM_TITLE,
@@ -26,6 +26,7 @@ from plugins.dingtalk.confirm import (  # noqa: E402
     build_confirm_card_payload,
     create_card_confirmer,
     parse_card_action,
+    parse_confirm_reply,
     parse_out_track_id,
     resolve_confirm_timeout,
 )
@@ -383,6 +384,158 @@ async def test_card_callback_handler_wakes_waiter_and_first_verdict_wins(monkeyp
         headers=SimpleNamespace(message_id="m-2"))
     await handler.raw_process(foreign)
     assert await plugin._card_actions.wait("req-2", timeout=0.01) is None
+
+
+# ── 文本兜底确认(卡片不可用时) ──
+
+def test_parse_confirm_reply_words():
+    for word in ("同意", "允许", "ok", "YES", "好", " 继续 "):
+        assert parse_confirm_reply(word) is True
+    for word in ("拒绝", "取消", "no", "不同意"):
+        assert parse_confirm_reply(word) is False
+    assert parse_confirm_reply("帮我看看 gview 项目") is None
+    assert parse_confirm_reply("") is None
+    assert parse_confirm_reply(None) is None
+
+
+async def test_confirmer_text_fallback_success_and_registers_before_send():
+    order = []
+
+    async def send_card(request_id, payload):
+        order.append("send_card")
+        return False
+
+    async def send_text(request_id, payload):
+        order.append("send_text")
+        return True
+
+    async def wait_allow(request_id, timeout):
+        order.append("wait")
+        return True
+
+    confirm = create_card_confirmer(
+        send_card=send_card,
+        send_text=send_text,
+        wait_action=wait_allow,
+        audit=lambda *a: None,
+        register=lambda rid: order.append("register"),
+    )
+    assert await confirm("shell", {"command": "x"}) is True
+    # 发送前先登记, 再卡片/文本, 最后等待
+    assert order == ["register", "send_card", "send_text", "wait"]
+
+
+async def test_confirmer_text_fallback_failure_cancels_and_fail_closed():
+    order = []
+
+    async def send_card(request_id, payload):
+        return False
+
+    async def send_text(request_id, payload):
+        return False
+
+    async def wait_never(request_id, timeout):
+        order.append("wait")
+        return None
+
+    audits = []
+    confirm = create_card_confirmer(
+        send_card=send_card,
+        send_text=send_text,
+        wait_action=wait_never,
+        audit=lambda t, ok, d: audits.append((t, ok, d)),
+        register=lambda rid: order.append("register"),
+        cancel=lambda rid: order.append("cancel"),
+    )
+    assert await confirm("shell", {}) is False
+    assert order == ["register", "cancel"]
+    assert audits == [("shell", False, "send_failed")]
+
+
+async def test_plugin_send_confirm_text_and_resolve(monkeypatch):
+    plugin = _plugin()
+    monkeypatch.setattr(plugin, "_get_dingtalk_staff_id", lambda uid: "staff-1")
+
+    async def fake_send_text(text, local_user_id=None):
+        assert "同意" in text and "拒绝" in text
+        return "消息已发送: ok"
+
+    monkeypatch.setattr(plugin, "_send_text", fake_send_text)
+
+    ok = await plugin._send_confirm_text(
+        "req-1", {"staticMsgContent": "工具：shell"}, "dingtalk:7")
+    assert ok is True
+    assert plugin._text_confirm_by_staff["staff-1"] == "req-1"
+
+    # 文本回复 → 唤醒等待者(需先登记 future)
+    plugin._card_actions.register("req-1")
+    assert plugin.resolve_text_confirm("staff-1", True) is True
+    assert await plugin._card_actions.wait("req-1", timeout=0.05) is True
+    # 无待确认时返回 False(不吞正常消息)
+    assert plugin.resolve_text_confirm("staff-1", True) is False
+
+
+async def test_plugin_send_confirm_text_no_staff_binding(monkeypatch):
+    plugin = _plugin()
+    monkeypatch.setattr(plugin, "_get_dingtalk_staff_id", lambda uid: None)
+    assert await plugin._send_confirm_text("req-x", {"staticMsgContent": "x"}, "dingtalk:7") is False
+
+
+async def test_make_confirmer_uses_text_fallback(monkeypatch):
+    plugin = _plugin()
+    monkeypatch.setattr(plugin, "_get_dingtalk_staff_id", lambda uid: "staff-1")
+
+    async def card_fail(request_id, payload, local_user_id):
+        return False
+
+    async def text_ok(text, local_user_id=None):
+        return "消息已发送: ok"
+
+    async def wait_ok(request_id, timeout):
+        return True
+
+    monkeypatch.setattr(plugin, "_send_confirm_card", card_fail)
+    monkeypatch.setattr(plugin, "_send_text", text_ok)
+    monkeypatch.setattr(plugin, "_wait_card_action", wait_ok)
+
+    confirm = plugin._make_confirmer("dingtalk:7", "dingtalk:7:abc", "张三")
+    assert await confirm("shell", {}) is True
+    # 卡片失败但文本兜底已登记待确认
+    assert plugin._text_confirm_by_staff.get("staff-1")
+
+
+class _FakeChatbotMessageFromDict:
+    def __init__(self, data):
+        self.text = SimpleNamespace(content=data.get("content", ""))
+        self.sender_staff_id = data.get("staff_id", "")
+        self.sender_id = data.get("staff_id", "")
+
+
+async def test_handler_intercepts_text_confirm_before_looping(monkeypatch):
+    stub = types.ModuleType("dingtalk_stream")
+    stub.ChatbotMessage = SimpleNamespace(from_dict=lambda d: _FakeChatbotMessageFromDict(d))
+    monkeypatch.setitem(sys.modules, "dingtalk_stream", stub)
+
+    plugin = _plugin()
+    handler = AgentChatbotHandler(plugin)
+    replies = []
+    monkeypatch.setattr(handler, "reply_text", lambda content, incoming, msgtype="markdown": replies.append(content))
+
+    # 有待确认: 命中并裁决, 返回 True(不进正常 agent 处理)
+    plugin._card_actions.register("req-1")
+    plugin._text_confirm_by_staff["staff-1"] = "req-1"
+    handled = handler._maybe_handle_text_confirm(
+        SimpleNamespace(data={"content": "同意", "staff_id": "staff-1"}))
+    assert handled is True
+    assert await plugin._card_actions.wait("req-1", timeout=0.05) is True
+    assert replies and "已同意" in replies[0]
+
+    # 非确认词: 不拦截
+    assert handler._maybe_handle_text_confirm(
+        SimpleNamespace(data={"content": "帮我看看项目", "staff_id": "staff-1"})) is False
+    # 无待确认: 不拦截
+    assert handler._maybe_handle_text_confirm(
+        SimpleNamespace(data={"content": "同意", "staff_id": "staff-2"})) is False
 
 
 def test_plugin_make_confirmer_binds_context_and_user():
