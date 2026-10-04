@@ -229,6 +229,14 @@ class DingTalkPlugin(BasePlugin):
             os.environ.get("DINGTALK_CONFIRM_CARD_TEMPLATE_ID", "").strip()
             or DEFAULT_CARD_TEMPLATE_ID
         )
+        # 钉钉权限模式: 默认 auto(全权) —— 写操作直接执行, 不再向用户请求确认;
+        # 设为 default 才启用卡片/文本确认回路。非法值回退 auto。
+        _raw_perm = os.environ.get("DINGTALK_PERMISSION_MODE", "auto").strip().lower()
+        if _raw_perm in ("auto", "default", ""):
+            self._permission_mode = _raw_perm or "auto"
+        else:
+            logger.warning(f"DINGTALK_PERMISSION_MODE={_raw_perm!r} 非法, 回退 auto")
+            self._permission_mode = "auto"
 
     def start(self):
         if not self.config.enabled:
@@ -693,15 +701,34 @@ class DingTalkPlugin(BasePlugin):
         return _dispatch
 
     @contextlib.asynccontextmanager
-    async def confirm_scope(self, agent, conversation_id: str, confirmer):
+    async def confirm_scope(self, agent, conversation_id: str, confirmer, *, force_auto: bool = False):
         """钉钉 run 期间装配卡片确认回路; finally 恢复原权限模式/on_confirm。
 
-        - 权限模式: 仅当原模式为 AUTO 时临时降为 DEFAULT(写操作才触发确认),
-          最后一个活跃钉钉 run 结束时恢复;
-        - on_confirm: 安装按 run 上下文派发的回调(捕获原值作为回退), 仅当当前值
-          仍是我们安装的派发器时恢复, 不覆盖并发安装的其它渠道回调。
+        - force_auto=True(钉钉默认): 运行期强制 AUTO(全权), 写操作直接执行、
+          不装确认回调; run 结束恢复原模式。
+        - 否则启用确认回路: 权限模式仅当原为 AUTO 时临时降为 DEFAULT(写操作才触发
+          确认), 最后一个活跃钉钉 run 结束时恢复; on_confirm 安装按 run 上下文派发的
+          回调(捕获原值作为回退), 仅当当前值仍是我们安装的派发器时恢复, 不覆盖并发
+          安装的其它渠道回调。
         """
-        if agent is None or confirmer is None:
+        if agent is None:
+            yield
+            return
+        from security.permissions import PermissionMode
+        pc = getattr(agent, "_permission_config", None)
+        if force_auto:
+            old = getattr(pc, "mode", None) if pc is not None else None
+            if pc is not None:
+                with contextlib.suppress(Exception):
+                    pc.mode = PermissionMode.AUTO
+            try:
+                yield
+            finally:
+                if pc is not None and old is not None:
+                    with contextlib.suppress(Exception):
+                        pc.mode = old
+            return
+        if confirmer is None:
             yield
             return
         self._confirmers[conversation_id] = confirmer
@@ -709,12 +736,9 @@ class DingTalkPlugin(BasePlugin):
         dispatch = self._build_confirm_dispatch(old_confirm)
         old_mode = None
         try:
-            pc = getattr(agent, "_permission_config", None)
-            if pc is not None:
-                from security.permissions import PermissionMode
-                if pc.mode == PermissionMode.AUTO:
-                    old_mode = pc.mode
-                    pc.mode = PermissionMode.DEFAULT
+            if pc is not None and pc.mode == PermissionMode.AUTO:
+                old_mode = pc.mode
+                pc.mode = PermissionMode.DEFAULT
             agent.on_confirm = dispatch
             yield
         finally:
@@ -1071,16 +1095,18 @@ class AgentChatbotHandler:
             else:
                 router = getattr(self.plugin.plugin_manager, "router", None)
                 if router:
-                    # 写操作确认回路: 本次 run 期间装配互动卡片审批(触发人私聊),
+                    # 钉钉默认全权(DINGTALK_PERMISSION_MODE=auto): 写操作直接执行,
+                    # 不装配确认回路; 设为 default 才走互动卡片/文本审批(触发人私聊),
                     # 超时/发送失败 fail-closed; 并发 run 以 conversation_id 隔离。
                     agent = getattr(router, "agent", None)
-                    confirmer = self.plugin._make_confirmer(
+                    force_auto = self.plugin._permission_mode == "auto"
+                    confirmer = None if force_auto else self.plugin._make_confirmer(
                         local_user_id=user_id,
                         session_id=session.session_id,
                         user_name=user_name,
                     )
                     async with self.plugin.confirm_scope(
-                            agent, session.session_id, confirmer):
+                            agent, session.session_id, confirmer, force_auto=force_auto):
                         result = await router.route(
                             content, channel="dingtalk",
                             session_id=session.session_id,

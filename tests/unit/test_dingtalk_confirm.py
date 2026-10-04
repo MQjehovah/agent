@@ -313,6 +313,34 @@ async def test_confirm_scope_no_agent_is_noop():
     assert plugin._confirmers == {}
 
 
+async def test_confirm_scope_force_auto_sets_and_restores_without_confirmer():
+    plugin = _plugin()
+    agent = _FakeAgent(mode=PermissionMode.DEFAULT)
+
+    async def fallback(name, args):
+        return False
+
+    agent.on_confirm = fallback
+    async with plugin.confirm_scope(agent, "dingtalk:7:abc", None, force_auto=True):
+        # 运行期全权: 强制 AUTO, 且不安装确认派发器
+        assert agent._permission_config.mode == PermissionMode.AUTO
+        assert agent.on_confirm is fallback
+    assert agent._permission_config.mode == PermissionMode.DEFAULT
+    assert agent.on_confirm is fallback
+
+
+def test_plugin_permission_mode_defaults_to_auto(monkeypatch):
+    monkeypatch.delenv("DINGTALK_PERMISSION_MODE", raising=False)
+    assert _plugin()._permission_mode == "auto"
+
+
+def test_plugin_permission_mode_override_and_invalid_fallback(monkeypatch):
+    monkeypatch.setenv("DINGTALK_PERMISSION_MODE", "default")
+    assert _plugin()._permission_mode == "default"
+    monkeypatch.setenv("DINGTALK_PERMISSION_MODE", "weird")
+    assert _plugin()._permission_mode == "auto"
+
+
 def test_plugin_confirm_unavailable_reply_flag():
     plugin = _plugin()
     audit = plugin._make_confirm_audit("sess-1")
