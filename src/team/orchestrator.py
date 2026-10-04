@@ -451,9 +451,9 @@ class TeamOrchestrator:
                 if retry_result and retry_result.startswith("ERROR:"):
                     self.context.set_blackboard(f"{node.id}_retry_error", retry_result)
 
-        # 测试反馈循环
+        # 测试/审核反馈循环(任意带 feedback_to 的阶段均可回退上游)
         has_feedback = stage_config.get("feedback_to") is not None
-        if has_feedback and node.id in ("testing",):
+        if has_feedback:
             test_results = parse_test_output(result)
             if test_results:
                 self.context.feedback_loop.test_results = test_results
@@ -495,7 +495,7 @@ class TeamOrchestrator:
 
         full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令"
 
-        if stage in ("implementation", "fix", "bug_fix"):
+        if stage in ("implementation", "development", "fix", "bug_fix"):
             full_task += (
                 "\n\n## 铁律\n"
                 "- 用 `grep` / `code_search` 定位目标代码，用 `file(read, offset, limit)` 看关键片段，不要通读无关文件\n"
@@ -546,7 +546,7 @@ class TeamOrchestrator:
                     self.context.set_blackboard(f"{node.id}_retry_error", retry_result)
 
         has_feedback = stage_config.get("feedback_to") is not None
-        if has_feedback and node.id in ("testing",):
+        if has_feedback:
             test_results = parse_test_output(result)
             if test_results:
                 self.context.feedback_loop.test_results = test_results
@@ -654,7 +654,7 @@ class TeamOrchestrator:
         if output_file:
             full_task += f"\n\n## 输出说明\n如果本次产出内容量大且结构化，请写入 `{output_file}` 供后续查阅；如果只是简单结论，直接回复即可。"
         full_task += "\n\n## 安全提醒\n- 禁止使用 sudo / ssh / vim / nano 等交互式命令"
-        if stage in ("implementation", "fix", "bug_fix"):
+        if stage in ("implementation", "development", "fix", "bug_fix"):
             full_task += (
                 "\n\n## 铁律\n"
                 "- 用 `grep` / `code_search` 定位目标代码，用 `file(read, offset, limit)` 看关键片段，不要通读无关文件\n"
@@ -849,12 +849,28 @@ class TeamOrchestrator:
                 content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             adjusted = json.loads(content)
             if isinstance(adjusted, list):
-                for s in adjusted:
-                    s.setdefault("deps", [])
-                    s.setdefault("feedback_to", None)
-                    s.setdefault("max_loops", 3)
-                logger.info(f"Leader 调整流水线: {len(adjusted)} 个阶段")
-                return adjusted
+                if self.pipeline_mode == "auto":
+                    for s in adjusted:
+                        s.setdefault("deps", [])
+                        s.setdefault("feedback_to", None)
+                        s.setdefault("max_loops", 3)
+                    logger.info(f"Leader 调整流水线: {len(adjusted)} 个阶段")
+                    return adjusted
+                # 固定流水线(default/feedback/lite): 阶段集合与依赖不可变,
+                # Leader 仅可调整 output, 防止额外角色被引入而拖慢任务。
+                by_id = {s.get("stage"): s for s in adjusted if isinstance(s, dict)}
+                merged = []
+                for orig in self.pipeline_stages:
+                    new = dict(orig)
+                    override = by_id.get(orig.get("stage"))
+                    if isinstance(override, dict) and "output" in override:
+                        new["output"] = override["output"]
+                    new.setdefault("deps", [])
+                    new.setdefault("feedback_to", None)
+                    new.setdefault("max_loops", 3)
+                    merged.append(new)
+                logger.info(f"Leader 调整流水线(固定模式, 保持 {len(merged)} 阶段)")
+                return merged
         except Exception as e:
             logger.warning(f"Leader 流水线审核失败，使用原配置: {e}")
         return self.pipeline_stages

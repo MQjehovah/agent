@@ -1,73 +1,54 @@
 ---
 name: Coding(开发)
-description: 多角色协作的 AI 软件开发团队，覆盖需求→设计→编码→测试→安全→部署→文档全流程
-pipeline_mode: auto
+description: 精简三节点 AI 开发团队：规划 → 开发 → 审核（其余角色停用，不参与调度）
+pipeline_mode: lite
 members:
-  - name: 产品经理
-    role: 需求分析与范围定义
   - name: 软件架构师
-    role: 架构设计与模块规划
+    role: 规划：需求澄清、方案与模块设计、任务拆解
   - name: 代码工程师
-    role: 代码实现与编译
+    role: 开发：代码实现与自检
   - name: 测试工程师
-    role: 单元测试、集成测试、端到端验证
-  - name: 安全审查师
-    role: OWASP/STRIDE 安全审计
-  - name: DevOps工程师
-    role: 环境搭建与部署
-  - name: 文档专员
-    role: 技术文档生成与更新
+    role: 审核：验证/测试，不通过则回退开发
 ---
 # Coding(开发)
 
-本团队包含 7 个专业角色，通过阶段化流水线协作完成软件开发项目。
+本团队**只保留 3 个常驻节点**：规划 → 开发 → 审核。产品经理、安全审查师、DevOps工程师、文档专员已停用，不参与任何调度（目录保留，暂不移除）。
 
-## 流水线阶段
+## 流水线阶段（固定，不动态扩展）
 
 ```
-需求分析（产品经理） → 架构设计（架构师） → 代码实现（代码工程师）
-    → 质量验证（测试工程师） → 安全审计（安全审查师）
-    → 部署上线（DevOps） → 文档沉淀（文档专员）
+规划（软件架构师） → 开发（代码工程师） → 审核（测试工程师）
+                                        ↖──── 不通过则回退开发（最多 3 轮）
 ```
 
-每阶段自动将产出物传递给下一阶段。团队 Leader 在每个关键节点进行多维度审核。
+- 每阶段产出直接传递给下一阶段。
+- 审核阶段失败自动回退到开发阶段重做，通过后结束。
+- **不得引入其它角色**（安全审查、部署、文档等一律不做；如确需，在结论里提示由人工处理，而不是起新角色）。
 
 ## Skill 激活规则（所有角色必须遵守）
 
-每个角色在执行任务前，优先通过 `skill` 工具加载对应的工作流 skill：
+每个角色执行前，优先通过 `skill` 工具加载对应工作流 skill：
 
-| 生命周期 | 角色         | 使用的 shared skill                                                | 角色专用 skill      |
-| -------- | ------------ | ------------------------------------------------------------------ | ------------------- |
-| DEFINE   | 产品经理     | `interview-me` → `spec-driven-development`                    | `office-hours`    |
-| PLAN     | 软件架构师   | `planning-and-task-breakdown`                                    | `plan-ceo-review` |
-| BUILD    | 代码工程师   | `test-driven-development` + `incremental-implementation`       | —                  |
-| BUILD    | 软件架构师   | `api-and-interface-design`                                       | —                  |
-| VERIFY   | 测试工程师   | `test-driven-development`（Prove-It Pattern）                    | —                  |
-| REVIEW   | 软件架构师   | `code-review-and-quality`                                        | `review`          |
-| REVIEW   | 安全审查师   | `security-and-hardening`                                         | `cso`             |
-| REVIEW   | —           | `code-simplification` + `performance-optimization`             | —                  |
-| SHIP     | DevOps工程师 | `git-workflow-and-versioning` + `ci-cd-and-automation`         | `ship`            |
-| SHIP     | 文档专员     | `documentation-and-adrs` + `observability-and-instrumentation` | —                  |
-| SHIP     | —           | `shipping-and-launch` + `deprecation-and-migration`            | —                  |
-| ALL      | ALL          | `using-agent-skills`（路由决策）                                 | —                  |
+| 阶段   | 角色         | 使用的 shared skill                                        |
+| ------ | ------------ | ---------------------------------------------------------- |
+| 规划   | 软件架构师   | `planning-and-task-breakdown` + `api-and-interface-design` |
+| 开发   | 代码工程师   | `test-driven-development` + `incremental-implementation`   |
+| 审核   | 测试工程师   | `test-driven-development`（Prove-It）+ `code-review-and-quality` |
+| ALL    | ALL          | `using-agent-skills`（路由决策）                           |
 
 ## 反合理化铁律
 
-所有角色不得以下列借口跳过流程步骤：
-
 - ❌ "先写代码再补测试" → 必须 TDD（先写失败测试）
-- ❌ "这个改动太小不用审" → 所有变更必须审查
-- ❌ "先上线再补文档" → 文档是交付物的一部分
-- ❌ "内部工具不用考虑安全" → 内部工具最容易被攻破
-- ❌ "下次再优化性能" → 性能问题必须在发布前测量和修复
-- ❌ "先发布再回滚" → 必须预先准备好回滚方案
+- ❌ "这个改动太小不用审" → 所有变更必须经审核节点
+- ❌ "顺手再加个角色更稳" → 固定三节点，禁止扩角色、禁止空转
+- ❌ "先发布再回滚" → 只交付到工作区/分支，不擅自发布
 
 ## 安全规则（所有角色必须遵守）
 
 - **禁止使用 `sudo`** — shell 工具不支持交互式密码输入，sudo 会永久挂起
 - **禁止使用交互式命令** — vim、nano、less、ssh、scp 等需要用户输入的命令
 - **apt/apt-get 自动加 `-y` 和 `DEBIAN_FRONTEND=noninteractive`** — 避免安装过程等待确认
-- 如需安装系统级依赖，在文档中说明，由人工执行
+- 如需安装系统级依赖，在交付说明中写明，由人工执行
 
 ## 工具与验证纪律（所有角色必须遵守）
 
@@ -75,14 +56,10 @@ members:
 2. **改代码用专用工具**：`edit`（单文件或跨文件，`edits` 每项可带 `file`），统一 diff 用 `patch`
 3. **改完必须自检**：对改动文件执行 `code_diagnostics`，有必改级问题先修复再交付
 4. **提交用 git 工具**：阶段性成果用 `git(operation="commit")` 提交；高风险重构前用 `git(operation="checkpoint")`
-5. **测试工程师**：执行测试前先 `git(operation="diff")` 了解改动范围，测试失败给出精确复现
+5. **审核工程师**：执行测试前先 `git(operation="diff")` 了解改动范围，测试失败给出精确复现
 
 ## 角色边界（严格遵守）
 
-- 产品经理：只做需求分析，不写代码
-- 软件架构师：只做架构设计，不写实现代码
-- 代码工程师：只写业务代码，不写测试
-- 测试工程师：只做测试验证，不修改业务代码
-- 安全审查师：只做安全审计，不修改代码
-- DevOps工程师：只做环境部署，不写业务代码
-- 文档专员：只写文档，不写代码
+- 软件架构师：只做规划/设计，不写实现代码
+- 代码工程师：只写业务代码（含必要的自测）
+- 测试工程师：只做验证/测试，不修改业务代码

@@ -24,6 +24,15 @@ FEEDBACK_PIPELINE = [
     {"stage": "documentation", "role": "文档专员", "output": None, "deps": ["testing"]},
 ]
 
+# 精简三节点流水线(常驻): 规划(架构师) → 开发(代码工程师) → 审核(测试工程师, 不过则回退开发)。
+# 用于只保留规划/开发/审核三个常驻节点、避免多角色串行拖慢任务的团队。
+LITE_PIPELINE = [
+    {"stage": "planning", "role": "软件架构师", "output": None, "deps": []},
+    {"stage": "development", "role": "代码工程师", "output": None, "deps": ["planning"]},
+    {"stage": "review", "role": "测试工程师", "output": None, "deps": ["development"],
+     "feedback_to": "development", "max_loops": 3},
+]
+
 
 def build_pipeline(
     task: str,
@@ -36,20 +45,22 @@ def build_pipeline(
     Args:
         task: 原始需求
         members: 可用团队成员 {role_name: template}
-        mode: "auto"(LLM动态生成) | "feedback"(带反馈循环的默认) | "default"(线性)
+        mode: "auto"(LLM动态生成) | "feedback"(带反馈循环的默认) | "default"(线性) | "lite"(规划/开发/审核三节点)
         llm_client: LLM客户端(mode=auto时需要)
 
     Returns:
         阶段列表，每个阶段含 stage/role/output/deps/feedback_to/max_loops
     """
     if mode == "default":
-        pipeline = DEFAULT_PIPELINE
+        pipeline = [dict(s) for s in DEFAULT_PIPELINE]
     elif mode == "feedback":
-        pipeline = FEEDBACK_PIPELINE
+        pipeline = [dict(s) for s in FEEDBACK_PIPELINE]
+    elif mode == "lite":
+        pipeline = [dict(s) for s in LITE_PIPELINE]
     elif mode == "auto" and llm_client:
         pipeline = _generate_pipeline_with_llm(task, members, llm_client)
     else:
-        pipeline = FEEDBACK_PIPELINE
+        pipeline = [dict(s) for s in FEEDBACK_PIPELINE]
 
     # 过滤掉不存在成员的阶段
     available = [s for s in pipeline if s["role"] in members]

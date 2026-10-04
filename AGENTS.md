@@ -103,7 +103,7 @@ config/
 │   ├── IT运维/
 │   └── Coding(开发)/      # Team agent with skills + references + sub-agents
 │       ├── skills/        # 23 shared lifecycle skills (each may have references/)
-│       └── agents/        # 7 sub-agent personas
+│       └── agents/        # 角色人设目录(规划=软件架构师/开发=代码工程师/审核=测试工程师 三节点常驻, 其余角色目录保留但不再调度)
 ├── skills/                # Skill definitions (each has SKILL.md)
 │   └── report-writer/
 ├── memory/                # Auto-managed (gitignored)
@@ -136,7 +136,7 @@ workspace/                # Auto-created, gitignored
 - **Permission modes**: `default` (confirm writes), `smart` (仅 destructive 需确认, write 放行), `auto` (allow all, for containers), `plan` (read-only) — set in `Agent.__init__`. 注: `plan` 只拦显式 write/destructive 注解的 MCP 工具, 对无注解(unknown)工具不构成只读保障
 - **Logging**: Uses `rich.logging.RichHandler` with aligned logger names; API calls logged to `logs/api_YYYYMMDD.log`
 - **Sandbox**: Optional sandbox via `config/sandbox.json` (process or Docker mode). Intercepted at `Agent._sandbox_intercept()` — tools remain unaware of sandboxing
-- **Team pipeline**: `TeamOrchestrator` supports `default`/`feedback`/`auto` modes. `feedback` mode enables dev↔test feedback loops with automatic retry. `auto` mode uses LLM to dynamically generate pipeline stages. **失败恢复**: 阶段执行失败自动重试并退避(`AGENT_TEAM_STAGE_RETRIES` 默认 2、`AGENT_TEAM_RETRY_BACKOFF` 默认 2s), 超限标记 `failed`; 上游最终失败时下游依赖未满足的阶段标记 `blocked`(不空转). 共享上下文经 `TeamContext.blackboard` 注入各阶段最小上下文
+- **Team pipeline**: `TeamOrchestrator` supports `default`/`feedback`/`auto`/`lite` modes. `feedback` mode enables dev↔test feedback loops with automatic retry. `auto` mode uses LLM to dynamically generate pipeline stages. `lite` 为固定三节点(规划=软件架构师 → 开发=代码工程师 → 审核=测试工程师, 审核不过回退开发), 不动态扩展; `config/agents/Coding(开发)/TEAM.md` 即 `pipeline_mode: lite`, 只保留规划/开发/审核三个常驻节点(其余角色目录保留但不调度)。任意带 `feedback_to` 的阶段均可触发回退循环; 固定模式(default/feedback/lite)下 Leader 流水线审核被限制为只改 `output`、不得增删阶段。 **失败恢复**: 阶段执行失败自动重试并退避(`AGENT_TEAM_STAGE_RETRIES` 默认 2、`AGENT_TEAM_RETRY_BACKOFF` 默认 2s), 超限标记 `failed`; 上游最终失败时下游依赖未满足的阶段标记 `blocked`(不空转). 共享上下文经 `TeamContext.blackboard` 注入各阶段最小上下文
 
 ## 多用户隔离与审计(公司级在线 Agent)
 
