@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from team.pipeline_builder import LITE_PIPELINE, build_pipeline  # noqa: E402
+from team.pipeline_builder import LITE_PIPELINE, allowed_pipeline_roles, build_pipeline  # noqa: E402
 
 
 def _members(*names):
@@ -43,3 +43,28 @@ def test_lite_pipeline_ignores_extra_members():
 
 def test_lite_pipeline_constant_is_three_stages():
     assert len(LITE_PIPELINE) == 3
+
+
+def test_allowed_pipeline_roles():
+    assert allowed_pipeline_roles(
+        {"pipeline_roles": ["软件架构师", "代码工程师", "测试工程师"]}
+    ) == {"软件架构师", "代码工程师", "测试工程师"}
+    assert allowed_pipeline_roles({}) is None
+    assert allowed_pipeline_roles({"pipeline_roles": []}) is None
+    assert allowed_pipeline_roles({"pipeline_roles": "软件架构师"}) is None
+
+
+def test_normalize_stages_drops_unknown_roles_and_cleans_deps():
+    from team.orchestrator import TeamOrchestrator
+
+    orch = TeamOrchestrator("t", {}, {"软件架构师": {}, "代码工程师": {}}, None, None)
+    stages = [
+        {"stage": "planning", "role": "软件架构师", "deps": []},
+        {"stage": "x", "role": "安全审查师", "deps": ["planning"]},
+        {"stage": "dev", "role": "代码工程师", "deps": ["planning", "x"]},
+    ]
+    out = orch._normalize_stages(stages)
+    assert [s["stage"] for s in out] == ["planning", "dev"]
+    assert out[1]["deps"] == ["planning"]
+    # 原流水线常量不被就地修改
+    assert stages[2]["deps"] == ["planning", "x"]

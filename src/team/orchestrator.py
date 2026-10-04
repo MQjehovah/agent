@@ -18,7 +18,7 @@ from typing import Any
 
 from team.context import TeamContext
 from team.dag import DAGNode, ExecutionDAG
-from team.feedback import parse_test_output
+from team.feedback import parse_review_verdict, parse_test_output
 from team.pipeline_builder import build_pipeline, generate_pipeline_async
 
 logger = logging.getLogger("agent.team.orchestrator")
@@ -180,6 +180,8 @@ class TeamOrchestrator:
                 self.pipeline_stages = build_pipeline(
                     task, self.members, mode=self.pipeline_mode
                 )
+            # 剔除不在团队可用成员内的角色(防 LLM 臆造角色), 并清理悬空依赖
+            self.pipeline_stages = self._normalize_stages(self.pipeline_stages)
 
             stage_names = [s["stage"] for s in self.pipeline_stages]
             logger.info(
@@ -453,21 +455,11 @@ class TeamOrchestrator:
 
         # 测试/审核反馈循环(任意带 feedback_to 的阶段均可回退上游)
         has_feedback = stage_config.get("feedback_to") is not None
-        if has_feedback:
-            test_results = parse_test_output(result)
-            if test_results:
-                self.context.feedback_loop.test_results = test_results
-                all_passed = all(r.get("passed", False) for r in test_results)
-                if not all_passed:
-                    return False, True
-            else:
-                passed = await self._llm_judge_test_result(result)
-                if not passed:
-                    self.context.feedback_loop.test_results = [
-                        {"name": "LLM判定", "passed": False, "details": result[:500]}
-                    ]
-                    return False, True
-
+        if has_feedback and await self._stage_needs_feedback(result):
+            self.context.feedback_loop.test_results = [
+                {"name": f"{node.id} 未通过", "passed": False, "details": result[:500]}
+            ]
+            return False, True
         return True, False
 
     # ── 构建阶段任务上下文（v2.0: 最小上下文） ────────
@@ -546,20 +538,11 @@ class TeamOrchestrator:
                     self.context.set_blackboard(f"{node.id}_retry_error", retry_result)
 
         has_feedback = stage_config.get("feedback_to") is not None
-        if has_feedback:
-            test_results = parse_test_output(result)
-            if test_results:
-                self.context.feedback_loop.test_results = test_results
-                all_passed = all(r.get("passed", False) for r in test_results)
-                if not all_passed:
-                    return False, True
-            else:
-                passed = await self._llm_judge_test_result(result)
-                if not passed:
-                    self.context.feedback_loop.test_results = [
-                        {"name": "LLM判定", "passed": False, "details": result[:500]}
-                    ]
-                    return False, True
+        if has_feedback and await self._stage_needs_feedback(result):
+            self.context.feedback_loop.test_results = [
+                {"name": f"{node.id} 未通过", "passed": False, "details": result[:500]}
+            ]
+            return False, True
         return True, False
 
     # ── 反馈循环（未改动） ─────────────────────────
@@ -624,14 +607,11 @@ class TeamOrchestrator:
                     stage_config.get("output"),
                 )
                 if test_result and not test_result.startswith("ERROR:"):
-                    new_results = parse_test_output(test_result)
-                    if new_results:
-                        loop.test_results = new_results
-                    else:
-                        passed = await self._llm_judge_test_result(test_result)
-                        loop.test_results = [
-                            {"name": "LLM判定", "passed": passed, "details": test_result[:500]}
-                        ]
+                    needs_fb = await self._stage_needs_feedback(test_result)
+                    loop.test_results = [
+                        {"name": f"{test_node.id} 复核", "passed": not needs_fb,
+                         "details": test_result[:500]}
+                    ]
 
     # ── 阶段执行（未改动主体，沿用原逻辑） ────────────
 
@@ -785,6 +765,22 @@ class TeamOrchestrator:
 
     # ── 辅助方法 ─────────────────────────────────────
 
+    def _normalize_stages(self, stages: list[dict]) -> list[dict]:
+        """只保留团队成员可承担的阶段, 并清理指向被剔除阶段的悬空依赖。"""
+        valid: list[dict] = []
+        for s in stages or []:
+            role = str(s.get("role") or "")
+            if role not in self.members:
+                logger.warning(
+                    f"团队 [{self.team_name}] 流水线阶段 {s.get('stage')!r} 角色 {role!r} "
+                    f"不在可用成员, 已剔除")
+                continue
+            valid.append(dict(s))  # 复制, 避免清理 deps 时改坏模块级流水线常量
+        names = {s["stage"] for s in valid}
+        for s in valid:
+            s["deps"] = [d for d in (s.get("deps") or []) if d in names]
+        return valid
+
     def _get_stage_config(self, stage_id: str) -> dict | None:
         for s in self.pipeline_stages:
             if s["stage"] == stage_id:
@@ -934,20 +930,38 @@ class TeamOrchestrator:
             logger.warning(f"Leader 审核解析失败: {e}")
             return True, ""
 
-    async def _llm_judge_test_result(self, test_output: str) -> bool:
-        prompt = f"""判断以下测试输出是否全部通过。
+    async def _stage_needs_feedback(self, result: str) -> bool:
+        """判断带 feedback_to 的阶段产出是否需要回退上游(未通过)。
 
-## 测试输出
-{test_output[:3000]}
+        判定优先级: 审核结论(``审核结论：通过/不通过`` 或 JSON ``confirmed``)
+        → 测试输出(pytest/jest/go 摘要) → LLM 兜底判定。
+        """
+        verdict = parse_review_verdict(result)
+        if verdict is not None:
+            return not verdict
+        test_results = parse_test_output(result)
+        if test_results:
+            return not all(r.get("passed", False) for r in test_results)
+        return not await self._llm_judge_stage_result(result)
+
+    async def _llm_judge_stage_result(self, result: str) -> bool:
+        prompt = f"""判断以下「测试/审核」阶段产出是否通过。
+
+判定口径:
+- 若是测试输出: 全部用例通过才算通过;
+- 若是代码审核结论: 审核确认通过(``审核结论：通过`` / confirmed=true)才算通过。
+
+## 阶段产出
+{result[:3000]}
 
 只返回 JSON: {{"passed": true/false, "reason": "原因"}}"""
         try:
             resp = await self.llm.chat([{"role": "user", "content": prompt}])
             content = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
-            result = json.loads(_extract_json_from_llm(content))
-            return result.get("passed", False)
+            judged = json.loads(_extract_json_from_llm(content))
+            return judged.get("passed", False)
         except Exception as e:
-            logger.warning(f"LLM 测试判定失败: {e}")
+            logger.warning(f"LLM 阶段判定失败: {e}")
             return False
 
     def _build_report(self) -> str:

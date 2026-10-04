@@ -86,6 +86,25 @@ def parse_test_output(raw_output: str) -> list[dict]:
     return results
 
 
+def parse_review_verdict(raw_output: str) -> "bool | None":
+    """从「审核」阶段产出里解析结论: True=通过 / False=不通过 / None=未给出明确结论。
+
+    审核工程师不写测试, 其产出是代码审查结论, 因此优先识别结构化结论:
+    - JSON 里的 ``"confirmed": true/false``;
+    - 末尾的 ``审核结论：通过`` / ``审核结论：不通过``(兼容"结论:"与全角/半角冒号)。
+    """
+    text = raw_output or ""
+    m = re.search(r'"confirmed"\s*:\s*(true|false)', text, re.IGNORECASE)
+    if m:
+        return m.group(1).lower() == "true"
+    # 先判"不通过", 避免被"通过"子串误命中
+    if re.search(r"(审核)?结论\s*[:：]\s*不通过", text):
+        return False
+    if re.search(r"(审核)?结论\s*[:：]\s*通过", text):
+        return True
+    return None
+
+
 def extract_failure_details(raw_output: str, max_chars: int = 3000) -> str:
     """从测试输出中提取失败详情"""
     lines = raw_output.split("\n")

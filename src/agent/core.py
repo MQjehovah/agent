@@ -432,12 +432,16 @@ class Agent:
             "leader_prompt": leader_prompt,
             "dir_name": name,
         }
-        # 加载成员
+        # 加载成员(pipeline_roles 白名单: 只加载允许参与流水线的角色)
+        from team.pipeline_builder import allowed_pipeline_roles
         agents_dir = os.path.join(self.config_dir, "agents")
         members = {}
+        _allowed_roles = allowed_pipeline_roles(fm)
         if os.path.exists(agents_dir):
             from utils.frontmatter import extract_frontmatter as _ef
             for mname in os.listdir(agents_dir):
+                if _allowed_roles is not None and mname not in _allowed_roles:
+                    continue
                 mp = os.path.join(agents_dir, mname)
                 if not os.path.isdir(mp):
                     continue

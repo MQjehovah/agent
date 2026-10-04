@@ -290,7 +290,12 @@ class SubagentManager:
         self._team_configs[name] = config
 
         members: dict[str, dict[str, Any]] = {}
+        # pipeline_roles 白名单: 只加载允许参与流水线的角色(其余目录保留但不调度)
+        from team.pipeline_builder import allowed_pipeline_roles
+        _allowed_roles = allowed_pipeline_roles(frontmatter)
         for member_name in os.listdir(agents_dir):
+            if _allowed_roles is not None and member_name not in _allowed_roles:
+                continue
             member_path = os.path.join(agents_dir, member_name)
             if not os.path.isdir(member_path):
                 continue
@@ -330,8 +335,20 @@ class SubagentManager:
             if not (os.path.exists(team_file) and os.path.isdir(agents_dir)):
                 continue
 
+            _allowed = None
+            try:
+                from team.pipeline_builder import allowed_pipeline_roles
+                from utils.frontmatter import extract_frontmatter as _ef
+                with open(team_file, encoding="utf-8") as _f:
+                    _fm, _ = _ef(_f.read())
+                _allowed = allowed_pipeline_roles(_fm)
+            except Exception:
+                _allowed = None
+
             members = []
             for member_name in os.listdir(agents_dir):
+                if _allowed is not None and member_name not in _allowed:
+                    continue
                 member_path = os.path.join(agents_dir, member_name)
                 if os.path.isdir(member_path):
                     members.append(member_name)
