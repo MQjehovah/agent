@@ -26,6 +26,7 @@ from settings import get_settings, init_settings
 from tui import TUIApp
 from tui.display import _fmt_args, _truncate
 from tui.styles import BOLD, CYAN, DIM, GRAY, GREEN, RED, RESET, YELLOW
+from utils.git_auth import configure_git_from_env
 
 # 日志目录必须在模块导入前设置（llm.py 在导入时读取 AGENT_LOG_DIR）
 _LOCAL_LOG = os.path.join(Path(__file__).parent.parent, "logs")
@@ -91,6 +92,9 @@ else:
     if _env_example.exists():
         load_dotenv(_env_example)
 
+# 装载 GitLab HTTPS 凭据(供 shell/terminal 的 git clone/push 自动认证, 不落盘)
+configure_git_from_env()
+
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 # 抑制 Windows asyncio 关闭时的管道清理和子进程传输警告
@@ -137,6 +141,7 @@ def _init_logging(log_dir: str):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logger = logging.getLogger("agent.main")
     logger.info("日志系统初始化完成，目录: %s", log_dir)
+    logger.info("git HTTPS 凭据: %s", "已注入" if os.environ.get("GIT_CONFIG_COUNT") else "未配置(无 GITLAB_TOKEN/口令)")
 
 
 # 绑定到 CLI 会话的插件会话（如 feishu 绑定后共享上下文）
