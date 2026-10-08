@@ -51,11 +51,11 @@ def get_auth(request: Request) -> dict:
     except Exception:
         pass
     from web import sso_auth  # noqa: PLC0415
-    from web.server import _sso_lookup_user  # noqa: PLC0415 — 避免循环导入
+    from web.server import _sso_ensure_user, _sso_lookup_user  # noqa: PLC0415 避免循环导入
     claims = sso_auth.verify_sso_token(cred)
-    user = _sso_lookup_user(claims.get("sub", ""))
-    if not user:
-        raise ValueError("unprovisioned sso user")
+    sub = str(claims.get("sub", "")).strip()
+    # 自助开户: 首次以 SSO 身份访问时按 claims 建档(仅限本人); 禁用账号抛 403
+    user = _sso_lookup_user(sub) or _sso_ensure_user(sub, claims)
     return {"uid": user["id"], "name": user["name"], "role": user["role"],
             "work_id": user.get("work_id") or ""}
 

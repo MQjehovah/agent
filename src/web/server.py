@@ -1240,9 +1240,10 @@ class WebServer:
                 claims = sso_auth.verify_sso_token(cred)
             except Exception:
                 raise HTTPException(status_code=401, detail="Unauthorized") from None
-            user = _sso_lookup_user(claims.get("sub", ""))
-            if not user:
-                raise HTTPException(status_code=401, detail="Unauthorized")
+            sub = str(claims.get("sub", "")).strip()
+            # 自助开户: 首次以 SSO 身份访问时按 claims 建档/对齐(仅限令牌持有者本人;
+            # 命中被禁用账号时 _sso_ensure_user 抛 403, 不静默放行)
+            user = _sso_lookup_user(sub) or _sso_ensure_user(sub, claims)
             return {"uid": user["id"], "name": user["name"], "role": user["role"],
                     "work_id": user.get("work_id") or ""}
 

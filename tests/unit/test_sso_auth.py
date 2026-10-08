@@ -440,3 +440,70 @@ def test_refresh_token_grant_client_override_public_client_no_secret(monkeypatch
     assert "client_id=dashboard-gateway" in body
     assert "client_secret" not in body
     assert captured["auth"] is None
+
+
+# ---- SSO 资源轨自助开户(未建档自动创建; 禁用拒绝) ----
+
+
+def test_get_auth_dual_track_provisions_unprovisioned_user(sso_env, tmp_path):
+    """SSO 首次访问自助开户: 未建档用户按 claims 自动创建(仅本人), 返回 200。"""
+    from fastapi.testclient import TestClient
+
+    import storage.storage as storage_mod
+    from storage.storage import Storage
+    from web.server import WebServer
+
+    key, _ = sso_env
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    try:
+        w = WebServer()
+        client = TestClient(w._app)
+        token = sign_token(valid_claims(sub="20001", name="李四", dept="生产部"), key)
+        resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["name"] == "李四"
+        assert body["work_id"] == "20001"
+        assert body["role"] == "default"
+        with s.get_connection() as conn:
+            row = conn.execute(
+                "SELECT name, work_id, department, status FROM rbac_users WHERE work_id='20001'"
+            ).fetchone()
+        assert row is not None
+        assert row["name"] == "李四"
+        assert row["department"] == "生产部"
+        assert row["status"] == "active"
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
+
+
+def test_get_auth_dual_track_disabled_user_rejected(sso_env, tmp_path):
+    """已建档但被禁用: SSO 令牌同样被拒(不因自助开户语义放行)。"""
+    from fastapi.testclient import TestClient
+
+    import storage.storage as storage_mod
+    from storage.storage import Storage
+    from web.server import WebServer
+
+    key, _ = sso_env
+    prev = storage_mod._storage_instance
+    s = Storage(str(tmp_path))
+    storage_mod._storage_instance = s
+    with s.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO rbac_users (name, work_id, department, role, status, created_at, updated_at) "
+            "VALUES ('王五', '20002', '研发', 'default', 'disabled', datetime('now'), datetime('now'))"
+        )
+        conn.commit()
+    try:
+        w = WebServer()
+        client = TestClient(w._app)
+        token = sign_token(valid_claims(sub="20002", name="王五"), key)
+        resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 403, resp.text
+    finally:
+        s.close()
+        storage_mod._storage_instance = prev
