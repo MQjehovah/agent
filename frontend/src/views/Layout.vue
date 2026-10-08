@@ -203,15 +203,12 @@ async function refreshMe() {
   }
 }
 
-let sideTimer: number | undefined
 onMounted(() => {
   void refreshMe()
   void loadSideSessions()
-  sideTimer = window.setInterval(() => void loadSideSessions(), 15000)
   window.addEventListener('keydown', onKeydown)
 })
 onBeforeUnmount(() => {
-  if (sideTimer) window.clearInterval(sideTimer)
   window.removeEventListener('keydown', onKeydown)
 })
 
