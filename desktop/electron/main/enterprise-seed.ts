@@ -15,6 +15,7 @@ export const ENTERPRISE_FIELDS = [
   'marketUrl',
   'gatewayUrl',
   'gatewayAdminUrl',
+  'agentServiceToken',
   'updateFeedUrl',
   'asrUrl'
 ] as const
