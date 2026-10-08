@@ -266,7 +266,6 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-let refreshTimer: number | undefined
 /** 桌面壳事件订阅的取消函数(托盘/快速提问窗/通知) */
 let offQuickPrompt: (() => void) | undefined
 let offOpenSession: (() => void) | undefined
@@ -296,8 +295,6 @@ onMounted(async () => {
   // 会话列表与最近会话就绪后再通知主进程补发排队事件:
   // 否则排队中的 quick-prompt 可能撞上 autoOpenLatestSession 的 loadHistory
   void window.desktop.invoke('desktop:ready').catch(() => {})
-  // 会话列表兜底静默刷新
-  refreshTimer = window.setInterval(() => void sessionsStore.refresh(true), 15000)
 })
 
 onBeforeUnmount(() => {
@@ -305,7 +302,6 @@ onBeforeUnmount(() => {
   offQuickPrompt?.()
   offOpenSession?.()
   offNewSession?.()
-  if (refreshTimer) window.clearInterval(refreshTimer)
 })
 
 function formatTime(t: string | number): string {
