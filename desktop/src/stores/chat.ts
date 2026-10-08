@@ -983,36 +983,42 @@ function normalizeHistory(history: HistoryMessage[]): UiMessage[] {
   return list
 }
 
-/** 本地历史:assistant.toolCalls 映射为轨迹占位,tool 消息按 toolCallId 回填结果 */
-function normalizeLocalMessages(stored: LocalStoredMessage[]): UiMessage[] {
+/**
+ * 本地历史:assistant.toolCalls 映射为轨迹占位, tool 消息按 toolCallId 回填结果。
+ *
+ * 本地内核按「每段响应一条 assistant」落库(含大量单工具轮), 逐条成泡会出现
+ * 大量"已调用 1 次工具"; 与在线历史同口径: 同一轮(相邻、无 user 隔断)的
+ * assistant 合并为一个气泡 —— content 拼接、工具轨迹按出现顺序合并。
+ */
+export function normalizeLocalMessages(stored: LocalStoredMessage[]): UiMessage[] {
   const traceByCallId = new Map<string, ToolTrace>()
   const list: UiMessage[] = []
+  let current: UiMessage | null = null
   for (const m of stored) {
     if (m.role === 'tool') {
       const trace = m.toolCallId ? traceByCallId.get(m.toolCallId) : undefined
       if (trace && trace.result === undefined) trace.result = truncateText(m.content, 4000)
       continue
     }
-    const ts = m.ts ?? Date.now()
-    const ui: UiMessage = {
-      id: nextId('m'),
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content,
-      reasoning: '',
-      subagentOutput: '',
-      subagentRunning: false,
-      tools: [],
-      error: '',
-      ts
+    if (m.role === 'user') {
+      const user = blankMessage('user')
+      user.content = m.content
+      user.ts = m.ts ?? Date.now()
+      list.push(user)
+      current = null
+      continue
     }
-    if (m.role === 'assistant' && m.toolCalls?.length) {
-      for (const call of m.toolCalls) {
-        const trace: ToolTrace = { name: call.name || 'tool', kind: 'tool', ts }
-        ui.tools.push(trace)
-        traceByCallId.set(call.id, trace)
-      }
+    if (!current) {
+      current = blankMessage('assistant')
+      current.ts = m.ts ?? Date.now()
+      list.push(current)
     }
-    list.push(ui)
+    if (m.content) current.content += current.content ? `\n\n${m.content}` : m.content
+    for (const call of m.toolCalls ?? []) {
+      const trace: ToolTrace = { name: call.name || 'tool', kind: 'tool', ts: m.ts ?? Date.now() }
+      current.tools.push(trace)
+      if (call.id) traceByCallId.set(call.id, trace)
+    }
   }
   return list
 }

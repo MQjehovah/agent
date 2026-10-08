@@ -864,7 +864,11 @@ function settleScrollToBottom(ms = 1200): void {
 }
 
 onMounted(() => {
-  // 监听内容变化（流式文本、工具/子代理块、图片与 markdown 异步渲染增高）→ 贴底时跟随
+  // 挂载即落底: 从会话列表进入/切页回来时 store 中已有消息且 sessionId 未变化,
+  // watch 不会触发; 首屏渲染的 DOM 变更也早于 MutationObserver 挂载, 需主动 settle
+  pinned.value = true
+  settleScrollToBottom(1200)
+  // 监听内容变化（流式文本、工具、子代理块、图片与 markdown 异步渲染增高）→ 贴底时跟随
   const el = scrollRef.value
   if (el) {
     contentMO = new MutationObserver(() => scrollToBottom())
