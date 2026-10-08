@@ -13,6 +13,7 @@ const BUNDLE = {
   marketUrl: 'https://bundle.example/market',
   gatewayUrl: 'https://bundle.example/gateway',
   gatewayAdminUrl: 'https://bundle.example/gateway',
+  agentServiceToken: 'svc-bundle-test',
   updateFeedUrl: 'https://bundle.example/updates/dashboard',
   asrUrl: 'https://bundle.example/asr/v1'
 }
@@ -57,7 +58,8 @@ test('seed: 空 stored + 真实 enterprise.example.json → 模板字段全量�
   assert.equal(updates.length, 1)
   for (const key of ENTERPRISE_FIELDS) {
     const value = template[key]
-    if (typeof value === 'string') {
+    // 模板中的空占位(如未配置的 agentServiceToken/asrUrl)按"空值不注入"语义跳过
+    if (typeof value === 'string' && value.trim()) {
       assert.equal(updates[0][key], value.trim(), key)
     }
   }

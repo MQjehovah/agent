@@ -457,3 +457,25 @@ test('同身份并发 fetchGatewayKey 遇 401 时单飞重换并各自成功', a
   assert.equal(keyCalls, 4)
   assert.equal(state.identity?.gatewayKey, 'sk-1')
 })
+
+
+test('freshAgentToken: 交换出 audience=agent 并写回 agentToken 字段', async () => {
+  const { creds, state } = setup({ identity: { agentToken: 'a-old', agentTokenExpiresAt: 999_000 } })
+  state.handler = async () => jsonResponse({ access_token: 'a-new', expires_in: 3600 })
+  assert.equal(await creds.freshAgentToken(), 'a-new')
+  const exchangeCall = state.calls.find((c) => bodyParams(c).get('audience') === 'agent')
+  assert.ok(exchangeCall, '应发生 audience=agent 的交换')
+  assert.equal(bodyParams(exchangeCall!).get('client_id'), 'dashboard-gateway')
+  assert.equal(state.identity?.agentToken, 'a-new')
+  assert.ok((state.identity?.agentTokenExpiresAt ?? 0) > state.clock + 60_000)
+  // 不同受众缓存字段隔离: agent 交换不影响 gatewayToken
+  assert.equal(state.identity?.gatewayToken, undefined)
+})
+
+test('freshAgentToken: 未过期(余量>60s)时不发请求直接返回', async () => {
+  const { creds, state } = setup({
+    identity: { agentToken: 'a-fresh', agentTokenExpiresAt: 1_000_000 + 10 * 60_000 }
+  })
+  assert.equal(await creds.freshAgentToken(), 'a-fresh')
+  assert.equal(state.calls.length, 0)
+})

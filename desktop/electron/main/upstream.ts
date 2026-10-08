@@ -1,7 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { getConfig } from './store'
-import { freshAgentJwt, freshGatewayToken, getIdentity, ensureGatewayKey } from './identity'
+import {
+  freshAgentJwt,
+  freshAgentToken,
+  freshGatewayToken,
+  getIdentity,
+  ensureGatewayKey
+} from './identity'
 
 /**
  * 上游代理(IPC 直达,无本地 HTTP):
@@ -22,8 +28,15 @@ const SERVICE_FIELD: Record<ServiceName, 'agentUrl' | 'ragUrl' | 'marketUrl' | '
 async function authFor(service: ServiceName): Promise<string | null> {
   const identity = getIdentity()
   if (!identity) return null
-  // agent JWT 默认 12h, 请求前按需用本机保管的凭据续期
-  if (service === 'agent') return freshAgentJwt()
+  // agent: 首选 SSO 用户令牌(aud=agent, 服务端自助开户); 交换失败回退 JIT 本地账号
+  if (service === 'agent') {
+    try {
+      return await freshAgentToken()
+    } catch (err) {
+      console.warn('[upstream] agent SSO token 获取失败,回退 JIT:', (err as Error).message)
+      return freshAgentJwt()
+    }
+  }
   if (service === 'gateway') {
     // gatewayKey 可能因登录时交换降级而缺失:走 ensureGatewayKey 自愈;失败仍回退无鉴权(由上游 401 提示)
     try {

@@ -1,7 +1,6 @@
 {
   "oidcIssuer": "https://auth.xzrobot.com",
   "oidcClientId": "dashboard-gateway",
-  "oidcClientSecret": "",
   "agentUrl": "https://ai.xzrobot.com/agent",
   "ragUrl": "https://ai.xzrobot.com/rag",
   "marketUrl": "https://ai.xzrobot.com/market",

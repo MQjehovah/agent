@@ -45,8 +45,12 @@ export interface Identity {
   gatewayKey: string
   /** gateway 受众平台 token(id_token 换取):用于 /api/me/* 与 rag/market 直连(upstream/media/kb_search/mcp) */
   gatewayToken?: string
-  /** gatewayToken 过期时间戳(ms) */
+  /** gatewayToken 过期时间(ms) */
   gatewayTokenExpiresAt?: number
+  /** agent 受众平台 token(id_token 换取):桌面直连 agent 的首选凭据 */
+  agentToken?: string
+  /** agentToken 过期时间(ms) */
+  agentTokenExpiresAt?: number
   agentJwt: string
 }
 
@@ -263,6 +267,16 @@ export function freshGatewayToken(): Promise<string> {
 /** 401 自愈:清零 token 过期时间并落盘后强制重换(usage 首次 401 时重试用) */
 export function renewGatewayToken(): Promise<string> {
   return gatewayCredentials.renewGatewayToken()
+}
+
+/** agent 受众平台 token(桌面直连 agent 首选; 失败由 upstream 回退 JIT) */
+export function freshAgentToken(): Promise<string> {
+  return gatewayCredentials.freshAgentToken()
+}
+
+/** agent 受众 token 401 自愈:清零过期时间后强制重换 */
+export function renewAgentToken(): Promise<string> {
+  return gatewayCredentials.renewAgentToken()
 }
 
 /** 取 gateway apikey:已有则直接返回;否则调 gateway admin /api/me/key(401 时重换 token 重试一次) */
