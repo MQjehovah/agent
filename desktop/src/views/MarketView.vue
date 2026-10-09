@@ -12,6 +12,7 @@ import type {
 } from '../api/types'
 import { useSettingsStore } from '../stores/settings'
 import { iconPhStyle, typeName } from '../utils/market'
+import CredentialsDialog from '../components/CredentialsDialog.vue'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -80,6 +81,14 @@ const busySub = ref('')
 const busyInstall = ref('')
 const busyUninstall = ref('')
 
+// ---- 配置凭据弹窗(binding=user 且声明 user_env 的「我的」卡片) ----
+const credVisible = ref(false)
+const credCard = ref<BrowseCard | null>(null)
+function openCredentials(card: BrowseCard): void {
+  credCard.value = card
+  credVisible.value = true
+}
+
 function typeKey(type: MarketCapabilityType, name: string): string {
   return `${type}/${name}`
 }
@@ -137,6 +146,14 @@ function mapLite(v: unknown): MarketCapabilityLite | null {
   if (tags.length) out.tags = tags as string[]
   const runtime = mapRuntime(r.runtime)
   if (runtime) out.runtime = runtime
+  if (r.binding === 'user' || r.binding === 'service') out.binding = r.binding
+  const schema = typeof r.input_schema === 'object' && r.input_schema !== null
+    ? (r.input_schema as Record<string, unknown>)
+    : null
+  const userEnv = Array.isArray(schema?.user_env)
+    ? (schema!.user_env as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim())
+    : []
+  if (userEnv.length) out.user_env = userEnv
   const ratingCount = Number(r.rating_count ?? 0)
   if (Number.isFinite(ratingCount) && ratingCount > 0) {
     out.rating_count = Math.floor(ratingCount)
@@ -676,6 +693,14 @@ onMounted(() => {
                 <span class="market-spacer"></span>
                 <el-tag v-if="card.mine" size="small" type="success" effect="plain">我的</el-tag>
                 <el-button
+                  v-if="card.mine && card.binding === 'user' && (card.user_env?.length ?? 0) > 0"
+                  size="small"
+                  plain
+                  @click="openCredentials(card)"
+                >
+                  配置凭据
+                </el-button>
+                <el-button
                   size="small"
                   type="primary"
                   :loading="busyInstall === card.name"
@@ -745,5 +770,12 @@ onMounted(() => {
         </template>
       </section>
     </div>
+
+    <CredentialsDialog
+      v-model="credVisible"
+      :capability-id="credCard?.id ?? ''"
+      :capability-name="cardTitle(credCard ?? ({} as BrowseCard))"
+      :keys="credCard?.user_env ?? []"
+    />
   </div>
 </template>

@@ -243,3 +243,65 @@ test('market client 网络错误折叠并保留 cause', async () => {
     return true
   })
 })
+
+test('market client listSecrets 带 scope 查询并解析列表', async () => {
+  const calls: CapturedCall[] = []
+  const rows = [{ id: '3f1c0c8e-1111-2222-3333-444455556666', key_name: 'ERP_USERNAME', scope: 'cap/1', has_value: true }]
+  const client = createMarketClient({
+    marketUrl: 'http://market.test',
+    getToken: () => 'sso-tok',
+    fetchImpl: stubFetch(calls, () => new Response(JSON.stringify(rows), { status: 200 }))
+  })
+  const list = await client.listSecrets('cap/1')
+  assert.equal(calls[0].input, 'http://market.test/api/my/secrets?scope=cap%2F1')
+  assert.equal(list[0].key_name, 'ERP_USERNAME')
+})
+
+test('market client listSecrets 非数组返回空列表', async () => {
+  const calls: CapturedCall[] = []
+  const client = createMarketClient({
+    marketUrl: 'http://market.test',
+    getToken: () => 'sso-tok',
+    fetchImpl: stubFetch(calls, () => new Response(JSON.stringify({ result: [] }), { status: 200 }))
+  })
+  assert.deepEqual(await client.listSecrets(''), [])
+  assert.equal(calls[0].input, 'http://market.test/api/my/secrets')
+})
+
+test('market client secretsStatus 自动按能力判缺', async () => {
+  const calls: CapturedCall[] = []
+  const st = { required: ['K'], filled: [], missing: ['K'], complete: false }
+  const client = createMarketClient({
+    marketUrl: 'http://market.test',
+    getToken: () => 'sso-tok',
+    fetchImpl: stubFetch(calls, () => new Response(JSON.stringify(st), { status: 200 }))
+  })
+  const out = await client.secretsStatus('cap 1')
+  assert.equal(calls[0].input, 'http://market.test/api/my/secrets/status?capability_id=cap%201')
+  assert.equal(out.complete, false)
+})
+
+test('market client upsertSecrets PUT bulk(scope=能力 id)并解析返回', async () => {
+  const calls: CapturedCall[] = []
+  const client = createMarketClient({
+    marketUrl: 'http://market.test/',
+    getToken: () => 'sso-tok',
+    fetchImpl: stubFetch(calls, () => new Response(JSON.stringify([]), { status: 200 }))
+  })
+  await client.upsertSecrets({ K: 'v' }, 'cap1')
+  assert.equal(calls[0].input, 'http://market.test/api/my/secrets/bulk')
+  assert.equal(calls[0].init.method, 'PUT')
+  assert.equal(calls[0].init.body, JSON.stringify({ secrets: { K: 'v' }, scope: 'cap1' }))
+})
+
+test('market client deleteSecret DELETE UUID 行 id', async () => {
+  const calls: CapturedCall[] = []
+  const client = createMarketClient({
+    marketUrl: 'http://market.test',
+    getToken: () => 'sso-tok',
+    fetchImpl: stubFetch(calls, () => new Response(JSON.stringify({ message: '已删除' }), { status: 200 }))
+  })
+  await client.deleteSecret('3f1c0c8e-1111-2222-3333-444455556666')
+  assert.equal(calls[0].input, 'http://market.test/api/my/secrets/3f1c0c8e-1111-2222-3333-444455556666')
+  assert.equal(calls[0].init.method, 'DELETE')
+})

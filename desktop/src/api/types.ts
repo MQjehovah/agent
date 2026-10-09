@@ -139,6 +139,10 @@ export interface MarketCapabilityLite {
   distribution?: string
   /** 运行规格(优先于 distribution;缺失回退) */
   runtime?: CapabilityRuntime
+  /** 能力绑定: user=按用户身份执行, 需个人凭据(市场 binding 字段) */
+  binding?: 'user' | 'service'
+  /** 用户级凭据变量名清单(binding=user 时由 input_schema.user_env 投影) */
+  user_env?: string[]
 }
 
 /** 本地已安装能力清单条目(localagent:market:listInstalled) */

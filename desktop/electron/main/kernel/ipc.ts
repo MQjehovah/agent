@@ -39,7 +39,7 @@ import {
   type McpGatewayTarget,
   type McpServerConfig
 } from './mcp'
-import { createMarketClient, type MarketCapability, type MarketCapabilityType, type MarketClient } from './market'
+import { createMarketClient, type MarketCapability, type MarketCapabilityType, type MarketClient, type MarketSecret, type MarketSecretStatus } from './market'
 import { installCapability, uninstallCapability, shouldRefuseRemoteInstall, assertSafeCapabilityName, type InstallResult, type McpInstallMode } from './installer'
 import { createMarketTool, createMarketToolInvoker } from './market-tools'
 import { loadMarketToolsFile, saveMarketToolsFile, type MarketToolRecord } from './market-registry'
@@ -726,6 +726,51 @@ async function handleMarketUnsubscribe(
   if (!capabilityId) throw new Error('缺少能力 id (capabilityId)')
   await createMarketClientForIpc().unsubscribe(capabilityId)
   return { ok: true, output: '已从我的能力移除' }
+}
+
+async function handleMarketSecretsList(
+  _event: IpcMainInvokeEvent,
+  payload?: { scope?: string }
+): Promise<MarketSecret[]> {
+  requireSsoLogin()
+  const scope = typeof payload?.scope === 'string' ? payload.scope : ''
+  return createMarketClientForIpc().listSecrets(scope)
+}
+
+async function handleMarketSecretsStatus(
+  _event: IpcMainInvokeEvent,
+  payload?: { capabilityId?: string }
+): Promise<MarketSecretStatus> {
+  requireSsoLogin()
+  const capabilityId = typeof payload?.capabilityId === 'string' ? payload.capabilityId.trim() : ''
+  if (!capabilityId) throw new Error('缺少能力 id (capabilityId)')
+  return createMarketClientForIpc().secretsStatus(capabilityId)
+}
+
+async function handleMarketSecretsUpsert(
+  _event: IpcMainInvokeEvent,
+  payload?: { secrets?: Record<string, unknown>; scope?: string }
+): Promise<MarketSecret[]> {
+  requireSsoLogin()
+  const scope = typeof payload?.scope === 'string' ? payload.scope.trim() : ''
+  if (!scope) throw new Error('缺少能力 id (scope)')
+  const raw = payload?.secrets
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('secrets 需为对象')
+  const secrets: Record<string, string> = {}
+  for (const [k, v] of Object.entries(raw)) if (typeof v === 'string' && v.trim()) secrets[k] = v
+  if (!Object.keys(secrets).length) throw new Error('请先填写至少一项凭据')
+  return createMarketClientForIpc().upsertSecrets(secrets, scope)
+}
+
+async function handleMarketSecretsDelete(
+  _event: IpcMainInvokeEvent,
+  payload?: { id?: string }
+): Promise<{ ok: boolean }> {
+  requireSsoLogin()
+  const id = typeof payload?.id === 'string' ? payload.id.trim() : ''
+  if (!id) throw new Error('缺少凭据 id')
+  await createMarketClientForIpc().deleteSecret(id)
+  return { ok: true }
 }
 
 /**
@@ -1694,6 +1739,10 @@ export function registerKernelIpc(): void {
     return handleMarketListInstalled()
   })
   ipcMain.handle('localagent:market:icon', handleMarketIcon)
+  ipcMain.handle('localagent:market:secrets:list', handleMarketSecretsList)
+  ipcMain.handle('localagent:market:secrets:status', handleMarketSecretsStatus)
+  ipcMain.handle('localagent:market:secrets:upsert', handleMarketSecretsUpsert)
+  ipcMain.handle('localagent:market:secrets:delete', handleMarketSecretsDelete)
   ipcMain.handle('localagent:personas:list', () => {
     requireSsoLogin()
     return listLocalPersonas()

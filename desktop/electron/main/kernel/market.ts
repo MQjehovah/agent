@@ -38,6 +38,25 @@ export interface MarketCapability {
   runtime?: MarketRuntime
 }
 
+/** 个人凭据行(市场 /api/my/secrets 条目;仅元信息,永不回显明文) */
+export interface MarketSecret {
+  id: string
+  key_name: string
+  scope: string
+  has_value: boolean
+  label?: string
+  updated_at?: string
+  created_at?: string
+}
+
+/** 按能力自动判缺结果(市场以 user_env 声明为 required) */
+export interface MarketSecretStatus {
+  required: string[]
+  filled: string[]
+  missing: string[]
+  complete: boolean
+}
+
 export interface MarketClientDeps {
   /** 市场服务地址(可带尾斜杠,内部去掉) */
   marketUrl: string
@@ -58,6 +77,14 @@ export interface MarketClient {
   download(name: string, version?: string): Promise<Buffer>
   /** 取能力图标(返回 data URL;无图标或失败返回空串) */
   icon(id: string): Promise<string>
+  /** 个人凭据列表(scope=能力 id 取本能力级; 空=全部; 永不回显明文) */
+  listSecrets(scope?: string): Promise<MarketSecret[]>
+  /** 按能力自动判缺(市场以 user_env 声明为 required) */
+  secretsStatus(capabilityId: string): Promise<MarketSecretStatus>
+  /** 批量写入个人凭据(能力级覆盖), 返回写入后的行(不含明文) */
+  upsertSecrets(secrets: Record<string, string>, scope: string): Promise<MarketSecret[]>
+  /** 删除个人凭据行(仅本人; id 为 UUID 字符串) */
+  deleteSecret(id: string): Promise<void>
 }
 
 /** 从非 2xx 正文里提炼短原因:优先 JSON 的 detail/error/message,否则截断原文 */
@@ -93,7 +120,7 @@ export function createMarketClient(deps: MarketClientDeps): MarketClient {
    * 统一请求入口:取 token(缺失即抛 SSO 提示)→ 拼接 URL → 注入 Bearer →
    * 网络错误折叠(cause)→ 非 2xx 取 detail/error/message 后抛错。返回已 2xx 的 Response。
    */
-  async function request(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<Response> {
+  async function request(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<Response> {
     const token = await deps.getToken()
     if (!token) throw new Error('请先完成企业 SSO 登录(访问能力市场需要)')
     const url = `${base}${path.startsWith('/') ? path : `/${path}`}`
@@ -188,6 +215,29 @@ export function createMarketClient(deps: MarketClientDeps): MarketClient {
       } catch {
         return ''
       }
+    },
+
+    async listSecrets(scope = '') {
+      const qs = scope ? `?scope=${encodeURIComponent(scope)}` : ''
+      const res = await request('GET', `/api/my/secrets${qs}`)
+      const parsed = (await res.json()) as unknown
+      return Array.isArray(parsed) ? (parsed as MarketSecret[]) : []
+    },
+
+    async secretsStatus(capabilityId) {
+      const res = await request(
+        'GET', `/api/my/secrets/status?capability_id=${encodeURIComponent(capabilityId)}`)
+      return (await res.json()) as MarketSecretStatus
+    },
+
+    async upsertSecrets(secrets, scope) {
+      const res = await request('PUT', '/api/my/secrets/bulk', { secrets, scope })
+      const parsed = (await res.json()) as unknown
+      return Array.isArray(parsed) ? (parsed as MarketSecret[]) : []
+    },
+
+    async deleteSecret(id) {
+      await request('DELETE', `/api/my/secrets/${encodeURIComponent(id)}`)
     }
   }
 }
