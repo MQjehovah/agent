@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import MarketIcon from './MarketIcon.vue'
 import { typeColor, typeName } from '../utils/market'
 
@@ -37,25 +37,26 @@ const emit = defineEmits<{
   (e: 'mounted', id: string): void
 }>()
 
-const c = props.cap
-const title = (c.display_name || '').trim() || c.name
+const c = computed(() => props.cap)
+const title = computed(() => (c.value.display_name || '').trim() || c.value.name)
 /** 默认头像用名称首字符（不是类型首字母） */
-const iconLetter = (title || '?').trim().slice(0, 1).toUpperCase() || '?'
-const isNew = !c.rating_count
+const iconLetter = computed(() => (title.value || '?').trim().slice(0, 1).toUpperCase() || '?')
+const isNew = computed(() => !c.value.rating_count)
 // 属性标签：分类 + 能力自带 tags（不含功能性标记）
-const attrTags = [
-  ...(c.category ? [c.category] : []),
-  ...(c.tags || []).filter((t) => t && t !== 'plugin-component')
-]
+const attrTags = computed(() => [
+  ...(c.value.category ? [c.value.category] : []),
+  ...(c.value.tags || []).filter((t) => t && t !== 'plugin-component')
+])
 /** 第二行：能力名 · 版本号（与 market 卡片一致） */
-const subline = c.version ? `${c.name} · v${c.version}` : c.name
+const subline = computed(() => (c.value.version ? `${c.value.name} · v${c.value.version}` : c.value.name))
 
 /** user 绑定能力声明的用户凭据键(卡片显示「配置凭据」入口) */
-const credKeys = (c.input_schema?.user_env ?? []).filter((k) => k && k.trim())
-const needsCredentials = () => Boolean(c.joined && c.binding === 'user' && credKeys.length)
+const credKeys = computed(() => (c.value.input_schema?.user_env ?? []).filter((k) => k && k.trim()))
+const needsCredentials = computed(() =>
+  Boolean(c.value.joined && c.value.binding === 'user' && credKeys.value.length))
 
 // 让父级知道卡片已挂载(用于按需加载图标)
-onMounted(() => emit('mounted', c.id))
+onMounted(() => emit('mounted', props.cap.id))
 </script>
 
 <template>
@@ -90,7 +91,7 @@ onMounted(() => emit('mounted', c.id))
         <span v-if="c.usage_count"> · {{ c.usage_count }} 次</span>
       </span>
       <div class="foot-actions">
-        <el-button v-if="needsCredentials()" size="small" plain @click="emit('credentials')">
+        <el-button v-if="needsCredentials" size="small" plain @click="emit('credentials')">
           配置凭据
         </el-button>
         <template v-if="c.installed">

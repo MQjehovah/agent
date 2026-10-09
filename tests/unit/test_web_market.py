@@ -175,7 +175,7 @@ def test_user_endpoints_fail_closed_503_when_no_user_token(env, monkeypatch):
         ("get", "/api/market/my-secrets", None),
         ("get", "/api/market/my-secrets/status?capability_id=c1", None),
         ("put", "/api/market/my-secrets/bulk", {"secrets": {"K": "v"}, "scope": "c1"}),
-        ("delete", "/api/market/my-secrets/7", None),
+        ("delete", "/api/market/my-secrets/3f1c0c8e-1111-2222-3333-444455556666", None),
     ]
     for method, path, body in cases:
         fn = getattr(client, method)
@@ -193,6 +193,10 @@ def test_service_identity_uid0_denied_with_hint(env, monkeypatch):
     r = client.get("/api/market/capabilities")
     assert r.status_code == 503 and r.json()["error"] == market_mod.USER_TOKEN_HINT
     r = client.get("/api/market/installations")
+    assert r.status_code == 503 and r.json()["error"] == market_mod.USER_TOKEN_HINT
+    r = client.get("/api/market/my-secrets")
+    assert r.status_code == 503 and r.json()["error"] == market_mod.USER_TOKEN_HINT
+    r = client.get("/api/market/my-secrets/status?capability_id=c1")
     assert r.status_code == 503 and r.json()["error"] == market_mod.USER_TOKEN_HINT
     assert market["calls"] == []
 
@@ -435,6 +439,9 @@ def test_my_secrets_list_forwards_scope(env):
 
 def test_my_secrets_status_and_bulk_and_delete(env):
     server, store, client, market, uid = env
+    r = client.get("/api/market/my-secrets/status")               # capability_id 必填
+    assert r.status_code == 422 and r.json()["error"] == "capability_id 必填"
+
     market["routes"][("GET", "/api/my/secrets/status")] = (
         200, {"required": ["ERP_USERNAME"], "filled": [], "missing": ["ERP_USERNAME"], "complete": False})
     r = client.get("/api/market/my-secrets/status", params={"capability_id": "c1"})
@@ -447,9 +454,14 @@ def test_my_secrets_status_and_bulk_and_delete(env):
     call = market["calls"][1]
     assert call["method"] == "PUT" and call["json"] == {"secrets": {"ERP_USERNAME": "u"}, "scope": "c1"}
 
-    market["routes"][("DELETE", "/api/my/secrets/7")] = (200, {"message": "已删除"})
-    r = client.delete("/api/market/my-secrets/7")
+    secret_id = "3f1c0c8e-1111-2222-3333-444455556666"
+    market["routes"][("DELETE", f"/api/my/secrets/{secret_id}")] = (200, {"message": "已删除"})
+    r = client.delete(f"/api/market/my-secrets/{secret_id}")
     assert r.status_code == 200 and r.json()["message"] == "已删除"
+    delete_call = market["calls"][2]
+    assert delete_call["method"] == "DELETE"
+    assert delete_call["path"] == f"/api/my/secrets/{secret_id}"
+    assert delete_call["user_uid"] == uid
 
 
 def test_my_secrets_forwards_market_error(env):
@@ -457,3 +469,11 @@ def test_my_secrets_forwards_market_error(env):
     market["routes"][("PUT", "/api/my/secrets/bulk")] = (400, {"detail": "value 过长"})
     r = client.put("/api/market/my-secrets/bulk", json={"secrets": {"K": "v"}, "scope": "c1"})
     assert r.status_code == 400 and "value 过长" in r.text
+
+
+def test_my_secrets_bulk_rejects_non_json(env):
+    server, store, client, market, uid = env
+    r = client.put("/api/market/my-secrets/bulk", content=b"not-json",
+                   headers={"Content-Type": "application/json"})
+    assert r.status_code == 422 and r.json()["error"] == "请求体需为 JSON 对象"
+    assert market["calls"] == []

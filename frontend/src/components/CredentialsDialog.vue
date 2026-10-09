@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, del, put } from '../api'
 
-interface SecretRow { id: number; key_name: string; scope: string; has_value: boolean }
+interface SecretRow { id: string; key_name: string; scope: string; has_value: boolean }
 interface StatusResp { required: string[]; filled: string[]; missing: string[]; complete: boolean }
 
 const props = defineProps<{
@@ -37,11 +37,16 @@ function keyState(key: string): 'cap' | 'global' | 'missing' {
   return 'missing'
 }
 
+let loadSeq = 0
+
 async function load(): Promise<void> {
   if (!props.cap) return
+  const seq = ++loadSeq
   loading.value = true
   error.value = ''
   needLogin.value = false
+  rows.value = []
+  status.value = null
   inputs.value = {}
   keys.value = (props.cap.input_schema?.user_env ?? []).filter((k) => k && k.trim())
   try {
@@ -50,15 +55,17 @@ async function load(): Promise<void> {
       api<SecretRow[]>(`/api/market/my-secrets?scope=${id}`),
       api<StatusResp>(`/api/market/my-secrets/status?capability_id=${id}`)
     ])
+    if (seq !== loadSeq) return
     rows.value = Array.isArray(list) ? list : []
     status.value = st
     if (st?.required?.length) keys.value = st.required
   } catch (e) {
+    if (seq !== loadSeq) return
     const x = e as { status?: number; message?: string }
     if (x.status === 503 && (x.message || '').includes('请先登录')) needLogin.value = true
     else error.value = x.message || '凭据加载失败'
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -82,6 +89,7 @@ async function save(): Promise<void> {
 }
 
 async function clearKey(key: string): Promise<void> {
+  if (loading.value || saving.value) return
   const row = rowOf(key)
   if (!row) return
   try {
@@ -93,7 +101,7 @@ async function clearKey(key: string): Promise<void> {
   }
 }
 
-watch(() => props.modelValue, (v) => { if (v) void load() })
+watch(() => props.modelValue, (v) => { if (v) void load(); else inputs.value = {} })
 </script>
 
 <template>
@@ -116,7 +124,8 @@ watch(() => props.modelValue, (v) => { if (v) void load() })
         </div>
         <el-input v-model="inputs[key]" type="password" show-password
                   :placeholder="keyState(key) === 'missing' ? '请输入' : '已设置, 留空不修改'" />
-        <el-button v-if="rowOf(key)" size="small" text type="danger" @click="clearKey(key)">
+        <el-button v-if="rowOf(key)" size="small" text type="danger"
+                   :disabled="loading || saving" @click="clearKey(key)">
           清除
         </el-button>
       </div>
@@ -124,7 +133,7 @@ watch(() => props.modelValue, (v) => { if (v) void load() })
     </div>
     <template #footer>
       <el-button @click="visible = false">关闭</el-button>
-      <el-button type="primary" :loading="saving" :disabled="!keys.length" @click="save">保存</el-button>
+      <el-button type="primary" :loading="saving" :disabled="!keys.length || loading" @click="save">保存</el-button>
     </template>
   </el-dialog>
 </template>

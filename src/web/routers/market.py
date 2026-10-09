@@ -389,6 +389,8 @@ def build_market_router(server) -> APIRouter:
         uid = _uid(u)
         if (denied := _deny_without_user_token(uid)) is not None:
             return denied
+        if not capability_id:
+            return JSONResponse({"error": "capability_id 必填"}, status_code=422)
         try:
             status, payload = await _market_request(
                 "GET", "/api/my/secrets/status", user_uid=uid,
@@ -411,7 +413,7 @@ def build_market_router(server) -> APIRouter:
         try:
             data = await request.json()
         except Exception:
-            data = {}
+            return JSONResponse({"error": "请求体需为 JSON 对象"}, status_code=422)
         try:
             status, payload = await _market_request(
                 "PUT", "/api/my/secrets/bulk", user_uid=uid, json_body=data)
@@ -422,7 +424,7 @@ def build_market_router(server) -> APIRouter:
         return payload if isinstance(payload, list) else []
 
     @router.delete("/api/market/my-secrets/{secret_id}")
-    async def my_secrets_delete(secret_id: int, request: Request):
+    async def my_secrets_delete(secret_id: str, request: Request):
         """代理市场个人凭据删除(仅本人行; 越权市场侧 404)。"""
         u, denied = _authz_or_401(request)
         if denied:
