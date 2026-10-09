@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from agent import Agent, RunContext, _current_run  # noqa: E402
+from agent.core import Agent, RunContext, _current_run  # noqa: E402
 from prompt import PromptBuilder  # noqa: E402
 
 

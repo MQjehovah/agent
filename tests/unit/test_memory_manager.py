@@ -1,7 +1,9 @@
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
-from storage import Storage
 from memory.manager import MemoryManager
+from storage.storage import Storage
 
 
 def _setup(tmp_path):

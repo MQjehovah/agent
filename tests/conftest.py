@@ -1,9 +1,15 @@
-import pytest
 import os
-import json
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+# 固定把应用源码目录加入 sys.path：部分测试文件只加了 mcp_server/src，
+# 依赖其它文件先 import 才偶然可用（曾致 test_mcp_servers_v2 单跑全错）。
+_SRC = str(Path(__file__).resolve().parents[1] / "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 
 @pytest.fixture

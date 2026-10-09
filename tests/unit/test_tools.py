@@ -484,6 +484,7 @@ class TestFileTool:
 #  ShellTool
 # ═══════════════════════════════════════════════════════════
 
+@pytest.mark.skipif(os.name == "nt", reason="ShellTool 依赖 POSIX shell（Windows 无 /bin/sh）")
 class TestShellTool:
     def setup_method(self):
         from tools.shell import ShellTool
@@ -886,46 +887,35 @@ class TestTodoTool:
 
 class TestTaskManager:
     def setup_method(self):
-        from tools.task import TaskCancelTool, TaskCreateTool, TaskGetTool, TaskListTool, TaskManager
+        from tools.task import TaskManager
         self.manager = TaskManager()
-        self.create_tool = TaskCreateTool(self.manager)
-        self.list_tool = TaskListTool(self.manager)
-        self.get_tool = TaskGetTool(self.manager)
-        self.cancel_tool = TaskCancelTool(self.manager)
 
     @pytest.mark.asyncio
     async def test_create_task(self):
-        r = await self.create_tool.execute(description="测试任务")
-        data = json.loads(r)
-        assert data["success"] is True
-        assert data["status"] == "pending"
-        assert data["description"] == "测试任务"
+        task = self.manager.create_task("测试任务")
+        assert task.id
+        assert task.status == "pending"
+        assert task.description == "测试任务"
 
     @pytest.mark.asyncio
     async def test_list_tasks(self):
-        await self.create_tool.execute(description="任务1")
-        await self.create_tool.execute(description="任务2")
+        self.manager.create_task("任务1")
+        self.manager.create_task("任务2")
 
-        r = await self.list_tool.execute()
-        data = json.loads(r)
-        assert data["success"] is True
-        assert data["count"] == 2
+        tasks = self.manager.list_tasks()
+        assert len(tasks) == 2
 
     @pytest.mark.asyncio
     async def test_get_task(self):
-        r = await self.create_tool.execute(description="获取测试")
-        task_id = json.loads(r)["task_id"]
+        task = self.manager.create_task("获取测试")
 
-        r = await self.get_tool.execute(task_id=task_id)
-        data = json.loads(r)
-        assert data["success"] is True
-        assert data["task"]["description"] == "获取测试"
+        got = self.manager.get_task(task.id)
+        assert got is not None
+        assert got.description == "获取测试"
 
     @pytest.mark.asyncio
     async def test_get_nonexistent_task(self):
-        r = await self.get_tool.execute(task_id="nonexistent")
-        data = json.loads(r)
-        assert data["success"] is False
+        assert self.manager.get_task("nonexistent") is None
 
     @pytest.mark.asyncio
     async def test_run_task_to_completion(self):
@@ -934,7 +924,7 @@ class TestTaskManager:
         async def simple_coro():
             return "done"
 
-        await self.manager.start_task(task.id, simple_coro())
+        assert await self.manager.start_task(task.id, simple_coro()) is True
         await asyncio.sleep(0.1)
 
         updated = self.manager.get_task(task.id)
@@ -964,19 +954,14 @@ class TestTaskManager:
 
         await self.manager.start_task(task.id, long_coro())
 
-        r = await self.cancel_tool.execute(task_id=task.id)
-        data = json.loads(r)
-        assert data["success"] is True
-
+        assert await self.manager.cancel_task(task.id) is True
         await asyncio.sleep(0.1)
         updated = self.manager.get_task(task.id)
         assert updated.status == "cancelled"
 
     @pytest.mark.asyncio
     async def test_cancel_nonexistent(self):
-        r = await self.cancel_tool.execute(task_id="nonexistent")
-        data = json.loads(r)
-        assert data["success"] is False
+        assert await self.manager.cancel_task("nonexistent") is False
 
     @pytest.mark.asyncio
     async def test_cleanup_completed(self):
@@ -1364,7 +1349,7 @@ class TestGitTool:
 
 class TestUsageTracker:
     def test_track_and_summary(self):
-        from usage import UsageTracker
+        from llm.usage import UsageTracker
         tracker = UsageTracker()
         tracker.track("glm-5", {"prompt_tokens": 100, "completion_tokens": 50})
         tracker.track("glm-5", {"prompt_tokens": 200, "completion_tokens": 100})
@@ -1375,7 +1360,7 @@ class TestUsageTracker:
         assert summary["total_completion_tokens"] == 150
 
     def test_reset(self):
-        from usage import UsageTracker
+        from llm.usage import UsageTracker
         tracker = UsageTracker()
         tracker.track("glm-5", {"prompt_tokens": 100, "completion_tokens": 50})
         tracker.reset()

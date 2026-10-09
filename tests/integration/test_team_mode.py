@@ -7,14 +7,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 from agent.subagent import SubagentManager  # noqa: E402
 
 TEAM_NAME = "Coding(开发)"
+# 精简流水线：只保留规划/开发/审核三个常驻节点（其余角色目录保留但不参与调度）
 EXPECTED_MEMBERS = {
-    "产品经理",
     "软件架构师",
     "代码工程师",
     "测试工程师",
-    "安全审查师",
-    "DevOps工程师",
-    "文档专员",
 }
 
 

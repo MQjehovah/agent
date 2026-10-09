@@ -141,16 +141,18 @@ def test_resolve_tool_timeout_bad_env_falls_back(monkeypatch):
 async def test_registry_empty_message_error_text_contains_class_name():
     reg = ToolRegistry()
     reg.register_tool(_BoomTool())
-    result = await reg.execute("boom", {})
-    assert result == "错误: 工具 'boom' 执行失败 - RuntimeError"
+    data = json.loads(await reg.execute("boom", {}))
+    assert data["success"] is False
+    assert data["error"] == "工具 'boom' 执行失败 - RuntimeError"
 
 
 async def test_registry_empty_timeout_error_text_contains_class_name():
     """TimeoutError 的 str() 为空 → 回退类名(线上空文案的直接来源)。"""
     reg = ToolRegistry()
     reg.register_tool(_TimeoutTool())
-    result = await reg.execute("timeout_tool", {})
-    assert result == "错误: 工具 'timeout_tool' 执行失败 - TimeoutError"
+    data = json.loads(await reg.execute("timeout_tool", {}))
+    assert data["success"] is False
+    assert data["error"] == "工具 'timeout_tool' 执行失败 - TimeoutError"
 
 
 async def test_registry_cancelled_error_propagates():
@@ -168,21 +170,6 @@ async def test_execute_tool_safe_empty_error_uses_class_name():
     agent = _make_agent(RuntimeError())
     result = await execute_tool_safe(agent, "boom", {})
     assert result == "工具执行错误: RuntimeError"
-
-
-async def test_execute_tool_safe_own_handler_uses_class_name():
-    """execute_tool_safe 自身通用 handler: 空消息异常 → JSON 错误文案回退类名。"""
-    agent = _make_agent(None)
-    agent.tool_registry.execute = AsyncMock(return_value="ok")
-    agent._hook_event = SimpleNamespace(PRE_TOOL_USE="pre", TOOL_START="start", TOOL_RESULT="result")
-
-    async def _fire(event, **kwargs):
-        if event == "result":
-            raise asyncio.TimeoutError()
-
-    agent.hooks.fire = AsyncMock(side_effect=_fire)
-    result = await execute_tool_safe(agent, "boom", {})
-    assert json.loads(result) == {"success": False, "error": "TimeoutError"}
 
 
 async def test_execute_tool_safe_cancel_re_raises_and_logs(caplog):

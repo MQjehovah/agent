@@ -1141,7 +1141,11 @@ def _bare_agent(*, parent=None, platform_enabled=True, configs=()):
 
     agent = Agent.__new__(Agent)
     agent.parent_agent = parent
+    agent.name = "bare"
     agent.platform_mcp_enabled = platform_enabled
+    agent.capabilities = SimpleNamespace(
+        allows_platform_mcp=lambda *a, **k: True, mcp_servers=None
+    )
     agent._subagent_mcp_configs = list(configs)
     agent._read_mcp_config_file = lambda: []
     calls = []
@@ -1232,9 +1236,11 @@ async def test_connect_mcp_servers_passes_platform_token_provider(monkeypatch):
 
     agent = Agent.__new__(Agent)
     agent.mcp_configs = []
+    agent.config_dir = "."
     agent.platform_token_provider = provider
     agent.owner_uid = 0                       # 未注入归属身份(非 worker): 不过滤
     agent.name = "test"
+    agent.capabilities = SimpleNamespace(allows_platform_mcp=lambda *a, **k: True)
     agent.tool_registry = None
     agent.skill_manager = None
     agent.plugin_manager = None

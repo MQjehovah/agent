@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from agent import RunContext, _current_run, current_run  # noqa: E402
+from agent.core import RunContext, _current_run, current_run  # noqa: E402
 from hooks import HookEvent, HookManager, reset_run_id, set_run_id  # noqa: E402
 
 # ═══════════════════════════════════════════════════════════
@@ -88,7 +88,7 @@ def test_current_run_returns_empty_outside_run():
 
 def _make_bare_agent():
     """构造一个最小可用的 Agent（跳过 initialize 的重依赖）"""
-    from agent import Agent
+    from agent.core import Agent
 
     agent = Agent(workspace=".", client=MagicMock())
     agent.system_prompt_raw = "BASE_PROMPT"
@@ -100,23 +100,29 @@ def _make_bare_agent():
     return agent
 
 
-def test_build_prompt_writes_run_context_not_instance():
-    """run 内调用 _build_prompt 应写入本次 ctx，不污染实例属性（并发隔离）。"""
+def test_build_prompt_writes_run_context_and_instance():
+    """_build_prompt 同步写 ctx 与实例（子代理 initialize 依赖实例兜底）；
+
+    并发隔离点在读取侧：run 内 _active_* 优先取本 run ctx，互不串。
+    """
     agent = _make_bare_agent()
 
     ctx = RunContext(user_id="u1")
     token = _current_run.set(ctx)
     try:
         agent._build_prompt("task")
+        # run 内读取优先 ctx（并发隔离）
+        assert agent._active_system_prompt() == ctx.system_prompt
+        assert agent._active_prompt_builder() is ctx.prompt_builder
     finally:
         _current_run.reset(token)
 
     assert ctx.system_prompt  # 写入了 ctx
     assert "BASE_PROMPT" in ctx.system_prompt
     assert ctx.prompt_builder is not None
-    # 关键：实例属性未被 run 内的构建覆盖
-    assert agent.system_prompt == ""
-    assert agent._prompt_builder is None
+    # 实例同步写入（子代理在父级 rc 下 initialize，需要实例兜底）
+    assert agent.system_prompt == ctx.system_prompt
+    assert agent._prompt_builder is ctx.prompt_builder
 
 
 def test_build_prompt_isolated_between_two_runs():
@@ -243,7 +249,7 @@ def test_storage_concurrent_writes_do_not_lock(tmp_path):
     """多线程并发同步写入不应抛 database is locked（busy_timeout + 写锁兜底）。"""
     import threading
 
-    from storage import Storage
+    from storage.storage import Storage
 
     db = tmp_path / "ws"
     db.mkdir()
@@ -281,7 +287,7 @@ def test_storage_concurrent_writes_do_not_lock(tmp_path):
 
 def test_storage_batch_flush_requeues_on_failure(tmp_path, monkeypatch):
     """_flush_batch 失败时应重新入队而非静默丢弃。"""
-    from storage import Storage
+    from storage.storage import Storage
 
     storage = Storage(str(tmp_path), config_dir=str(tmp_path))
 

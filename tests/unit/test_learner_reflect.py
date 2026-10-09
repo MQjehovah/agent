@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from learning.learner import Learner  # noqa: E402
 from memory.manager import MemoryManager  # noqa: E402
-from storage import Storage  # noqa: E402
+from storage.storage import Storage  # noqa: E402
 
 
 def _make_learner(tmp_path):

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from memory.curator import MemoryCurator
-from storage import Storage
+from storage.storage import Storage
 
 
 def _setup(tmp_path, llm_text='{"items": [{"generic": "设备保养需定期进行", "reason": "通用运维常识"}]}'):

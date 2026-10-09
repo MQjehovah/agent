@@ -88,8 +88,8 @@ def test_market_search_tool_schema_is_object():
     assert params.get("required") == ["query"]
 
 
-async def _run_with(user_id: str, coro_factory):
-    rc = RunContext(user_id=user_id, role="default")
+async def _run_with(user_id: str, coro_factory, role: str = "default"):
+    rc = RunContext(user_id=user_id, role=role)
     token = _current_run.set(rc)
     try:
         return await coro_factory()
@@ -112,6 +112,32 @@ async def test_market_search_tool_sends_user_token_and_groups(monkeypatch, hoste
     assert cap["headers"]["Authorization"] == "Bearer user-tok-7"
     assert "X-Act-As-Sub" not in cap["headers"]
     assert cap["params"] == {"q": "报销"}
+
+
+async def test_market_search_tool_admin_uses_user_token(monkeypatch, hosted_token):
+    """管理员有用户令牌：按用户视角检索（Bearer=用户令牌）。"""
+    monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
+    tool = MarketSearchTool()
+    out = await _run_with("web:7", lambda: tool.execute(query="报销"), role="admin")
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    cap = _FakeClient.captured
+    assert cap["headers"]["Authorization"] == "Bearer user-tok-7"
+
+
+async def test_market_search_tool_admin_without_user_token_uses_service_token(monkeypatch):
+    """管理员无用户令牌：以服务令牌（平台身份）检索，不 fail-closed。"""
+    from web import sso_tokens
+
+    monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: "")
+    tool = MarketSearchTool()
+    out = await _run_with("web:7", lambda: tool.execute(query="报销"), role="admin")
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    cap = _FakeClient.captured
+    assert cap["headers"]["Authorization"] == "Bearer svc-token"
 
 
 async def test_market_search_tool_kind_filter(monkeypatch, hosted_token):

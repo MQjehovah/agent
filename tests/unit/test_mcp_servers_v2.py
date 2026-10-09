@@ -43,7 +43,7 @@ SERVER_TOOL_COUNTS = {
     "remote_terminal": 15,
     "rosiwit_cloud_remote": 71,
     "rosiwit_cloud_ticket": 7,
-    "comfyui_remote": 17,
+    "comfyui_remote": 20,
     "remote_operation": 36,
     "ticket_ops": 7,
     "mcp_time": 3,

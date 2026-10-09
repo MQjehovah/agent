@@ -198,7 +198,6 @@ def test_gitlab_helpers_project_encoding():
 def test_gitlab_whoami_uses_pat_and_encoded_project(monkeypatch):
     module = _load("gitlab")
     monkeypatch.setattr(module, "GITLAB_TOKEN", "glpat-test")
-    monkeypatch.setattr(module, "GITLAB_PASSWORD", "")
     monkeypatch.setattr(module, "_logged_in", True)
     http = _mount(
         monkeypatch,
@@ -217,7 +216,7 @@ def test_gitlab_whoami_uses_pat_and_encoded_project(monkeypatch):
 def test_gitlab_ldap_session_login_flow_and_csrf(monkeypatch):
     module = _load("gitlab")
     monkeypatch.setattr(module, "GITLAB_TOKEN", "")
-    monkeypatch.setattr(module, "GITLAB_PASSWORD", "s3cret-pw")
+    monkeypatch.setenv("GITLAB_PASSWORD", "s3cret-pw")  # 口令调用时从环境读取
     monkeypatch.setattr(module, "_logged_in", False)
     monkeypatch.setattr(module, "_csrf_token", "")
 
@@ -250,7 +249,6 @@ def test_gitlab_ldap_session_login_flow_and_csrf(monkeypatch):
 def test_gitlab_error_message_redacts_credentials(monkeypatch):
     module = _load("gitlab")
     monkeypatch.setattr(module, "GITLAB_TOKEN", "glpat-secret")
-    monkeypatch.setattr(module, "GITLAB_PASSWORD", "")
     monkeypatch.setattr(module, "_logged_in", True)
     _mount(monkeypatch, module, lambda method, url, kwargs: FakeResponse(401, {"message": "401 Unauthorized"}))
     result = module.gitlab_whoami()
@@ -413,7 +411,6 @@ def test_gerrit_error_includes_status(monkeypatch):
 def test_jira_auth_switches_bearer_and_basic(monkeypatch):
     module = _load("jira")
     monkeypatch.setattr(module, "JIRA_TOKEN", "jira-pat")
-    monkeypatch.setattr(module, "JIRA_PASSWORD", "")
     http = _mount(monkeypatch, module, lambda method, url, kwargs: FakeResponse(200, payload={"version": "9.4"}))
     module.jira_server_info()
     call = http.calls[0]
@@ -421,7 +418,7 @@ def test_jira_auth_switches_bearer_and_basic(monkeypatch):
     assert call["auth"] is None
 
     monkeypatch.setattr(module, "JIRA_TOKEN", "")
-    monkeypatch.setattr(module, "JIRA_PASSWORD", "jira-pw")
+    monkeypatch.setenv("JIRA_PASSWORD", "jira-pw")  # 口令调用时从环境读取
     http2 = _mount(monkeypatch, module, lambda method, url, kwargs: FakeResponse(200, payload={"issues": []}))
     module.jira_search("project = P")
     assert http2.calls[0]["auth"] == (module.JIRA_USERNAME, "jira-pw")

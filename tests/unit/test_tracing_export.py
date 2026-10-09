@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from tracing import JSONLExporter, Span, Tracer  # noqa: E402
+from llm.tracing import JSONLExporter, Span, Tracer  # noqa: E402
 
 
 def test_jsonl_exporter_writes_span(tmp_path):

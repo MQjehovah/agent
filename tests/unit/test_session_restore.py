@@ -11,9 +11,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-import storage as storage_mod  # noqa: E402
-from agent_session import AgentSessionManager  # noqa: E402
-from storage import Storage  # noqa: E402
+import storage.storage as storage_mod  # noqa: E402
+from agent.session import AgentSessionManager  # noqa: E402
+from storage.storage import Storage  # noqa: E402
 
 
 def test_session_meta_save_and_get(tmp_path):
