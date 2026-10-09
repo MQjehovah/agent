@@ -294,6 +294,16 @@ test('market client upsertSecrets PUT bulk(scope=能力 id)并解析返回', asy
   assert.equal(calls[0].init.body, JSON.stringify({ secrets: { K: 'v' }, scope: 'cap1' }))
 })
 
+test('market client upsertSecrets 非数组返回空列表', async () => {
+  const calls: CapturedCall[] = []
+  const client = createMarketClient({
+    marketUrl: 'http://market.test',
+    getToken: () => 'sso-tok',
+    fetchImpl: stubFetch(calls, () => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+  })
+  assert.deepEqual(await client.upsertSecrets({ K: 'v' }, 'cap1'), [])
+})
+
 test('market client deleteSecret DELETE UUID 行 id', async () => {
   const calls: CapturedCall[] = []
   const client = createMarketClient({

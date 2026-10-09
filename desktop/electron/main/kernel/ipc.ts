@@ -733,7 +733,7 @@ async function handleMarketSecretsList(
   payload?: { scope?: string }
 ): Promise<MarketSecret[]> {
   requireSsoLogin()
-  const scope = typeof payload?.scope === 'string' ? payload.scope : ''
+  const scope = typeof payload?.scope === 'string' ? payload.scope.trim() : ''
   return createMarketClientForIpc().listSecrets(scope)
 }
 

@@ -774,7 +774,7 @@ onMounted(() => {
     <CredentialsDialog
       v-model="credVisible"
       :capability-id="credCard?.id ?? ''"
-      :capability-name="cardTitle(credCard ?? ({} as BrowseCard))"
+      :capability-name="credCard ? cardTitle(credCard) : ''"
       :keys="credCard?.user_env ?? []"
     />
   </div>

@@ -227,7 +227,8 @@ export function createMarketClient(deps: MarketClientDeps): MarketClient {
     async secretsStatus(capabilityId) {
       const res = await request(
         'GET', `/api/my/secrets/status?capability_id=${encodeURIComponent(capabilityId)}`)
-      return (await res.json()) as MarketSecretStatus
+      const parsed = (await res.json()) as unknown
+      return (typeof parsed === 'object' && parsed !== null ? parsed : {}) as MarketSecretStatus
     },
 
     async upsertSecrets(secrets, scope) {

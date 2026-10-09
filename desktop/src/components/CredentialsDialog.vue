@@ -37,7 +37,10 @@ function keyState(key: string): 'cap' | 'global' | 'missing' {
   return 'missing'
 }
 
+let loadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   error.value = ''
   inputs.value = {}
@@ -53,13 +56,15 @@ async function load(): Promise<void> {
         capabilityId: props.capabilityId
       })
     ])
+    if (seq !== loadSeq) return
     rows.value = Array.isArray(list) ? list : []
     status.value = st
     if (st?.required?.length) keys.value = st.required
   } catch (err) {
+    if (seq !== loadSeq) return
     error.value = invokeErr(err)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
