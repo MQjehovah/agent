@@ -120,6 +120,21 @@ def test_parse_sync_prefers_runtime_cloud_over_distribution():
     assert [c["name"] for c in caps] == ["cloud-on", "fallback-remote", "fallback-no-runtime"]
 
 
+def test_parse_sync_skips_user_bound_capabilities():
+    """user/user_only 绑定能力不挂平台轨(逐请求代授权), 由 market_execute 调 /api/runtime/*。"""
+    payload = [
+        {"name": "svc", "type": "mcp", "version": "1.0.0", "distribution": "remote",
+         "binding": "service"},
+        {"name": "ub", "type": "mcp", "version": "1.0.0", "distribution": "remote",
+         "binding": "user"},
+        {"name": "uo", "type": "mcp", "version": "1.0.0", "distribution": "remote",
+         "binding": "user_only"},
+        {"name": "def", "type": "mcp", "version": "1.0.0", "distribution": "remote"},
+    ]
+    caps = platform.parse_sync_capabilities(payload)
+    assert [c["name"] for c in caps] == ["svc", "def"]
+
+
 # ===== 3. 暴露名与 relay URL =====
 
 def test_exposed_tool_name_prefix_and_sanitize():

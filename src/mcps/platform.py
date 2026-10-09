@@ -178,9 +178,10 @@ def parse_sync_capabilities(payload: Any) -> list[dict[str, Any]]:
         gateway = item.get("gateway")
         distribution = str(item.get("distribution") or "both").strip().lower()
         binding = str(item.get("binding") or "service").strip().lower()
-        if binding == "user":
-            # 用户级能力(binding=user)需按提问者逐请求代授权, 持久 MCP 会话无法变换身份,
-            # 故不挂载到平台轨; 由 agent 的 market_execute 工具走 /api/runtime/* 调用。
+        if binding in ("user", "user_only"):
+            # 用户级能力(binding=user/user_only)需按提问者逐请求代授权, 持久 MCP 会话
+            # 无法变换身份, 故不挂载到平台轨; 由 agent 的 market_execute 工具走
+            # /api/runtime/* 调用(user_only 平台身份也被市场拒绝)。
             continue
         caps.append({
             "name": name,

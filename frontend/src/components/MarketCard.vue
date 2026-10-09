@@ -50,10 +50,14 @@ const attrTags = computed(() => [
 /** 第二行：能力名 · 版本号（与 market 卡片一致） */
 const subline = computed(() => (c.value.version ? `${c.value.name} · v${c.value.version}` : c.value.name))
 
-/** user 绑定能力声明的用户凭据键(卡片显示「配置凭据」入口) */
+/** user/user_only 绑定能力声明的用户凭据键(卡片显示「配置凭据」入口) */
 const credKeys = computed(() => (c.value.input_schema?.user_env ?? []).filter((k) => k && k.trim()))
 const needsCredentials = computed(() =>
-  Boolean(c.value.joined && c.value.binding === 'user' && credKeys.value.length))
+  Boolean(
+    c.value.joined &&
+      (c.value.binding === 'user' || c.value.binding === 'user_only') &&
+      credKeys.value.length
+  ))
 
 // 让父级知道卡片已挂载(用于按需加载图标)
 onMounted(() => emit('mounted', props.cap.id))
