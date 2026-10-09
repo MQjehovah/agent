@@ -81,7 +81,7 @@ const busySub = ref('')
 const busyInstall = ref('')
 const busyUninstall = ref('')
 
-// ---- 配置凭据弹窗(binding=user 且声明 user_env 的「我的」卡片) ----
+// ---- 配置凭据弹窗(binding=user/user_only 且声明 user_env 的「我的」卡片) ----
 const credVisible = ref(false)
 const credCard = ref<BrowseCard | null>(null)
 function openCredentials(card: BrowseCard): void {
@@ -146,7 +146,7 @@ function mapLite(v: unknown): MarketCapabilityLite | null {
   if (tags.length) out.tags = tags as string[]
   const runtime = mapRuntime(r.runtime)
   if (runtime) out.runtime = runtime
-  if (r.binding === 'user' || r.binding === 'service') out.binding = r.binding
+  if (r.binding === 'user' || r.binding === 'user_only' || r.binding === 'service') out.binding = r.binding
   const schema = typeof r.input_schema === 'object' && r.input_schema !== null
     ? (r.input_schema as Record<string, unknown>)
     : null
@@ -693,7 +693,7 @@ onMounted(() => {
                 <span class="market-spacer"></span>
                 <el-tag v-if="card.mine" size="small" type="success" effect="plain">我的</el-tag>
                 <el-button
-                  v-if="card.mine && card.binding === 'user' && (card.user_env?.length ?? 0) > 0"
+                  v-if="card.mine && (card.binding === 'user' || card.binding === 'user_only') && (card.user_env?.length ?? 0) > 0"
                   size="small"
                   plain
                   @click="openCredentials(card)"

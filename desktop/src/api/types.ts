@@ -139,8 +139,8 @@ export interface MarketCapabilityLite {
   distribution?: string
   /** 运行规格(优先于 distribution;缺失回退) */
   runtime?: CapabilityRuntime
-  /** 能力绑定: user=按用户身份执行, 需个人凭据(市场 binding 字段) */
-  binding?: 'user' | 'service'
+  /** 执行身份: user=用户+平台(个人凭据优先,平台兜底) / user_only=仅用户(无兜底) / service=平台 */
+  binding?: 'user' | 'user_only' | 'service'
   /** 用户级凭据变量名清单(binding=user 时由 input_schema.user_env 投影) */
   user_env?: string[]
 }
