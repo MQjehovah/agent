@@ -13,6 +13,7 @@ export class AuthError extends Error {
 }
 
 let adminJwtCache: { jwt: string; expiresAt: number } | null = null
+let adminInflight: Promise<string> | null = null
 
 /** agent 服务基址(统一在此取, 供同主进程其它模块复用) */
 export function agentBase(): string {
@@ -33,20 +34,38 @@ async function agentLogin(username: string, password: string): Promise<string> {
 }
 
 /**
- * 管理员 JWT:优先环境变量凭据;若 admin 密码已被本网关 JIT 轮换,
+ * 管理员 JWT(单飞):优先环境变量凭据;若 admin 密码已被本网关 JIT 轮换,
  * 回退使用凭据库中 admin 的托管密码(鸡生蛋问题的解法)。
+ * 两者皆无时直接抛可执行指引, 绝不发送空密码请求(服务端会回 400, 且每分钟重试会污染日志)。
  */
-export async function agentAdminJwt(): Promise<string> {
-  if (adminJwtCache && Date.now() < adminJwtCache.expiresAt) return adminJwtCache.jwt
+export function agentAdminJwt(): Promise<string> {
+  if (adminJwtCache && Date.now() < adminJwtCache.expiresAt) return Promise.resolve(adminJwtCache.jwt)
+  if (adminInflight) return adminInflight
+  let entry: Promise<string> | null = null
+  const promise = runAgentAdminJwt().finally(() => {
+    if (adminInflight === entry) adminInflight = null
+  })
+  entry = promise
+  adminInflight = entry
+  return promise
+}
+
+async function runAgentAdminJwt(): Promise<string> {
   const envUser = process.env.AGENT_ADMIN_USER ?? 'admin'
   const envPass = process.env.AGENT_ADMIN_PASSWORD ?? ''
-  try {
-    return await agentLogin(envUser, envPass)
-  } catch {
-    const stored = getCred(envUser)
-    if (stored) return await agentLogin(envUser, stored.agentPassword)
-    throw new AuthError(502, 'agent 管理员凭据无效(检查 AGENT_ADMIN_USER/PASSWORD)')
+  if (envPass) {
+    try {
+      return await agentLogin(envUser, envPass)
+    } catch {
+      // 环境变量凭据失效: 继续尝试凭据库中的托管密码
+    }
   }
+  const stored = getCred(envUser)
+  if (stored) return await agentLogin(envUser, stored.agentPassword)
+  throw new AuthError(
+    502,
+    '桌面缺少 agent 服务令牌(agentServiceToken)且无管理员凭据可回退, 无法连接 agent; 请更新桌面端到最新版并重新登录企业账号'
+  )
 }
 
 async function agentCall(path: string, init: RequestInit = {}): Promise<any> {
@@ -78,6 +97,31 @@ export function mapAgentRole(roles: string[] = []): string {
 }
 
 /**
+ * 同一工号的 JIT 单飞: 并发调用合并为一次(避免密码重置/登录竞态——
+ * 实测并发曾出现 4x rbac/users + 2x set-password + 登录 401/200 交错)。
+ */
+const jwtInflight = new Map<string, Promise<string>>()
+
+export function ensureAgentJwt(
+  sub: string,
+  name: string,
+  status: string,
+  roles: string[] = [],
+  department = ''
+): Promise<string> {
+  const key = String(sub)
+  const running = jwtInflight.get(key)
+  if (running) return running
+  let entry: Promise<string> | null = null
+  const promise = runEnsureAgentJwt(sub, name, status, roles, department).finally(() => {
+    if (jwtInflight.get(key) === entry) jwtInflight.delete(key)
+  })
+  entry = promise
+  jwtInflight.set(key, promise)
+  return promise
+}
+
+/**
  * 按工号 find-or-provision agent 账号,并取得该用户的 agent JWT。
  * 策略:
  *   - 首次登录:agent 侧建号(随机密码)或对存量账号重置一次密码 → 网关加密保存凭据
@@ -86,7 +130,7 @@ export function mapAgentRole(roles: string[] = []): string {
  * 账号模型(姓名/工号分离):name=姓名, work_id=工号(身份键, 市场代授权用它);
  * 登录即按 SSO 权威源回写姓名/部门。
  */
-export async function ensureAgentJwt(
+async function runEnsureAgentJwt(
   sub: string,
   name: string,
   status: string,
