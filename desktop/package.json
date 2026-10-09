@@ -1,6 +1,6 @@
 {
   "name": "desktop",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "description": "零号员工平台 · 员工 AI 工作台桌面端",
   "main": "./out/main/index.js",
   "author": "Platform Team",
