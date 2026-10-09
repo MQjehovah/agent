@@ -359,6 +359,84 @@ def build_market_router(server) -> APIRouter:
             return _market_error(e)
         return _forward(status, payload)
 
+    # ---------------- 个人凭据(市场页卡片「配置凭据」弹窗) ----------------
+
+    @router.get("/api/market/my-secrets")
+    async def my_secrets(request: Request, scope: str = Query("")):
+        """代理市场个人凭据列表(scope=capability_id 取本能力级; 空=全部; 永不回显明文)。"""
+        u, denied = _authz_or_401(request)
+        if denied:
+            return denied
+        uid = _uid(u)
+        if (denied := _deny_without_user_token(uid)) is not None:
+            return denied
+        params = {"scope": scope} if scope else None
+        try:
+            status, payload = await _market_request(
+                "GET", "/api/my/secrets", user_uid=uid, params=params)
+        except _MARKET_ERRORS as e:
+            return _market_error(e)
+        if status >= 400:
+            return _forward(status, payload)
+        return payload if isinstance(payload, list) else []
+
+    @router.get("/api/market/my-secrets/status")
+    async def my_secrets_status(request: Request, capability_id: str = Query("")):
+        """代理市场按能力判缺(市场自动取 user_env 声明为 required)。"""
+        u, denied = _authz_or_401(request)
+        if denied:
+            return denied
+        uid = _uid(u)
+        if (denied := _deny_without_user_token(uid)) is not None:
+            return denied
+        try:
+            status, payload = await _market_request(
+                "GET", "/api/my/secrets/status", user_uid=uid,
+                params={"capability_id": capability_id})
+        except _MARKET_ERRORS as e:
+            return _market_error(e)
+        if status >= 400:
+            return _forward(status, payload)
+        return payload if isinstance(payload, dict) else {}
+
+    @router.put("/api/market/my-secrets/bulk")
+    async def my_secrets_bulk(request: Request):
+        """代理市场个人凭据批量写入(能力级覆盖; 明文只在请求体, 不回传)。"""
+        u, denied = _authz_or_401(request)
+        if denied:
+            return denied
+        uid = _uid(u)
+        if (denied := _deny_without_user_token(uid)) is not None:
+            return denied
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        try:
+            status, payload = await _market_request(
+                "PUT", "/api/my/secrets/bulk", user_uid=uid, json_body=data)
+        except _MARKET_ERRORS as e:
+            return _market_error(e)
+        if status >= 400:
+            return _forward(status, payload)
+        return payload if isinstance(payload, list) else []
+
+    @router.delete("/api/market/my-secrets/{secret_id}")
+    async def my_secrets_delete(secret_id: int, request: Request):
+        """代理市场个人凭据删除(仅本人行; 越权市场侧 404)。"""
+        u, denied = _authz_or_401(request)
+        if denied:
+            return denied
+        uid = _uid(u)
+        if (denied := _deny_without_user_token(uid)) is not None:
+            return denied
+        try:
+            status, payload = await _market_request(
+                "DELETE", f"/api/my/secrets/{secret_id}", user_uid=uid)
+        except _MARKET_ERRORS as e:
+            return _market_error(e)
+        return _forward(status, payload)
+
     # ---------------- 用户级云端托管安装 ----------------
 
     @router.get("/api/market/installations")

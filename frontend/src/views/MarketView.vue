@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { api, del, patch, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarketCard from '../components/MarketCard.vue'
+import CredentialsDialog from '../components/CredentialsDialog.vue'
 
 const router = useRouter()
 
@@ -24,6 +25,8 @@ interface MarketItem {
   tags?: string[]
   version?: string
   distribution?: string
+  binding?: string
+  input_schema?: { user_env?: string[] }
   icon_url?: string
   joined?: boolean
   installed?: boolean
@@ -150,6 +153,14 @@ function canInstall(item: MarketItem): boolean {
 
 function enabledOf(item: MarketItem): boolean {
   return installationOf(item)?.enabled ?? true
+}
+
+// ---------------- 个人凭据(卡片「配置凭据」弹窗) ----------------
+const credDialog = ref(false)
+const credCap = ref<MarketItem | null>(null)
+function openCredentials(item: MarketItem): void {
+  credCap.value = item
+  credDialog.value = true
 }
 
 async function load() {
@@ -371,6 +382,7 @@ onBeforeUnmount(() => {
           @install="install(row)"
           @uninstall="uninstall(row)"
           @toggle="(v: boolean) => toggleEnabled(row, v)"
+          @credentials="openCredentials(row)"
         />
       </div>
 
@@ -435,6 +447,8 @@ onBeforeUnmount(() => {
         <el-empty v-else description="详情加载失败" />
       </div>
     </el-drawer>
+
+    <CredentialsDialog v-model="credDialog" :cap="credCap" />
   </div>
 </template>
 

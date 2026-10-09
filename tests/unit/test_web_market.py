@@ -172,6 +172,10 @@ def test_user_endpoints_fail_closed_503_when_no_user_token(env, monkeypatch):
         ("post", "/api/market/installations", {"capability_id": "c1"}),
         ("patch", "/api/market/installations/c1", {"enabled": False}),
         ("delete", "/api/market/installations/c1", None),
+        ("get", "/api/market/my-secrets", None),
+        ("get", "/api/market/my-secrets/status?capability_id=c1", None),
+        ("put", "/api/market/my-secrets/bulk", {"secrets": {"K": "v"}, "scope": "c1"}),
+        ("delete", "/api/market/my-secrets/7", None),
     ]
     for method, path, body in cases:
         fn = getattr(client, method)
@@ -413,3 +417,43 @@ def test_admin_local_mcp_upsert_get_delete(env):
     assert not os.path.exists(server_file)
     assert client.get("/api/admin/local-mcp/demo").status_code == 404
     assert client.delete("/api/admin/local-mcp/demo").status_code == 404
+
+
+# ===== 1c. 个人凭据代理(市场页卡片「配置凭据」弹窗) =====
+
+def test_my_secrets_list_forwards_scope(env):
+    server, store, client, market, uid = env
+    market["routes"][("GET", "/api/my/secrets")] = (200, [
+        {"id": 1, "key_name": "ERP_USERNAME", "scope": "c1", "has_value": True}])
+    r = client.get("/api/market/my-secrets", params={"scope": "c1"})
+    assert r.status_code == 200
+    assert r.json()[0]["key_name"] == "ERP_USERNAME"
+    call = market["calls"][0]
+    assert call["path"] == "/api/my/secrets" and call["user_uid"] == uid
+    assert call["params"] == {"scope": "c1"}
+
+
+def test_my_secrets_status_and_bulk_and_delete(env):
+    server, store, client, market, uid = env
+    market["routes"][("GET", "/api/my/secrets/status")] = (
+        200, {"required": ["ERP_USERNAME"], "filled": [], "missing": ["ERP_USERNAME"], "complete": False})
+    r = client.get("/api/market/my-secrets/status", params={"capability_id": "c1"})
+    assert r.status_code == 200 and r.json()["complete"] is False
+
+    market["routes"][("PUT", "/api/my/secrets/bulk")] = (200, [])
+    r = client.put("/api/market/my-secrets/bulk",
+                   json={"secrets": {"ERP_USERNAME": "u"}, "scope": "c1"})
+    assert r.status_code == 200
+    call = market["calls"][1]
+    assert call["method"] == "PUT" and call["json"] == {"secrets": {"ERP_USERNAME": "u"}, "scope": "c1"}
+
+    market["routes"][("DELETE", "/api/my/secrets/7")] = (200, {"message": "已删除"})
+    r = client.delete("/api/market/my-secrets/7")
+    assert r.status_code == 200 and r.json()["message"] == "已删除"
+
+
+def test_my_secrets_forwards_market_error(env):
+    server, store, client, market, uid = env
+    market["routes"][("PUT", "/api/my/secrets/bulk")] = (400, {"detail": "value 过长"})
+    r = client.put("/api/market/my-secrets/bulk", json={"secrets": {"K": "v"}, "scope": "c1"})
+    assert r.status_code == 400 and "value 过长" in r.text

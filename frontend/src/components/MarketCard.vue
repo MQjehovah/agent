@@ -13,6 +13,8 @@ interface Cap {
   category?: string
   tags?: string[]
   distribution?: string
+  binding?: string
+  input_schema?: { user_env?: string[] }
   icon_url?: string
   joined?: boolean
   installed?: boolean
@@ -31,6 +33,7 @@ const emit = defineEmits<{
   (e: 'install'): void
   (e: 'uninstall'): void
   (e: 'toggle', v: boolean): void
+  (e: 'credentials'): void
   (e: 'mounted', id: string): void
 }>()
 
@@ -46,6 +49,10 @@ const attrTags = [
 ]
 /** 第二行：能力名 · 版本号（与 market 卡片一致） */
 const subline = c.version ? `${c.name} · v${c.version}` : c.name
+
+/** user 绑定能力声明的用户凭据键(卡片显示「配置凭据」入口) */
+const credKeys = (c.input_schema?.user_env ?? []).filter((k) => k && k.trim())
+const needsCredentials = () => Boolean(c.joined && c.binding === 'user' && credKeys.length)
 
 // 让父级知道卡片已挂载(用于按需加载图标)
 onMounted(() => emit('mounted', c.id))
@@ -83,6 +90,9 @@ onMounted(() => emit('mounted', c.id))
         <span v-if="c.usage_count"> · {{ c.usage_count }} 次</span>
       </span>
       <div class="foot-actions">
+        <el-button v-if="needsCredentials()" size="small" plain @click="emit('credentials')">
+          配置凭据
+        </el-button>
         <template v-if="c.installed">
           <el-switch
             :model-value="enabled"
