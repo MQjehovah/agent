@@ -22,9 +22,9 @@
 
 ## List（待办项）
 
-- [ ] **L1 agent 全量对齐部署**：线上为 9-28/29 旧快照（40 处内容差异 + 17 个新文件未部署：内核重构/LSP/终端/repo_map/patch/market_execute 等 + 5 个已删文件残留）；需"备份→全量同步→重建→冒烟（web/钉钉/平台轨/定时）"
-- [ ] **L2 market 漂移来源排查**：server 上 `stats.py`/`router_key.py`/`BrowseView.vue` 等今天 17:36~17:50 被改，方向未明；先判定"服务器比仓库新还是旧"再决定对齐
-- [ ] **L3 部署工程化（含本次对账脚本常态化）**：agent 改 compose 声明挂载（防再丢 shared）、各仓 `scripts/deploy`=同步+构建+重建+冒烟、部署后对账脚本入库
+- [x] ~~**L1 agent 全量对齐部署**~~：**已完成（2026-10-09，e4aeede9）**——git archive 导出 HEAD → 备份（`agent-build.bak-fullsync-20261009_142533.tgz`）→ 覆盖 `/home/xzrobot/agent-build` + 清理 5 个陈旧文件 → 重建镜像/容器；冒烟：healthz 200、web 200、平台轨 relay 正常。残留观察：`mysql_query` 平台能力因 DB_PORT 平台密钥为空连接失败（市场数据侧，非代码）
+- [x] ~~**L2 market 漂移来源排查**~~：**已并入（2026-10-09）**——漂移来自并行工作线（gitlab `9fcbc88` 等 3 个提交：市场走查/试用个人网关密钥）；已 merge 整合（`1e295ee`）并用其 `deploy.py` 全量部署（含 409 文案补"撤回"、白名单用例适配禁自审）
+- [ ] **L3 部署工程化（含本次对账脚本常态化）**：agent 改 compose 声明挂载（防再丢 shared）、各仓 `scripts/deploy`=同步+构建+重建+冒烟、部署后对账脚本入库（market 已有 `deploy.py` 可移植；agent 仍为手动 git-archive 流程）
 - [ ] **L4 渐进披露优化**：工具激活改为 dispatcher 间接调用、不改 tools 数组（保 prompt 缓存字节稳定）
 - [ ] **L5 模型回退链**：主模型限流/故障自动切备用（CubeLoop FallbackBoundModel 思路）
 - [ ] **L6 Faux LLM 确定性测试模式**：预置响应序列，跑通整条 Agent 链路（子代理/工具/流式）回归
