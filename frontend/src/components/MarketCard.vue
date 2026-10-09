@@ -14,7 +14,7 @@ interface Cap {
   tags?: string[]
   distribution?: string
   binding?: string
-  input_schema?: { user_env?: string[] }
+  input_schema?: { env?: Record<string, string>; required_env?: string[] }
   icon_url?: string
   joined?: boolean
   installed?: boolean
@@ -50,8 +50,15 @@ const attrTags = computed(() => [
 /** 第二行：能力名 · 版本号（与 market 卡片一致） */
 const subline = computed(() => (c.value.version ? `${c.value.name} · v${c.value.version}` : c.value.name))
 
-/** user/user_only 绑定能力声明的用户凭据键(卡片显示「配置凭据」入口) */
-const credKeys = computed(() => (c.value.input_schema?.user_env ?? []).filter((k) => k && k.trim()))
+/** user/user_only 绑定能力的固定配置项键(卡片显示「配置凭据」入口) */
+const credKeys = computed(() => {
+  const s = c.value.input_schema
+  if (!s) return []
+  const keys: string[] = []
+  if (Array.isArray(s.required_env)) keys.push(...s.required_env.map((k) => String(k)))
+  if (s.env && typeof s.env === 'object') keys.push(...Object.keys(s.env))
+  return [...new Set(keys.map((k) => String(k).trim()).filter(Boolean))]
+})
 const needsCredentials = computed(() =>
   Boolean(
     c.value.joined &&

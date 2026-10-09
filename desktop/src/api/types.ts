@@ -141,8 +141,8 @@ export interface MarketCapabilityLite {
   runtime?: CapabilityRuntime
   /** 执行身份: user=用户+平台(个人凭据优先,平台兜底) / user_only=仅用户(无兜底) / service=平台 */
   binding?: 'user' | 'user_only' | 'service'
-  /** 用户级凭据变量名清单(binding=user 时由 input_schema.user_env 投影) */
-  user_env?: string[]
+  /** 固定配置项键(env/required_env)：user/user_only 绑定时卡片显示「配置凭据」入口 */
+  cred_keys?: string[]
 }
 
 /** 本地已安装能力清单条目(localagent:market:listInstalled) */

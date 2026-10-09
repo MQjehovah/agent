@@ -26,7 +26,7 @@ interface MarketItem {
   version?: string
   distribution?: string
   binding?: string
-  input_schema?: { user_env?: string[] }
+  input_schema?: { env?: Record<string, string>; required_env?: string[] }
   icon_url?: string
   joined?: boolean
   installed?: boolean

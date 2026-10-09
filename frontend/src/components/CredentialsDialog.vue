@@ -8,7 +8,12 @@ interface StatusResp { required: string[]; filled: string[]; missing: string[]; 
 
 const props = defineProps<{
   modelValue: boolean
-  cap: { id: string; name: string; display_name?: string; input_schema?: { user_env?: string[] } } | null
+  cap: {
+    id: string
+    name: string
+    display_name?: string
+    input_schema?: { env?: Record<string, string>; required_env?: string[] }
+  } | null
 }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
 
@@ -27,6 +32,16 @@ const capTitle = computed(() => props.cap?.display_name || props.cap?.name || ''
 function scopeId(): string {
   return props.cap?.id ?? ''
 }
+
+/** 能力固定配置项键（env/required_env）：status 未返回时的兜底清单 */
+function configKeysOf(schema?: { env?: Record<string, string>; required_env?: string[] }): string[] {
+  if (!schema) return []
+  const keys: string[] = []
+  if (Array.isArray(schema.required_env)) keys.push(...schema.required_env.map((k) => String(k)))
+  if (schema.env && typeof schema.env === 'object') keys.push(...Object.keys(schema.env))
+  return [...new Set(keys.map((k) => String(k).trim()).filter(Boolean))]
+}
+
 function rowOf(key: string): SecretRow | undefined {
   return rows.value.find((r) => r.key_name === key && r.scope === scopeId())
 }
@@ -48,7 +63,7 @@ async function load(): Promise<void> {
   rows.value = []
   status.value = null
   inputs.value = {}
-  keys.value = (props.cap.input_schema?.user_env ?? []).filter((k) => k && k.trim())
+  keys.value = configKeysOf(props.cap.input_schema)
   try {
     const id = encodeURIComponent(scopeId())
     const [list, st] = await Promise.all([

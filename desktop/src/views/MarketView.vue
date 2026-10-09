@@ -81,7 +81,7 @@ const busySub = ref('')
 const busyInstall = ref('')
 const busyUninstall = ref('')
 
-// ---- 配置凭据弹窗(binding=user/user_only 且声明 user_env 的「我的」卡片) ----
+// ---- 配置凭据弹窗(binding=user/user_only 且有配置项的「我的」卡片) ----
 const credVisible = ref(false)
 const credCard = ref<BrowseCard | null>(null)
 function openCredentials(card: BrowseCard): void {
@@ -150,10 +150,13 @@ function mapLite(v: unknown): MarketCapabilityLite | null {
   const schema = typeof r.input_schema === 'object' && r.input_schema !== null
     ? (r.input_schema as Record<string, unknown>)
     : null
-  const userEnv = Array.isArray(schema?.user_env)
-    ? (schema!.user_env as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim())
-    : []
-  if (userEnv.length) out.user_env = userEnv
+  const credKeys: string[] = []
+  if (Array.isArray(schema?.required_env)) {
+    credKeys.push(...(schema!.required_env as unknown[]).map((k) => String(k)))
+  }
+  if (schema?.env && typeof schema.env === 'object') credKeys.push(...Object.keys(schema.env))
+  const normalized = [...new Set(credKeys.map((k) => k.trim()).filter(Boolean))]
+  if (normalized.length) out.cred_keys = normalized
   const ratingCount = Number(r.rating_count ?? 0)
   if (Number.isFinite(ratingCount) && ratingCount > 0) {
     out.rating_count = Math.floor(ratingCount)
@@ -693,7 +696,7 @@ onMounted(() => {
                 <span class="market-spacer"></span>
                 <el-tag v-if="card.mine" size="small" type="success" effect="plain">我的</el-tag>
                 <el-button
-                  v-if="card.mine && (card.binding === 'user' || card.binding === 'user_only') && (card.user_env?.length ?? 0) > 0"
+                  v-if="card.mine && (card.binding === 'user' || card.binding === 'user_only') && (card.cred_keys?.length ?? 0) > 0"
                   size="small"
                   plain
                   @click="openCredentials(card)"
@@ -775,7 +778,7 @@ onMounted(() => {
       v-model="credVisible"
       :capability-id="credCard?.id ?? ''"
       :capability-name="credCard ? cardTitle(credCard) : ''"
-      :keys="credCard?.user_env ?? []"
+      :keys="credCard?.cred_keys ?? []"
     />
   </div>
 </template>
