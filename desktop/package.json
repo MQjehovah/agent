@@ -1,6 +1,6 @@
 {
   "name": "desktop",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "description": "零号员工平台 · 员工 AI 工作台桌面端",
   "main": "./out/main/index.js",
   "author": "Platform Team",
@@ -19,6 +19,7 @@
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "dompurify": "^3.4.16",
     "echarts": "^5.5.0",
     "electron-updater": "^6.8.9",
     "element-plus": "^2.14.5",

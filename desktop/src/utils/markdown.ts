@@ -1,13 +1,14 @@
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js/lib/common'
+import { sanitizeHtml } from './sanitize'
 
 /**
- * LLM 输出渲染:html 关闭,原始 HTML 一律转义;代码走 highlight.js 高亮;
- * ```mermaid 代码块渲染为占位节点,由 utils/mermaid.ts 在挂载后异步画成图。
- * 链接统一新窗口打开(main 进程会转交系统浏览器)。
+ * LLM 输出渲染:原始 HTML 经 DOMPurify 白名单清洗(允许邮件级表格/内联样式报告),
+ * 代码走 highlight.js 高亮;```mermaid 代码块渲染为占位节点, 由 utils/mermaid.ts
+ * 在挂载后异步画成图。链接统一新窗口打开(main 进程会转交系统浏览器)。
  */
 const md = new MarkdownIt({
-  html: false,
+  html: true,
   linkify: true,
   breaks: true,
   highlight(code: string, lang: string): string {
@@ -76,7 +77,8 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
 const defaultPre = md.renderer.rules.code_block ?? null
 
 export function renderMarkdown(text: string): string {
-  const html = md.render(text ?? '')
+  // 原始 HTML(邮件级报告)与 markdown 统一先经 DOMPurify 清洗; 之后再做复制按钮包裹
+  const html = sanitizeHtml(md.render(text ?? ''))
   void defaultPre
   // 包一层容器便于右上角放复制按钮(纯字符串处理, 不引入额外解析)
   return html.replace(

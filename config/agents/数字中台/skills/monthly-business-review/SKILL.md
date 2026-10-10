@@ -1,7 +1,7 @@
 ---
 name: monthly-business-review
-description: 月度经营分析。适用于"XX月经营情况 / 经营分析 / 经营报告 / 月度复盘"类任务。中台月度经营接口优先（生产/质量/齐套/财务/研发/目标）+ ERP 实时看板补充 + 数据库查询兜底，产出"数据统计 + 经营分析与建议"两大部分报告；接口未就绪时按缺口标注，禁止编造。
-version: "1.1.1"
+description: 月度经营分析。适用于"XX月经营情况 / 经营分析 / 经营报告 / 月度复盘"类任务。中台月度经营接口优先 + ERP 实时看板补充 + 数据库兜底；输出"数据统计 + 经营分析与建议"两大部分报告，含 Mermaid 图表（对话）或 email-safe HTML 条形图（邮件/界面）；接口未就绪时按缺口标注，禁止编造。
+version: "1.1.2"
 ---
 
 # 月度经营分析（中台接口优先）
@@ -102,6 +102,88 @@ SELECT
 3. **禁止编造任何数字**；口径存疑必须标注（如币种异常、数据截止时间）。
 4. 报告末尾附「数据来源与缺口」小节，列明每部分实际来源（中台月度接口 / ERP 时点看板 / 数据库 / 缺口）。
 
+## 图表与输出形态（对话版 / 邮件版）
+
+报告**默认输出 Markdown（对话版，含 Mermaid 图表）**；当用户提到"发邮件 / 给领导 / HTML 版"时，改输出 **email-safe HTML（邮件版）** 并可代为发送。
+
+### 对话版图表（Mermaid，选 2~4 张；仅用已取到的数据，缺失不画）
+
+**趋势图（销售/采购，多月）**——数据来自 #1；数值不带千分位：
+````markdown
+```mermaid
+xychart-beta
+    title "销售金额趋势（万元）"
+    x-axis [2月, 3月, 4月, 5月, 6月, 7月, 8月, 9月]
+    y-axis "万元" 0 --> 3000
+    bar [780, 1186, 2381, 863, 2765, 536, 1269, 2960]
+    line [780, 1186, 2381, 863, 2765, 536, 1269, 2960]
+```
+````
+
+**客户 TOP5（条形）**——数据来自 #3：
+````markdown
+```mermaid
+xychart-beta
+    title "客户 TOP5（万元）"
+    x-axis [客户A, 客户B, 客户C, 客户D, 客户E]
+    y-axis "万元" 0 --> 1500
+    bar [1402, 345, 305, 213, 110]
+```
+````
+
+**费用构成（饼图）**——数据来自 #9：
+````markdown
+```mermaid
+pie title 费用构成（万元）
+    "日常报销" : 12.5
+    "对外采购" : 30.2
+    "行政办公" : 8.4
+```
+````
+
+规则：x 轴标签 ≤6 字（客户名取简称）；每张图后仍保留数据表；图表渲染失败不影响报告（表格兜底）。
+
+### 邮件版（email-safe HTML）
+
+**硬性要求**：只用 `div/table/tr/td/p/h2/h3/ul/li/span/b` + **内联 style**；**禁止** Mermaid、`<style>`、flex/grid、SVG、外链图片/字体；条形图用「嵌套 table 色条」按最大值归一化宽度；每个条形**旁边必须给数字**（纯文本客户端也可读）。
+
+模板骨架（按章节填充；指标卡一排 3~4 个）：
+```html
+<div style="font-family:'Microsoft YaHei',Arial,sans-serif;color:#1f2329;font-size:14px;line-height:1.7;max-width:760px">
+  <h2 style="margin:0 0 6px">霞智科技 {Y}年{M}月经营分析</h2>
+  <p style="color:#8f959e;font-size:12px;margin:0 0 14px">数据来源：中台月度接口 + ERP 实时看板（生成时点）；金额为含税本币</p>
+
+  <h3 style="margin:16px 0 8px;border-left:3px solid #2f6bff;padding-left:8px">一、核心指标</h3>
+  <table style="border-collapse:collapse;width:100%"><tr>
+    <td style="width:25%;padding:10px;background:#f5f7fa;text-align:center;border:1px solid #e5e7eb">
+      <div style="color:#8f959e;font-size:12px">销售金额</div>
+      <div style="font-size:20px;font-weight:700">2,959.6万</div>
+      <div style="font-size:12px;color:#e5484d">环比 +133.2%</div>
+    </td>
+    <!-- 同排再放 2~3 个指标卡（发货/齐套率/净现金流…） -->
+  </tr></table>
+
+  <h3 style="margin:16px 0 8px;border-left:3px solid #2f6bff;padding-left:8px">二、销售趋势（万元）</h3>
+  <table style="border-collapse:collapse;width:100%;font-size:12px">
+    <tr><td style="width:52px;color:#646a73">9月</td>
+      <td><table style="border-collapse:collapse;width:100%"><tr><td style="width:100%;height:14px;background:#2f6bff;border-radius:2px"></td><td style="width:0"></td></tr></table></td>
+      <td style="width:88px;text-align:right;font-weight:600">2,959.6万</td></tr>
+    <!-- 其余月份同理；宽度% = 数值/最大值 -->
+  </table>
+  <p style="color:#8f959e;font-size:12px;margin:4px 0">条形长度按区间最大值归一化</p>
+
+  <!-- 各章节数据表（同 Markdown 版内容，改为 HTML table + 内联样式） -->
+  <h3 style="margin:16px 0 8px;border-left:3px solid #2f6bff;padding-left:8px">附录：数据缺口</h3>
+  <ul><li>…</li></ul>
+</div>
+```
+
+**发送规则**：收件人先与用户确认（未给明确收件人不得擅自发送）；调用
+`send_email(to=["xxx@xzrobot.com"], cc=[...], subject="霞智科技 {M}月经营分析", body=<上面的HTML>, is_html=True)`；
+发送后回报结果（成功/失败原因）。
+
+**界面直出 HTML**：对话回复中直接输出该 HTML 时，网页端/桌面端会**安全渲染**（表格与条形图可见）；钉钉等纯文本渠道会把 HTML 显示为源码——**从钉钉使用时改用对话版 Markdown + Mermaid**。
+
 ## 报告模板（两大部分）
 
 ```markdown
@@ -161,6 +243,7 @@ SELECT
 - 各节实际来源与缺口清单（含未就绪接口/未录入数据/无数据源指标）
 ```
 
+- **图表（对话版）**：在「1. 销售」后放销售/采购趋势图 + 客户 TOP5 条形图；「5. 财务收支」后放费用构成饼图；「供应链」齐套率/达成率可放条形图。数据缺失则不画。
 - **默认直接输出完整报告内容**，不要写文件。
 - 仅当用户明确要求"保存/生成报告文件"时，才写入 `.agent/report/` 目录。
 
