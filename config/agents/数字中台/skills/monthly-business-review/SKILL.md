@@ -1,55 +1,65 @@
 ---
 name: monthly-business-review
-description: 月度经营分析。适用于"XX月经营情况 / 经营分析 / 经营报告 / 月度复盘"类任务。中台月度经营接口优先 + ERP 实时看板补充 + 数据库兜底；输出"数据统计 + 经营分析与建议"两大部分报告，含 Mermaid 图表（对话）或 email-safe HTML 条形图（邮件/界面）；接口未就绪时按缺口标注，禁止编造。
-version: "1.1.2"
+description: 月度经营分析（领导汇报口径，两大部分：数据统计 + 分析建议）。覆盖销售（定/发/收）、供应链与生产（效率/发货台数/库存/制造费用率/齐套率）、研发（版本/认证）、质量、售后、财务（收支/费用）；中台月度接口优先 + ERP 实时看板补充 + 数据库兜底；输出含丰富图表的 email-safe HTML（或对话版 Markdown+Mermaid）；缺口如实标注，禁止编造。
+version: "1.2.0"
 ---
 
-# 月度经营分析（中台接口优先）
+# 月度经营分析（中台接口优先 · 领导汇报口径）
+
+## 目标
+
+围绕公司经营的**销售、供应链、生产、研发、质量、售后、财务**各环节，输出**两大部分**报告：
+
+1. **第一部分 上月数据统计**：销售（定/发/收）→ 供应链与生产 → 研发 → 质量 → 财务
+2. **第二部分 经营情况分析和建议**：目标差距与冲刺计划 → 供应链/研发/质量建议 → 财务费用管控建议
+
+要求：数据驱动、结论先行、缺口如实标注（`【数据缺口·原因】`），**禁止编造/估算任何数字**。
 
 ## 使用前提
 
-1. **确定目标月份**：从用户输入解析（如"9月"→ `2026-09`；拿不准先调 `get_current_time` 确认）。
-2. **替换占位符**（下文所有 `{M}`/`{M_START}`/`{M_END}`/`{P_*}` 都要替换）：
-   - `{M}` = `YYYY-MM`；`{M_START}` = 本月首日，`{M_END}` = 次月首日（如 `2026-09-01` / `2026-10-01`）
-   - `{P_START}` / `{P_END}` = 上月区间；`{Y}` = 年份（如 `2026`）
-3. **金额口径**：本币（含税）；接口返回自带 `formula/note` 字段时以其为准。
+1. **确定目标月份**：`{M}`=`YYYY-MM`（如 `2026-09`）；`{M_START}`/`{M_END}`=本月首日/次月首日；`{P_START}`/`{P_END}`=上月区间；`{Y}`=年份。
+2. **金额口径**：本币（含税）；接口返回自带 `formula/note` 字段时以其为准。
+3. **工具名（重要）**：ERP 连接器工具名前缀视环境而定——市场运行环境为 `mcp_erp_*`（如 `mcp_erp_erp_request`）；独立 Agent 环境为 `erp_*`。**不要臆造其他别名**；同一调用失败最多重试 1 次。
 
 ## 数据通道（优先级从高到低）
 
 ### A2. 中台月度经营接口（首选）
 
-调用方式（二选一，视当前工具集）：
-- 有 `erp_*` 命名工具：`erp_request(method="GET", path="<path>", params={...})`
-- 无命名工具（经市场逐请求）：`market_execute(kind="mcp", capability="erp", tool="erp_request", params={"method":"GET","path":"<path>","params":{...}})`
+调用方式：`erp_request(method="GET", path="<path>", params={...})`（POST 见 #15）。
 
-**判成功**：返回体需满足 `success==true && returnCode==200`（外层 `success` 是 HTTP 层；中台业务错误会以 `returnCode=404/2100001` 返回）。不满足 → 按「降级规则」处理。
+**判成功**：返回体 `success==true && returnCode==200`。**接口实测状态表（2026-10-10，先打 ✅ 项；❌ 项重试 1 次仍失败即标缺口）**：
 
-| # | 用途 | 方法/路径（经 erp_request） | 参数 | 关键返回字段 |
-|---|------|------------------------------|------|--------------|
-| 1 | 销售/采购/入出库**多月趋势** | GET `/statistics/business/trend` | `months=6` | `[{month, saleAmount, deliveryAmount, purchaseAmount, inboundAmount, outboundAmount}]` |
-| 2 | 月发货量/金额 | GET `/statistics/delivery-monthly` | `month={M}` | `{deliveryQuantity, deliveryAmount}` |
-| 3 | 客户 TOP | GET `/statistics/business/top-customers` | `start={M_START}`, `end={M_END}`, `limit=10` | `[{customerName, amount, quantity, ...}]` |
-| 4 | 经营概览（区间） | GET `/statistics/business/overview` | `start={M_START}`, `end={M_END}` | `saleAmount/deliveryAmount/aftersaleDeliveryAmount/purchaseAmount/arrivalAmount/inboundAmount/outboundAmount/paymentAmount/saleOrderCount/completedDeliveryOrderCount` |
-| 5 | **生产月度**（达成/良率） | GET `/statistics/business/production-monthly` | `month={M}`（可加 `dim=product`） | `planQuantity/completedQuantity/completionRate/goodQuantity/rejectQuantity/goodRate/rejectRate/workHours/byProduct[]` |
-| 6 | **质量月度** | GET `/statistics/business/quality-monthly` | `month={M}` | `firstPassRate/rejectRate/goodQuantity/rejectQuantity/aftersaleCount/complaintCount/repairCount` |
-| 7 | **齐套率月度** | GET `/statistics/business/kitting-rate` | `month={M}` | `planCount/kittedPlanCount/kittingRate/shortageRows/topShortageMaterials[]` |
-| 8 | **财务收支月度** | GET `/statistics/business/cashflow-monthly` | `month={M}` | `receiveAmount/payAmount/netAmount/byCategory[]` |
-| 9 | **费用月度** | GET `/statistics/business/expense-monthly` | `month={M}` | `totalAmount/byType[]` |
-| 10 | **研发版本月度** | GET `/rd/statistics/version-monthly` | `month={M}` | `plannedCount/releasedCount/delayedCount/onTimeRate` |
-| 11 | **认证月度** | GET `/rd/statistics/certification-monthly` | `month={M}` | `completedCount/inProgressCount/overdueCount/byProject[]` |
-| 12 | **目标达成（OKR）** | GET `/oa/okr/statistics` | `period={M}`（可加 `dim=project\|product\|dept`） | `total/achieved/achievementRate/targetValue/actualValue/groups[]` |
-| 13 | **年度目标（差距分析）** | GET `/oa/okr/targets` | `year={Y}` | 同 #12（年度口径） |
-| 14 | 绩效月度 | GET `/oa/performance/statistics` | `period={M}` | `total/avgScore/gradeDistribution/deptDistribution` |
-| 15 | 付款台账（按月） | POST `/finance/payment/query` | query `pageCurrent=1&pageSize=100`；body `{"startTime":"{M_START} 00:00:00","endTime":"{M_END} 00:00:00"}` | `records[]` + `total` |
+| # | 用途 | 路径 | 状态 | 关键字段 / 说明 |
+|---|------|------|------|----------------|
+| 1 | 销售/采购/入出库**多月趋势** | GET `/statistics/business/trend` | ✅ | `[{month, saleAmount, purchaseAmount, inboundAmount}]`；`deliveryAmount/outboundAmount` 恒为 0（未回写，勿用于结论，发货金额用 #2） |
+| 2 | 月发货量/金额 | GET `/statistics/delivery-monthly` | ✅ | `{deliveryQuantity, deliveryAmount}` |
+| 3 | 客户 TOP | GET `/statistics/business/top-customers` | ❌ 2100001 | 执行失败→标缺口（连续多日故障） |
+| 4 | 经营概览（区间） | GET `/statistics/business/overview` | ❌ 2100001 | 订单数/到货等区间汇总→标缺口 |
+| 5 | **生产月度**（达成/良率/工时） | GET `/statistics/business/production-monthly` | ⚠️ 全 0 | 接口正常但**报工数据未录入**：计划/完工/良率/工时均为 0 → 标注「生产报工数据未录入」；`byProduct` 结构 | 
+| 6 | **质量月度** | GET `/statistics/business/quality-monthly` | ✅（部分） | `aftersaleCount` 有数（售后单数）；`firstPassRate/rejectRate`=0 系**检测数据未录入**；客诉/返修无口径 |
+| 7 | **齐套率月度** | GET `/statistics/business/kitting-rate` | ⚠️ 全 0 | 接口正常但**生产计划未录入** → 标注；字段 `kittingRate/shortageRows/topShortageMaterials` |
+| 8 | **财务收支月度** | GET `/statistics/business/cashflow-monthly` | ⚠️ 全 0 | 收款/付款/净额均为 0（**收付款凭证未录入**）；结构 `{receiveAmount, payAmount, netAmount, byCategory[]}` |
+| 9 | **费用月度** | GET `/statistics/business/expense-monthly` | ✅ | `totalAmount`＋`byType[]`（7 类：对外采购/其他/行政办公/出差报销/业务招待/日常报销/借款）=付款申请口径 ✅ |
+| 10 | **研发版本月度** | GET `/rd/statistics/version-monthly` | ❌ 500 | 服务器业务异常 → 标缺口（待研发侧） |
+| 11 | **认证月度** | GET `/rd/statistics/certification-monthly` | ❌ 500 | 同上 |
+| 12 | **目标达成（OKR）** | GET `/oa/okr/statistics` | ⚠️ 全 0 | 接口正常、**目标尚未录入**（total=0）→ 第二部分按实绩分析 |
+| 13 | **年度目标** | GET `/oa/okr/targets` | ⚠️ 全 0 | 同上，`year={Y}` |
+| 14 | 绩效月度 | GET `/oa/performance/statistics` | ✅ | `{total, avgScore, maxScore, minScore, deptDistribution, gradeDistribution}`（一行概要即可） |
+| 15 | 付款台账明细 | POST `/finance/payment/query` | ❌ 500 | 用 #9 费用总额替代，注明「付款申请口径」 |
 
-### A. ERP 实时看板（生成时点口径，作补充）
+### A. ERP 实时看板（生成时点口径，作补充；**必须标注"ERP 实时看板（生成时点）"，不得冒充目标月**）
 
-`erp_statistics(kind=...)`：`overview` / `sales_revenue` / `fund_flow` / `inventory` / `product_delivery`（机型发货台数）/ `aftersale_delivery`。
-> 这些接口无历史月份参数，是**生成时点**口径；报告中必须标注"ERP 实时看板（生成时点）"，不得冒充目标月数据。
+| 用途 | 调用 | 状态 | 说明 |
+|------|------|------|------|
+| 经营概览（周） | `erp_statistics(kind="overview")` | ✅ | 周口径：totalSalesOrders、weeklySaleAmount/Purchase/Delivery/Arrival |
+| 销售/资金 | `erp_statistics(kind="sales_revenue")` / `kind="fund_flow"` | ✅ | **库存余额**=`fund_flow.inventoryBalanceAmount`（时点，9月约 1503 万）；`salesRevenueAmount` 时点销售额；`fundFlowRatio` |
+| 机型发货结构 | `erp_statistics(kind="product_delivery")` | ✅ | `[{productType, quantity, percentage}]`（周内时点，如 T810 28 台） |
+| 售后出库 TOP | `erp_statistics(kind="aftersale_delivery")` | ✅ | `[{rank, materialName, quantity}]` 物料排行 |
+| 库存明细 | `erp_statistics(kind="inventory")` | ❌ 404 | 用 fund_flow 库存余额替代 |
 
-### B. 数据库查询（兜底，仅 DB 查询工具可用时）
+### B. 数据库查询（兜底，仅当 DB 查询工具可用时）
 
-仅当 A2 对应接口"未就绪/异常"且当前有数据库只读查询工具（execute_query 类）时执行；报错一次即放弃并转缺口标注。
+仅当 A2/A 均取不到且当前有只读 SQL 工具（execute_query 类）时执行；报错一次即放弃转缺口。
 
 **销售汇总（本月+上月）**
 ```sql
@@ -91,165 +101,142 @@ SELECT
 
 ## 执行方式（严格，最多 3 轮）
 
-- **第 1 轮**：一次性**并行**发起 **A2 全部 15 条 + A 组 6 条**（共 21 条），不逐条确认、不先探索其他表。
-- **第 2 轮**：失败项只修正一次（参数名 / 日期格式 / POST body）；若多台 A2 接口返回 `404 / 2100001 / 500`（未就绪），对应项改为执行 B 组 SQL（DB 工具可用时），否则标记缺口。
-- **第 3 轮**：按「报告模板」撰写完整报告并输出，**不再新增任何查询**。默认直接输出；仅当用户明确要求保存文件时，写入 `.agent/report/`。
+- **第 1 轮**：一次性并行发起 **A2 全部 15 条 + A 组 6 条**（共 21 条）；不逐条确认、不先探索其他表。
+- **第 2 轮**：失败项只修正一次（参数名/日期格式/POST body）；❌ 项直接按状态表结论标缺口，不反复试。
+- **第 3 轮**：按「报告模板」撰写完整报告并输出；不再新增查询。
 
-## 降级与缺口规则（重要）
+## 凭证缺失时的行为
 
-1. 每一项按 **A2 → B（SQL）→ 缺口** 顺序取数；前一层不成功才用下一层。
-2. 缺口标注格式：`【数据缺口·<原因>】`，原因写清（如"中台接口未就绪(404)"、"该指标无数据源(制造费用率)"、"目标尚未录入"）。
-3. **禁止编造任何数字**；口径存疑必须标注（如币种异常、数据截止时间）。
-4. 报告末尾附「数据来源与缺口」小节，列明每部分实际来源（中台月度接口 / ERP 时点看板 / 数据库 / 缺口）。
+若 ERP 工具整体不可用（连接器未挂载/未配置凭据），**不要尝试猜测工具名**：直接输出报告骨架并将所有数据标 `【数据缺口·ERP连接器未连接（请先配置凭据）】`，并提示到市场该能力卡片「配置凭据」。
 
-## 图表与输出形态（对话版 / 邮件版）
+## 降级与缺口规则
 
-报告**默认输出 Markdown（对话版，含 Mermaid 图表）**；当用户提到"发邮件 / 给领导 / HTML 版"时，改输出 **email-safe HTML（邮件版）** 并可代为发送。
+1. 每项按 **A2 → A（时点）→ B（SQL）→ 缺口** 顺序取数。
+2. 缺口格式：`【数据缺口·<原因>】`；原因写明（"接口未就绪(500)"、"数据未录入"、"无数据源(制造费用率)"、"目标尚未录入"）。
+3. 口径存疑必须标注（如"趋势接口 deliveryAmount=0 与月发货口径冲突，以 #2 为准"）。
+4. 报告末尾附「附录：数据来源与缺口」逐项列明。
 
-### 对话版图表（Mermaid，选 2~4 张；仅用已取到的数据，缺失不画）
+## 报告模板（两大部分 · 严格按此结构）
 
-**趋势图（销售/采购，多月）**——数据来自 #1；数值不带千分位：
-````markdown
-```mermaid
-xychart-beta
-    title "销售金额趋势（万元）"
-    x-axis [2月, 3月, 4月, 5月, 6月, 7月, 8月, 9月]
-    y-axis "万元" 0 --> 3000
-    bar [780, 1186, 2381, 863, 2765, 536, 1269, 2960]
-    line [780, 1186, 2381, 863, 2765, 536, 1269, 2960]
-```
-````
+### 第一部分 上月数据统计
 
-**客户 TOP5（条形）**——数据来自 #3：
-````markdown
-```mermaid
-xychart-beta
-    title "客户 TOP5（万元）"
-    x-axis [客户A, 客户B, 客户C, 客户D, 客户E]
-    y-axis "万元" 0 --> 1500
-    bar [1402, 345, 305, 213, 110]
-```
-````
-
-**费用构成（饼图）**——数据来自 #9：
-````markdown
-```mermaid
-pie title 费用构成（万元）
-    "日常报销" : 12.5
-    "对外采购" : 30.2
-    "行政办公" : 8.4
-```
-````
-
-规则：x 轴标签 ≤6 字（客户名取简称）；每张图后仍保留数据表；图表渲染失败不影响报告（表格兜底）。
-
-### 邮件版（email-safe HTML）
-
-**硬性要求**：只用 `div/table/tr/td/p/h2/h3/ul/li/span/b` + **内联 style**；**禁止** Mermaid、`<style>`、flex/grid、SVG、外链图片/字体；条形图用「嵌套 table 色条」按最大值归一化宽度；每个条形**旁边必须给数字**（纯文本客户端也可读）。
-
-模板骨架（按章节填充；指标卡一排 3~4 个）：
-```html
-<div style="font-family:'Microsoft YaHei',Arial,sans-serif;color:#1f2329;font-size:14px;line-height:1.7;max-width:760px">
-  <h2 style="margin:0 0 6px">霞智科技 {Y}年{M}月经营分析</h2>
-  <p style="color:#8f959e;font-size:12px;margin:0 0 14px">数据来源：中台月度接口 + ERP 实时看板（生成时点）；金额为含税本币</p>
-
-  <h3 style="margin:16px 0 8px;border-left:3px solid #2f6bff;padding-left:8px">一、核心指标</h3>
-  <table style="border-collapse:collapse;width:100%"><tr>
-    <td style="width:25%;padding:10px;background:#f5f7fa;text-align:center;border:1px solid #e5e7eb">
-      <div style="color:#8f959e;font-size:12px">销售金额</div>
-      <div style="font-size:20px;font-weight:700">2,959.6万</div>
-      <div style="font-size:12px;color:#e5484d">环比 +133.2%</div>
-    </td>
-    <!-- 同排再放 2~3 个指标卡（发货/齐套率/净现金流…） -->
-  </tr></table>
-
-  <h3 style="margin:16px 0 8px;border-left:3px solid #2f6bff;padding-left:8px">二、销售趋势（万元）</h3>
-  <table style="border-collapse:collapse;width:100%;font-size:12px">
-    <tr><td style="width:52px;color:#646a73">9月</td>
-      <td><table style="border-collapse:collapse;width:100%"><tr><td style="width:100%;height:14px;background:#2f6bff;border-radius:2px"></td><td style="width:0"></td></tr></table></td>
-      <td style="width:88px;text-align:right;font-weight:600">2,959.6万</td></tr>
-    <!-- 其余月份同理；宽度% = 数值/最大值 -->
-  </table>
-  <p style="color:#8f959e;font-size:12px;margin:4px 0">条形长度按区间最大值归一化</p>
-
-  <!-- 各章节数据表（同 Markdown 版内容，改为 HTML table + 内联样式） -->
-  <h3 style="margin:16px 0 8px;border-left:3px solid #2f6bff;padding-left:8px">附录：数据缺口</h3>
-  <ul><li>…</li></ul>
-</div>
-```
-
-**发送规则**：收件人先与用户确认（未给明确收件人不得擅自发送）；调用
-`send_email(to=["xxx@xzrobot.com"], cc=[...], subject="霞智科技 {M}月经营分析", body=<上面的HTML>, is_html=True)`；
-发送后回报结果（成功/失败原因）。
-
-**界面直出 HTML**：对话回复中直接输出该 HTML 时，网页端/桌面端会**安全渲染**（表格与条形图可见）；钉钉等纯文本渠道会把 HTML 显示为源码——**从钉钉使用时改用对话版 Markdown + Mermaid**。
-
-## 报告模板（两大部分）
-
-```markdown
-# 霞智科技 YYYY年M月经营分析
-
-> 数据来源：中台月度经营接口（{M}）+ ERP 实时看板（生成时点）+（必要时）业务库查询
-> 口径说明：金额含税本币；中台接口为自然月口径；ERP 看板为生成时点口径
-
-## 第一部分 上月数据统计
-
-### 1. 销售（定 / 发 / 收）
+#### 1. 销售（定 / 发 / 收）
 | 指标 | 本月 | 上月/环比 | 来源 |
 |------|------|----------|------|
-| 销售金额 / 订单数 | #4/#1 | #1 环比 | 中台 |
-| 发货量 / 发货金额 | #2 | — | 中台 |
-| 发货台数（机型结构） | A.product_delivery | — | ERP 时点 |
-| 收款 / 付款 / 净额 | #8（#15 明细） | — | 中台 |
-- 客户 TOP10（#3）、多月趋势要点（#1）、数据质量提示（币种/未建档等）
+| 销售金额（#1 saleAmount） | | ▲▼% | 中台 trend |
+| 时点销售看板（A2 salesRevenueAmount） | — | | ERP 时点 |
+| 发货量 / 发货金额（#2） | | | 中台 delivery-monthly |
+| 机型发货结构（A5） | | | ERP 时点 |
+| 收款 / 付款 / 净额（#8） | 全 0 则注明"收付款凭证未录入" | | 中台 cashflow |
+| 客户结构（#3） | ❌→缺口 | | — |
 
-### 2. 供应链
-- **生产效率/达成率/良率**：#5（计划/完工/达成率/goodRate/rejectRate/工时）
-- **发货台数**：A.product_delivery（时点）+ #2（月）
-- **库存数据**：A.inventory（时点）+ B.库存 SQL（金额/SKU）
-- **齐套率**：#7（齐套率/缺料行数/TOP 缺料）
-- **制造费用率**：【数据缺口·该指标暂无数据源（待财务口径）】
+> 小结 1~2 句（同比/环比、异常与口径提示）。
 
-### 3. 研发
-- **版本情况**：#10（计划/发布/延期/按期率）；无数据时标注【版本数据尚未录入】
-- **认证进展**：#11（完成/进行中/逾期/按项目）；同上
-- **研发目标达成**：#12（dim=project|product）
+#### 2. 供应链与生产
+- **生产效率/达成率/良率/工时**（#5；全 0 时注明"报工数据未录入"）
+- **发货台数（机型结构）**（A5）+ 月度发货（#2）
+- **库存**：金额=fund_flow.inventoryBalanceAmount（时点）；SKU/金额明细（SQL 可用时）
+- **制造费用率**：【数据缺口·待财务口径】（无来源）
+- **齐套率 / 缺料行数 / TOP 缺料**（#7；未录入时标注）
+- **采购/入库**（#1 purchaseAmount/inboundAmount）
+- 小结 1~2 句。
 
-### 4. 质量
-- **质量关键指标**：#6（一次合格率/不良率）
-- **售后情况**：#6（售后/客诉/返修）+ A.aftersale_delivery（时点）
+#### 3. 研发
+| 指标 | 结果 | 来源 |
+|------|------|------|
+| 版本：计划/发布/延期/按期率（#10） | ❌ 500→缺口 | — |
+| 认证：完成/进行中/逾期（#11） | ❌ 500→缺口 | — |
+| 研发/年度目标达成（#12/#13） | 未录入 | 中台 OKR |
+> 注明"待研发侧补录/接口修复"。
 
-### 5. 财务收支
+#### 4. 质量
+- **一次合格率 / 不良率**（#6；数据未录入时标注）
+- **售后情况**：售后单数（#6 aftersaleCount ✅）、客诉/返修（无口径→缺口）、售后出库 TOP 物料（A6 ✅，列 TOP5）
+- 小结 1~2 句。
+
+#### 5. 财务
 | 指标 | 本月 | 来源 |
 |------|------|------|
-| 收款 / 付款 / 净额 | #8 | 中台 |
-| 费用构成（按类别） | #9 | 中台 |
-| 资金看板（时点） | A.fund_flow | ERP 时点 |
+| 收款 / 付款 / 净额（#8） | 全 0→未录入 | 中台 |
+| 费用合计 + 构成（#9 ✅） | 2,485.6 万（对外采购 2,068.6 万…） | 中台 |
+| 资金看板（A3 fund_flow） | 时点 | ERP |
+- 小结 1~2 句（费用结构、管控空间）。
 
-## 第二部分 经营情况分析和建议
+#### 6. 人力资源（一行概要）
+- 绩效（#14）：总人数 / 平均分 / 区间分布（可选一行，无则省略）。
 
-### 1. 销售业绩与目标差距
-- 与年初目标差距：#13（year={Y}）+ #12（当月进度）+ #1 销售实绩
-- 数据未录入时：#13/#12 返回空 → 标注【目标尚未录入】，仅按实绩给冲刺建议
-- 冲刺计划：重点客户/停滞订单/回款（3~5 条，数据支撑）
+### 第二部分 经营情况分析和建议
 
-### 2. 供应链 / 研发 / 质量建议
-- 各域 1~3 条（基于 #5/#7、#10/#11、#6 的量化结果）
+#### 1. 销售业绩与年初目标差距 · 订单冲刺计划
+- **目标数据**：#13（年度）+ #12（当月进度）；若全 0 → `【目标尚未录入】`，按实绩给差距判断与建议。
+- **差距测算**（有目标时）：年度目标 vs 累计实绩 → 剩余缺口金额/节奏要求（量化）。
+- **冲刺计划 3~5 条**（每条有数据支撑）：重点订单转化（销售/发货比）、回款专项（收款口径缺失时用费用/台账替代参照）、客户结构（TOP 缺失时以机型结构/大单情况替代）、下月开局盘点等。
 
-### 3. 财务费用管控建议
-- 基于 #9 费用分类 + #8 收支缺口：2~4 条
+#### 2. 供应链 / 研发 / 质量建议
+- 供应链：采购-入库节奏（在途）、库存水位与周转、齐套/缺料（未录入时给推动录入的建议）、生产报工数据补录。
+- 研发：版本/认证指标补录与接口修复；目标录入。
+- 质量：检测数据补录、售后 TOP 物料的改善方向（结合 A6 具体物料）。
+- 每条 1~3 行、引用第一部分量化数据。
 
-## 附录：数据来源与缺口
-- 各节实际来源与缺口清单（含未就绪接口/未录入数据/无数据源指标）
+#### 3. 财务费用管控建议（2~4 条）
+- 基于 #9 费用构成（哪类占比高、是否集中于采购付款）；
+- 给出可执行方向（大额付款节奏、行政/差旅占比、收付款凭证补录、避免用交易额推算现金流等）。
+
+### 附录：数据来源与缺口
+- 逐项列出：已取到（来源=中台接口/ERP 时点/SQL）+ 缺口清单（原因）+ 口径提示。
+
+## HTML 输出规范（邮件版 · 丰富图表 · 清晰直观）
+
+**硬性**：只用 `div/table/tr/td/p/h2/h3/ul/li/span/b` + 内联 style；禁止 Mermaid、`<style>`、flex/grid、SVG、外链图片字体；每个图形旁必须给数字。
+
+**图表组件（全篇 ≥ 5 组，按有数据的画）**：
+
+1. **指标卡一排**（3~4 个）：大数字 + 环比 `▲ +191.2%`（正向红 `#e5484d`、下降绿 `#16a34a`；逆指标反之）
+```html
+<td style="width:25%;padding:10px;background:#f5f7fa;text-align:center;border:1px solid #e5e7eb">
+  <div style="color:#8f959e;font-size:12px">销售金额</div>
+  <div style="font-size:20px;font-weight:700">2,285.2万</div>
+  <div style="font-size:12px;color:#e5484d">▲ 环比 +191.2%</div>
+</td>
 ```
+2. **趋势条形图**（销售/采购，近 5~6 月）——嵌套 table 色条，宽度%=数值/区间最大值，条形旁给数字（模板见下）
+```html
+<table style="border-collapse:collapse;width:100%;font-size:12px">
+  <tr><td style="width:56px;color:#646a73">9月</td>
+    <td><table style="border-collapse:collapse;width:100%;table-layout:fixed"><tr>
+      <td style="width:100%;height:14px;background:#2f6bff;border-radius:2px"></td><td style="width:0"></td>
+    </tr></table></td>
+    <td style="width:88px;text-align:right;font-weight:600">2,285.2万</td></tr>
+</table>
+```
+3. **目标/达成进度条**（有目标或达成率数据时）：灰底 + 彩色填充 + 百分比文案
+```html
+<table style="border-collapse:collapse;width:100%;table-layout:fixed"><tr>
+  <td style="background:#eef1f5;border-radius:6px;height:16px;padding:0">
+    <table style="border-collapse:collapse;width:100%;height:16px"><tr>
+      <td style="width:62%;background:#2f6bff;border-radius:6px"></td><td style="width:38%"></td>
+    </tr></table>
+  </td>
+</tr></table>
+```
+4. **费用构成条形**（#9 byType，横向 7 类，按金额降序）
+5. **机型结构 / 售后物料 TOP 条形**（A5/A6）
 
-- **图表（对话版）**：在「1. 销售」后放销售/采购趋势图 + 客户 TOP5 条形图；「5. 财务收支」后放费用构成饼图；「供应链」齐套率/达成率可放条形图。数据缺失则不画。
-- **默认直接输出完整报告内容**，不要写文件。
-- 仅当用户明确要求"保存/生成报告文件"时，才写入 `.agent/report/` 目录。
+**结构**：严格按「两大部分」全章节输出（含 6 个小节小结、三类建议、附录缺口）。
+**篇幅**：8000~14000 字符（信息优先，宁缺毋滥）；从 `<div` 开始、`</div>` 完整闭合；直接输出 HTML 源码，无需思考过程/解释。
+
+### 发送邮件（可选）
+收件人由调用方提供时：`send_email(to_recipients=[...], subject="霞智科技 {M} 经营分析报告", body=<HTML>, is_html=True)`；发送后回报发送结果。
+
+## 对话版（在对话中直接输出报告时）
+
+Markdown + **2~4 张 Mermaid 图表**（仅用已取到的数据；每图后保留数据表兜底）：
+- 趋势：`xychart-beta`（bar 销售 + line 采购，数值不带千分位）
+- 结构：`pie`（费用构成 / 机型结构）
 
 ## 红线
 
-- **只读**：ERP/中台接口禁止 PUT/DELETE/创建类；SQL 只允许 SELECT。
-- **只执行 A2 组 15 + A 组 6**（第 2 轮最多补 B 组 4 条），不要 describe 其他表、不要重复或追加查询。
-- 接口未就绪、数据未录入、无数据源 → **一律标注缺口，禁止编造或强行估算**。
-- SQL 报错（列名 / `only_full_group_by`）修正一次即停。
+- **只读**：禁止 PUT/DELETE/创建类；SQL 只允许 SELECT。
+- **只执行 A2 组 15 + A 组 6**（第 2 轮最多补 B 组 4 条）；不 describe 其他表、不重复追加查询。
+- 接口未就绪/未录入/无数据源 → **一律标注缺口，禁止编造或强行估算**。
+- 工具名不臆造；同一调用失败最多重试 1 次。
