@@ -9,8 +9,29 @@ import { CaretRight, Warning, ArrowRight, Plus, Microphone, MagicStick, Check, P
 import { ElMessage } from 'element-plus'
 import AttachmentImage from '../components/AttachmentImage.vue'
 import { compressImage } from '../utils/image'
+import { sanitizeHtml } from '../utils/sanitize'
+import { renderMermaidIn } from '../utils/mermaid'
 
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
+const md = new MarkdownIt({ html: true, linkify: true, breaks: true })
+
+/** mermaid 源码 base64 进 data-src(避免 HTML 转义), 由 utils/mermaid 异步画成图 */
+function base64Utf8(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let binary = ''
+  for (const b of bytes) binary += String.fromCharCode(b)
+  return btoa(binary)
+}
+const defaultFence = md.renderer.rules.fence
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const info = tokens[idx].info.trim().toLowerCase()
+  if (info === 'mermaid' || info === 'graph' || info === 'sequence') {
+    const code = tokens[idx].content
+    return `<div class="mermaid-block" data-src="${base64Utf8(code)}">Mermaid 图表渲染中…</div>`
+  }
+  return defaultFence
+    ? defaultFence(tokens, idx, options, env, self)
+    : self.renderToken(tokens, idx, options)
+}
 
 /** 推荐问句(点一下填进输入框) */
 const suggestions = [
@@ -146,14 +167,25 @@ const readonly = computed(() => {
 })
 
 function render(text: string) {
-  return md.render(text ?? '')
+  // markdown-it 允许内联 HTML(邮件级报告可直接展示), 统一经 DOMPurify 白名单清洗
+  return sanitizeHtml(md.render(text ?? ''))
 }
 
 // —— markdown 渲染时机 ——
 // 流式期间正文以纯文本即时累积显示(零解析、顺滑)；整段流结束(或历史加载)后
 // 才渲染一次 markdown 存 html。避免每 token 全量 v-html 重跑 markdown-it 卡顿。
+let mermaidTimer: number | undefined
+/** 节流触发 mermaid 渲染(内容更新后; 无占位块时开销极小) */
+function scheduleMermaid() {
+  window.clearTimeout(mermaidTimer)
+  mermaidTimer = window.setTimeout(() => {
+    const el = scrollRef.value
+    if (el) void renderMermaidIn(el)
+  }, 50)
+}
 function renderBlockMarkdown(b: TextBlock) {
   b.html = render(b.content)
+  scheduleMermaid()
 }
 function flushMarkdown(blocks: MsgBlock[]) {
   for (const b of blocks) {
@@ -566,6 +598,7 @@ watch(
 onBeforeUnmount(() => {
   abort?.abort()
   if (pollTimer) window.clearInterval(pollTimer)
+  window.clearTimeout(mermaidTimer)
   contentMO?.disconnect()
 })
 </script>
@@ -895,4 +928,19 @@ onBeforeUnmount(() => {
   color: var(--text-3, #999); padding: 0;
 }
 .pending-chip .thumb-x:hover { color: var(--el-color-danger, #e5534b); }
+
+/* 富内容(HTML 报告/表格)与 Mermaid 图表(v-html 注入, 需 :deep) */
+:deep(.md table), :deep(.agent-stream table) {
+  border-collapse: collapse; margin: 8px 0; width: 100%;
+}
+:deep(.md th), :deep(.md td), :deep(.agent-stream th), :deep(.agent-stream td) {
+  border: 1px solid var(--border, #e5e7eb); padding: 4px 8px; font-size: 13px;
+}
+:deep(.md th), :deep(.agent-stream th) { background: var(--el-fill-color-light, #f2f3f5); }
+:deep(.mermaid-block) { margin: 8px 0; overflow-x: auto; }
+:deep(.mermaid-block.mermaid-done) { text-align: center; }
+:deep(.mermaid-failed) {
+  white-space: pre-wrap; font-size: 12px; color: var(--el-color-danger, #e5534b);
+  background: var(--el-fill-color-light, #f2f3f5); padding: 8px 10px; border-radius: 8px;
+}
 </style>
