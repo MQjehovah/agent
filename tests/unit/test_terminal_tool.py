@@ -1,7 +1,9 @@
 """后台/流式终端工具：start/read/list/stop。"""
+import asyncio
 import json
 import os
 import sys
+import time
 
 import pytest
 
@@ -42,3 +44,36 @@ async def test_terminal_unknown_operation_and_session():
     assert json.loads(await tool.execute(operation="nope"))["success"] is False
     assert json.loads(await tool.execute(operation="read", session_id="x"))["success"] is False
     assert json.loads(await tool.execute(operation="start", command=""))["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_terminal_buffer_is_capped(tmp_path):
+    """后台进程输出不能无限攒在内存里（历史事故：36GB 缓冲区）。"""
+    script = tmp_path / "spam.py"
+    script.write_text(
+        "import sys\nsys.stdout.write('x' * 5000000)\nsys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    tool = TerminalTool()
+    try:
+        started = await tool.execute(
+            operation="start", command=f"{sys.executable} {script}", cwd=str(tmp_path)
+        )
+    except NotImplementedError:
+        pytest.skip("当前事件循环不支持子进程(Windows Selector loop)")
+    sid = json.loads(started)["session_id"]
+
+    entry = None
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        listing = json.loads(await tool.execute(operation="list"))["sessions"]
+        entry = next((s for s in listing if s["id"] == sid), None)
+        if entry and not entry["running"]:
+            break
+        await asyncio.sleep(0.2)
+    stop_all_sessions()
+
+    assert entry is not None
+    assert entry["buffered_chars"] <= 1_000_000, (
+        f"缓冲区保留了 {entry['buffered_chars']} 字符，没有上限"
+    )

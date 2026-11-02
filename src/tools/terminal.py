@@ -23,6 +23,10 @@ from . import BuiltinTool
 
 logger = logging.getLogger("agent.tools")
 
+# 单个后台会话在内存里最多保留的输出字符数；超出丢弃最旧的部分。
+# 后台进程可能连续产出数小时，无上限会直接吃满内存。
+MAX_BUFFER_CHARS = 1_000_000
+
 
 class _TerminalSession:
     def __init__(self, sid: str, command: str, proc: asyncio.subprocess.Process):
@@ -30,6 +34,7 @@ class _TerminalSession:
         self.command = command
         self.proc = proc
         self.buffer: list[str] = []
+        self.buffered_chars = 0
         self.exit_code: int | None = None
         self._pumps: list[asyncio.Task] = []
 
@@ -37,9 +42,23 @@ class _TerminalSession:
     def running(self) -> bool:
         return self.exit_code is None and self.proc.returncode is None
 
+    def append(self, text: str) -> None:
+        """追加输出，保证内存占用不超过 MAX_BUFFER_CHARS。"""
+        if not text:
+            return
+        self.buffer.append(text)
+        self.buffered_chars += len(text)
+        while len(self.buffer) > 1 and self.buffered_chars > MAX_BUFFER_CHARS:
+            self.buffered_chars -= len(self.buffer.pop(0))
+        if self.buffered_chars > MAX_BUFFER_CHARS:
+            keep = self.buffer[-1][-MAX_BUFFER_CHARS:]
+            self.buffer[-1] = keep
+            self.buffered_chars = len(keep)
+
     def drain(self) -> str:
         out = "".join(self.buffer)
         self.buffer.clear()
+        self.buffered_chars = 0
         return out
 
 
@@ -56,9 +75,9 @@ async def _pump(stream, session: _TerminalSession, tag: str):
             if not chunk:
                 break
             text = chunk.decode("utf-8", errors="replace")
-            session.buffer.append(f"[{tag}] {text}" if tag else text)
+            session.append(f"[{tag}] {text}" if tag else text)
     except Exception as e:  # noqa: BLE001
-        session.buffer.append(f"[{tag}] <读取结束: {e}>")
+        session.append(f"[{tag}] <读取结束: {e}>")
     finally:
         # 进程仍在时由 wait 收尾；退出后确保 exit_code 落地
         if session.proc.returncode is not None and session.exit_code is None:
@@ -136,7 +155,7 @@ class TerminalTool(BuiltinTool):
                     "success": True,
                     "sessions": [
                         {"id": s.id, "command": s.command, "running": s.running,
-                         "exit_code": s.exit_code, "buffered_chars": sum(len(x) for x in s.buffer)}
+                         "exit_code": s.exit_code, "buffered_chars": s.buffered_chars}
                         for s in _SESSIONS.values()
                     ],
                 }, ensure_ascii=False)
@@ -169,7 +188,7 @@ class TerminalTool(BuiltinTool):
         async def _reap():
             code = await proc.wait()
             session.exit_code = code
-            session.buffer.append(f"\n[exit] {code}\n")
+            session.append(f"\n[exit] {code}\n")
 
         asyncio.create_task(_reap())
         return json.dumps({

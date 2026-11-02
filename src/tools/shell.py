@@ -5,12 +5,62 @@ import json
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import threading
 
 from . import BuiltinTool
 
 logger = logging.getLogger("agent.tools")
+
+# 单条命令在内存里最多保留的输出（每个流），超出部分继续读取但丢弃。
+# 历史事故：超时命令未杀 + 无上限 raw.read()，把 36GB 管道数据攒进父进程。
+MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+
+
+def read_pipe_bounded(fh, limit_bytes: int = MAX_CAPTURE_BYTES) -> bytes:
+    """读取管道直到 EOF，内存中最多保留 limit_bytes 字节。
+
+    必须一直读到 EOF：提前停止读取会让子进程写满管道缓冲区后永久阻塞。
+    """
+    raw = getattr(fh, "buffer", fh)
+    kept = bytearray()
+    while True:
+        chunk = raw.read(65536)
+        if not chunk:
+            break
+        if len(kept) < limit_bytes:
+            kept.extend(chunk[: limit_bytes - len(kept)])
+    return bytes(kept)
+
+
+def _new_process_group_kwargs() -> dict:
+    """让子进程独立成组，超时时可以整组杀掉（含子孙进程）。"""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def terminate_process_tree(proc) -> None:
+    """杀掉子进程及其整个进程组；用于超时兜底，避免读取线程永久阻塞。"""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001
+        with contextlib.suppress(Exception):
+            proc.kill()
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=5)
+
 
 DENIED_COMMANDS = [
     "rm -rf /",
@@ -138,6 +188,8 @@ class ShellTool(BuiltinTool):
             except Exception:
                 cmd_args = command if isinstance(command, list) else [command]
 
+            proc_holder: list = []
+
             def _run_sync():
                 proc = subprocess.Popen(
                     cmd_args,
@@ -146,23 +198,34 @@ class ShellTool(BuiltinTool):
                     stderr=subprocess.PIPE,
                     cwd=cwd,
                     env=env,
+                    **_new_process_group_kwargs(),
                 )
+                proc_holder.append(proc)
 
                 stdout_result = [b""]
                 stderr_result = [b""]
 
                 def _read_pipe(fh, out):
-                    raw = getattr(fh, "buffer", fh)
-                    out[0] = raw.read()
-                    fh.close()
+                    try:
+                        out[0] = read_pipe_bounded(fh, MAX_CAPTURE_BYTES)
+                    finally:
+                        with contextlib.suppress(Exception):
+                            fh.close()
 
                 t_out = threading.Thread(target=_read_pipe, args=(proc.stdout, stdout_result))
                 t_err = threading.Thread(target=_read_pipe, args=(proc.stderr, stderr_result))
                 t_out.start()
                 t_err.start()
-                proc.wait(timeout=timeout)
-                t_out.join(timeout=5)
-                t_err.join(timeout=5)
+                try:
+                    proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    # 必须整组杀掉：否则子进程继续产出，读取线程永远不返回，
+                    # 缓冲区会无限增长（线上 36GB 事故的根因）。
+                    terminate_process_tree(proc)
+                    raise
+                finally:
+                    t_out.join(timeout=5)
+                    t_err.join(timeout=5)
 
                 return subprocess.CompletedProcess(
                     args=command,
@@ -179,6 +242,8 @@ class ShellTool(BuiltinTool):
                 )
             except (asyncio.TimeoutError, concurrent.futures.TimeoutError, subprocess.TimeoutExpired):
                 logger.warning(f"命令执行超时 ({timeout}s): {command[:100]}")
+                if proc_holder:
+                    terminate_process_tree(proc_holder[0])
                 return json.dumps({
                     "success": False,
                     "error": f"命令执行超时（{timeout}秒）"
