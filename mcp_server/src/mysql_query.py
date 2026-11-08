@@ -32,11 +32,11 @@ _READ_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, op
 # 真正查询时才报错（生产缺密钥/弱值仍在 require_secret 内拒绝）
 def _db_config() -> dict:
     return {
-        "host": os.getenv("DB_HOST", "192.168.31.45"),
-        "port": int(os.getenv("DB_PORT", "3306")),
-        "user": os.getenv("DB_USER", "root"),
-        "password": require_secret("DB_PASSWORD", os.getenv("DB_PASSWORD", "")) or "",
-        "database": os.getenv("DB_NAME", "rosiwit_erp_server"),
+        "host": os.getenv("DB_HOST") or "192.168.31.45",
+        "port": int(os.getenv("DB_PORT") or "3306"),
+        "user": os.getenv("DB_USER") or "root",
+        "password": require_secret("DB_PASSWORD", os.getenv("DB_PASSWORD") or "") or "",
+        "database": os.getenv("DB_NAME") or "rosiwit_erp_server",
         "charset": "utf8mb4"
 }
 
