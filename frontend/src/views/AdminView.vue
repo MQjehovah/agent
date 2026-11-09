@@ -3,6 +3,12 @@ import { computed, onMounted, ref } from 'vue'
 import { api, del, hasPerm, post, put } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+interface Identity {
+  id: number
+  platform: string
+  platform_uid: string
+  created_at?: string
+}
 interface User {
   id: number | string
   name: string
@@ -13,6 +19,7 @@ interface User {
   phone?: string
   email?: string
   has_password?: boolean
+  identities?: Identity[]
 }
 interface Role {
   name: string
@@ -52,6 +59,12 @@ const editDialog = ref(false)
 const editTarget = ref<User | null>(null)
 const editForm = ref({ name: '', work_id: '', role: '', department: '', password: '' })
 
+// —— 身份绑定 ——
+const identityDialog = ref(false)
+const identityTarget = ref<User | null>(null)
+const identityForm = ref({ platform: 'dingtalk', platform_uid: '' })
+const identityLoading = ref(false)
+
 // —— 角色 ——
 const roleDialog = ref(false)
 const roleEditing = ref(false)
@@ -70,6 +83,11 @@ const deptForm = ref<{ name: string; description: string; manager_id: number | n
 const roleNames = computed(() => roles.value.map((r) => r.name))
 const deptNames = computed(() => departments.value.map((d) => d.name))
 const userOptions = computed(() => users.value.map((u) => ({ id: Number(u.id), name: u.name })))
+
+const platformLabels: Record<string, string> = { dingtalk: '钉钉', feishu: '飞书' }
+function platformLabel(platform: string) {
+  return platformLabels[platform] || platform
+}
 
 async function load() {
   loading.value = true
@@ -166,6 +184,65 @@ async function removeUser(u: User) {
   try {
     await del(`/api/rbac/users/${u.id}`)
     await load()
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+// —— 身份绑定 ——
+function openIdentities(u: User) {
+  identityTarget.value = u
+  identityForm.value = { platform: 'dingtalk', platform_uid: '' }
+  identityDialog.value = true
+}
+
+async function refreshIdentityTarget() {
+  const u = identityTarget.value
+  if (!u) return
+  const fresh = await api<User>(`/api/rbac/users/${u.id}`)
+  identityTarget.value = fresh
+  const idx = users.value.findIndex((x) => String(x.id) === String(u.id))
+  if (idx >= 0) users.value[idx] = { ...users.value[idx], identities: fresh.identities ?? [] }
+}
+
+async function bindIdentity() {
+  const u = identityTarget.value
+  const platform = identityForm.value.platform.trim()
+  const platformUid = identityForm.value.platform_uid.trim()
+  if (!u || !platform || !platformUid) {
+    ElMessage.warning('请选择平台并填写平台用户 ID')
+    return
+  }
+  const other = users.value.find((x) => String(x.id) !== String(u.id)
+    && (x.identities ?? []).some((i) => i.platform === platform && i.platform_uid === platformUid))
+  if (other) {
+    try {
+      await ElMessageBox.confirm(
+        `该身份已绑定到「${other.name}」，继续绑定会转移到「${u.name}」。`,
+        '确认转移绑定', { type: 'warning' })
+    } catch { return }
+  }
+  identityLoading.value = true
+  try {
+    await post(`/api/rbac/users/${u.id}/identities`, { platform, platform_uid: platformUid })
+    identityForm.value.platform_uid = ''
+    await refreshIdentityTarget()
+    ElMessage.success('已绑定')
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    identityLoading.value = false
+  }
+}
+
+async function unbindIdentity(ident: Identity) {
+  try {
+    await ElMessageBox.confirm(`解绑「${platformLabel(ident.platform)} ${ident.platform_uid}」?`, '确认', { type: 'warning' })
+  } catch { return }
+  try {
+    await del(`/api/rbac/identities/${ident.id}`)
+    await refreshIdentityTarget()
+    ElMessage.success('已解绑')
   } catch (e) {
     ElMessage.error((e as Error).message)
   }
@@ -310,6 +387,23 @@ onMounted(load)
             <template #default="{ row }"><el-tag size="small">{{ row.role }}</el-tag></template>
           </el-table-column>
           <el-table-column prop="department" label="部门" width="140" />
+          <el-table-column label="身份绑定" min-width="150">
+            <template #default="{ row }">
+              <template v-if="(row.identities ?? []).length">
+                <el-tag
+                  v-for="i in row.identities"
+                  :key="i.id"
+                  size="small"
+                  type="success"
+                  style="margin-right: 4px"
+                  :title="i.platform_uid"
+                >
+                  {{ platformLabel(i.platform) }}
+                </el-tag>
+              </template>
+              <span v-else style="color: var(--el-text-color-secondary)">未绑定</span>
+            </template>
+          </el-table-column>
           <el-table-column label="状态" width="90" align="center">
             <template #default="{ row }">
               <el-tag :type="(row.status ?? 'active') === 'active' ? 'success' : 'danger'" size="small">
@@ -317,9 +411,10 @@ onMounted(load)
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="210" align="center">
+          <el-table-column label="操作" width="280" align="center">
             <template #default="{ row }">
               <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" text type="primary" @click="openIdentities(row)">身份绑定</el-button>
               <el-button size="small" text :type="row.status === 'active' ? 'warning' : 'success'" @click="toggle(row)">
                 {{ row.status === 'active' ? '禁用' : '启用' }}
               </el-button>
@@ -425,6 +520,47 @@ onMounted(load)
       <template #footer>
         <el-button @click="editDialog = false">取消</el-button>
         <el-button type="primary" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 身份绑定 -->
+    <el-dialog v-model="identityDialog" :title="`身份绑定 — ${identityTarget?.name ?? ''}`" width="560px">
+      <div v-if="identityTarget">
+        <el-table :data="identityTarget.identities ?? []" size="small" empty-text="尚未绑定任何平台身份">
+          <el-table-column label="平台" width="100">
+            <template #default="{ row }">{{ platformLabel(row.platform) }}</template>
+          </el-table-column>
+          <el-table-column prop="platform_uid" label="平台用户 ID" min-width="220" show-overflow-tooltip />
+          <el-table-column label="操作" width="80" align="center">
+            <template #default="{ row }">
+              <el-button size="small" text type="danger" @click="unbindIdentity(row)">解绑</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-divider />
+        <el-form label-width="100px">
+          <el-form-item label="平台">
+            <el-select v-model="identityForm.platform" style="width: 100%">
+              <el-option label="钉钉" value="dingtalk" />
+              <el-option label="飞书" value="feishu" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="平台用户 ID">
+            <el-input
+              v-model="identityForm.platform_uid"
+              placeholder="钉钉 staff_id，如 16873171131634445"
+              clearable
+              @keyup.enter="bindIdentity"
+            />
+          </el-form-item>
+          <div style="color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; padding-left: 100px;">
+            钉钉 staff_id 可在钉钉通讯录/管理后台查看。绑定后该钉钉账号可直接使用零号员工，无需再登录工作台。
+          </div>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="identityDialog = false">关闭</el-button>
+        <el-button type="primary" :loading="identityLoading" @click="bindIdentity">绑定</el-button>
       </template>
     </el-dialog>
 
