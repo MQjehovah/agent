@@ -947,6 +947,9 @@ class Storage:
         first_at, last_at, channel}，与 list_conversations 同构。
         """
         uid = str(agent_user_id)
+        # 注意: 群参与者判定必须用非相关 ``IN (SELECT ...)``，让 SQLite 只物化一次候选
+        # 群根集合。若写成 ``EXISTS (... gp.conversation_id = m.conversation_id ...)``，
+        # 会对 messages 每一行都执行一次相关子查询，大表下退化为平方级扫描并卡死事件循环。
         sql = (
             "SELECT m.conversation_id AS conversation_id, MAX(m.agent_id) AS agent_id, "
             "MAX(m.user_id) AS user_id, COUNT(*) AS msg_count, "
@@ -964,10 +967,9 @@ class Storage:
             "     AND substr(m.user_id, instr(m.user_id, ':') + 1) = ? "
             "     AND m.session_id LIKE (m.user_id || ':%')) "
             "    OR m.session_id LIKE 'web:' || ? || ':%' "
-            "    OR (m.session_id LIKE 'dingtalk_group:%' AND EXISTS ("
-            "        SELECT 1 FROM messages gp "
-            "        WHERE gp.conversation_id = m.conversation_id "
-            "          AND gp.user_id = 'dingtalk:' || ?)) "
+            "    OR (m.session_id LIKE 'dingtalk_group:%' AND m.conversation_id IN ("
+            "        SELECT gp.conversation_id FROM messages gp "
+            "        WHERE gp.user_id = 'dingtalk:' || ?)) "
             "  ) "
             "  AND NOT EXISTS (SELECT 1 FROM deleted_conversations d "
             "                  WHERE d.conversation_id = m.conversation_id) "
