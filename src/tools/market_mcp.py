@@ -35,7 +35,11 @@ class MarketMCPProxyTool(BuiltinTool):
     def __init__(self, capability: str, remote_name: str, description: str, parameters: dict):
         self.capability = capability
         self.remote_name = remote_name
-        self._name = _tool_name(capability, remote_name)
+        # 市场 connect 返回的暴露名带 mcp_{能力}_ 前缀；本地代理去掉前缀，便于模型选择
+        cap_key = re.sub(r"[^A-Za-z0-9]+", "_", capability).strip("_")
+        prefix = f"mcp_{cap_key}_"
+        local_name = remote_name[len(prefix):] if remote_name.startswith(prefix) else remote_name
+        self._name = _tool_name(capability, local_name)
         self._description = description or f"市场 MCP 工具 {capability}/{remote_name}"
         self._parameters = parameters if isinstance(parameters, dict) else {
             "type": "object",
