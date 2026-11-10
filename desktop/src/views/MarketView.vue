@@ -849,10 +849,10 @@ onMounted(() => {
         <MarkdownBody v-if="docCard.readme_md" :content="docCard.readme_md" />
         <el-empty v-else description="该能力暂时没有说明文档" :image-size="72" />
         <div v-if="docCard.mine && needsAuthorize(docCard)" class="market-doc-tip">
-          使用前请先完成扫码授权；授权后即可在对话里直接使用。
+          首次使用需完成扫码授权；已授权可直接在对话里使用。
         </div>
         <div v-else-if="docCard.mine && needsPersonalCredentials(docCard)" class="market-doc-tip">
-          使用前请先配置你自己的凭据；普通用户的凭据不会被其他员工使用。
+          首次使用需配置你自己的凭据；已配置可直接使用，凭据不会被其他员工使用。
         </div>
       </template>
       <template #footer>

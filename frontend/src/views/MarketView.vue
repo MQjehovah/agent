@@ -283,10 +283,10 @@ const detailGuide = computed(() => {
     return { tone: 'info', title: '加入后即可使用', text: '先加入能力，再加入后按下面说明完成配置或授权。' }
   }
   if (detailHasAuth.value) {
-    return { tone: 'warn', title: '还差一步：扫码授权', text: '用你自己的钉钉扫码授权后，才能以个人身份执行。' }
+    return { tone: 'info', title: '使用前：扫码授权', text: '首次使用需用你自己的钉钉扫码授权；已授权可直接使用。' }
   }
   if (detailNeedsCredentials.value) {
-    return { tone: 'warn', title: '还差一步：配置个人凭据', text: '填写你自己的账号或 Token 后，才能在对话中调用。' }
+    return { tone: 'info', title: '使用前：配置个人凭据', text: '首次使用需填写你自己的账号或 Token；已配置可直接使用。' }
   }
   return null
 })
