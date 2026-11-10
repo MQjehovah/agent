@@ -21,10 +21,11 @@ from .user_token import resolve_user_token_or_hint
 
 logger = logging.getLogger("agent.tools.dws")
 
-_DWS_TOOL_PATH = "/api/runtime/tools/dingtalk-dws/invoke"
-_DWS_SCHEMA_PATH = "/api/dws/schema"
-_DWS_WORKSPACE_PATH = "/api/dws/workspace"
-_DWS_FILES_PATH = "/api/dws/files"
+_DWS_CAPABILITY = "dingtalk-dws"
+_DWS_TOOL_PATH = f"/api/runtime/tools/{_DWS_CAPABILITY}/invoke"
+_DWS_SCHEMA_PATH = f"/api/capabilities/{_DWS_CAPABILITY}/auth/schema"
+_DWS_WORKSPACE_PATH = f"/api/capabilities/{_DWS_CAPABILITY}/auth/workspace"
+_DWS_FILES_PATH = f"/api/capabilities/{_DWS_CAPABILITY}/auth/files"
 
 
 def _json(data: dict[str, Any]) -> str:
