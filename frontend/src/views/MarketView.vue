@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import MarkdownIt from 'markdown-it'
 import { api, del, patch, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarketCard from '../components/MarketCard.vue'
 import CredentialsDialog from '../components/CredentialsDialog.vue'
+import { sanitizeHtml } from '../utils/sanitize'
 
 const router = useRouter()
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
 interface MarketComponent {
   name?: string
@@ -26,6 +29,15 @@ interface MarketItem {
   version?: string
   distribution?: string
   binding?: string
+  config_ui?: {
+    auth?: string
+    provider?: string
+    title?: string
+    subtitle?: string
+    note?: string
+    hide_env_fields?: boolean
+  }
+  readme_md?: string
   input_schema?: { env?: Record<string, string>; required_env?: string[] }
   icon_url?: string
   joined?: boolean
@@ -155,6 +167,39 @@ function enabledOf(item: MarketItem): boolean {
   return installationOf(item)?.enabled ?? true
 }
 
+// ---------------- 使用说明 / 配置引导 ----------------
+
+/** 个人凭据键：认证类能力(DWS 扫码)不显示 env 字段 */
+function credKeysOf(item: MarketItem | null): string[] {
+  const schema = item?.input_schema
+  if (!schema || item?.config_ui?.hide_env_fields) return []
+  const keys: string[] = []
+  if (Array.isArray(schema.required_env)) keys.push(...schema.required_env.map((k) => String(k)))
+  if (schema.env && typeof schema.env === 'object') keys.push(...Object.keys(schema.env))
+  return [...new Set(keys.map((k) => String(k).trim()).filter(Boolean))]
+}
+
+/** 需要个人凭据(binding=user / user&service)；service 只用平台凭据 */
+function needsPersonalCredentials(item: MarketItem | null): boolean {
+  if (!item) return false
+  return ['user', 'user&service', 'user_only'].includes(item.binding || '')
+}
+
+/** 带扫码/设备码认证的能力(DWS) */
+function hasAuthConfig(item: MarketItem | null): boolean {
+  return Boolean(item?.config_ui?.auth || item?.config_ui?.provider)
+}
+
+/** 市场能力配置页(同域部署；扫码授权与平台凭据都在这里) */
+function marketConfigUrl(item: MarketItem): string {
+  const id = encodeURIComponent(item.id)
+  return `${window.location.origin}/market/capabilities/${id}?tab=config`
+}
+
+function openMarketConfig(item: MarketItem): void {
+  window.open(marketConfigUrl(item), '_blank', 'noopener')
+}
+
 // ---------------- 个人凭据(卡片「配置凭据」弹窗) ----------------
 const credDialog = ref(false)
 const credCap = ref<MarketItem | null>(null)
@@ -219,6 +264,32 @@ function resetSearch() {
 const detail = ref<MarketItem | null>(null)
 const drawer = ref(false)
 const detailLoading = ref(false)
+
+const detailReadme = computed(() => {
+  const raw = (detail.value?.readme_md || '').trim()
+  return raw ? sanitizeHtml(md.render(raw)) : ''
+})
+const detailCredKeys = computed(() => credKeysOf(detail.value))
+const detailNeedsCredentials = computed(() =>
+  needsPersonalCredentials(detail.value) && detailCredKeys.value.length > 0
+)
+const detailHasAuth = computed(() => hasAuthConfig(detail.value))
+
+/** 详情页顶部引导：未加入 / 待扫码 / 待配凭据 */
+const detailGuide = computed(() => {
+  const d = detail.value
+  if (!d) return null
+  if (!d.joined) {
+    return { tone: 'info', title: '加入后即可使用', text: '先加入能力，再加入后按下面说明完成配置或授权。' }
+  }
+  if (detailHasAuth.value) {
+    return { tone: 'warn', title: '还差一步：扫码授权', text: '用你自己的钉钉扫码授权后，才能以个人身份执行。' }
+  }
+  if (detailNeedsCredentials.value) {
+    return { tone: 'warn', title: '还差一步：配置个人凭据', text: '填写你自己的账号或 Token 后，才能在对话中调用。' }
+  }
+  return null
+})
 
 async function openDetail(item: MarketItem) {
   drawer.value = true
@@ -383,6 +454,7 @@ onBeforeUnmount(() => {
           @uninstall="uninstall(row)"
           @toggle="(v: boolean) => toggleEnabled(row, v)"
           @credentials="openCredentials(row)"
+          @authorize="openMarketConfig(row)"
         />
       </div>
 
@@ -401,7 +473,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <el-drawer v-model="drawer" size="480px" :title="detail?.name || '能力详情'">
+    <el-drawer v-model="drawer" size="520px" :title="detail?.display_name || detail?.name || '能力详情'">
       <div v-loading="detailLoading">
         <template v-if="detail">
           <div style="margin-bottom: 10px">
@@ -422,6 +494,20 @@ onBeforeUnmount(() => {
                     style="margin: 0 4px 4px 0">{{ t }}</el-tag>
           </div>
 
+          <div
+            v-if="detailGuide"
+            class="detail-guide"
+            :class="'tone-' + detailGuide.tone"
+          >
+            <strong>{{ detailGuide.title }}</strong>
+            <span>{{ detailGuide.text }}</span>
+          </div>
+
+          <template v-if="detailReadme">
+            <div class="section-title">使用说明</div>
+            <div class="detail-readme md" v-html="detailReadme" />
+          </template>
+
           <template v-if="detail.components && detail.components.length">
             <div class="section-title">组件（{{ detail.components.length }}）</div>
             <el-table :data="detail.components" size="small" border>
@@ -436,6 +522,10 @@ onBeforeUnmount(() => {
           <div class="drawer-actions">
             <el-button v-if="!detail.joined" type="primary" @click="join(detail)">加入</el-button>
             <el-button v-else @click="leave(detail)">移出</el-button>
+            <el-button v-if="detail.joined && detailNeedsCredentials" type="primary" plain
+                       @click="openCredentials(detail)">配置个人凭据</el-button>
+            <el-button v-if="detailHasAuth" type="primary" plain
+                       @click="openMarketConfig(detail)">去扫码授权</el-button>
             <el-button v-if="canInstall(detail) && !detail.installed" type="primary"
                        @click="install(detail)">安装（云端托管）</el-button>
             <el-button v-if="detail.installed" type="danger" plain @click="uninstall(detail)">卸载</el-button>
@@ -457,7 +547,39 @@ onBeforeUnmount(() => {
 .muted { color: var(--text-3); font-size: 12px; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .detail-desc { font-size: 13px; line-height: 1.7; white-space: pre-wrap; color: var(--text-2); }
-.section-title { font-size: 13px; font-weight: 600; margin: 6px 0 8px; }
+.section-title { font-size: 13px; font-weight: 600; margin: 16px 0 8px; }
+.detail-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+  background: var(--bg-inset);
+}
+.detail-guide strong { font-size: 13px; color: var(--text-1); }
+.detail-guide.tone-warn {
+  border-color: rgba(230, 162, 60, 0.35);
+  background: rgba(230, 162, 60, 0.08);
+}
+.detail-readme {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-2);
+  word-break: break-word;
+}
+.detail-readme :deep(h1) { font-size: 17px; margin: 0 0 10px; color: var(--text-1); }
+.detail-readme :deep(h2) { font-size: 14px; margin: 16px 0 6px; color: var(--text-1); }
+.detail-readme :deep(h3) { font-size: 13px; margin: 12px 0 4px; color: var(--text-1); }
+.detail-readme :deep(ul),
+.detail-readme :deep(ol) { padding-left: 20px; margin: 6px 0; }
+.detail-readme :deep(li) { margin: 3px 0; }
+.detail-readme :deep(p) { margin: 6px 0; }
+.detail-readme :deep(a) { color: var(--primary); }
 .drawer-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 </style>
 

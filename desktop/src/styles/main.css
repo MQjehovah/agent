@@ -2521,9 +2521,48 @@ html.dark .composer {
   margin-top: auto;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding-top: 10px;
   border-top: 1px dashed var(--el-border-color-lighter);
+}
+
+/* 能力说明弹窗 */
+.market-doc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.market-doc-sub {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-family: Consolas, monospace;
+}
+.market-doc-tip {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(230, 162, 60, 0.35);
+  background: rgba(230, 162, 60, 0.08);
+  color: var(--el-text-color-regular);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.market-doc-dialog .md {
+  font-size: 13.5px;
+  line-height: 1.75;
+  max-height: 58vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+.market-doc-dialog .md h1 {
+  font-size: 18px;
+  margin: 0 0 10px;
+}
+.market-doc-dialog .md h2 {
+  font-size: 14px;
+  margin: 18px 0 6px;
 }
 
 /* 已安装清单行 */

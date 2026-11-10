@@ -139,9 +139,20 @@ export interface MarketCapabilityLite {
   distribution?: string
   /** 运行规格(优先于 distribution;缺失回退) */
   runtime?: CapabilityRuntime
-  /** 执行身份: user=用户+平台(个人凭据优先,平台兜底) / user_only=仅用户(无兜底) / service=平台 */
-  binding?: 'user' | 'user_only' | 'service'
-  /** 固定配置项键(env/required_env)：user/user_only 绑定时卡片显示「配置凭据」入口 */
+  /** 执行身份: user=仅个人凭据 / service=仅平台共享凭据 / user&service=个人优先,管理员平台兜底 */
+  binding?: 'user' | 'service' | 'user&service' | 'user_only'
+  /** 配置界面声明(扫码授权/隐藏平台内部 env) */
+  config_ui?: {
+    auth?: string
+    provider?: string
+    title?: string
+    subtitle?: string
+    note?: string
+    hide_env_fields?: boolean
+  }
+  /** 能力说明文档(Markdown) */
+  readme_md?: string
+  /** 固定配置项键(env/required_env)：需要个人凭据时卡片显示「配置凭据」入口 */
   cred_keys?: string[]
 }
 

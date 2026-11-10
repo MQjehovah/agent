@@ -13,6 +13,7 @@ import type {
 import { useSettingsStore } from '../stores/settings'
 import { iconPhStyle, typeName } from '../utils/market'
 import CredentialsDialog from '../components/CredentialsDialog.vue'
+import MarkdownBody from '../components/MarkdownBody.vue'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -89,6 +90,35 @@ function openCredentials(card: BrowseCard): void {
   credVisible.value = true
 }
 
+// ---- 使用说明 / 配置引导 ----
+const docVisible = ref(false)
+const docCard = ref<BrowseCard | null>(null)
+function openDoc(card: BrowseCard): void {
+  docCard.value = card
+  docVisible.value = true
+}
+
+/** 需要个人凭据(binding=user / user&service)；service 只用平台凭据 */
+function needsPersonalCredentials(card: BrowseCard): boolean {
+  return Boolean(
+    ['user', 'user&service', 'user_only'].includes(card.binding || '') &&
+      !card.config_ui?.hide_env_fields &&
+      (card.cred_keys?.length ?? 0) > 0
+  )
+}
+/** 扫码授权类能力(DWS)：直接去市场配置页授权 */
+function needsAuthorize(card: BrowseCard): boolean {
+  return Boolean(card.config_ui?.auth || card.config_ui?.provider)
+}
+function openMarketConfig(card: BrowseCard): void {
+  const base = (settings.config.marketUrl || '').replace(/\/+$/, '')
+  if (!base) {
+    ElMessage.error('未配置能力市场地址')
+    return
+  }
+  window.open(`${base}/capabilities/${encodeURIComponent(card.id)}?tab=config`, '_blank', 'noopener')
+}
+
 function typeKey(type: MarketCapabilityType, name: string): string {
   return `${type}/${name}`
 }
@@ -146,15 +176,37 @@ function mapLite(v: unknown): MarketCapabilityLite | null {
   if (tags.length) out.tags = tags as string[]
   const runtime = mapRuntime(r.runtime)
   if (runtime) out.runtime = runtime
-  if (r.binding === 'user' || r.binding === 'user_only' || r.binding === 'service') out.binding = r.binding
+  if (
+    r.binding === 'user' ||
+    r.binding === 'user&service' ||
+    r.binding === 'user_only' ||
+    r.binding === 'service'
+  ) {
+    out.binding = r.binding
+  }
+  const readme = typeof r.readme_md === 'string' ? r.readme_md.trim() : ''
+  if (readme) out.readme_md = readme
+  if (typeof r.config_ui === 'object' && r.config_ui !== null) {
+    const ui = r.config_ui as Record<string, unknown>
+    const configUi: NonNullable<MarketCapabilityLite['config_ui']> = {}
+    for (const key of ['auth', 'provider', 'title', 'subtitle', 'note'] as const) {
+      if (typeof ui[key] === 'string' && (ui[key] as string).trim()) {
+        configUi[key] = (ui[key] as string).trim()
+      }
+    }
+    if (typeof ui.hide_env_fields === 'boolean') configUi.hide_env_fields = ui.hide_env_fields
+    if (Object.keys(configUi).length) out.config_ui = configUi
+  }
   const schema = typeof r.input_schema === 'object' && r.input_schema !== null
     ? (r.input_schema as Record<string, unknown>)
     : null
   const credKeys: string[] = []
-  if (Array.isArray(schema?.required_env)) {
-    credKeys.push(...(schema!.required_env as unknown[]).map((k) => String(k)))
+  if (!out.config_ui?.hide_env_fields) {
+    if (Array.isArray(schema?.required_env)) {
+      credKeys.push(...(schema!.required_env as unknown[]).map((k) => String(k)))
+    }
+    if (schema?.env && typeof schema.env === 'object') credKeys.push(...Object.keys(schema.env))
   }
-  if (schema?.env && typeof schema.env === 'object') credKeys.push(...Object.keys(schema.env))
   const normalized = [...new Set(credKeys.map((k) => k.trim()).filter(Boolean))]
   if (normalized.length) out.cred_keys = normalized
   const ratingCount = Number(r.rating_count ?? 0)
@@ -695,8 +747,17 @@ onMounted(() => {
                 </span>
                 <span class="market-spacer"></span>
                 <el-tag v-if="card.mine" size="small" type="success" effect="plain">我的</el-tag>
+                <el-button size="small" link @click="openDoc(card)">说明</el-button>
                 <el-button
-                  v-if="card.mine && (card.binding === 'user' || card.binding === 'user_only') && (card.cred_keys?.length ?? 0) > 0"
+                  v-if="card.mine && needsAuthorize(card)"
+                  size="small"
+                  plain
+                  @click="openMarketConfig(card)"
+                >
+                  去授权
+                </el-button>
+                <el-button
+                  v-else-if="card.mine && needsPersonalCredentials(card)"
                   size="small"
                   plain
                   @click="openCredentials(card)"
@@ -773,6 +834,45 @@ onMounted(() => {
         </template>
       </section>
     </div>
+
+    <el-dialog
+      v-model="docVisible"
+      :title="docCard ? cardTitle(docCard) : '使用说明'"
+      width="640px"
+      class="market-doc-dialog"
+    >
+      <template v-if="docCard">
+        <div class="market-doc-head">
+          <span class="market-doc-sub">{{ cardSub(docCard) }}</span>
+          <el-tag v-if="docCard.category" size="small" effect="plain">{{ docCard.category }}</el-tag>
+        </div>
+        <MarkdownBody v-if="docCard.readme_md" :content="docCard.readme_md" />
+        <el-empty v-else description="该能力暂时没有说明文档" :image-size="72" />
+        <div v-if="docCard.mine && needsAuthorize(docCard)" class="market-doc-tip">
+          使用前请先完成扫码授权；授权后即可在对话里直接使用。
+        </div>
+        <div v-else-if="docCard.mine && needsPersonalCredentials(docCard)" class="market-doc-tip">
+          使用前请先配置你自己的凭据；普通用户的凭据不会被其他员工使用。
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="docVisible = false">关闭</el-button>
+        <el-button
+          v-if="docCard && docCard.mine && needsAuthorize(docCard)"
+          type="primary"
+          @click="openMarketConfig(docCard)"
+        >
+          去扫码授权
+        </el-button>
+        <el-button
+          v-else-if="docCard && docCard.mine && needsPersonalCredentials(docCard)"
+          type="primary"
+          @click="openCredentials(docCard)"
+        >
+          配置个人凭据
+        </el-button>
+      </template>
+    </el-dialog>
 
     <CredentialsDialog
       v-model="credVisible"
