@@ -96,10 +96,19 @@ async def mount_user_mcp_tools(agent) -> int:
     base, _service, timeout = market_config()
     if not base:
         return 0
-    token, hint = await asyncio.to_thread(resolve_user_token_or_hint, audience="market")
-    if hint:
-        logger.info("市场 MCP 工具挂载跳过：%s", hint)
-        return 0
+    token = ""
+    provider = getattr(agent, "platform_token_provider", None)
+    if callable(provider):
+        try:
+            token = str(provider() or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.info("市场 MCP 工具挂载跳过：用户 token 获取失败 %s", exc)
+            return 0
+    if not token:
+        token, hint = await asyncio.to_thread(resolve_user_token_or_hint, audience="market")
+        if hint:
+            logger.info("市场 MCP 工具挂载跳过：%s", hint)
+            return 0
     headers = {"Authorization": f"Bearer {token}"}
     try:
         async with httpx.AsyncClient(timeout=max(timeout, 60)) as client:
