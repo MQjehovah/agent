@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../theme'
   import { api, clearToken, del, getRole, hasPerm, setIdentity } from '../api'
@@ -10,13 +10,33 @@ import { dingtalkGroupDisplayName, isDingtalkGroupSession } from '../channel'
 import {
   ChatDotRound, Timer, Coin,
   Odometer, User, Setting, Moon, Sunny, Fold, Expand, SwitchButton,
-  Shop, Files, Collection, Clock, Search, Refresh, CaretRight, FolderOpened
+  Shop, Files, Collection, Clock, Search, Refresh, CaretRight, FolderOpened, Menu, Close
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const { theme, toggle } = useTheme()
 const collapsed = ref(false)
+
+// 手机端(<768px): 侧栏改为抽屉，避免固定 236px 挤压内容。
+const isMobile = ref(false)
+const mobileNavOpen = ref(false)
+let mobileMq: MediaQueryList | null = null
+function syncMobile(): void {
+  isMobile.value = mobileMq?.matches ?? window.innerWidth <= 768
+  if (isMobile.value) collapsed.value = false
+  else mobileNavOpen.value = false
+}
+function toggleNav(): void {
+  if (isMobile.value) mobileNavOpen.value = !mobileNavOpen.value
+  else collapsed.value = !collapsed.value
+}
+const navIcon = computed(() => (isMobile.value ? Menu : collapsed.value ? Expand : Fold))
+
+watch(
+  () => route.fullPath,
+  () => { mobileNavOpen.value = false }
+)
 
 /** 命令面板(Ctrl+K)/新建任务(Ctrl+N) */
 const paletteVisible = ref(false)
@@ -30,6 +50,10 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return tag === 'input' || tag === 'textarea' || node.isContentEditable === true
 }
 function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && mobileNavOpen.value) {
+    mobileNavOpen.value = false
+    return
+  }
   if (isTypingTarget(e.target)) return
   if (e.ctrlKey && e.key.toLowerCase() === 'k') {
     e.preventDefault()
@@ -204,11 +228,15 @@ async function refreshMe() {
 }
 
 onMounted(() => {
+  mobileMq = window.matchMedia('(max-width: 768px)')
+  mobileMq.addEventListener('change', syncMobile)
+  syncMobile()
   void refreshMe()
   void loadSideSessions()
   window.addEventListener('keydown', onKeydown)
 })
 onBeforeUnmount(() => {
+  mobileMq?.removeEventListener('change', syncMobile)
   window.removeEventListener('keydown', onKeydown)
 })
 
@@ -225,9 +253,15 @@ function onUserCommand(cmd: string | number | object) {
 </script>
 
 <template>
-  <div class="layout" :class="{ collapsed }">
-    <aside class="sider">
-      <div class="brand"><img class="logo" :src="logoUrl" alt="Rosiwit" /><span class="side-label">零号员工</span></div>
+  <div class="layout" :class="{ collapsed, mobile: isMobile, 'mobile-nav-open': mobileNavOpen }">
+    <!-- 注意：inert 不能用布尔 false，Vue 会渲染成 inert="false" 仍然生效，必须用 undefined 移除 -->
+    <aside class="sider" :inert="isMobile && !mobileNavOpen ? true : undefined">
+      <div class="brand">
+        <img class="logo" :src="logoUrl" alt="Rosiwit" /><span class="side-label">零号员工</span>
+        <button v-if="isMobile" class="icon-btn drawer-close" aria-label="关闭菜单" @click="mobileNavOpen = false">
+          <el-icon :size="18"><Close /></el-icon>
+        </button>
+      </div>
       <div class="side-actions">
         <button class="side-action" @click="newTask">
           <el-icon :size="15"><SwitchButton /></el-icon>
@@ -326,14 +360,26 @@ function onUserCommand(cmd: string | number | object) {
       </div>
     </aside>
 
+    <div
+      class="mobile-backdrop"
+      :class="{ show: isMobile && mobileNavOpen }"
+      aria-hidden="true"
+      @click="mobileNavOpen = false"
+    />
+
     <main class="main">
       <div class="topbar">
-        <button class="icon-btn" @click="collapsed = !collapsed">
-          <el-icon :size="16"><component :is="collapsed ? Expand : Fold" /></el-icon>
+        <button
+          class="icon-btn"
+          :title="isMobile ? '打开菜单' : collapsed ? '展开侧栏' : '收起侧栏'"
+          :aria-label="isMobile ? '打开菜单' : collapsed ? '展开侧栏' : '收起侧栏'"
+          @click="toggleNav"
+        >
+          <el-icon :size="18"><component :is="navIcon" /></el-icon>
         </button>
         <span class="title">{{ currentTitle }}</span>
         <span class="spacer" />
-        <button class="icon-btn" :title="theme === 'dark' ? '切换浅色' : '切换深色'" @click="toggle">
+        <button class="icon-btn" :title="theme === 'dark' ? '切换浅色' : '切换深色'" aria-label="切换主题" @click="toggle">
           <el-icon :size="16"><component :is="theme === 'dark' ? Sunny : Moon" /></el-icon>
         </button>
       </div>
