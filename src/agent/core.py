@@ -290,6 +290,13 @@ class Agent:
         self.tool_registry.temp_dir = self.temp_dir
         self._init_skills()
         await self._load_mcp_servers()
+        if getattr(self, "owner_uid", 0):
+            try:
+                from tools.market_mcp import mount_user_mcp_tools
+
+                await mount_user_mcp_tools(self)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"市场用户级 MCP 工具挂载失败(忽略): {e}")
 
         from agent.session import AgentSessionManager
         from storage.storage import init_storage

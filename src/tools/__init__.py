@@ -356,7 +356,6 @@ from .read_image import ViewImageTool
 from .tool_search import SearchToolsTool
 from .web import WebFetchTool, WebSearchTool
 from .whoami import WhoamiTool
-from .dws import DwsSchemaTool, DwsTool
 
 __all__ = [
     'ToolRegistry', 'BuiltinTool', 'ToolDefinition',
