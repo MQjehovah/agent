@@ -47,7 +47,12 @@ const PERM_MODES: Record<'default' | 'smart' | 'auto', { label: string; hint: st
   smart: { label: '智能(必要时询问)', hint: '仅高危操作需确认' },
   auto: { label: '完全访问', hint: '不询问，直接执行' }
 }
-const permMode = ref<'default' | 'smart' | 'auto'>('default')
+const PERM_STORAGE_KEY = 'agent_perm_mode'
+const savedPerm = localStorage.getItem(PERM_STORAGE_KEY)
+const permMode = ref<'default' | 'smart' | 'auto'>(
+  savedPerm === 'smart' || savedPerm === 'auto' ? savedPerm : 'default'
+)
+watch(permMode, (value) => localStorage.setItem(PERM_STORAGE_KEY, value))
 const permLabel = computed(() => PERM_MODES[permMode.value].label)
 const onlineModel = ref('')
 const plusOpen = ref(false)

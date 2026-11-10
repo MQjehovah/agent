@@ -462,8 +462,29 @@ class Storage:
 
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
-                VALUES ('default', '默认角色-只能对话', '[]', '[]', '[]', 'self', datetime('now'))
+                VALUES ('default', '默认角色-只能对话', '["dws:read", "dws_schema"]', '[]', '[]', 'self', datetime('now'))
             """)
+            # 老库升级: 默认角色补 DWS 只读工具（写权限仍由 * / dws 条目录入）
+            with suppress(sqlite3.OperationalError):
+                _row = conn.execute(
+                    "SELECT allowed_tools FROM rbac_roles WHERE name = 'default'"
+                ).fetchone()
+                if _row:
+                    try:
+                        _tools = json.loads(_row[0] or "[]")
+                    except (json.JSONDecodeError, TypeError):
+                        _tools = []
+                    if isinstance(_tools, list) and "*" not in _tools:
+                        _changed = False
+                        for _tool in ("dws:read", "dws_schema"):
+                            if _tool not in _tools:
+                                _tools.append(_tool)
+                                _changed = True
+                        if _changed:
+                            conn.execute(
+                                "UPDATE rbac_roles SET allowed_tools = ? WHERE name = 'default'",
+                                (json.dumps(_tools, ensure_ascii=False),),
+                            )
             conn.execute("""
                 INSERT OR IGNORE INTO rbac_roles (name, description, allowed_tools, allowed_agents, permissions, data_scope, created_at)
                 VALUES ('admin', '管理员-全部权限', '["*"]', '["*"]', '["*"]', 'all', datetime('now'))

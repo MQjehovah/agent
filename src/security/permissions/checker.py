@@ -22,6 +22,12 @@ GIT_READ_OPS = ("status", "diff", "log")
 GIT_DESTRUCTIVE_OPS = ("rollback",)
 
 
+def _dws_mode(arguments: dict) -> str:
+    """DWS 工具声明的风险级别（read/write/destructive）。"""
+    mode = str((arguments or {}).get("mode", "") or "read").strip().lower()
+    return mode if mode in ("read", "write", "destructive") else "destructive"
+
+
 def _git_access(arguments: dict) -> str:
     """把 git 工具调用归类为 read / write / destructive。"""
     op = str((arguments or {}).get("operation", "") or "").strip().lower()
@@ -67,6 +73,8 @@ class PermissionChecker:
         本方法只做归类, 不改动 check() 的既有行为。
         """
         arguments = arguments or {}
+        if tool_name == "dws":
+            return "read" if _dws_mode(arguments) == "read" else "write"
         if tool_name == "file":
             op = str(arguments.get("operation", "") or "").lower()
             return "read" if op in FILE_READ_OPERATIONS else "write"
@@ -100,6 +108,11 @@ class PermissionChecker:
 
         # PLAN 模式：禁止所有写操作
         if self.config.mode == PermissionMode.PLAN:
+            if tool_name == "dws" and _dws_mode(arguments) != "read":
+                return PermissionCheckResult(
+                    allowed=False,
+                    reason="PLAN 模式禁止执行 DWS 写操作",
+                )
             if tool_name == "file":
                 op = arguments.get("operation", "")
                 if op in ("read", "exists", "list"):
@@ -157,6 +170,8 @@ class PermissionChecker:
                 return PermissionCheckResult(allowed=True)
             if mcp_risk == "destructive":
                 return PermissionCheckResult(allowed=True, reason="需要用户确认")
+            if tool_name == "dws" and _dws_mode(arguments) == "destructive":
+                return PermissionCheckResult(allowed=True, reason="需要用户确认")
             return PermissionCheckResult(allowed=True)
 
         # 检查命令黑名单
@@ -186,6 +201,8 @@ class PermissionChecker:
             return path_result
 
         # DEFAULT 模式下写操作需要确认
+        if self.config.mode == PermissionMode.DEFAULT and tool_name == "dws" and _dws_mode(arguments) != "read":
+            return PermissionCheckResult(allowed=True, reason="需要用户确认")
         if self.config.mode == PermissionMode.DEFAULT and tool_name in self.config.write_tools:
             # 判断是否为读操作
             if tool_name == "file":
