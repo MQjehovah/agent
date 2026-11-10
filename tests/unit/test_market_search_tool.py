@@ -1,10 +1,9 @@
-"""市场目录检索工具(用户身份)单测。
+"""市场目录检索工具(market 身份)单测。
 
 覆盖:
-- 逐请求携带用户 token(Bearer, aud=gateway)并走 GET /api/capabilities/task-search,
-  不再带服务令牌 / X-Act-As-Sub;
+- 逐请求携带 market 受众用户 token(Bearer, aud=market)并走 GET /api/capabilities/task-search;
 - 命中分组(agents/skills/mcps/tools)与 total;
-- 无托管 token / uid 解析失败时 fail-closed 并返回统一引导登录文案; 市场未配置时返回错误;
+- 真实用户无 token 时 fail-closed；仅无数字 uid 的系统 run 用服务令牌;
 - joined 标记: 已开通优先 + 未开通 note 提示(方案A: 发现保留, 不误调未开通能力)。
 """
 
@@ -69,13 +68,21 @@ def _market_env(monkeypatch):
     yield
 
 
+_TOKEN_CALLS: list[tuple[int, str]] = []
+
+
 @pytest.fixture
 def hosted_token(monkeypatch):
-    """托管用户 token(按 uid 派生), 供断言 Bearer 头。"""
+    """托管用户 token(按 uid 派生), 记录 audience 供断言。"""
     from web import sso_tokens
 
-    monkeypatch.setattr(sso_tokens, "get_downstream_token",
-                        lambda uid, audience="", **kwargs: f"user-tok-{uid}")
+    _TOKEN_CALLS.clear()
+
+    def _fake(uid, audience="", **kwargs):
+        _TOKEN_CALLS.append((uid, audience))
+        return f"user-tok-{uid}"
+
+    monkeypatch.setattr(sso_tokens, "get_downstream_token", _fake)
     return "user-tok-7"
 
 
@@ -112,10 +119,11 @@ async def test_market_search_tool_sends_user_token_and_groups(monkeypatch, hoste
     assert cap["headers"]["Authorization"] == "Bearer user-tok-7"
     assert "X-Act-As-Sub" not in cap["headers"]
     assert cap["params"] == {"q": "报销"}
+    assert _TOKEN_CALLS[-1] == (7, "market")
 
 
 async def test_market_search_tool_admin_uses_user_token(monkeypatch, hosted_token):
-    """管理员有用户令牌：按用户视角检索（Bearer=用户令牌）。"""
+    """管理员也是真实用户：按自己的 market 身份检索。"""
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
     tool = MarketSearchTool()
     out = await _run_with("web:7", lambda: tool.execute(query="报销"), role="admin")
@@ -123,10 +131,11 @@ async def test_market_search_tool_admin_uses_user_token(monkeypatch, hosted_toke
     assert payload["ok"] is True
     cap = _FakeClient.captured
     assert cap["headers"]["Authorization"] == "Bearer user-tok-7"
+    assert _TOKEN_CALLS[-1] == (7, "market")
 
 
-async def test_market_search_tool_admin_without_user_token_uses_service_token(monkeypatch):
-    """管理员无用户令牌：以服务令牌（平台身份）检索，不 fail-closed。"""
+async def test_market_search_tool_real_user_without_token_fails_closed(monkeypatch):
+    """真实用户（即使 role=admin）无 token：fail-closed，不用服务令牌。"""
     from web import sso_tokens
 
     monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
@@ -134,6 +143,21 @@ async def test_market_search_tool_admin_without_user_token_uses_service_token(mo
                         lambda uid, audience="", **kwargs: "")
     tool = MarketSearchTool()
     out = await _run_with("web:7", lambda: tool.execute(query="报销"), role="admin")
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"] == _HINT
+    assert _FakeClient.captured == {}
+
+
+async def test_market_search_tool_system_without_token_uses_service_token(monkeypatch):
+    """无数字 uid 的系统 run：允许服务令牌（平台身份）检索。"""
+    from web import sso_tokens
+
+    monkeypatch.setattr(ms.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: "")
+    tool = MarketSearchTool()
+    out = await _run_with("scheduler:admin", lambda: tool.execute(query="报销"), role="admin")
     payload = json.loads(out)
     assert payload["ok"] is True
     cap = _FakeClient.captured

@@ -2,7 +2,7 @@
 
 - `WebUserWorkerPool._resolve_platform_token_provider`: 平台轨启用(MARKET_BASE_URL +
   MARKET_SERVICE_TOKEN 齐备)时恒定注入该用户 provider(lambda: get_downstream_token(
-  uid, "gateway")); 平台轨关闭 → None(worker 保持服务令牌视角);
+  uid, "market")); 平台轨关闭 → None(worker 保持服务令牌视角);
 - `_create_worker`: provider 在 initialize(建平台连接)之前写入 worker;
   uid 不可解析或该用户无托管 token 时 provider 返回空串, 由平台轨 fail-closed
   置空平台能力(不回退服务令牌);
@@ -93,7 +93,7 @@ def test_create_worker_sets_user_token_provider_when_platform_on(
     assert worker.initialized is True
     assert worker.provider_at_init is worker.platform_token_provider  # 时序: initialize 前注入
     assert worker.platform_token_provider() == f"utok-{uid}"
-    assert calls == [(uid, "gateway")]  # audience 恒为 gateway
+    assert calls == [(uid, "market")]  # 平台轨使用市场受众身份
 
 
 def test_create_worker_provider_none_when_platform_disabled(

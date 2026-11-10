@@ -50,13 +50,13 @@ _MARKET_ERRORS = (MarketUnavailableError, MarketUpstreamError, UserTokenRequired
 
 
 def _user_downstream_token(uid: int, *, force: bool = False) -> str:
-    """按用户取 SSO 交换 token(下游受众默认 gateway); 无会话/失败返回空串(fail-closed)。"""
+    """按用户取 SSO 交换 token（市场受众 market）；无会话/失败返回空串(fail-closed)。"""
     if uid <= 0:
         return ""
     try:
         from web.sso_tokens import get_downstream_token
 
-        return get_downstream_token(uid, force=force)
+        return get_downstream_token(uid, "market", force=force)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"用户 {uid} 获取下游 token 失败(按无 token fail-closed): {e}")
         return ""
@@ -66,9 +66,9 @@ async def _market_request(method: str, path: str, *, user_uid: int = 0,
                           params: dict | None = None, json_body: Any = None):
     """代理市场 HTTP; 返回 (status_code, payload)。
 
-    逐请求携带当前用户的 SSO 交换 token(Bearer; 401 自动强换重试一次, 仍 401 按无用户
-    token fail-closed 503 引导登录, 不回退服务令牌)。市场未配置抛
-    MarketUnavailableError; 网络异常抛 MarketUpstreamError。
+    逐请求携带当前用户的 SSO 交换 token（aud=market；401 自动强换重试一次，仍 401
+    按无用户 token fail-closed 503 引导登录，不回退服务令牌）。市场未配置抛
+    MarketUnavailableError；网络异常抛 MarketUpstreamError。
     """
     cfg = PlatformMCPConfig.from_env()
     if not cfg.enabled:

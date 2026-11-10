@@ -69,7 +69,7 @@ def _in_run_ctx(user_id: str, func):
 
 
 def test_resolve_user_token_parses_uid_and_keeps_gateway_audience(monkeypatch):
-    """防回归: 必须按 tag 数字 uid 调用, audience 恒为 gateway(不得回退默认受众)。"""
+    """防回归: 必须按 tag 数字 uid 调用, 默认 audience 为 gateway。"""
     calls: list[tuple[int, str]] = []
 
     def fake_require(uid, audience=""):
@@ -79,6 +79,30 @@ def test_resolve_user_token_parses_uid_and_keeps_gateway_audience(monkeypatch):
     monkeypatch.setattr(sso_tokens, "require_user_token", fake_require)
     assert _in_run_ctx("web:7", user_token.resolve_user_token_or_hint) == ("tok-7", None)
     assert calls == [(7, "gateway")]
+
+
+def test_resolve_user_token_market_audience(monkeypatch):
+    """市场工具显式传 audience=market, 由市场换成自己的身份。"""
+    calls: list[tuple[int, str]] = []
+
+    def fake_require(uid, audience=""):
+        calls.append((uid, audience))
+        return "tok-m"
+
+    monkeypatch.setattr(sso_tokens, "require_user_token", fake_require)
+    assert _in_run_ctx(
+        "web:7", lambda: user_token.resolve_user_token_or_hint(audience="market")
+    ) == ("tok-m", None)
+    assert calls == [(7, "market")]
+
+
+def test_is_system_run_only_for_system_channels():
+    assert _in_run_ctx("", user_token.is_system_run) is False
+    assert _in_run_ctx("cli:admin", user_token.is_system_run) is True
+    assert _in_run_ctx("scheduler:admin", user_token.is_system_run) is True
+    assert _in_run_ctx("web:7", user_token.is_system_run) is False
+    assert _in_run_ctx("scheduler:7", user_token.is_system_run) is False
+    assert _in_run_ctx("web:abc", user_token.is_system_run) is False
 
 
 def test_resolve_user_token_fail_closed_on_unavailable_token(monkeypatch):

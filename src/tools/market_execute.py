@@ -1,4 +1,4 @@
-"""能力市场执行工具(用户身份): 按当前提问者的用户 token 调用市场能力。
+"""能力市场执行工具(market 身份): 按当前提问者的 market 受众 token 调用市场能力。
 
 `kind` 支持四类能力:
 - ``tool``  : 调用市场工具能力（``/api/runtime/tools/{capability}/invoke``）
@@ -8,16 +8,15 @@
   即「capability 指向一个 agent」的委派路径（原 ``market_delegate`` 的能力已并入此处）。
 
 与平台 MCP 轨(mcps/platform.py)的区别:
-- 平台 MCP 轨是**持久会话**连接, 用户 token 每 worker 恒定(随周期刷新轮换重连), 适合服务面/全局能力;
-- 本工具走市场 ``/api/runtime/*`` **逐请求** HTTP, 默认携带当前提问者的**用户 token**
-  (Bearer, audience=gateway), 由市场按个人凭据执行; 适合"零号员工"等全局单例
-  为不同提问者执行**用户级**能力。无托管 token 或凭据缺失时普通用户 fail-closed
-  并引导登录; **管理员/系统任务**(归属 admin 账号, role=admin)由 agent 侧兜底:
-  无用户令牌直接以服务令牌(平台身份)执行; 个人凭据缺失(市场 403 +
-  ``X-Market-Error-Code: user_credentials_missing``)时以服务令牌重试一次。
+- 平台 MCP 轨是**持久会话**连接, 适合服务面/全局能力;
+- 本工具走市场 ``/api/runtime/*`` **逐请求** HTTP, 携带当前提问者的**market 受众
+  token**(Bearer, audience=market), 由市场解析成自己的用户后执行; 适合"零号员工"
+  等全局单例为不同提问者执行**用户级**能力。个人凭据优先、market 管理员平台兜底
+  均由市场侧判断；agent 不再按自身角色重试服务令牌。
+- 只有没有数字 uid 的系统 run（``cli:admin`` / ``scheduler:admin``）在取不到用户
+  token 时才使用 ``MARKET_SERVICE_TOKEN``（平台身份）。
 
-仅当市场配置齐备(MARKET_BASE_URL + MARKET_SERVICE_TOKEN)时保留, 见 Agent._init_market_tools;
-MARKET_SERVICE_TOKEN 平时仅作启用门禁, 管理员兜底路径作为平台身份令牌使用(Bearer)。
+仅当市场配置齐备(MARKET_BASE_URL + MARKET_SERVICE_TOKEN)时保留, 见 Agent._init_market_tools。
 """
 
 import asyncio
@@ -28,7 +27,7 @@ import httpx
 
 from . import BuiltinTool
 from .market_common import market_config
-from .user_token import is_admin_run, resolve_user_token_or_hint
+from .user_token import is_system_run, resolve_user_token_or_hint
 
 logger = logging.getLogger("agent.tools")
 
@@ -37,9 +36,6 @@ _TOOL_INVOKE_PATH = "/api/runtime/tools/{capability}/invoke"
 _AGENT_TASK_PATH = "/api/runtime/agents/{capability}/tasks"
 _MCP_CALL_PATH = "/api/runtime/mcp/{capability}/call"
 _SKILL_ACTIVATE_PATH = "/api/runtime/skills/{capability}/activate"
-# 「个人凭据缺失」机器可读标记（与 market capability_secrets 常量一致，改动需双端同步）
-_CREDS_MISSING_HEADER = "X-Market-Error-Code"
-_CREDS_MISSING_CODE = "user_credentials_missing"
 
 
 class MarketExecuteTool(BuiltinTool):
@@ -103,21 +99,21 @@ class MarketExecuteTool(BuiltinTool):
             return json.dumps({"success": False, "ok": False, "error": "能力市场未配置"},
                               ensure_ascii=False)
 
-        # 身份与凭据（agent 侧决策，市场零角色判断）:
-        # - 默认逐请求携带提问者用户令牌 → 市场按个人凭据执行;
-        # - 个人凭据缺失时市场返回 403 + X-Market-Error-Code=user_credentials_missing;
-        #   管理员/系统身份(role=admin) 收到该标记后改用服务令牌(平台身份)重试一次，
-        #   由市场按平台凭据执行;
-        # - 管理员本就没有市场用户令牌时，直接以服务令牌（平台身份）执行;
-        # - 普通用户无令牌/凭据缺失一律 fail-closed（不得以服务身份越权执行）。
+        # 身份与凭据：
+        # - 真实用户逐请求携带 market 受众 token，市场解析成自己的用户后执行；
+        #   个人凭据优先、market 管理员平台兜底全部由市场判断；
+        # - 只有无数字 uid 的系统 run 才允许以服务令牌（平台身份）执行；
+        # - 真实用户无 token / 凭据缺失一律 fail-closed，不得以服务身份越权执行。
         # token 解析含同步阻塞(SSO 刷新/交换 + SQLite), 经线程池执行避免卡事件循环
-        is_admin = is_admin_run()
-        user_token, hint = await asyncio.to_thread(resolve_user_token_or_hint)
-        if hint and not is_admin:
-            return json.dumps({"success": False, "ok": False, "error": hint}, ensure_ascii=False)
-        using_platform = bool(hint)  # 管理员无用户令牌 → 直接平台身份
-        if using_platform:
-            user_token = token
+        user_token, hint = await asyncio.to_thread(
+            resolve_user_token_or_hint, audience="market"
+        )
+        if hint:
+            if not is_system_run():
+                return json.dumps(
+                    {"success": False, "ok": False, "error": hint}, ensure_ascii=False
+                )
+            user_token = token  # 无真实用户的系统 run：平台身份
 
         if kind == "agent":
             path = _AGENT_TASK_PATH.format(capability=capability)
@@ -143,20 +139,6 @@ class MarketExecuteTool(BuiltinTool):
                              "Content-Type": "application/json"},
                     json=body,
                 )
-                # 管理员 + 个人凭据缺失 → 平台身份重试一次（403 发生于执行前，重试安全）
-                if (
-                    not using_platform
-                    and is_admin
-                    and resp.status_code == 403
-                    and resp.headers.get(_CREDS_MISSING_HEADER) == _CREDS_MISSING_CODE
-                ):
-                    logger.info(f"管理员 {capability} 个人凭据缺失, 以平台身份重试")
-                    resp = await client.post(
-                        url,
-                        headers={"Authorization": f"Bearer {token}",
-                                 "Content-Type": "application/json"},
-                        json=body,
-                    )
         except httpx.HTTPError as e:
             logger.warning(f"市场执行调用失败: {e}")
             return json.dumps({"success": False, "ok": False, "error": f"市场请求失败: {type(e).__name__}: {e}"},

@@ -1,9 +1,9 @@
 """市场执行工具(用户身份)单测。
 
 覆盖:
-- 逐请求携带用户 token(Bearer, aud=gateway)调用 /api/runtime/*, 不再带服务令牌 / X-Act-As-Sub;
+- 逐请求携带 market 受众用户 token(Bearer, aud=market)调用 /api/runtime/*;
 - tool/mcp/skill/agent 四类端点与请求体（agent 即委派专家）;
-- 无托管 token / uid 解析失败时 fail-closed 并返回统一引导登录文案; 市场未配置时返回错误。
+- 真实用户无托管 token 时 fail-closed；仅无数字 uid 的系统 run 用服务令牌。
 """
 import json
 import os
@@ -65,13 +65,21 @@ def _market_env(monkeypatch):
     yield
 
 
+_TOKEN_CALLS: list[tuple[int, str]] = []
+
+
 @pytest.fixture
 def hosted_token(monkeypatch):
-    """托管用户 token(按 uid 派生), 供断言 Bearer 头。"""
+    """托管用户 token(按 uid 派生), 记录 audience 供断言。"""
     from web import sso_tokens
 
-    monkeypatch.setattr(sso_tokens, "get_downstream_token",
-                        lambda uid, audience="", **kwargs: f"user-tok-{uid}")
+    _TOKEN_CALLS.clear()
+
+    def _fake(uid, audience="", **kwargs):
+        _TOKEN_CALLS.append((uid, audience))
+        return f"user-tok-{uid}"
+
+    monkeypatch.setattr(sso_tokens, "get_downstream_token", _fake)
     return "user-tok-7"
 
 
@@ -116,20 +124,17 @@ async def test_market_execute_tool_sends_user_token(monkeypatch, hosted_token):
     assert cap["headers"]["Authorization"] == "Bearer user-tok-7"
     assert "X-Act-As-Sub" not in cap["headers"]
     assert cap["json"] == {"tool": "t", "params": {"a": 1}}
+    assert _TOKEN_CALLS[-1] == (7, "market")
 
 
-async def test_market_execute_tool_admin_retries_with_service_token_on_creds_missing(
-    monkeypatch, hosted_token
-):
-    """B 方案：管理员先用个人（用户令牌）；市场 403 + user_credentials_missing →
-    以服务令牌（平台身份）重试一次。"""
+async def test_market_execute_tool_admin_uses_user_token_no_retry(monkeypatch, hosted_token):
+    """管理员也是真实用户：始终用自己的 market token；市场 403 不触发 agent 重试。"""
     _FakeClient.scripted = [
         (
             403,
             {"detail": "该能力按你的身份执行，缺少必需凭据：ERP_PASSWORD"},
             {"X-Market-Error-Code": "user_credentials_missing"},
         ),
-        (200, {"tool": "t", "status": "ok"}, {}),
     ]
     monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
     tool = MarketExecuteTool()
@@ -139,53 +144,14 @@ async def test_market_execute_tool_admin_retries_with_service_token_on_creds_mis
         role="admin",
     )
     payload = json.loads(out)
-    assert payload["ok"] is True
-    assert len(_FakeClient.calls) == 2
-    assert _FakeClient.calls[0]["headers"]["Authorization"] == "Bearer user-tok-7"
-    assert _FakeClient.calls[1]["headers"]["Authorization"] == "Bearer svc-token"
-
-
-async def test_market_execute_tool_user_no_retry_on_creds_missing(monkeypatch, hosted_token):
-    """普通用户凭据缺失：不重试平台身份，原样返回 403。"""
-    _FakeClient.scripted = [
-        (
-            403,
-            {"detail": "该能力按你的身份执行，缺少必需凭据：ERP_PASSWORD；请先在能力市场「我的凭据」中填写后重试"},
-            {"X-Market-Error-Code": "user_credentials_missing"},
-        ),
-    ]
-    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
-    tool = MarketExecuteTool()
-    out = await _run_with(
-        "web:7",
-        lambda: tool.execute(capability="某连接器", kind="mcp", tool="t"),
-        role="default",
-    )
-    payload = json.loads(out)
     assert payload["ok"] is False
     assert payload["status_code"] == 403
-    assert len(_FakeClient.calls) == 1  # 不重试
-
-
-async def test_market_execute_tool_admin_no_retry_on_other_403(monkeypatch, hosted_token):
-    """管理员但 403 非「凭据缺失」标记（如准入拒绝）→ 不重试，避免越权。"""
-    _FakeClient.scripted = [
-        (403, {"detail": "没有调用该能力的权限"}, {}),
-    ]
-    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
-    tool = MarketExecuteTool()
-    out = await _run_with(
-        "web:7",
-        lambda: tool.execute(capability="某连接器", kind="mcp", tool="t"),
-        role="admin",
-    )
-    payload = json.loads(out)
-    assert payload["ok"] is False
     assert len(_FakeClient.calls) == 1
+    assert _FakeClient.calls[0]["headers"]["Authorization"] == "Bearer user-tok-7"
 
 
-async def test_market_execute_tool_admin_without_user_token_uses_service_token(monkeypatch):
-    """管理员无用户令牌：直接以服务令牌（平台身份）调用，不 fail-closed。"""
+async def test_market_execute_tool_real_user_without_token_fails_closed(monkeypatch):
+    """真实用户（即使 role=admin）无 token：fail-closed，不回退服务令牌。"""
     from web import sso_tokens
 
     monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
@@ -194,6 +160,25 @@ async def test_market_execute_tool_admin_without_user_token_uses_service_token(m
     tool = MarketExecuteTool()
     out = await _run_with(
         "web:7",
+        lambda: tool.execute(capability="某连接器", kind="mcp", tool="t"),
+        role="admin",
+    )
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"] == _HINT
+    assert len(_FakeClient.calls) == 0
+
+
+async def test_market_execute_tool_system_without_token_uses_service_token(monkeypatch):
+    """无数字 uid 的系统 run：允许服务令牌（平台身份）执行。"""
+    from web import sso_tokens
+
+    monkeypatch.setattr(me.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(sso_tokens, "get_downstream_token",
+                        lambda uid, audience="", **kwargs: "")
+    tool = MarketExecuteTool()
+    out = await _run_with(
+        "scheduler:admin",
         lambda: tool.execute(capability="某连接器", kind="mcp", tool="t"),
         role="admin",
     )

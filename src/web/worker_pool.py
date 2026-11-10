@@ -10,8 +10,8 @@
 - worker.parent_agent = root：继承 root 的 storage/LLM 客户端/插件管理器，
   但不继承上下文；persist_session=True 使 worker 保留会话历史跨轮次
 - 平台轨按用户身份（无需开关，平台轨启用即注入）：
-  worker.platform_token_provider = lambda: get_downstream_token(uid, "gateway")，
-  平台 MCP 的 sync/relay 均以该用户 token 鉴权（aud=gateway）；未托管/刷新失败时
+  worker.platform_token_provider = lambda: get_downstream_token(uid, "market")，
+  平台 MCP 的 sync/relay 均以该用户的 market 身份鉴权（aud=market）；未托管/刷新失败时
   该用户平台能力为空（fail-closed，不回退服务令牌）；root/群共享不注入 provider，
   保持服务令牌身份（平台轨启动打 WARNING）
 
@@ -262,7 +262,7 @@ class WebUserWorkerPool:
 
         def _provider() -> str:
             from web import sso_tokens
-            return sso_tokens.get_downstream_token(owner_uid, "gateway")
+            return sso_tokens.get_downstream_token(owner_uid, "market")
 
         return _provider
 

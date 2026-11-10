@@ -1,10 +1,10 @@
-"""能力市场目录检索工具(用户身份): 零号员工"全能"的发现层。
+"""能力市场目录检索工具(market 身份): 零号员工"全能"的发现层。
 
 按要办的事(task/关键词)在市场检索可用能力(agent/skill/mcp/tool/workflow),
-逐请求携带当前提问者的**用户 token**(Bearer, audience=gateway), 由市场按用户
-视角过滤可见性与归因; 命中后可用 ``market_execute`` 执行。无托管 token 时普通
-用户 fail-closed 并引导登录; 管理员/系统任务(role=admin)无用户令牌时改用服务
-令牌(Bearer, 平台身份/绑定账号视角)检索。
+逐请求携带当前提问者的 **market 受众 token**(Bearer, audience=market), 由市场
+解析成自己的用户后过滤可见性与归因; 命中后可用 ``market_execute`` 执行。
+真实用户无托管 token 时 fail-closed 并引导登录; 只有无数字 uid 的系统 run
+（``cli:admin`` / ``scheduler:admin``）才使用服务令牌（平台身份）检索。
 """
 
 import asyncio
@@ -15,7 +15,7 @@ import httpx
 
 from . import BuiltinTool
 from .market_common import market_config
-from .user_token import is_admin_run, resolve_user_token_or_hint
+from .user_token import is_system_run, resolve_user_token_or_hint
 
 logger = logging.getLogger("agent.tools")
 
@@ -74,14 +74,18 @@ class MarketSearchTool(BuiltinTool):
         if not (base and token):
             return json.dumps({"ok": False, "error": "能力市场未配置"}, ensure_ascii=False)
 
-        # 身份：默认用户令牌（个人视角）；管理员/系统身份无用户令牌时以服务令牌
-        # （平台身份/绑定账号视角）检索；普通用户无令牌 fail-closed 引导登录。
+        # 身份：真实用户用 market 受众 token（市场自己的用户视角）；只有无数字 uid
+        # 的系统 run 才用服务令牌（平台身份）。真实用户无 token 一律 fail-closed。
         # token 解析含同步阻塞(SSO 刷新/交换 + SQLite), 经线程池执行避免卡事件循环
-        is_admin = is_admin_run()
-        user_token, hint = await asyncio.to_thread(resolve_user_token_or_hint)
-        if hint and not is_admin:
-            return json.dumps({"ok": False, "error": hint}, ensure_ascii=False)
-        bearer = user_token or token  # 管理员无用户令牌 → 服务令牌（平台身份）
+        user_token, hint = await asyncio.to_thread(
+            resolve_user_token_or_hint, audience="market"
+        )
+        if hint:
+            if not is_system_run():
+                return json.dumps({"ok": False, "error": hint}, ensure_ascii=False)
+            bearer = token
+        else:
+            bearer = user_token
         url = f"{base}{_TASK_SEARCH_PATH}"
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
