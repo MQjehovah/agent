@@ -211,9 +211,15 @@ class Settings:
 
     # ---- 环境变量兼容（用于尚未迁移的模块）----
     def _env_get(self, path: str, env_key: str, default: Any = None) -> Any:
-        """优先 Settings，回退环境变量，再回退默认值"""
+        """优先 Settings，回退环境变量，再回退默认值。
+
+        空字符串视为“未配置”，继续回退环境变量；否则 config.json 里的空模板
+        会永久屏蔽 .env（例如 rag.base_url="" 导致 RAG_BASE_URL 不生效）。
+        """
         from_settings = self.get(path)
-        if from_settings is not None:
+        if from_settings is not None and not (
+            isinstance(from_settings, str) and not from_settings.strip()
+        ):
             return from_settings
         env_val = _os.getenv(env_key, "")
         if env_val:
