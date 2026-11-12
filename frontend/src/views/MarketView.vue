@@ -5,7 +5,6 @@ import MarkdownIt from 'markdown-it'
 import { api, del, patch, post } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarketCard from '../components/MarketCard.vue'
-import CredentialsDialog from '../components/CredentialsDialog.vue'
 import { sanitizeHtml } from '../utils/sanitize'
 
 const router = useRouter()
@@ -200,14 +199,6 @@ function openMarketConfig(item: MarketItem): void {
   window.open(marketConfigUrl(item), '_blank', 'noopener')
 }
 
-// ---------------- 个人凭据(卡片「配置凭据」弹窗) ----------------
-const credDialog = ref(false)
-const credCap = ref<MarketItem | null>(null)
-function openCredentials(item: MarketItem): void {
-  credCap.value = item
-  credDialog.value = true
-}
-
 async function load() {
   loading.value = true
   marketMissing.value = false
@@ -274,6 +265,14 @@ const detailNeedsCredentials = computed(() =>
   needsPersonalCredentials(detail.value) && detailCredKeys.value.length > 0
 )
 const detailHasAuth = computed(() => hasAuthConfig(detail.value))
+const detailNeedsConfig = computed(() =>
+  Boolean(
+    detail.value &&
+      (detailHasAuth.value ||
+        detailNeedsCredentials.value ||
+        detailCredKeys.value.length > 0)
+  )
+)
 
 /** 详情页顶部引导：未加入 / 待扫码 / 待配凭据 */
 const detailGuide = computed(() => {
@@ -287,6 +286,9 @@ const detailGuide = computed(() => {
   }
   if (detailNeedsCredentials.value) {
     return { tone: 'info', title: '使用前：配置个人凭据', text: '首次使用需填写你自己的账号或 Token；已配置可直接使用。' }
+  }
+  if (detailCredKeys.value.length) {
+    return { tone: 'info', title: '使用前：确认平台凭据', text: '该能力以平台身份执行，由管理员在配置页维护凭据。' }
   }
   return null
 })
@@ -453,8 +455,7 @@ onBeforeUnmount(() => {
           @install="install(row)"
           @uninstall="uninstall(row)"
           @toggle="(v: boolean) => toggleEnabled(row, v)"
-          @credentials="openCredentials(row)"
-          @authorize="openMarketConfig(row)"
+          @configure="openMarketConfig(row)"
         />
       </div>
 
@@ -522,10 +523,8 @@ onBeforeUnmount(() => {
           <div class="drawer-actions">
             <el-button v-if="!detail.joined" type="primary" @click="join(detail)">加入</el-button>
             <el-button v-else @click="leave(detail)">移出</el-button>
-            <el-button v-if="detail.joined && detailNeedsCredentials" type="primary" plain
-                       @click="openCredentials(detail)">配置个人凭据</el-button>
-            <el-button v-if="detailHasAuth" type="primary" plain
-                       @click="openMarketConfig(detail)">去扫码授权</el-button>
+            <el-button v-if="detail.joined && detailNeedsConfig" type="primary" plain
+                       @click="openMarketConfig(detail)">去配置</el-button>
             <el-button v-if="canInstall(detail) && !detail.installed" type="primary"
                        @click="install(detail)">安装（云端托管）</el-button>
             <el-button v-if="detail.installed" type="danger" plain @click="uninstall(detail)">卸载</el-button>
@@ -538,7 +537,6 @@ onBeforeUnmount(() => {
       </div>
     </el-drawer>
 
-    <CredentialsDialog v-model="credDialog" :cap="credCap" />
   </div>
 </template>
 

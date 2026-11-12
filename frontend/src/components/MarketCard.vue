@@ -14,7 +14,12 @@ interface Cap {
   tags?: string[]
   distribution?: string
   binding?: string
-  config_ui?: { auth?: string; provider?: string; hide_env_fields?: boolean }
+  config_ui?: {
+    auth?: string
+    provider?: string
+    hide_env_fields?: boolean
+    auth_methods?: Array<{ id?: string; label?: string }>
+  }
   input_schema?: { env?: Record<string, string>; required_env?: string[] }
   icon_url?: string
   joined?: boolean
@@ -34,8 +39,7 @@ const emit = defineEmits<{
   (e: 'install'): void
   (e: 'uninstall'): void
   (e: 'toggle', v: boolean): void
-  (e: 'credentials'): void
-  (e: 'authorize'): void
+  (e: 'configure'): void
   (e: 'mounted', id: string): void
 }>()
 
@@ -61,17 +65,15 @@ const credKeys = computed(() => {
   if (s.env && typeof s.env === 'object') keys.push(...Object.keys(s.env))
   return [...new Set(keys.map((k) => String(k).trim()).filter(Boolean))]
 })
-/** user / user&service 绑定能力必须配置个人凭据；service 只用平台凭据 */
-const needsCredentials = computed(() =>
+/** 已加入且需要用户/管理员配置的能力，统一给「去配置」入口 */
+const needsConfig = computed(() =>
   Boolean(
     c.value.joined &&
-      ['user', 'user&service', 'user_only'].includes(c.value.binding || '') &&
-      !c.value.config_ui?.hide_env_fields &&
-      credKeys.value.length
-  ))
-/** 扫码/设备码授权类能力(DWS)：卡片给「去授权」而不是填 env */
-const needsAuthorize = computed(() =>
-  Boolean(c.value.joined && (c.value.config_ui?.auth || c.value.config_ui?.provider))
+      (c.value.config_ui?.auth ||
+        c.value.config_ui?.provider ||
+        (c.value.config_ui?.auth_methods?.length ?? 0) > 0 ||
+        credKeys.value.length)
+  )
 )
 
 // 让父级知道卡片已挂载(用于按需加载图标)
@@ -110,11 +112,8 @@ onMounted(() => emit('mounted', props.cap.id))
         <span v-if="c.usage_count"> · {{ c.usage_count }} 次</span>
       </span>
       <div class="foot-actions">
-        <el-button v-if="needsAuthorize" size="small" plain @click="emit('authorize')">
-          去授权
-        </el-button>
-        <el-button v-else-if="needsCredentials" size="small" plain @click="emit('credentials')">
-          配置凭据
+        <el-button v-if="needsConfig" size="small" plain @click="emit('configure')">
+          去配置
         </el-button>
         <template v-if="c.installed">
           <el-switch

@@ -12,7 +12,6 @@ import type {
 } from '../api/types'
 import { useSettingsStore } from '../stores/settings'
 import { iconPhStyle, typeName } from '../utils/market'
-import CredentialsDialog from '../components/CredentialsDialog.vue'
 import MarkdownBody from '../components/MarkdownBody.vue'
 
 const router = useRouter()
@@ -82,14 +81,6 @@ const busySub = ref('')
 const busyInstall = ref('')
 const busyUninstall = ref('')
 
-// ---- 配置凭据弹窗(binding=user/user_only 且有配置项的「我的」卡片) ----
-const credVisible = ref(false)
-const credCard = ref<BrowseCard | null>(null)
-function openCredentials(card: BrowseCard): void {
-  credCard.value = card
-  credVisible.value = true
-}
-
 // ---- 使用说明 / 配置引导 ----
 const docVisible = ref(false)
 const docCard = ref<BrowseCard | null>(null)
@@ -98,17 +89,14 @@ function openDoc(card: BrowseCard): void {
   docVisible.value = true
 }
 
-/** 需要个人凭据(binding=user / user&service)；service 只用平台凭据 */
-function needsPersonalCredentials(card: BrowseCard): boolean {
+/** 已加入且需要配置的能力：扫码授权、个人账号密码/Token、平台凭据 */
+function needsConfig(card: BrowseCard): boolean {
   return Boolean(
-    ['user', 'user&service', 'user_only'].includes(card.binding || '') &&
-      !card.config_ui?.hide_env_fields &&
+    card.config_ui?.auth ||
+      card.config_ui?.provider ||
+      (card.config_ui?.auth_methods?.length ?? 0) > 0 ||
       (card.cred_keys?.length ?? 0) > 0
   )
-}
-/** 扫码授权类能力(DWS)：直接去市场配置页授权 */
-function needsAuthorize(card: BrowseCard): boolean {
-  return Boolean(card.config_ui?.auth || card.config_ui?.provider)
 }
 function openMarketConfig(card: BrowseCard): void {
   const base = (settings.config.marketUrl || '').replace(/\/+$/, '')
@@ -749,20 +737,12 @@ onMounted(() => {
                 <el-tag v-if="card.mine" size="small" type="success" effect="plain">我的</el-tag>
                 <el-button size="small" link @click="openDoc(card)">说明</el-button>
                 <el-button
-                  v-if="card.mine && needsAuthorize(card)"
+                  v-if="card.mine && needsConfig(card)"
                   size="small"
                   plain
                   @click="openMarketConfig(card)"
                 >
-                  去授权
-                </el-button>
-                <el-button
-                  v-else-if="card.mine && needsPersonalCredentials(card)"
-                  size="small"
-                  plain
-                  @click="openCredentials(card)"
-                >
-                  配置凭据
+                  去配置
                 </el-button>
                 <el-button
                   size="small"
@@ -848,37 +828,20 @@ onMounted(() => {
         </div>
         <MarkdownBody v-if="docCard.readme_md" :content="docCard.readme_md" />
         <el-empty v-else description="该能力暂时没有说明文档" :image-size="72" />
-        <div v-if="docCard.mine && needsAuthorize(docCard)" class="market-doc-tip">
-          首次使用需完成扫码授权；已授权可直接在对话里使用。
-        </div>
-        <div v-else-if="docCard.mine && needsPersonalCredentials(docCard)" class="market-doc-tip">
-          首次使用需配置你自己的凭据；已配置可直接使用，凭据不会被其他员工使用。
+        <div v-if="docCard.mine && needsConfig(docCard)" class="market-doc-tip">
+          首次使用需完成配置：扫码授权，或填写账号密码 / Token。已配置可直接使用。
         </div>
       </template>
       <template #footer>
         <el-button @click="docVisible = false">关闭</el-button>
         <el-button
-          v-if="docCard && docCard.mine && needsAuthorize(docCard)"
+          v-if="docCard && docCard.mine && needsConfig(docCard)"
           type="primary"
           @click="openMarketConfig(docCard)"
         >
-          去扫码授权
-        </el-button>
-        <el-button
-          v-else-if="docCard && docCard.mine && needsPersonalCredentials(docCard)"
-          type="primary"
-          @click="openCredentials(docCard)"
-        >
-          配置个人凭据
+          去配置
         </el-button>
       </template>
     </el-dialog>
-
-    <CredentialsDialog
-      v-model="credVisible"
-      :capability-id="credCard?.id ?? ''"
-      :capability-name="credCard ? cardTitle(credCard) : ''"
-      :keys="credCard?.cred_keys ?? []"
-    />
   </div>
 </template>

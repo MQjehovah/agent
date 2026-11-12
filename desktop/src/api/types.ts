@@ -149,10 +149,11 @@ export interface MarketCapabilityLite {
     subtitle?: string
     note?: string
     hide_env_fields?: boolean
+    auth_methods?: Array<{ id?: string; label?: string }>
   }
   /** 能力说明文档(Markdown) */
   readme_md?: string
-  /** 固定配置项键(env/required_env)：需要个人凭据时卡片显示「配置凭据」入口 */
+  /** 固定配置项键(env/required_env)：需要配置时卡片显示「去配置」入口 */
   cred_keys?: string[]
 }
 
